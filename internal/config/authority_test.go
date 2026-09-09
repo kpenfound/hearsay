@@ -70,6 +70,18 @@ func TestRankOfAnUnrankedClass(t *testing.T) {
 	if p.Outranks(config.ArtifactMeeting, config.ArtifactMeeting) {
 		t.Error("a class outranks itself")
 	}
+
+	// Being left out is worse than being ranked last. `agent` is the bottom of
+	// the default ranking, so it is easy to read an omission as "level with
+	// agent" — but a ranking that lists agent puts it above everything it
+	// leaves out. docs/config.md says so, and this is why.
+	listed := config.Policy{Ranking: []config.ArtifactClass{config.ArtifactMeeting, config.ArtifactAgent}}
+	if !listed.Outranks(config.ArtifactAgent, config.ArtifactSpec) {
+		t.Error("agent is ranked last and spec is not ranked at all; agent should outrank it")
+	}
+	if listed.Outranks(config.ArtifactSpec, config.ArtifactAgent) {
+		t.Error("an unranked class outranks the class ranked last")
+	}
 }
 
 func TestRatifiedByArtifactIsRestrictedBySource(t *testing.T) {

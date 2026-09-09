@@ -561,10 +561,18 @@ func (l *loader) buildAuthority(r Repo) Authority {
 	policies := make([]Policy, 0, len(l.authority))
 	defined := make(map[string]string, len(l.authority))
 	// merged is the policies whose merged form is checked below, once every
-	// policy has been layered onto the one it inherits from. A policy whose
-	// scope is itself what is wrong is not in it: a scope with two policies has
-	// two answers and only one of them survives the merge, so anything said
-	// about the survivor would be attributed to whichever file was read first.
+	// policy has been layered onto the one it inherits from. Two kinds of policy
+	// are left out of it:
+	//
+	// A policy whose scope is itself what is wrong, because a scope with two
+	// policies has two answers and only one of them survives the merge, so
+	// anything said about the survivor would be attributed to whichever file was
+	// read first.
+	//
+	// A policy that sets neither of the two fields the merged check is about,
+	// because everything it has, it inherited. A contradiction it can be in was
+	// written somewhere else and is reported there; blaming it here as well
+	// would print one sentence once per scope in the configuration.
 	type policyAt struct {
 		scope string
 		at    at
@@ -576,6 +584,7 @@ func (l *loader) buildAuthority(r Repo) Authority {
 		p := d.v
 		a := locate(d, "authority policy", p.Scope, i)
 
+		named := false
 		switch {
 		case p.Scope == "":
 			l.bad(a, "scope", "is required: name a scope, or %q for the policy every other scope inherits", AnyValue)
@@ -586,7 +595,7 @@ func (l *loader) buildAuthority(r Repo) Authority {
 			ambiguous[p.Scope] = true
 		default:
 			defined[p.Scope] = position(d.file, d.line)
-			merged = append(merged, policyAt{scope: p.Scope, at: a})
+			named = true
 			if p.Scope != AnyValue {
 				if _, ok := r.Scope(p.Scope); !ok {
 					l.bad(a, "scope", "no scope is configured with id %q", p.Scope)
@@ -619,6 +628,13 @@ func (l *loader) buildAuthority(r Repo) Authority {
 			})
 		}
 		policies = append(policies, policy)
+		// A nil list is one this file did not set. Either field being present is
+		// enough: the ranking and the ratifiers are the two halves of the same
+		// contradiction, and whichever half arrived last is the one that made it
+		// one.
+		if named && (policy.Ranking != nil || policy.RatifiedBy.Artifacts != nil) {
+			merged = append(merged, policyAt{scope: p.Scope, at: a})
+		}
 	}
 
 	auth := newAuthority(policies)
@@ -642,12 +658,16 @@ func (l *loader) buildAuthority(r Repo) Authority {
 // accident, because narrowing a ranking is how a scope's policy usually starts.
 //
 // It is checked on the merged policy rather than on the file, because a scope
-// that sets one of the two fields inherits the other: neither file is wrong on
-// its own, and the scope's is where the ranking that made it wrong is written.
+// that sets one of the two fields inherits the other and neither file is wrong
+// on its own. Which file is told about it is decided by the caller, and is the
+// one that set a field: a policy that inherited both halves introduced nothing,
+// and every scope in the configuration inherits from the same `*`.
+//
+// A policy whose merged ranking is empty is left alone. That only happens where
+// a `ranking: []` was written, which is reported where it was written, and every
+// class would be missing from it.
 func (l *loader) checkRatifiersAreRanked(a at, p Policy) {
 	if len(p.Ranking) == 0 {
-		// An empty ranking is reported where it is written, and every class
-		// would be missing from it.
 		return
 	}
 	for _, c := range p.RatifiedBy.Artifacts {

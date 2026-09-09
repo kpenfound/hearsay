@@ -388,6 +388,21 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 			want: []string{`authority/a.yaml:4: authority policy "api": ratified_by.artifacts: "spec" ratifies on its own`},
 		},
 		{
+			// The contradiction is entirely inside the `*` policy. Every scope
+			// inherits it, and none of them introduced it, so it is one problem
+			// on one line however many scopes there are.
+			name: "a contradiction in the default policy that every scope inherits",
+			files: with(map[string]string{
+				"scopes/api.yaml":   "- id: api\n  sources: [github]\n- id: web\n  sources: [github]\n",
+				"principals/p.yaml": "id: kyle\nidentities: [{source: github, handle: kpenfound}]\n",
+				"authority/a.yaml": "" +
+					"- scope: \"*\"\n  ranking: [meeting]\n" +
+					"- scope: api\n  ratified_by:\n    principals: [kyle]\n" +
+					"- scope: web\n  ratified_by:\n    principals: [kyle]\n",
+			}),
+			want: []string{`authority/a.yaml:1: authority policy "*": ratified_by.artifacts: "merged_pr" ratifies on its own`},
+		},
+		{
 			name:  "a ratifier who is not a principal",
 			files: with(map[string]string{"authority/a.yaml": "scope: api\nratified_by:\n  principals: [kyle]\n"}),
 			want:  []string{`authority policy "api": ratified_by.principals[0]: no principal is configured with id "kyle"`},

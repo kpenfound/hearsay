@@ -238,22 +238,25 @@ A list that is present but empty inherits nothing: `principals: []` means nobody
 may ratify by hand in this scope. `ranking: []` is an error rather than "nothing
 outranks anything" — leave the field out to inherit.
 
-**A ranking that leaves a class out puts it at the bottom.** A class the ranking
-does not list ranks below every class that it does, and the omitted classes tie
-with each other, so between two of them nothing outranks anything and the more
-recent stance decides. Writing `ranking: [merged_pr, meeting]` is therefore a
-decision about all nine classes and not just two: it puts the other seven level
-with `agent`. Write the whole order out when you mean the whole order — the
-example above overrides one position and still lists nine.
+**A ranking that leaves a class out puts it below every class it lists.** The
+omitted classes tie with each other, so between two of *them* nothing outranks
+anything and the more recent stance decides — but every class in the list beats
+all of them, `agent` included. Leaving a class out is worse for it than ranking
+it last. Writing `ranking: [merged_pr, meeting]` is therefore a decision about
+all nine classes and not just two: it puts the other seven, `agent` among them,
+level with each other and below both. Write the whole order out when you mean
+the whole order — the example above overrides one position and still lists nine.
 
 A class that ratifies **on its own** has to be in the ranking in force for the
 scope, and the loader refuses a policy where it is not. `artifacts: [spec]`
 under a ranking that omits `spec` says a spec is authoritative enough to settle
 a topic with no human in the loop and also loses every disagreement it is in,
 which is not a policy anyone means to write. Ranking is inherited as readily as
-ratification, so this is checked on the policy as it ends up, not on one file:
-narrowing a scope's ranking can contradict a `ratified_by` it inherited from
-`*`, and the scope's file is where the contradiction was introduced.
+ratification, so this is checked on the policy as it ends up rather than on one
+file — narrowing a scope's ranking can contradict a `ratified_by` it inherited
+from `*`. It is reported against the file that **set** one of the two, which is
+where the contradiction was introduced; a scope that inherited both halves is
+not told about a mistake it has no part in.
 
 There is at most one policy per scope, and at most one `*`. Two policies for one
 scope would be two answers.
@@ -466,7 +469,7 @@ authority:
   - scope: api
     # This team decides in meetings, so a meeting outranks a merged PR here.
     # All nine classes are listed: one left out would rank below every one that
-    # is, level with `agent`.
+    # is, `agent` included.
     ranking:
       [meeting, merged_pr, spec, issue, pull_request, commit, chat_thread, dm, agent]
     ratified_by:
@@ -603,7 +606,7 @@ ratified_by:
 # authority/api.yaml
 # This team decides in meetings, so a meeting outranks a merged PR here.
 # All nine classes are listed: one left out would rank below every one that is,
-# level with `agent`.
+# `agent` included.
 scope: api
 ranking:
   [meeting, merged_pr, spec, issue, pull_request, commit, chat_thread, dm, agent]
