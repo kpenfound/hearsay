@@ -321,6 +321,77 @@ func TestConcurrentWorkersNeverRunTwoJobsOfOneSerialKey(t *testing.T) {
 	}
 }
 
+// The serialized claim's *other* guard, and the one a race between two workers
+// only rarely reaches: the claim takes an advisory lock on its kind, so that
+// two claims cannot both read a snapshot in which one serial key is free
+// (ADR-0007). The window that needs is about a millisecond wide, which the
+// test above hits by luck rather than by design — so the lock is held here by
+// the test instead, and a claim that did not take it is caught every run.
+//
+// The lock's name is spelled out rather than taken from the package because it
+// is a contract between workers and not an implementation detail: two workers
+// hashing different strings would each serialize against nobody, and neither
+// would notice.
+func TestTheSerializedClaimTakesTheKindsAdvisoryLock(t *testing.T) {
+	pool := newPool(t)
+	serialized := newKind(t, true)
+	unserialized := newKind(t, false)
+	enqueue(t, pool, queue.Request{Kind: serialized, TargetID: "l1-a", SerialKey: "scope"})
+	enqueue(t, pool, queue.Request{Kind: unserialized, TargetID: "evt-a"})
+
+	// A connection of its own, because an advisory lock without `xact` in its
+	// name belongs to a session: this one holds both kinds' claim locks until
+	// the test hands them back.
+	holder, err := pool.Acquire(t.Context())
+	if err != nil {
+		t.Fatalf("acquiring a connection to hold the claim lock: %v", err)
+	}
+	t.Cleanup(func() {
+		// Not t.Context(): it is cancelled before cleanup runs, and a lock
+		// left behind would outlive the test on a pooled connection.
+		_, _ = holder.Exec(context.Background(), `SELECT pg_advisory_unlock_all()`)
+		holder.Release()
+	})
+	for _, kind := range []queue.Kind{serialized, unserialized} {
+		if _, err := holder.Exec(t.Context(), `SELECT pg_advisory_lock(hashtext('claim:' || $1))`, kind.Name); err != nil {
+			t.Fatalf("taking the claim lock for %s: %v", kind.Name, err)
+		}
+	}
+
+	// With the lock held the serialized claim cannot reach its UPDATE, so it
+	// waits rather than deciding the key is free, and comes back with the
+	// deadline it was given and no job.
+	const wait = time.Second
+	client := newClient(t, queue.Config{Kind: serialized})
+	blocked, giveUp := context.WithTimeout(t.Context(), wait)
+	defer giveUp()
+	start := time.Now()
+	jobs, err := client.Claim(blocked)
+	waited := time.Since(start)
+	if err == nil || len(jobs) != 0 {
+		t.Fatalf("Claim with the kind's claim lock held = %v, %v; want it to block on the lock and take nothing", jobs, err)
+	}
+	if waited < wait/2 {
+		t.Errorf("Claim came back after %s, want it to have waited on the lock until its context ran out at %s", waited, wait)
+	}
+
+	// The positive control. Only the serialized path takes this lock, so
+	// holding an unserialized kind's claims nothing — without this, a Claim
+	// that failed for some entirely other reason would read as the lock
+	// working.
+	if got := claim(t, newClient(t, queue.Config{Kind: unserialized})); len(got) != 1 {
+		t.Fatalf("an unserialized claim with that kind's lock held = %v, want the one pending job: it does not take the lock", got)
+	}
+
+	// And once the lock is released, the job that was waiting on it is taken.
+	if _, err := holder.Exec(t.Context(), `SELECT pg_advisory_unlock_all()`); err != nil {
+		t.Fatalf("releasing the claim locks: %v", err)
+	}
+	if got := claim(t, client); len(got) != 1 || got[0].TargetID != "l1-a" {
+		t.Fatalf("after the lock was released, Claim = %v, want the pending job", got)
+	}
+}
+
 // A serialized claim must not be starved by a key that is busy: the other
 // keys keep running.
 func TestASerializedClaimSkipsABusyKeyAndTakesAnother(t *testing.T) {
