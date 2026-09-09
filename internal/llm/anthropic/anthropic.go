@@ -120,7 +120,7 @@ func (c *client) Complete(ctx context.Context, req llm.Request) (llm.Response, e
 		// context that is done stops the retry loop before it tries.
 		return llm.Response{}, c.err(0, "", "the request did not complete", true, 0, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	answer, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {

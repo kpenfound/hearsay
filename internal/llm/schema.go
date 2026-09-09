@@ -278,7 +278,7 @@ func (n *node) validate(v any, path string) error {
 	case json.Number:
 		f, err := value.Float64()
 		if err != nil {
-			return fmt.Errorf("%s: %s is not a number this package can compare: %v", at(path), value, err)
+			return fmt.Errorf("%s: %s is not a number this package can compare: %w", at(path), value, err)
 		}
 		if n.minimum != nil && f < *n.minimum {
 			return fmt.Errorf("%s: %s, want at least %v", at(path), value, *n.minimum)

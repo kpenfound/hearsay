@@ -349,9 +349,10 @@ packages (`internal/connector`, `internal/llm`, `internal/queue`, `internal/db`,
 **Every top-level package has a README** saying what belongs in it and what does
 not. Read the one for the package you are changing, and update it when the
 answer changes. That is where the boundaries are written down; nothing else
-enforces them. Subpackages — the four under `internal/service`, and the
-per-source and per-provider ones to come — say it in their package comment
-instead of adding a second README.
+enforces them. Subpackages — the four under `internal/service`, the
+provider adapter and its catalogue under `internal/llm`, and the per-source
+ones to come — say it in their package comment instead of adding a second
+README.
 
 ## Conventions
 

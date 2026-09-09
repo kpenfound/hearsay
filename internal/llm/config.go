@@ -160,7 +160,7 @@ func (tc TierConfig) Validate(t Tier) error {
 	if tc.BaseURL != "" {
 		u, err := url.Parse(tc.BaseURL)
 		if err != nil {
-			return fmt.Errorf("base_url %q is not a URL: %v", tc.BaseURL, err)
+			return fmt.Errorf("base_url %q is not a URL: %w", tc.BaseURL, err)
 		}
 		if u.Scheme != "http" && u.Scheme != "https" || u.Host == "" {
 			return fmt.Errorf("base_url %q is not an absolute http or https URL", tc.BaseURL)
