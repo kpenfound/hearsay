@@ -548,9 +548,10 @@ SELECT count(*) > 0 FROM pg_locks
 	})
 
 	// A second job of the same key starts running and commits while the claim
-	// waits. This is the one write in the package's tests that has to be made
-	// directly: it must land between the waiting claim's snapshot and its
-	// UPDATE, which no sequence of Claim calls can arrange.
+	// waits. It is written directly because it has to land between the waiting
+	// claim's snapshot and its UPDATE, which no sequence of Claim calls can
+	// arrange; TestTheSchemaRefusesRowsTheQueueWouldNeverWrite is the only
+	// other test that writes these tables itself, and says so too.
 	if _, err := pool.Exec(t.Context(), `
 INSERT INTO queue_job (kind, target_id, serial_key, state, attempt, started_at, lease_expires_at)
 VALUES ($1, 'l1-running', 'scope', 'running', 1, now(), now() + interval '30 seconds')`, kind.Name); err != nil {
@@ -976,6 +977,70 @@ func TestAnOversizedErrorIsStoredBoundedAndStillValidText(t *testing.T) {
 	}
 }
 
+// A handler's error is the least controlled string this package writes: it is
+// whatever a provider, a decoder or an HTTP body put in it. text refuses a NUL
+// byte and invalid UTF-8 (22021) wherever it is written, and this write is not
+// in a caller's transaction, so nothing else is damaged — but Fail comes back
+// with an error and writes nothing, which is worse than it sounds. The row
+// stays `running` on a lease nobody renews, the cause never reaches the row an
+// operator reads, and only a reclaim moves it: up to Lease +
+// MaintenanceInterval later, with the backoff bypassed, because a reclaim
+// deliberately leaves run_after alone.
+func TestAnErrorHoldingBytesPostgresRefusesIsStillRecorded(t *testing.T) {
+	tests := []struct {
+		name  string
+		cause error
+		// readable is what must survive into the row: sanitising the bytes is
+		// not allowed to cost the message.
+		readable string
+	}{
+		{name: "a NUL byte", cause: errors.New("provider said: \x00 truncated"), readable: "provider said:"},
+		{name: "invalid UTF-8", cause: errors.New("provider said: \xff\xfe"), readable: "provider said:"},
+		{name: "a NUL and invalid UTF-8 together", cause: errors.New("boom\x00\xff"), readable: "boom"},
+		// Long enough to be cut, and invalid throughout, so that the cut
+		// cannot be what makes it valid: RuneStart reads one byte's top bits,
+		// which says nothing about bytes that were never a rune.
+		{name: "invalid UTF-8 past the length bound", cause: errors.New(strings.Repeat("\xff", 3000))},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			kind := newKind(t, false)
+			client := newClient(t, queue.Config{Kind: kind, MaxAttempts: 1})
+			enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
+			jobs := claim(t, client)
+			if len(jobs) != 1 {
+				t.Fatalf("Claim = %d jobs, want 1", len(jobs))
+			}
+
+			state, _, err := client.Fail(t.Context(), jobs[0], tt.cause)
+			if err != nil {
+				t.Fatalf("Fail = %v, want the attempt recorded: a handler's bytes must not be able to make the write fail", err)
+			}
+			if state != queue.StateFailed {
+				t.Fatalf("Fail = %q, want the job failed on its last attempt", state)
+			}
+
+			failed, err := client.List(t.Context(), queue.StateFailed, 0)
+			if err != nil || len(failed) != 1 {
+				t.Fatalf("List(failed) = %v, %v, want the failed job", failed, err)
+			}
+			stored := failed[0].LastError
+			if stored == "" {
+				t.Fatal("nothing was recorded as the cause")
+			}
+			if !utf8.ValidString(stored) {
+				t.Errorf("the stored error is not valid UTF-8: %q", stored)
+			}
+			if strings.ContainsRune(stored, 0) {
+				t.Errorf("a NUL byte survived into the row: %q", stored)
+			}
+			if tt.readable != "" && !strings.Contains(stored, tt.readable) {
+				t.Errorf("the stored error is %q, want the cause %q still readable in it", stored, tt.readable)
+			}
+		})
+	}
+}
+
 // The defaults are filled in when the client is built, so a service that
 // configures nothing still has the numbers ADR-0007 describes.
 func TestAClientFillsInTheDefaults(t *testing.T) {
@@ -989,8 +1054,14 @@ func TestAClientFillsInTheDefaults(t *testing.T) {
 
 // The table is the last line of defence, and these are the rows the package's
 // own API cannot produce — which is the point of asserting them here: a
-// constraint is what stops a path added later from producing one quietly. It
-// is also the only place a test writes the queue tables directly.
+// constraint is what stops a path added later from producing one quietly.
+//
+// Tests go through the package's API like every other caller — the README's
+// rule about SQL from outside it — and exactly two break that on purpose: this
+// one, whose subject is the constraints themselves, and
+// TestTheSerializedClaimRefusesABusyKeyOnARepeatableReadServer, which has to
+// commit a running row at a moment no sequence of Claim calls can reach. A
+// third would need a reason of that kind.
 func TestTheSchemaRefusesRowsTheQueueWouldNeverWrite(t *testing.T) {
 	kind := newKind(t, false)
 	pool := newPool(t)

@@ -247,17 +247,34 @@ type Job struct {
 // failure and not a place to put the document that failed (ADR-0008).
 const maxErrorLen = 2000
 
-// errorText is the message stored for a failed attempt, bounded.
+// errorText is the message stored for a failed attempt: a handler's bytes made
+// storable, and then bounded.
+//
+// A handler's error is the least controlled string this package writes — it is
+// whatever a provider, a decoder or an HTTP body put in it — and a text column
+// refuses a NUL byte and invalid UTF-8 alike. Written as they came, either
+// raises 22021 from inside [Client.Fail], which then records nothing: the row
+// keeps a lease nobody is renewing, the cause never reaches the row an
+// operator reads, and the job waits for a reclaim instead of its backoff. So
+// these bytes are coerced rather than trusted.
 func errorText(err error) string {
 	if err == nil {
 		return ""
 	}
-	msg := err.Error()
+	// Coercion comes before the bound, because the bound assumes valid UTF-8:
+	// utf8.RuneStart reads one byte's top bits, which says nothing about bytes
+	// that were never part of a rune. A run of invalid bytes collapses to one
+	// replacement character, so this shortens rather than grows.
+	msg := strings.ToValidUTF8(err.Error(), "\uFFFD")
+	// A NUL is valid UTF-8 and still not storable. It is dropped rather than
+	// replaced: it carries nothing a reader of the row wants.
+	msg = strings.ReplaceAll(msg, "\x00", "")
 	if len(msg) <= maxErrorLen {
 		return msg
 	}
-	// Cut on a rune boundary: the column is text, and a half-encoded rune in
-	// it would be a second bug to find later.
+	// Cut on a rune boundary, which the coercion above is what makes possible:
+	// the column is text, and a half-encoded rune in it would be a second bug
+	// to find later.
 	cut := maxErrorLen
 	for cut > 0 && !utf8.RuneStart(msg[cut]) {
 		cut--
