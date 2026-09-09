@@ -61,7 +61,9 @@ ingest allowlist works in, it appears in every event id, and it is not renamed
 after ingest has started.
 
 A source id is 1–64 bytes of lowercase letters, digits, `-` and `_`, starting with
-a letter or a digit.
+a letter or a digit. `connector.ValidSourceID` is that rule, and it is exported
+so that configuration rejects a bad id where it is written rather than when the
+connector is built from it.
 
 ### Event ids
 
@@ -460,8 +462,8 @@ before.
 ### The source config a connector consumes
 
 One entry of the config repository's `sources/` directory, parsed. The on-disk
-format belongs to the configuration work (issues #5 and #37); this is what
-reaches the connector:
+format is [the configuration schema](config.md#sources); this is what reaches the
+connector:
 
 | Field | Meaning |
 |---|---|

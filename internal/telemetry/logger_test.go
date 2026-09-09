@@ -7,40 +7,39 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
-
-	"github.com/kpenfound/hearsay/internal/config"
 )
 
 func TestNewLogger(t *testing.T) {
 	tests := []struct {
 		name    string
-		cfg     config.Log
+		level   string
+		format  string
 		wantErr bool
 		// wantJSON asserts the output parses as a JSON object.
 		wantJSON bool
 		// wantEmitted asserts an info line reaches the writer.
 		wantEmitted bool
 	}{
-		{name: "json format", cfg: config.Log{Level: "info", Format: "json"}, wantJSON: true, wantEmitted: true},
-		{name: "text format", cfg: config.Log{Level: "info", Format: "text"}, wantEmitted: true},
-		{name: "auto format on a non-terminal is json", cfg: config.Log{Level: "info", Format: "auto"}, wantJSON: true, wantEmitted: true},
-		{name: "zero value defaults to info json", cfg: config.Log{}, wantJSON: true, wantEmitted: true},
-		{name: "warn level drops info lines", cfg: config.Log{Level: "warn", Format: "json"}},
-		{name: "unknown level", cfg: config.Log{Level: "chatty", Format: "json"}, wantErr: true},
-		{name: "unknown format", cfg: config.Log{Level: "info", Format: "yaml"}, wantErr: true},
+		{name: "json format", level: "info", format: "json", wantJSON: true, wantEmitted: true},
+		{name: "text format", level: "info", format: "text", wantEmitted: true},
+		{name: "auto format on a non-terminal is json", level: "info", format: "auto", wantJSON: true, wantEmitted: true},
+		{name: "zero value defaults to info json", level: "", format: "", wantJSON: true, wantEmitted: true},
+		{name: "warn level drops info lines", level: "warn", format: "json"},
+		{name: "unknown level", level: "chatty", format: "json", wantErr: true},
+		{name: "unknown format", level: "info", format: "yaml", wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			l, err := NewLogger(tt.cfg, &buf)
+			l, err := NewLogger(tt.level, tt.format, &buf)
 			if tt.wantErr {
 				if err == nil {
-					t.Fatalf("NewLogger(%+v) = nil error, want error", tt.cfg)
+					t.Fatalf("NewLogger(%q, %q) = nil error, want error", tt.level, tt.format)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("NewLogger(%+v) = %v, want no error", tt.cfg, err)
+				t.Fatalf("NewLogger(%q, %q) = %v, want no error", tt.level, tt.format, err)
 			}
 			l.Info("hello", "service", "api")
 

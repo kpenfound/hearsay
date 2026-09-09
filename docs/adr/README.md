@@ -16,6 +16,7 @@ The format, numbering and supersession rules are in [ADR-0001](0001-record-archi
 | [0006](0006-schema-migrations-with-goose.md) | Schema migrations with goose, applied by `hearsay migrate` | accepted | 2026-09-08 |
 | [0007](0007-postgres-backed-job-queue.md) | Postgres-backed job queue with per-key serialization | accepted | 2026-09-08 |
 | [0008](0008-observability-slog-and-opentelemetry.md) | Observability: `log/slog` and OpenTelemetry | accepted | 2026-09-08 |
+| [0009](0009-configuration-as-a-gitops-directory.md) | Configuration is a GitOps directory of YAML, read at startup | accepted | 2026-09-09 |
 
 ## Names other work depends on
 

@@ -1,9 +1,14 @@
-// Package config holds the parsed Hearsay configuration.
+// Package config holds Hearsay's configuration: the process settings that come
+// from flags and the environment, and the configuration repository that is
+// applied like GitOps.
 //
-// The configuration format itself — the GitOps repo layout, the single-file
-// default and the authority schema — is designed in issue #5 and built in #37.
-// Until then this package carries only what the scaffold genuinely uses, so
-// that the service entry points can already take the signature ADR-0003 fixes:
+// The configuration repository — `sources/`, `scopes/`, `principals/`, `code/`
+// and `authority/`, or the single file that expands to it — is read by [Load],
+// which reports everything wrong with it rather than the first thing. The
+// format is documented in docs/config.md and decided in ADR-0009.
+//
+// The parsed configuration reaches the four services as the argument ADR-0003
+// fixes:
 //
 //	func Run(ctx context.Context, cfg *config.Config, deps Deps) error
 package config
@@ -13,6 +18,12 @@ package config
 // differs, such as worker concurrency.
 type Config struct {
 	Log Log
+	// Repo is the configuration repository, loaded at startup and never
+	// reloaded while the process runs (ADR-0009). Its zero value is a process
+	// that was started without one: it ingests nothing and serves no bundles,
+	// which is the state `hearsay` runs in until it is pointed at a
+	// configuration.
+	Repo Repo
 }
 
 // Log configures the process logger (ADR-0008).

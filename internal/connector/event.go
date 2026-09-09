@@ -387,7 +387,7 @@ func ParseEventID(id string) (source, nativeID string, err error) {
 	if !ok {
 		return "", "", fmt.Errorf("event id %q: missing the native id", id)
 	}
-	if !isSourceID(source) {
+	if !ValidSourceID(source) {
 		return "", "", fmt.Errorf("event id %q: %q is not a source id", id, source)
 	}
 	nativeID, err = decodeSegment(encoded)
@@ -404,7 +404,7 @@ func ParseEventID(id string) (source, nativeID string, err error) {
 //
 // Errors wrap [ErrInvalidEvent] and name the field that is wrong.
 func (e Event) Validate() error {
-	if !isSourceID(e.Source) {
+	if !ValidSourceID(e.Source) {
 		return fmt.Errorf("%w: source %q is not a source id (lowercase letters, digits, - and _)", ErrInvalidEvent, e.Source)
 	}
 	switch {
@@ -529,7 +529,7 @@ func (p Payload) validateRevision(e Event) error {
 
 func (i Identity) validate(field string) error {
 	switch {
-	case !isSourceID(i.Source):
+	case !ValidSourceID(i.Source):
 		return fmt.Errorf("%w: %s.source %q is not a source id", ErrInvalidEvent, field, i.Source)
 	case i.NativeID == "":
 		return fmt.Errorf("%w: %s.native_id is empty", ErrInvalidEvent, field)
@@ -553,7 +553,7 @@ func (a ACL) validate() error {
 				return fmt.Errorf("%w: acl[%d] is public and names %q", ErrInvalidEvent, i, entry.NativeID)
 			}
 		case ACLGroup, ACLIdentity:
-			if !isSourceID(entry.Source) {
+			if !ValidSourceID(entry.Source) {
 				return fmt.Errorf("%w: acl[%d].source %q is not a source id", ErrInvalidEvent, i, entry.Source)
 			}
 			if entry.NativeID == "" {

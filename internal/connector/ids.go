@@ -13,10 +13,15 @@ import (
 // bundle's provenance pointer.
 const safeBytes = "-._~:@/#+=,"
 
-// isSourceID reports whether s is a well-formed source id. The charset is
-// deliberately narrow: source ids appear in event ids, which are split on their
-// colons, and they are typed into config by hand.
-func isSourceID(s string) bool {
+// ValidSourceID reports whether s is a well-formed source id: 1 to
+// [MaxSourceIDLen] bytes of lowercase letters, digits, `-` and `_`, starting
+// with a letter or a digit. The charset is deliberately narrow: source ids
+// appear in event ids, which are split on their colons, and they are typed into
+// config by hand.
+//
+// It is exported so that configuration can reject a bad source id where it is
+// written rather than when a connector is built from it.
+func ValidSourceID(s string) bool {
 	if s == "" || len(s) > MaxSourceIDLen {
 		return false
 	}
