@@ -1,0 +1,10 @@
+{
+  "id": "msg_01TruncatedEXAMPLE",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-haiku-4-5-20251001",
+  "content": [],
+  "stop_reason": "max_tokens",
+  "stop_sequence": null,
+  "usage": {"input_tokens": 412, "output_tokens": 16}
+}

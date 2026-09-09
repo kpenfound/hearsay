@@ -1,0 +1,12 @@
+{
+  "id": "msg_01T4gk7hNQmYFYbEXAMPLE",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-haiku-4-5-20251001",
+  "content": [
+    {"type": "text", "text": "They decided to put the job queue in Postgres."}
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {"input_tokens": 88, "output_tokens": 12}
+}

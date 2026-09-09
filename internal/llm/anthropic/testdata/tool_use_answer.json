@@ -1,0 +1,20 @@
+{
+  "id": "msg_01QsW9zEXAMPLEtoolcall",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-haiku-4-5-20251001",
+  "content": [
+    {
+      "type": "tool_use",
+      "id": "toolu_01EXAMPLE",
+      "name": "distillation",
+      "input": {
+        "summary": "The job queue moves to Postgres; robin reviewed and it merged on Friday.",
+        "outcome_kind": "decided"
+      }
+    }
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {"input_tokens": 412, "output_tokens": 96}
+}
