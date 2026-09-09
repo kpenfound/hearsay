@@ -75,6 +75,24 @@ func TestRequestValidate(t *testing.T) {
 		{name: "a key on an unserialized kind would be ignored", req: queue.Request{Kind: distill, TargetID: "e1", SerialKey: "scope"}, wantErr: true},
 		{name: "a delay into the past", req: queue.Request{Kind: distill, TargetID: "e1", Delay: -time.Second}, wantErr: true},
 		{name: "a priority the column cannot hold", req: queue.Request{Kind: distill, TargetID: "e1", Priority: 1 << 40}, wantErr: true},
+
+		// What Postgres would refuse mid-statement, and so abort the caller's
+		// transaction with. Refusing it here is the whole of the promise that
+		// an enqueue cannot be the thing that rolls back the write it belongs
+		// to.
+		{name: "a target id at the length limit", req: queue.Request{Kind: distill, TargetID: strings.Repeat("e", queue.MaxIDLen)}},
+		{name: "a target id past the length limit", req: queue.Request{Kind: distill, TargetID: strings.Repeat("e", queue.MaxIDLen+1)}, wantErr: true},
+		{name: "a target id that is not valid UTF-8", req: queue.Request{Kind: distill, TargetID: "evt-\xff"}, wantErr: true},
+		{name: "a target id holding a NUL", req: queue.Request{Kind: distill, TargetID: "evt-\x00-1"}, wantErr: true},
+		{name: "a serial key that is not valid UTF-8", req: queue.Request{Kind: assert, TargetID: "l1-1", SerialKey: "scope-\xff"}, wantErr: true},
+		{name: "a serial key holding a NUL", req: queue.Request{Kind: assert, TargetID: "l1-1", SerialKey: "scope-\x00"}, wantErr: true},
+		{name: "a serial key past the length limit", req: queue.Request{Kind: assert, TargetID: "l1-1", SerialKey: strings.Repeat("s", queue.MaxIDLen+1)}, wantErr: true},
+		// jsonb refuses a \u0000 escape (22P05) as text refuses the byte, so
+		// the carrier is held to the same rule.
+		{name: "a trace context", req: queue.Request{Kind: distill, TargetID: "e1", TraceContext: map[string]string{"traceparent": "00-x-y-01"}}},
+		{name: "a trace context value holding a NUL", req: queue.Request{Kind: distill, TargetID: "e1", TraceContext: map[string]string{"traceparent": "00-\x00"}}, wantErr: true},
+		{name: "a trace context key holding a NUL", req: queue.Request{Kind: distill, TargetID: "e1", TraceContext: map[string]string{"trace\x00parent": "00-x"}}, wantErr: true},
+		{name: "a trace context value that is not valid UTF-8", req: queue.Request{Kind: distill, TargetID: "e1", TraceContext: map[string]string{"traceparent": "00-\xff"}}, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

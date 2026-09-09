@@ -157,6 +157,64 @@ func TestADuplicateEnqueueCollapsesWithoutAbortingTheTransaction(t *testing.T) {
 	}
 }
 
+// The property ADR-0007 will not trade, stated as behaviour rather than as a
+// comment: an enqueue cannot be the thing that aborts the caller's
+// transaction. Every request here is one Postgres would refuse with a
+// statement error — a NUL byte or invalid UTF-8 in a text column (22021), a
+// NUL escape in the jsonb carrier (22P05) — and each is refused before any SQL
+// runs, so the transaction survives and the write that was the point of it
+// still commits.
+func TestARefusedEnqueueLeavesTheCallersTransactionUsable(t *testing.T) {
+	kind := newKind(t, false)
+	pool := newPool(t)
+
+	tests := []struct {
+		name string
+		req  queue.Request
+	}{
+		{name: "a NUL in the target id", req: queue.Request{Kind: kind, TargetID: "evt-\x00-1"}},
+		{name: "invalid UTF-8 in the target id", req: queue.Request{Kind: kind, TargetID: "evt-\xff"}},
+		{name: "a target id past the limit", req: queue.Request{Kind: kind, TargetID: strings.Repeat("e", queue.MaxIDLen+1)}},
+		{name: "a NUL in the trace context", req: queue.Request{Kind: kind, TargetID: "evt-carrier", TraceContext: map[string]string{"traceparent": "00-\x00"}}},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tx, err := pool.Begin(t.Context())
+			if err != nil {
+				t.Fatalf("Begin = %v, want no error", err)
+			}
+			defer tx.Rollback(context.WithoutCancel(t.Context())) //nolint:errcheck // a rollback after commit is a no-op
+
+			if _, err := queue.Enqueue(t.Context(), tx, tt.req); err == nil {
+				t.Fatal("Enqueue accepted a request Postgres would have refused mid-transaction")
+			} else if !errors.Is(err, queue.ErrInvalidJob) {
+				t.Fatalf("Enqueue = %v, want it to wrap ErrInvalidJob rather than come back from the database", err)
+			}
+
+			// An aborted transaction answers every further statement with
+			// 25P02, so a second enqueue and a commit that both work are the
+			// evidence that nothing reached Postgres.
+			survivor := queue.Request{Kind: kind, TargetID: "evt-survivor-" + strconv.Itoa(i)}
+			if _, err := queue.Enqueue(t.Context(), tx, survivor); err != nil {
+				t.Fatalf("enqueueing after a refused request = %v, want the caller's transaction still usable", err)
+			}
+			if err := tx.Commit(t.Context()); err != nil {
+				t.Fatalf("Commit = %v, want the transaction the enqueue was refused in to commit", err)
+			}
+		})
+	}
+
+	// And the writes that shared those transactions are on the table.
+	client := newClient(t, queue.Config{Kind: kind})
+	pending, err := client.List(t.Context(), queue.StatePending, 0)
+	if err != nil {
+		t.Fatalf("List = %v, want no error", err)
+	}
+	if len(pending) != len(tests) {
+		t.Errorf("%d jobs committed, want %d: one per transaction an enqueue was refused in", len(pending), len(tests))
+	}
+}
+
 // Identity is only "pending", on purpose: once a job is running it may already
 // have read the state a new event is about, so the new event is new work
 // rather than the same work.
@@ -389,6 +447,130 @@ func TestTheSerializedClaimTakesTheKindsAdvisoryLock(t *testing.T) {
 	}
 	if got := claim(t, client); len(got) != 1 || got[0].TargetID != "l1-a" {
 		t.Fatalf("after the lock was released, Claim = %v, want the pending job", got)
+	}
+}
+
+// repeatableReadPool is a pool whose sessions start at REPEATABLE READ, which
+// is what an operator gets by putting `default_transaction_isolation` in
+// postgresql.conf, on the database, on the role, or in the connection URL.
+// db.Open is not used here precisely because it does not set the level.
+func repeatableReadPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	url := os.Getenv("HEARSAY_DATABASE_URL")
+	if url == "" {
+		t.Skip("HEARSAY_DATABASE_URL is not set")
+	}
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		t.Fatalf("parsing the database url: %v", err)
+	}
+	cfg.ConnConfig.RuntimeParams["default_transaction_isolation"] = "repeatable read"
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("connecting to postgres: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	// The pool is only evidence if the sessions really came up at that level:
+	// a runtime parameter that stopped being applied would make every
+	// assertion below pass for the wrong reason.
+	var level string
+	if err := pool.QueryRow(context.Background(), `SHOW default_transaction_isolation`).Scan(&level); err != nil {
+		t.Fatalf("reading the pool's default isolation level: %v", err)
+	}
+	if level != "repeatable read" {
+		t.Fatalf("the pool's default isolation level is %q, want repeatable read", level)
+	}
+	return pool
+}
+
+// The serialized claim is correct under READ COMMITTED and nowhere above it,
+// so it names the level rather than inheriting the server's — nothing else
+// pins one.
+//
+// The failure is not something concurrency reaches by luck, so it is built by
+// hand. A claim is made to wait on the kind's advisory lock, which is where a
+// REPEATABLE READ transaction registers its snapshot; while it waits, a job of
+// the same serial key is set running and committed. Against a transaction
+// snapshot taken before that commit, `NOT EXISTS` passes and the claim takes a
+// second job on a key that is already running — the invariant broken with the
+// lock held throughout. Against the per-statement snapshot READ COMMITTED
+// takes after the lock is granted, the running row is there and the claim
+// takes nothing.
+func TestTheSerializedClaimRefusesABusyKeyOnARepeatableReadServer(t *testing.T) {
+	kind := newKind(t, true)
+	pool := repeatableReadPool(t)
+	enqueue(t, pool, queue.Request{Kind: kind, TargetID: "l1-waiting", SerialKey: "scope"})
+
+	client, err := queue.New(pool, queue.Config{Kind: kind, Lease: 30 * time.Second})
+	if err != nil {
+		t.Fatalf("queue.New = %v, want no error", err)
+	}
+
+	holder, err := pool.Acquire(t.Context())
+	if err != nil {
+		t.Fatalf("acquiring a connection to hold the claim lock: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = holder.Exec(context.Background(), `SELECT pg_advisory_unlock_all()`)
+		holder.Release()
+	})
+	if _, err := holder.Exec(t.Context(), `SELECT pg_advisory_lock(hashtext('claim:' || $1))`, kind.Name); err != nil {
+		t.Fatalf("taking the claim lock for %s: %v", kind.Name, err)
+	}
+
+	type claimResult struct {
+		jobs []queue.Job
+		err  error
+	}
+	claimed := make(chan claimResult, 1)
+	go func() {
+		jobs, err := client.Claim(context.WithoutCancel(t.Context()))
+		claimed <- claimResult{jobs, err}
+	}()
+
+	// The claim is now inside its first statement, waiting for the lock —
+	// which is the moment a REPEATABLE READ transaction has taken its
+	// snapshot. The lock is matched by its key so that nothing else waiting on
+	// an advisory lock can stand in for it.
+	waitFor(t, "the serialized claim to block on the kind's advisory lock", func() bool {
+		var waiting bool
+		err := pool.QueryRow(t.Context(), `
+SELECT count(*) > 0 FROM pg_locks
+ WHERE locktype = 'advisory' AND NOT granted
+   AND classid::bigint = ((hashtext('claim:' || $1)::bigint >> 32) & 4294967295)
+   AND objid::bigint = (hashtext('claim:' || $1)::bigint & 4294967295)`, kind.Name).Scan(&waiting)
+		if err != nil {
+			t.Errorf("reading pg_locks = %v, want no error", err)
+			return true
+		}
+		return waiting
+	})
+
+	// A second job of the same key starts running and commits while the claim
+	// waits. This is the one write in the package's tests that has to be made
+	// directly: it must land between the waiting claim's snapshot and its
+	// UPDATE, which no sequence of Claim calls can arrange.
+	if _, err := pool.Exec(t.Context(), `
+INSERT INTO queue_job (kind, target_id, serial_key, state, attempt, started_at, lease_expires_at)
+VALUES ($1, 'l1-running', 'scope', 'running', 1, now(), now() + interval '30 seconds')`, kind.Name); err != nil {
+		t.Fatalf("starting a job on the serial key: %v", err)
+	}
+
+	if _, err := holder.Exec(t.Context(), `SELECT pg_advisory_unlock_all()`); err != nil {
+		t.Fatalf("releasing the claim lock: %v", err)
+	}
+
+	select {
+	case got := <-claimed:
+		if got.err != nil {
+			t.Fatalf("Claim = %v, want no error", got.err)
+		}
+		if len(got.jobs) != 0 {
+			t.Fatalf("Claim took %v while another job of serial key %q was running: the claim read a snapshot from before that job started, which is what READ COMMITTED is required for", got.jobs, "scope")
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the claim never returned after the lock was released")
 	}
 }
 

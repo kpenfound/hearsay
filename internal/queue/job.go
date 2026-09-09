@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -124,12 +125,60 @@ type Request struct {
 	TraceContext map[string]string
 }
 
+// MaxIDLen bounds both TargetID and SerialKey. The column is `text` and has no
+// limit of its own, so this is the queue's: an id long enough to matter is a
+// caller passing something that is not an id.
+//
+// It is set above the longest id anything mints today — `internal/connector`
+// bounds an L0 event id at 1605 bytes — with room for the L1 and L2 ids that
+// come later. The number is not read from that package on purpose: the queue
+// takes an opaque id and does not depend on the layers that mint one.
+const MaxIDLen = 2048
+
+// validID refuses what the text columns cannot store. Postgres rejects a NUL
+// byte and any invalid UTF-8 with a statement error, and a statement error
+// inside the caller's transaction aborts it — which is the one thing Enqueue
+// promises it cannot do (ADR-0007). So these are refused here, before any SQL
+// runs, rather than discovered there.
+func validID(kind, field, value string) error {
+	switch {
+	case !utf8.ValidString(value):
+		return fmt.Errorf("%w: the %s of a %s job is not valid UTF-8, which Postgres would refuse mid-transaction", ErrInvalidJob, field, kind)
+	case strings.IndexByte(value, 0) >= 0:
+		// NUL is valid UTF-8 and still not storable in a text column, so it
+		// needs saying separately.
+		return fmt.Errorf("%w: the %s of a %s job holds a NUL byte, which a text column cannot store", ErrInvalidJob, field, kind)
+	case len(value) > MaxIDLen:
+		return fmt.Errorf("%w: the %s of a %s job is %d bytes, over the %d-byte limit", ErrInvalidJob, field, kind, len(value), MaxIDLen)
+	}
+	return nil
+}
+
 // Validate reports a request the queue refuses. Enqueue calls it before any
 // SQL runs, so a bad request can never be the thing that aborts the caller's
 // transaction.
 func (r Request) Validate() error {
 	if err := r.Kind.Validate(); err != nil {
 		return err
+	}
+	if err := validID(r.Kind.Name, "target id", r.TargetID); err != nil {
+		return err
+	}
+	if err := validID(r.Kind.Name, "serial key", r.SerialKey); err != nil {
+		return err
+	}
+	// The carrier goes to a jsonb column, which refuses a \u0000 escape
+	// (22P05) exactly as the text columns refuse a NUL byte — a third way to
+	// abort the caller's transaction, so it is checked the same way. Invalid
+	// UTF-8 would not abort anything here, because encoding/json substitutes
+	// U+FFFD for it, but a trace id quietly rewritten is not a trace id.
+	for key, value := range r.TraceContext {
+		if err := validID(r.Kind.Name, "trace context key "+strconv.Quote(key), key); err != nil {
+			return err
+		}
+		if err := validID(r.Kind.Name, "trace context value for "+strconv.Quote(key), value); err != nil {
+			return err
+		}
 	}
 	switch {
 	case r.TargetID == "":

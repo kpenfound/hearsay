@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -64,6 +66,87 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", what)
+}
+
+// A worker with a backlog still does its maintenance. The drain loop is where
+// a busy worker lives — ADR-0007's distiller backfill keeps it there for as
+// long as the backfill lasts — so if the maintenance tick were only read by
+// the outer select, a kind's expired leases would go unreclaimed for exactly
+// as long as there is most to reclaim, and every extra worker would make that
+// worse rather than better, because they would all be draining.
+//
+// Staged rather than raced: a job is claimed with a lease measured in
+// milliseconds and then abandoned, which is the row a worker that died
+// mid-job leaves behind, and the work that keeps the loop fed enqueues its own
+// successor so that a claim never comes back empty.
+func TestABusyWorkerStillReclaimsExpiredLeases(t *testing.T) {
+	kind := newKind(t, false)
+	pool := newPool(t)
+
+	enqueue(t, pool, queue.Request{Kind: kind, TargetID: "evt-abandoned"})
+	abandoning := newClient(t, queue.Config{Kind: kind, Lease: time.Millisecond})
+	if got := claim(t, abandoning); len(got) != 1 || got[0].TargetID != "evt-abandoned" {
+		t.Fatalf("the staged claim = %v, want the one job, which is then abandoned", got)
+	}
+	// Nothing completes it, so it is `running` with a lease that is already
+	// gone. Only a reclaim can make it claimable again — which is the point:
+	// the worker below cannot reach it any other way.
+
+	var (
+		mu      sync.Mutex
+		ran     []string
+		feeding = true
+		feedErr error
+	)
+	enqueue(t, pool, queue.Request{Kind: kind, TargetID: "evt-feed-0"})
+	_, stop := run(t, queue.Config{
+		Kind:                kind,
+		Lease:               30 * time.Second,
+		MaintenanceInterval: 100 * time.Millisecond,
+		// Long, so that nothing here is explained by a poll: the drain loop
+		// never sleeps while there is work anyway.
+		PollInterval: time.Minute,
+	}, func(ctx context.Context, job queue.Job) error {
+		mu.Lock()
+		ran = append(ran, job.TargetID)
+		next := "evt-feed-" + strconv.Itoa(len(ran))
+		keepFeeding := feeding
+		mu.Unlock()
+
+		if keepFeeding {
+			// Enqueued before the handler returns, so there is always
+			// something pending when the loop claims again.
+			if _, err := queue.Enqueue(ctx, pool, queue.Request{Kind: kind, TargetID: next}); err != nil {
+				mu.Lock()
+				feedErr, feeding = err, false
+				mu.Unlock()
+			}
+		}
+		time.Sleep(2 * time.Millisecond)
+		return nil
+	})
+
+	waitFor(t, "the abandoned job to be reclaimed and re-run while the worker is busy", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Contains(ran, "evt-abandoned")
+	})
+
+	mu.Lock()
+	feeding = false
+	worked, err := len(ran), feedErr
+	mu.Unlock()
+	stop()
+
+	if err != nil {
+		t.Fatalf("keeping the worker fed failed: %v", err)
+	}
+	// The reclaim has to have happened while the loop had work, or the test
+	// proved nothing: with only the abandoned job and its feed, a worker that
+	// had gone idle would show barely any runs.
+	if worked < 3 {
+		t.Errorf("the worker ran %d jobs before the abandoned one was reclaimed, want a drain loop that stayed fed", worked)
+	}
 }
 
 // LISTEN/NOTIFY is what makes a job start now rather than at the next poll.
