@@ -9,8 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"strings"
-
-	"github.com/kpenfound/hearsay/internal/config"
 )
 
 type loggerKey struct{}
@@ -35,19 +33,26 @@ func With(ctx context.Context, args ...any) context.Context {
 	return WithLogger(ctx, Logger(ctx).With(args...))
 }
 
-// NewLogger builds the process logger from cfg, writing to w.
+// NewLogger builds the process logger, writing to w. The level is debug, info,
+// warn or error, and the format is json, text or auto; empty means the default
+// of each.
+//
+// It takes the two settings as values rather than as `config.Log` so that this
+// package depends on nothing: `internal/config` reads the configuration for
+// every other package, including the ones this one is used from, and a utility
+// that the configuration package cannot import is a utility in the wrong place.
 //
 // The caller attaches the fields that hold for the whole process — service,
 // version, instance — and puts the result in the context with [WithLogger].
-func NewLogger(cfg config.Log, w io.Writer) (*slog.Logger, error) {
-	level, err := parseLevel(cfg.Level)
+func NewLogger(level, format string, w io.Writer) (*slog.Logger, error) {
+	lvl, err := parseLevel(level)
 	if err != nil {
 		return nil, err
 	}
-	opts := &slog.HandlerOptions{Level: level}
+	opts := &slog.HandlerOptions{Level: lvl}
 
 	var h slog.Handler
-	switch strings.ToLower(strings.TrimSpace(cfg.Format)) {
+	switch strings.ToLower(strings.TrimSpace(format)) {
 	case "json":
 		h = slog.NewJSONHandler(w, opts)
 	case "text":
@@ -59,7 +64,7 @@ func NewLogger(cfg config.Log, w io.Writer) (*slog.Logger, error) {
 			h = slog.NewJSONHandler(w, opts)
 		}
 	default:
-		return nil, fmt.Errorf("unknown log format %q: want json, text or auto", cfg.Format)
+		return nil, fmt.Errorf("unknown log format %q: want json, text or auto", format)
 	}
 	return slog.New(h), nil
 }

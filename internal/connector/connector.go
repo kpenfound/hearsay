@@ -159,8 +159,8 @@ const (
 
 // SourceConfig is one entry of the config repository's `sources/` directory,
 // parsed: what a connector is told about the source it serves. The on-disk
-// format belongs to the configuration work (#5, #37); this is the shape a
-// connector consumes.
+// format is docs/config.md, and `internal/config` produces these values
+// directly, so there is no second shape between the file and the connector.
 type SourceConfig struct {
 	// ID is the source id, unique across the deployment. It appears in the
 	// Source field of every event the connector emits and in every event id, so
@@ -244,7 +244,7 @@ func (r *Registry) Register(connectorType string, f Factory) error {
 // about it that must be true before it is run: it ingests somehow, and it
 // describes itself as the type it was registered under.
 func (r *Registry) New(ctx context.Context, src SourceConfig) (Connector, error) {
-	if !isSourceID(src.ID) {
+	if !ValidSourceID(src.ID) {
 		return nil, fmt.Errorf("source %q: id is not a source id (lowercase letters, digits, - and _)", src.ID)
 	}
 	r.mu.RLock()

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -312,4 +313,156 @@ func TestMigrateErrorIsNotImplemented(t *testing.T) {
 	if n := strings.Count(err.Error(), "migrate"); n != 1 {
 		t.Errorf("error names the subcommand %d times, want once: %v", n, err)
 	}
+}
+
+// writeConfig writes a configuration repository into a temporary directory and
+// returns its path.
+func writeConfig(t *testing.T, files map[string]string) string {
+	t.Helper()
+	root := t.TempDir()
+	for name, body := range files {
+		full := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatalf("creating %s: %v", filepath.Dir(full), err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
+			t.Fatalf("writing %s: %v", full, err)
+		}
+	}
+	return root
+}
+
+// validConfig is the smallest configuration that loads.
+var validConfig = map[string]string{
+	"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\n",
+	"scopes/api.yaml":     "id: api\nsources: [github]\n",
+}
+
+func TestConfigValidate(t *testing.T) {
+	valid := writeConfig(t, validConfig)
+	broken := writeConfig(t, map[string]string{
+		"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\n",
+		"scopes/api.yaml":     "id: api\nsources: [github, discord]\n",
+	})
+
+	tests := []struct {
+		name       string
+		args       []string
+		wantErr    string
+		wantStdout string
+	}{
+		{
+			name:       "a valid configuration is summarised",
+			args:       []string{"config", "validate", valid},
+			wantStdout: "is valid",
+		},
+		{
+			name:       "the summary carries the digest a running process logs",
+			args:       []string{"config", "validate", valid},
+			wantStdout: "sha256:",
+		},
+		{
+			name:       "the path may come from the flag instead",
+			args:       []string{"config", "validate", "--config", valid},
+			wantStdout: "is valid",
+		},
+		{
+			name:    "an invalid configuration names the file, the line and the field",
+			args:    []string{"config", "validate", broken},
+			wantErr: `scopes/api.yaml:1: scope "api": sources[1].source: no source is configured with id "discord"`,
+		},
+		{
+			name:    "config with no action says what it wanted",
+			args:    []string{"config"},
+			wantErr: "no action given: want validate",
+		},
+		{
+			name:    "an unknown action is named",
+			args:    []string{"config", "explain"},
+			wantErr: `unknown action "explain"`,
+		},
+		{
+			name:    "a stray argument is refused",
+			args:    []string{"config", "validate", valid, "twice"},
+			wantErr: `unexpected argument "twice"`,
+		},
+		{
+			name:    "a path that is not there",
+			args:    []string{"config", "validate", filepath.Join(valid, "nowhere")},
+			wantErr: "reading configuration at",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			err := run(t.Context(), tt.args, &stdout, &stderr)
+			switch {
+			case tt.wantErr == "" && err != nil:
+				t.Fatalf("run(%q) = %v, want no error", tt.args, err)
+			case tt.wantErr != "" && err == nil:
+				t.Fatalf("run(%q) = nil, want an error containing %q", tt.args, tt.wantErr)
+			case tt.wantErr != "" && !strings.Contains(err.Error(), tt.wantErr):
+				t.Fatalf("run(%q) = %v, want an error containing %q", tt.args, err, tt.wantErr)
+			}
+			if tt.wantStdout != "" && !strings.Contains(stdout.String(), tt.wantStdout) {
+				t.Errorf("stdout = %q, want it to contain %q", stdout.String(), tt.wantStdout)
+			}
+		})
+	}
+}
+
+// A service reads its configuration before it starts, so a mistake in it stops
+// the process rather than showing up on the first request (ADR-0009).
+func TestServicesLoadTheirConfiguration(t *testing.T) {
+	valid := writeConfig(t, validConfig)
+
+	t.Run("a bad configuration stops the service starting", func(t *testing.T) {
+		broken := writeConfig(t, map[string]string{"sources/github.yaml": "id: github\n"})
+		var stdout, stderr bytes.Buffer
+		err := run(t.Context(), []string{"api", "--config", broken}, &stdout, &stderr)
+		if err == nil || !strings.Contains(err.Error(), "not a valid configuration") {
+			t.Fatalf("run(api --config <broken>) = %v, want the configuration error", err)
+		}
+	})
+
+	t.Run("a loaded configuration is logged with its digest", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		if err := run(ctx, []string{"api", "--config", valid, "--log-format", "json"}, &stdout, &stderr); err != nil {
+			t.Fatalf("run(api --config <valid>) = %v, want no error", err)
+		}
+		for _, want := range []string{`"msg":"configuration loaded"`, `"config_digest":"sha256:`, `"sources":1`} {
+			if !strings.Contains(stderr.String(), want) {
+				t.Errorf("stderr = %q, want it to contain %s", stderr.String(), want)
+			}
+		}
+	})
+
+	t.Run("HEARSAY_CONFIG is honoured", func(t *testing.T) {
+		t.Setenv("HEARSAY_CONFIG", valid)
+		var stdout, stderr bytes.Buffer
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		if err := run(ctx, []string{"api", "--log-format", "json"}, &stdout, &stderr); err != nil {
+			t.Fatalf("run(api) = %v, want no error", err)
+		}
+		if !strings.Contains(stderr.String(), `"msg":"configuration loaded"`) {
+			t.Errorf("stderr = %q, want the configuration to have been loaded", stderr.String())
+		}
+	})
+
+	t.Run("no configuration is a warning, not a refusal", func(t *testing.T) {
+		t.Setenv("HEARSAY_CONFIG", "")
+		var stdout, stderr bytes.Buffer
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		if err := run(ctx, []string{"api", "--log-format", "json"}, &stdout, &stderr); err != nil {
+			t.Fatalf("run(api) = %v, want no error", err)
+		}
+		if !strings.Contains(stderr.String(), `"level":"WARN"`) || !strings.Contains(stderr.String(), "no configuration") {
+			t.Errorf("stderr = %q, want a warning that there is no configuration", stderr.String())
+		}
+	})
 }
