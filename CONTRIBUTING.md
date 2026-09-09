@@ -12,9 +12,16 @@ without the reasons.
 
 ## Prerequisites
 
-- Go 1.24 or newer (`go.mod` declares the minimum; it is raised deliberately, in
-  its own commit).
-- [golangci-lint](https://golangci-lint.run) v2 for lint and formatting.
+- Go 1.27.1 or newer (`go.mod` declares the minimum; it is raised deliberately,
+  in its own commit).
+
+  ADR-0002 sets the floor at Go 1.24 and says it is raised when something needs
+  a newer feature. Nothing does — the floor is the current release because a new
+  project should start on a supported one, which is a direction from a person
+  and outranks the ADR. The ADR is accepted, so it is not edited; whether its
+  floor line gets superseded is a person's call.
+- [golangci-lint](https://golangci-lint.run) v2 for lint and formatting. CI pins
+  the version it runs; match it if a lint failure looks like a disagreement.
 - Postgres 16 with [pgvector](https://github.com/pgvector/pgvector) — for the
   database work that is coming. Nothing in the repository needs it yet.
 
@@ -31,7 +38,10 @@ golangci-lint fmt          # fixes it
 ```
 
 The module has no third-party dependencies today, so all of that works on a
-fresh clone with no network and no services running.
+fresh clone with no network and no services running — once you have the Go
+release `go.mod` asks for. With an older one and the default `GOTOOLCHAIN=auto`,
+the first build downloads that toolchain, and only that first build needs the
+network.
 
 CI runs those same commands on every pull request. Issue #35 replaces the
 workflow with calls into a Dagger module so CI and local development run

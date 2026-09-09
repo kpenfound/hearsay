@@ -1,3 +1,3 @@
 module github.com/kpenfound/hearsay
 
-go 1.24
+go 1.27.1

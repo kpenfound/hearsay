@@ -24,7 +24,9 @@ go run ./cmd/hearsay help # the subcommands
 ```
 
 Everything above runs offline with no services: the module has no dependencies
-yet, and no test touches a database or a model provider.
+yet, and no test touches a database or a model provider. The one exception is
+the toolchain itself — on a machine whose Go is older than the release `go.mod`
+asks for, the first build downloads it.
 
 Running a service locally:
 
