@@ -229,6 +229,15 @@ func TestRun(t *testing.T) {
 			wantErr: "get takes one argument",
 		},
 		{
+			// And the same when a flag precedes `--` in the same round: `fs.Parse`
+			// consumes the terminator itself, so without splitting on it up
+			// front the loop would go round again and report the second word
+			// as an unknown flag instead of an unexpected argument.
+			name:    "-- keeps its meaning behind a preceding flag too",
+			args:    []string{"l0", "list", "--source", "s", "--", "-one", "-two"},
+			wantErr: `unexpected argument "-one": list takes none`,
+		},
+		{
 			name:    "l0 count rejects a stray argument",
 			args:    []string{"l0", "count", "everything"},
 			wantErr: `unexpected argument "everything": count takes none`,
