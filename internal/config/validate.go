@@ -25,8 +25,10 @@ const maxEntityIDLen = 512
 // everything else references them, then principals, then the code entities that
 // name principals as owners, then the scopes that name both, and last the
 // authority policies, which reference all of it. An object that failed
-// validation is still put in the Repo, so a reference to it does not produce a
-// second problem about something the reader has already been told.
+// validation is still put in the Repo, so that a reference to it by id still
+// resolves and one mistake is reported once. The exception is an object whose
+// id is what is wrong: there is then genuinely nothing of that name, and
+// everything that named it says so.
 func (l *loader) build() Repo {
 	// Anything recorded before this point is a file that did not parse or a
 	// key that is not a field. What such a file was meant to say is unknown, so
