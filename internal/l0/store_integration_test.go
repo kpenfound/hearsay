@@ -312,6 +312,55 @@ func TestTheChangeFeedDoesNotSkipASlowTransaction(t *testing.T) {
 	}
 }
 
+// The other half of why the cursor is a pair: sequence order and transaction
+// order can disagree. A transaction that takes its id first can insert second,
+// so the row with the lower sequence number belongs to the later transaction.
+// The feed orders on the transaction, and a reader whose cursor is a sequence
+// number alone would be handed the later one first and then handed the earlier
+// one again on the next read.
+func TestTheChangeFeedOrdersOnTheTransactionNotTheSequence(t *testing.T) {
+	pool := newPool(t)
+	fake, source := newFake(t)
+	store := l0.New(pool)
+	marker, err := store.Append(t.Context(), fake.NewEvent(connector.KindMessage, "marker", "start"))
+	if err != nil {
+		t.Fatalf("Append(marker) = %v, want no error", err)
+	}
+
+	// `early` takes the lower transaction id and the higher sequence number.
+	early, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatalf("Begin(early) = %v, want no error", err)
+	}
+	defer func() { _ = early.Rollback(t.Context()) }()
+	if _, err := early.Exec(t.Context(), `SELECT pg_current_xact_id()`); err != nil {
+		t.Fatalf("assigning a transaction id: %v", err)
+	}
+
+	late, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatalf("Begin(late) = %v, want no error", err)
+	}
+	defer func() { _ = late.Rollback(t.Context()) }()
+	if _, err := l0.New(late).Append(t.Context(), fake.NewEvent(connector.KindMessage, "late", "inserted first")); err != nil {
+		t.Fatalf("Append(late) = %v, want no error", err)
+	}
+	if _, err := l0.New(early).Append(t.Context(), fake.NewEvent(connector.KindMessage, "early", "inserted second")); err != nil {
+		t.Fatalf("Append(early) = %v, want no error", err)
+	}
+	if err := late.Commit(t.Context()); err != nil {
+		t.Fatalf("Commit(late) = %v, want no error", err)
+	}
+	if err := early.Commit(t.Context()); err != nil {
+		t.Fatalf("Commit(early) = %v, want no error", err)
+	}
+
+	want := []string{"early", "late"}
+	if got := feed(t, store, marker.Cursor, source, want); !slices.Equal(got, want) {
+		t.Errorf("the feed = %v, want %v: the order is the transactions', not the sequence's", got, want)
+	}
+}
+
 // The table refuses a row that breaks the contract even if something other than
 // the ingest path writes it, which is what the CHECK constraints are for. Each
 // case names the constraint it expects, so a row rejected for some other reason
