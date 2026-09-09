@@ -18,26 +18,30 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// The five directories of the configuration repository
-// (docs/design.md#configuration).
+// The directories of the configuration repository
+// (docs/design.md#configuration). Five of them hold what Hearsay ingests and
+// who may decide things; `llm/` holds which model backs each tier (ADR-0005),
+// which is configuration for the same reason the rest of this is — it is
+// reviewed, checked in and deployed, and changing it is not a code change.
 const (
 	dirSources    = "sources"
 	dirScopes     = "scopes"
 	dirPrincipals = "principals"
 	dirCode       = "code"
 	dirAuthority  = "authority"
+	dirLLM        = "llm"
 )
 
 // configDirs is every directory the loader reads, in the order it reads them.
-var configDirs = []string{dirSources, dirScopes, dirPrincipals, dirCode, dirAuthority}
+var configDirs = []string{dirSources, dirScopes, dirPrincipals, dirCode, dirAuthority, dirLLM}
 
 // singleFileNames are the names a single-file configuration has when [Load] is
 // pointed at the directory holding it rather than at the file itself.
 var singleFileNames = []string{"hearsay.yaml", "hearsay.yml"}
 
 // Load reads and validates the configuration at path, which is either a
-// directory laid out as the five configuration directories or a single YAML
-// file holding the same thing under one key each (docs/config.md). A directory
+// directory laid out as the configuration directories or a single YAML file
+// holding the same thing under one key each (docs/config.md). A directory
 // containing a `hearsay.yaml` and no configuration directories is the second
 // form.
 //
@@ -124,6 +128,7 @@ type loader struct {
 	principals []doc[principalDoc]
 	code       []doc[codeDoc]
 	authority  []doc[authorityDoc]
+	llm        []doc[llmDoc]
 
 	files []readFile
 	probs problems
@@ -157,7 +162,7 @@ func (l *loader) digest() string {
 }
 
 // readSingleFile loads the single-file form: one mapping whose keys are the
-// five directories, each holding what that directory would.
+// configuration directories, each holding what that directory would.
 func (l *loader) readSingleFile(rel string) {
 	body, ok := l.read(rel)
 	if !ok {
@@ -181,21 +186,27 @@ func (l *loader) readSingleFile(rel string) {
 	l.principals = zip(rel, seqLines(root, dirPrincipals), d.Principals)
 	l.code = zip(rel, seqLines(root, dirCode), d.Code)
 	l.authority = zip(rel, seqLines(root, dirAuthority), d.Authority)
+	if d.LLM != nil {
+		l.llm = []doc[llmDoc]{{file: rel, line: keyLine(root, dirLLM), v: *d.LLM}}
+	}
 }
 
-// singleFileDoc is the single-file form: the five directories as five keys.
-// Each holds a list, because a directory holds a list of things.
+// singleFileDoc is the single-file form: one key per configuration directory.
+// Five of them hold a list, because a directory holds a list of things; `llm:`
+// is one mapping, because there is one of it — the three tiers are named, not
+// listed.
 type singleFileDoc struct {
 	Sources    []sourceDoc    `yaml:"sources"`
 	Scopes     []scopeDoc     `yaml:"scopes"`
 	Principals []principalDoc `yaml:"principals"`
 	Code       []codeDoc      `yaml:"code"`
 	Authority  []authorityDoc `yaml:"authority"`
+	LLM        *llmDoc        `yaml:"llm"`
 }
 
 // readDirs loads the directory form. Files that are not YAML are ignored — a
 // README belongs in a configuration repository — but a directory that is not
-// one of the five, or a subdirectory inside one of them, is a problem: silently
+// one of them, or a subdirectory inside one of them, is a problem: silently
 // reading none of it is how configuration goes missing.
 func (l *loader) readDirs() {
 	entries, err := os.ReadDir(l.root)
@@ -221,6 +232,7 @@ func (l *loader) readDirs() {
 	l.principals = readDir[principalDoc](l, dirPrincipals, "principal")
 	l.code = readDir[codeDoc](l, dirCode, "code entity")
 	l.authority = readDir[authorityDoc](l, dirAuthority, "authority policy")
+	l.llm = readDir[llmDoc](l, dirLLM, "model tier section")
 }
 
 // readDir decodes every YAML file in one configuration directory. A file holds
@@ -400,6 +412,17 @@ func zip[T any](rel string, lines []int, items []T) []doc[T] {
 		out[i] = doc[T]{file: rel, line: line, v: item}
 	}
 	return out
+}
+
+// keyLine is the line the named key's value starts on, or 0 if the mapping does
+// not have it.
+func keyLine(mapping *yaml.Node, key string) int {
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == key {
+			return mapping.Content[i].Line
+		}
+	}
+	return 0
 }
 
 // seqLines is the line each item of the named key's list starts on.
