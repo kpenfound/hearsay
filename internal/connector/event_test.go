@@ -208,6 +208,17 @@ func TestEventValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			// The empty token agrees with the empty native id suffix, so only
+			// the rule against a bare @ catches this one — and without it an
+			// artifact that never changed would have two event ids.
+			name: "a native id ending in @ and an empty revision token",
+			mutate: func(e *connector.Event) {
+				e.NativeID = e.Payload.Artifact + "@"
+				e.Payload.Revision = &connector.Revision{Token: ""}
+			},
+			wantErr: true,
+		},
+		{
 			name: "an artifact that contains an @ of its own",
 			mutate: func(e *connector.Event) {
 				e.Kind = connector.KindCommit
