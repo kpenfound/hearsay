@@ -488,8 +488,14 @@ func TestTimeoutBoundsAnAttempt(t *testing.T) {
 	provider := newStub("anthropic")
 	provider.complete = func(ctx context.Context, _ llm.Request) (llm.Response, error) {
 		if attempts.Add(1) == 1 {
-			<-ctx.Done()
-			return llm.Response{}, ctx.Err()
+			// A bound rather than a block: an attempt that is not cut off
+			// should fail this test rather than hang it.
+			select {
+			case <-ctx.Done():
+				return llm.Response{}, ctx.Err()
+			case <-time.After(2 * time.Second):
+				return llm.Response{}, errors.New("the attempt was not bounded by the tier's timeout")
+			}
 		}
 		return llm.Response{Text: "ok", StopReason: llm.StopEnd}, nil
 	}
@@ -525,8 +531,14 @@ func TestCancellationStopsRetrying(t *testing.T) {
 		t.Fatalf("NewRegistry() = %v", err)
 	}
 	completer, _ := registry.Completer(llm.TierDistill)
-	if _, err := completer.Complete(ctx, ask("a")); err == nil {
+	_, err = completer.Complete(ctx, ask("a"))
+	if err == nil {
 		t.Fatal("Complete() = nil, want the cancelled call to fail")
+	}
+	// What comes back is why the call failed, not just that the context is
+	// done: a worker logging this should see the provider's answer.
+	if !contains(err.Error(), "overloaded") {
+		t.Errorf("Complete() = %q, want the provider's error rather than the cancellation", err)
 	}
 	if attempts.Load() != 1 {
 		t.Errorf("the provider was called %d times, want 1: a cancelled context is not retried", attempts.Load())

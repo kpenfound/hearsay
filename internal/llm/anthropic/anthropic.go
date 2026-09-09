@@ -296,9 +296,10 @@ func (c *client) apiError(resp *http.Response, body []byte) error {
 			msg = msg[:512] + "…"
 		}
 	}
+	// 5xx covers the overloaded_error the API answers with under load, which
+	// is 529.
 	retryable := resp.StatusCode == http.StatusTooManyRequests ||
 		resp.StatusCode == http.StatusRequestTimeout ||
-		resp.StatusCode == 529 || // overloaded_error
 		resp.StatusCode >= 500 && resp.StatusCode <= 599
 	return c.err(resp.StatusCode, kind, msg, retryable, retryAfter(resp.Header), nil)
 }

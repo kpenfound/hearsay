@@ -107,7 +107,9 @@ func TestCompletionTiers(t *testing.T) {
 		recorded{status: 200, file: "text_answer.json"},
 		recorded{status: 200, file: "assert_answer.json"})
 	r := registry(t, server.URL, map[llm.Tier]llm.TierConfig{
-		llm.TierDistill: {Provider: "anthropic", Model: "claude-haiku-4-5-20251001", MaxTokens: 1024},
+		// The configured model is an alias, and the answer says which model
+		// the provider resolved it to.
+		llm.TierDistill: {Provider: "anthropic", Model: "claude-haiku-4-5", MaxTokens: 1024},
 		llm.TierAssert:  {Provider: "anthropic", Model: "claude-sonnet-5"},
 	})
 
@@ -132,7 +134,7 @@ func TestCompletionTiers(t *testing.T) {
 		t.Errorf("Tokens = %+v, want the recording's", resp.Tokens)
 	}
 	if resp.Model != "claude-haiku-4-5-20251001" {
-		t.Errorf("Model = %q, want the model the answer says answered", resp.Model)
+		t.Errorf("Model = %q, want the model the answer says answered, not the alias that was asked for", resp.Model)
 	}
 
 	assert, err := r.Completer(llm.TierAssert)
@@ -165,8 +167,8 @@ func TestCompletionTiers(t *testing.T) {
 	if got := first.header.Get("anthropic-version"); got == "" {
 		t.Error("the request carries no anthropic-version header")
 	}
-	if got := first.body["model"]; got != "claude-haiku-4-5-20251001" {
-		t.Errorf("model = %v, want the tier's", got)
+	if got := first.body["model"]; got != "claude-haiku-4-5" {
+		t.Errorf("model = %v, want the tier's, passed through untouched", got)
 	}
 	if got := first.body["max_tokens"]; got != float64(1024) {
 		t.Errorf("max_tokens = %v, want the tier's budget", got)
@@ -232,6 +234,26 @@ func TestStructuredOutput(t *testing.T) {
 	}
 	if choice["disable_parallel_tool_use"] != true {
 		t.Errorf("tool_choice = %v, want parallel tool use disabled so there is one answer to read", choice)
+	}
+}
+
+// The answer has to be the tool the schema named. A block that is not it is
+// not the shape the caller asked for, whatever it holds.
+func TestAnswerThatUsedAnotherTool(t *testing.T) {
+	server, _ := replay(t, recorded{status: 200, file: "tool_use_other_name.json"})
+	r := registry(t, server.URL, map[llm.Tier]llm.TierConfig{
+		llm.TierDistill: {Provider: "anthropic", Model: "claude-haiku-4-5-20251001", MaxRetries: -1},
+	})
+	completer, _ := r.Completer(llm.TierDistill)
+	_, err := completer.Complete(t.Context(), llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Text: "PR #62 merged."}},
+		Schema:   &llm.Schema{Name: "distillation", Definition: json.RawMessage(distillSchema)},
+	})
+	if err == nil {
+		t.Fatal("Complete() = nil, want the answer to be refused")
+	}
+	if !strings.Contains(err.Error(), "distillation tool") {
+		t.Errorf("Complete() = %q, want it to name the tool the answer did not use", err)
 	}
 }
 
