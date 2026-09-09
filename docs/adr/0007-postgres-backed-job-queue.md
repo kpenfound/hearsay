@@ -56,6 +56,15 @@ while another job with the same key is running. The assertion worker sets
 leaving different scopes fully parallel. The distiller leaves it null and runs as wide as
 its concurrency setting allows.
 
+`SKIP LOCKED` alone does not make that check correct: two workers claiming
+concurrently each read a snapshot in which the other's job is not yet `running`, and both
+would claim the same key. For kinds that use `serial_key`, the claim transaction first
+takes `pg_advisory_xact_lock(hashtext('claim:' || kind))`, so the running-check and the
+update are atomic with respect to other claims. The lock covers the claim only, not the
+job, so it is held for the duration of one small `UPDATE` while the jobs themselves still
+run in parallel across different keys. Kinds with no `serial_key` skip the lock entirely
+and rely on `SKIP LOCKED`, which is sufficient when any worker may take any job.
+
 **Wakeup is `LISTEN`/`NOTIFY` with a polling floor.** Workers listen on a channel per job
 kind for low latency, and also poll on an interval (a few seconds) so that a missed
 notification during a reconnect delays a job rather than stranding it. `NOTIFY` is fired

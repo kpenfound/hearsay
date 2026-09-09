@@ -46,8 +46,9 @@ hearsay migrate up-to <N>     # for deployments that roll forward in steps
 hearsay migrate down          # dev only; refuses without --i-know
 ```
 
-goose takes a Postgres advisory lock for the run, so two concurrent `migrate up`
-invocations are safe: one applies, the other waits.
+`hearsay migrate` enables goose's session-level advisory lock, so two concurrent
+`migrate up` invocations are safe: one applies, the other waits. It is not goose's
+default, and turning it on is what makes a re-run during a flaky deploy harmless.
 
 **Services verify, they do not migrate.** At startup each service reads the goose
 version table and refuses to start if the database version is *older* than the highest
