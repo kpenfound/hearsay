@@ -220,6 +220,25 @@ func TestRun(t *testing.T) {
 			wantErr: "connecting to postgres",
 		},
 		{
+			// And it stays ended for the words behind the first: without that,
+			// going round again would parse the second as a flag and report
+			// "flag provided but not defined" for a command line whose real
+			// problem is a second argument.
+			name:    "-- keeps its meaning for every word behind it",
+			args:    []string{"l0", "get", "--", "-one", "-two"},
+			wantErr: "get takes one argument",
+		},
+		{
+			name:    "l0 count rejects a stray argument",
+			args:    []string{"l0", "count", "everything"},
+			wantErr: `unexpected argument "everything": count takes none`,
+		},
+		{
+			name:    "migrate status rejects a stray argument",
+			args:    []string{"migrate", "status", "now"},
+			wantErr: `unexpected argument "now": status takes none`,
+		},
+		{
 			name:    "a service rejects an unknown flag",
 			args:    []string{"api", "--verbose"},
 			wantErr: "flag provided but not defined",
