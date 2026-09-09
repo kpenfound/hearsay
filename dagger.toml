@@ -2,11 +2,20 @@
 # exposes, in parallel; `dagger up dev` starts the local stack. There is no CI
 # workflow — Dagger Cloud runs the same checks on every commit.
 #
-# The Go SDK is not installed here. It is only needed to regenerate the module's
-# bindings, and installing it (`dagger sdk install go`) resolves a Git reference
-# and pins it in dagger.lock, which has to be done by someone with a working
-# engine. The engine's Go runtime, which is what loads the module, comes from
-# `[runtime] source = "go"` in .dagger/dagger-module.toml.
+# Hand-written: `dagger setup` does this conversion, and it needs an engine.
+# `dagger.lock`, which pins the resolved Git reference below, is missing for the
+# same reason — run `dagger setup` or `dagger update` on a machine that has one.
 
 [modules.hearsay]
 source = ".dagger"
+
+# The Go SDK authors the module in .dagger. This is the entry `dagger sdk install
+# go` writes, and it is what `dagger generate` uses to regenerate the bindings.
+[modules.dagger-go-sdk]
+source = "github.com/dagger/go-sdk"
+
+[modules.dagger-go-sdk.as-sdk]
+name = "go"
+
+[[modules.dagger-go-sdk.as-sdk.modules]]
+path = ".dagger"

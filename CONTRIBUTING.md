@@ -99,9 +99,13 @@ linter version is a constant in `.dagger/main.go`.
 After changing `.dagger/main.go`:
 
 ```sh
-dagger sdk install go   # once per clone-with-no-SDK-entry; writes it to dagger.toml
-dagger generate         # review the changeset, apply it, and commit the result
+dagger generate    # review the changeset, apply it, and commit the result
 ```
+
+The bindings are **not in the repository yet**: producing them needs an engine,
+and the session that wrote this module had none. Until someone runs
+`dagger generate` once and commits the result, the module does not load — see
+the pull request for #35.
 
 `dagger check` runs the generators as read-only checks too, so stale committed
 output fails the same gate a broken test does.
