@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/connector"
@@ -288,47 +289,86 @@ func TestTheChangeFeedDoesNotSkipASlowTransaction(t *testing.T) {
 }
 
 // The table refuses a row that breaks the contract even if something other than
-// the ingest path writes it, which is what the CHECK constraints are for.
+// the ingest path writes it, which is what the CHECK constraints are for. Each
+// case names the constraint it expects, so a row rejected for some other reason
+// — a typo in the statement, above all — is not mistaken for the rule holding.
 func TestTheTableRefusesARowThatBreaksTheContract(t *testing.T) {
 	pool := newPool(t)
 	_, source := newFake(t)
+	token, edited := "r2", time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC)
 	tests := []struct {
-		name   string
-		values string
+		name       string
+		constraint string // empty means the row is a good one
+		nativeID   string
+		artifact   string
+		token      *string
+		edited     *time.Time
+		target     *string
+		acl        string
 	}{
 		{
-			name:   "a native id that is neither the artifact nor a revision of it",
-			values: `'m2', 'm1', NULL, NULL`,
+			name:     "a row the contract allows",
+			nativeID: "m1", artifact: "m1", acl: `[{"kind":"public"}]`,
 		},
 		{
-			name:   "a revision token the native id does not carry",
-			values: `'m1', 'm1', 'r2', NULL`,
+			name:       "a native id that is neither the artifact nor a revision of it",
+			constraint: "l0_events_native_id_is_the_artifact_or_a_revision",
+			nativeID:   "m2", artifact: "m1", acl: `[{"kind":"public"}]`,
 		},
 		{
-			name:   "an edit that precedes the artifact",
-			values: `'m1@r2', 'm1', 'r2', '2020-01-01T00:00:00Z'`,
+			name:       "a revision token the native id does not carry",
+			constraint: "l0_events_native_id_is_the_artifact_or_a_revision",
+			nativeID:   "m1", artifact: "m1", token: &token, acl: `[{"kind":"public"}]`,
+		},
+		{
+			name:       "an edit that precedes the artifact it edits",
+			constraint: "l0_events_revision_edited_at_is_the_revisions_own",
+			nativeID:   "m1@r2", artifact: "m1", token: &token, edited: &edited, acl: `[{"kind":"public"}]`,
+		},
+		{
+			name:       "an edit time on an observation with no revision",
+			constraint: "l0_events_revision_edited_at_is_the_revisions_own",
+			nativeID:   "m1", artifact: "m1", edited: &edited, acl: `[{"kind":"public"}]`,
+		},
+		{
+			name:       "a tombstone that retracts itself",
+			constraint: "l0_events_tombstone_is_its_own_artifact",
+			nativeID:   "m1", artifact: "m1", target: ptr("m1"), acl: `[{"kind":"public"}]`,
+		},
+		{
+			name:       "an event nobody may read",
+			constraint: "l0_events_acl_is_not_empty",
+			nativeID:   "m1", artifact: "m1", acl: `[]`,
 		},
 	}
-	for _, tt := range tests {
+	for i, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// occurred_at is 2024 and the edit time above is 2020, so the
+			// case about an edit preceding its artifact really does.
 			_, err := pool.Exec(t.Context(), `
-INSERT INTO l0_events (id, source, native_id, kind, artifact, revision_token, revision_edited_at, occurred_at, payload, acl)
-VALUES ('evt:`+source+`:x', '`+source+`', `+tt.values+`, '2024-01-01T00:00:00Z', '{}', '[{"kind":"public"}]')`)
-			if err == nil {
-				t.Fatal("the insert succeeded, want a check constraint to refuse it")
+INSERT INTO l0_events (id, source, native_id, kind, artifact, revision_token, revision_edited_at, target, occurred_at, payload, acl)
+VALUES ($1, $2, $3, 'message', $4, $5, $6, $7, '2024-01-01T00:00:00Z', '{}', $8)`,
+				"evt:"+source+":row"+strconv.Itoa(i), source, tt.nativeID, tt.artifact,
+				tt.token, tt.edited, tt.target, tt.acl)
+
+			if tt.constraint == "" {
+				if err != nil {
+					t.Fatalf("inserting a row the contract allows = %v, want no error", err)
+				}
+				return
+			}
+			var pgErr *pgconn.PgError
+			if !errors.As(err, &pgErr) {
+				t.Fatalf("the insert = %v, want a constraint violation", err)
+			}
+			if pgErr.ConstraintName != tt.constraint {
+				t.Errorf("the insert violated %q (%s), want %q", pgErr.ConstraintName, pgErr.Code, tt.constraint)
 			}
 		})
 	}
-
-	t.Run("an empty acl", func(t *testing.T) {
-		_, err := pool.Exec(t.Context(), `
-INSERT INTO l0_events (id, source, native_id, kind, artifact, occurred_at, payload, acl)
-VALUES ('evt:`+source+`:y', '`+source+`', 'm1', 'message', 'm1', '2024-01-01T00:00:00Z', '{}', '[]')`)
-		if err == nil {
-			t.Fatal("the insert succeeded, want the acl check to refuse it")
-		}
-	})
 }
+
+func ptr[T any](v T) *T { return &v }
 
 func assertCounts(t *testing.T, store *l0.Store, source string, kind connector.Kind, events, visible int64) {
 	t.Helper()
