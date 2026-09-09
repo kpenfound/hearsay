@@ -420,7 +420,12 @@ func TestServicesLoadTheirConfiguration(t *testing.T) {
 	t.Run("a bad configuration stops the service starting", func(t *testing.T) {
 		broken := writeConfig(t, map[string]string{"sources/github.yaml": "id: github\n"})
 		var stdout, stderr bytes.Buffer
-		err := run(t.Context(), []string{"api", "--config", broken}, &stdout, &stderr)
+		// Cancelled up front, like the cases above: a service that ignored its
+		// configuration would then return nil rather than block, so this fails
+		// instead of hanging.
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		err := run(ctx, []string{"api", "--config", broken}, &stdout, &stderr)
 		if err == nil || !strings.Contains(err.Error(), "not a valid configuration") {
 			t.Fatalf("run(api --config <broken>) = %v, want the configuration error", err)
 		}
