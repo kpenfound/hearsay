@@ -268,6 +268,14 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 			want:  []string{`principal "kyle": kind: "robot" is not a principal kind: want one of human, agent, team`},
 		},
 		{
+			// Every other rule about a principal depends on its kind, so a kind
+			// nobody knows is reported once and the rest are not run: with them
+			// this is four problems, all of them the same mistake.
+			name:  "a principal kind that does not exist, and nothing else fits it",
+			files: with(map[string]string{"principals/p.yaml": "id: kyle\nkind: robot\nclass: worker\nmembers: [robin]\n"}),
+			want:  []string{`principal "kyle": kind: "robot" is not a principal kind`},
+		},
+		{
 			// One login written in two cases is one identity, because that is
 			// how the resolver matches it. Catching it here is what stops it
 			// from becoming an ambiguous author at ingest.

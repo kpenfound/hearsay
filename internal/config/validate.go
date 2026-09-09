@@ -244,31 +244,36 @@ func (l *loader) buildPrincipals(r Repo) []principal.Principal {
 		if p.Kind == "" {
 			kind = principal.KindHuman
 		}
+		class := principal.Class(p.Class)
+		// What a principal of no known kind was meant to be is unknown, so the
+		// rules that depend on the kind are not run at all. A class, an
+		// identity and a membership are each required or forbidden according
+		// to the kind, so every one of them would report the same mistake
+		// again in its own words.
 		if !kind.Valid() {
 			l.bad(a, "kind", "%q is not a principal kind: want one of %s", p.Kind, join(principal.Kinds()))
-		}
-
-		class := principal.Class(p.Class)
-		switch {
-		case kind == principal.KindAgent && p.Class == "":
-			l.bad(a, "class", "is required on an agent: it decides what the agent may read and write. Want one of %s", join(principal.Classes()))
-		case kind != principal.KindAgent && p.Class != "":
-			l.bad(a, "class", "is an agent's access class, and this principal is a %s", kind)
-		case p.Class != "" && !class.Valid():
-			l.bad(a, "class", "%q is not an agent class: want one of %s", p.Class, join(principal.Classes()))
-		}
-
-		if kind == principal.KindTeam {
-			if len(p.Identities) == 0 && len(p.Members) == 0 {
-				l.bad(a, "members", "is required on a team with no identities: a team that neither lists its people nor names a group in a source stands for nobody")
-			}
-			teams = append(teams, team{a, p})
 		} else {
-			if len(p.Identities) == 0 {
-				l.bad(a, "identities", "is required: a principal with no source identity is never matched to anything anyone said")
+			switch {
+			case kind == principal.KindAgent && p.Class == "":
+				l.bad(a, "class", "is required on an agent: it decides what the agent may read and write. Want one of %s", join(principal.Classes()))
+			case kind != principal.KindAgent && p.Class != "":
+				l.bad(a, "class", "is an agent's access class, and this principal is a %s", kind)
+			case p.Class != "" && !class.Valid():
+				l.bad(a, "class", "%q is not an agent class: want one of %s", p.Class, join(principal.Classes()))
 			}
-			if len(p.Members) > 0 {
-				l.bad(a, "members", "is a team's membership, and this principal is a %s", kind)
+
+			if kind == principal.KindTeam {
+				if len(p.Identities) == 0 && len(p.Members) == 0 {
+					l.bad(a, "members", "is required on a team with no identities: a team that neither lists its people nor names a group in a source stands for nobody")
+				}
+				teams = append(teams, team{a, p})
+			} else {
+				if len(p.Identities) == 0 {
+					l.bad(a, "identities", "is required: a principal with no source identity is never matched to anything anyone said")
+				}
+				if len(p.Members) > 0 {
+					l.bad(a, "members", "is a team's membership, and this principal is a %s", kind)
+				}
 			}
 		}
 
