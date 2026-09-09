@@ -202,8 +202,9 @@ func (f *Fixtures) claim(key, file string) error {
 // budget is a different call, and a fixture recorded at one budget replayed at
 // another would be a recording of something that never happened.
 //
-// A schema is canonicalised first, so that a fixture file and the caller that
-// asks for the same shape do not have to write it out the same way round.
+// A schema is canonicalised first ([canonicalJSON], the same form a `const` is
+// compared in), so that a fixture file and the caller asking for the same shape
+// do not have to write it out the same way round.
 func FixtureKey(tier Tier, req Request) string {
 	type canonical struct {
 		Tier      Tier      `json:"tier"`
@@ -219,25 +220,6 @@ func FixtureKey(tier Tier, req Request) string {
 		c.Schema = &schema
 	}
 	return hashJSON(c)
-}
-
-// canonicalJSON rewrites JSON into the one form this package hashes: object
-// keys sorted, whitespace gone, numbers as they were written. A schema is
-// written by hand into a fixture file and by hand into the caller, and two
-// spellings of the same schema have to be the same key or every fixture would
-// have to be a byte-for-byte copy of the code that asks for it.
-func canonicalJSON(raw json.RawMessage) json.RawMessage {
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	var v any
-	if err := dec.Decode(&v); err != nil {
-		return raw
-	}
-	canonical, err := json.Marshal(v)
-	if err != nil {
-		return raw
-	}
-	return canonical
 }
 
 // EmbedFixtureKey is what an embedding call is recorded under: the texts, in

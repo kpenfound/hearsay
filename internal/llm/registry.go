@@ -332,6 +332,14 @@ func call[T any](ctx context.Context, t *tierClient, run func(context.Context) (
 // capped, with the jitter spread over the whole interval rather than a fraction
 // of it, so that a fleet of workers rate-limited at once does not come back in
 // step.
+//
+// What the provider asked for is **not** capped, and [TierConfig.Timeout] bounds
+// an attempt rather than the wait between two, so a `Retry-After` of an hour is
+// an hour. The provider knows its own rate limit better than a constant here
+// does; the price is that the caller owes this package a deadline. A caller
+// inside a queue handler holding a lease has to bound the call to less than the
+// lease or have its job reclaimed underneath it — README.md carries the
+// obligation.
 func (t *tierClient) backoff(attempt int, err error) time.Duration {
 	var e *Error
 	if errors.As(err, &e) && e.RetryAfter > 0 {

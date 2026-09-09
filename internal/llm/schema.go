@@ -257,12 +257,16 @@ func (n *node) validate(v any, path string) error {
 			return fmt.Errorf("%s: want %s, found %s", at(path), strings.Join(n.types, " or "), kindOf(v))
 		}
 	}
+	// These two say what the schema allows and what kind of thing came back,
+	// and never the value that came back. An enum on a field of a distillation
+	// schema is matched against a completion, and an error string reaches a
+	// log line and a queue job's last_error (ADR-0007, ADR-0008).
 	if n.constant != nil && !equalJSON(*n.constant, v) {
-		return fmt.Errorf("%s: want the constant %s", at(path), *n.constant)
+		return fmt.Errorf("%s: want the constant %s, found %s", at(path), *n.constant, kindOf(v))
 	}
 	if len(n.enum) > 0 {
 		if !slices.ContainsFunc(n.enum, func(e json.RawMessage) bool { return equalJSON(e, v) }) {
-			return fmt.Errorf("%s: %s is not one of %s", at(path), literal(v), enumList(n.enum))
+			return fmt.Errorf("%s: not one of %s, found %s", at(path), enumList(n.enum), kindOf(v))
 		}
 	}
 	switch value := v.(type) {
@@ -307,7 +311,7 @@ func (n *node) validateObject(obj map[string]any, path string) error {
 		}
 		if len(extra) > 0 {
 			sort.Strings(extra)
-			return fmt.Errorf("%s: no such field %q", at(path), extra[0])
+			return fmt.Errorf("%s: no such field %q", at(path), boundedField(extra[0]))
 		}
 	}
 	for _, name := range n.propOrder {
@@ -376,6 +380,30 @@ func isType(v any, t string) bool {
 	return false
 }
 
+// boundedField cuts a field name from an answer down to the size of an
+// identifier.
+//
+// The name is the one thing a model produced that this package puts in an error
+// (README.md says so beside the rule): it is what tells a prompt's author that
+// the model wrote `outcome` where the schema says `outcome_kind`, and a schema
+// only closes its properties when it has named them all. It is bounded because
+// a name is still something a model chose, and nothing else about the answer
+// goes anywhere near an error.
+func boundedField(name string) string {
+	const max = 64
+	if len(name) <= max {
+		return name
+	}
+	cut := 0
+	for i := range name {
+		if i > max {
+			break
+		}
+		cut = i
+	}
+	return name[:cut] + "…"
+}
+
 // kindOf names what a value is, for an error message.
 func kindOf(v any) string {
 	switch value := v.(type) {
@@ -398,36 +426,87 @@ func kindOf(v any) string {
 	return "something else"
 }
 
-// equalJSON compares a schema's literal with a decoded value. Numbers are
-// compared as numbers, so that `1` in a schema matches `1.0` in an answer;
-// everything else is compared as the compact JSON it encodes to.
+// equalJSON compares a schema's literal — a `const`, or one member of an
+// `enum` — with a decoded answer.
+//
+// Both sides go through [canonicalJSON], because they arrive by different
+// routes: the schema as bytes somebody typed, the answer as a value the decoder
+// produced. Comparing the two encodings would make a correct answer fail on any
+// difference in spelling — an `&` in a string, the order the keys of an object
+// were written in, `1` against `1.0` — and by the abstraction's rules a schema
+// violation is final, so the model would be refused for answering exactly
+// right.
 func equalJSON(raw json.RawMessage, v any) bool {
-	if num, ok := v.(json.Number); ok {
-		var f float64
-		if err := json.Unmarshal(raw, &f); err == nil {
-			g, err := num.Float64()
-			return err == nil && f == g
-		}
+	answer, ok := canonicalValue(v)
+	if !ok {
 		return false
 	}
-	encoded, err := json.Marshal(v)
-	if err != nil {
-		return false
-	}
-	var canonical bytes.Buffer
-	if err := json.Compact(&canonical, raw); err != nil {
-		return false
-	}
-	return canonical.String() == string(encoded)
+	return string(canonicalJSON(raw)) == string(answer)
 }
 
-// literal renders a value for an error message.
-func literal(v any) string {
-	encoded, err := json.Marshal(v)
-	if err != nil {
-		return kindOf(v)
+// canonicalJSON rewrites JSON into the one form this package compares and
+// hashes: object keys sorted, whitespace gone, strings escaped the way
+// [json.Marshal] escapes them, and every number in one spelling. JSON that does
+// not parse is returned unchanged, which compares equal to nothing.
+func canonicalJSON(raw json.RawMessage) json.RawMessage {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return raw
 	}
-	return string(encoded)
+	canonical, ok := canonicalValue(v)
+	if !ok {
+		return raw
+	}
+	return canonical
+}
+
+// canonicalValue renders a decoded value in that same form.
+func canonicalValue(v any) (json.RawMessage, bool) {
+	encoded, err := json.Marshal(canonicalNumbers(v))
+	if err != nil {
+		return nil, false
+	}
+	return encoded, true
+}
+
+// canonicalNumbers rewrites every number in a decoded value into one spelling,
+// at every depth. A number is a number wherever it appears: `1` and `1.0` and
+// `1e0` are one constant, in an object, in an array, or on its own.
+func canonicalNumbers(v any) any {
+	switch value := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(value))
+		for k, item := range value {
+			out[k] = canonicalNumbers(item)
+		}
+		return out
+	case []any:
+		out := make([]any, len(value))
+		for i, item := range value {
+			out[i] = canonicalNumbers(item)
+		}
+		return out
+	case json.Number:
+		return json.Number(canonicalNumber(value))
+	}
+	return v
+}
+
+// canonicalNumber is one number's spelling: the integer where the literal is
+// one that fits, and the shortest form that round-trips otherwise. Integers go
+// through [strconv.ParseInt] rather than float64 so that an id beyond a
+// float64's exact range is not silently moved.
+func canonicalNumber(n json.Number) string {
+	if i, err := strconv.ParseInt(n.String(), 10, 64); err == nil {
+		return strconv.FormatInt(i, 10)
+	}
+	f, err := n.Float64()
+	if err != nil {
+		return n.String()
+	}
+	return strconv.FormatFloat(f, 'g', -1, 64)
 }
 
 // enumList renders an enum for an error message.

@@ -53,6 +53,15 @@ config.Repo.LLM  ->  llm.NewRegistry(cfg, providers.All())  ->  Completer / Embe
   sent: a constraint that is passed to the model and not checked on the way back
   is one the caller would believe was enforced. Widening the subset means
   teaching `schema.go` to enforce the keyword, in the same change.
+- **`const` and `enum` compare values, not spellings.** The schema is bytes
+  somebody typed and the answer is a value the decoder produced, so both sides go
+  through one canonical form (`canonicalJSON`): object keys sorted, strings
+  escaped by one encoder, and every number in one spelling at every depth — `1`,
+  `1.0` and `1e0` are one constant inside an object as much as on their own.
+  Without that, a `&` in an enum member, or keys written out of alphabetical
+  order, would refuse an answer that is exactly right, permanently, because a
+  schema violation is not retried. Anything new that compares JSON here uses the
+  same function; the fixture key does.
 - **`Embedder` is the interface ADR-0005 fixes, and it reports no tokens.**
   An adapter whose provider counts them implements `UsageEmbedder` as well, and
   the registry accounts through that; an adapter that does not is counted with
@@ -61,13 +70,31 @@ config.Repo.LLM  ->  llm.NewRegistry(cfg, providers.All())  ->  Completer / Embe
   budget is not replayed at another, because it is a recording of a call that
   never happened. `FixtureKey` is exported so a recorder can name a file after
   the call in it.
-- **A miss, and every provider error, must be free of request content.** A
-  prompt is L1 text on its way to a model and an error string ends up in a log
-  line (ADR-0008). Errors here name the tier, the provider, the model and the
-  key — never the text.
+- **An error here must be free of request content and of answer content.** A
+  prompt is L1 text on its way to a model, a completion is what comes back, and
+  an error string ends up in a log line — and, for a caller inside a queue
+  handler, in `queue_job.last_error` (ADR-0007, ADR-0008). Errors here name the
+  tier, the provider, the model, the field, the schema and the fixture key —
+  never the text. A schema violation says what the schema allowed and what
+  *kind* of thing came back (`not one of "decided", "proposed", found a
+  string`), never the value; a number out of range prints the number, which is
+  not text. **The one exception** is the name of a field a closed schema does not
+  allow: it is what tells a prompt's author that the model wrote `outcome` where
+  the schema says `outcome_kind`, so it is named, and bounded to the size of an
+  identifier (`boundedField`).
 - **There is no metric emission yet.** `Registry.Usage` is the read, tagged by
   tier, provider and model, and it is where ADR-0008's metrics come from once
   `internal/telemetry` has a meter to report through.
+- **A caller owes this package a deadline.** A provider's `Retry-After` is
+  honoured as asked and is not capped, and the per-attempt timeout does not bound
+  the wait between attempts, so a provider or gateway answering
+  `retry-after: 3600` holds `Complete` for an hour per retry. That is deliberate
+  — the provider knows its own rate limit better than a constant here does — and
+  it is safe only while the caller's context has a deadline. A worker calling
+  this **inside a queue handler holding a lease** (ADR-0007) must bound the call
+  to less than that lease, or its job is reclaimed and re-run underneath it. If a
+  cap belongs anywhere, it belongs here as a tier parameter; until a caller needs
+  one, the obligation is the caller's and is written down.
 
 See
 [ADR-0005](../../docs/adr/0005-llm-provider-abstraction-with-three-model-tiers.md).

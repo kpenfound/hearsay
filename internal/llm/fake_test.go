@@ -168,6 +168,15 @@ func TestFixtureKey(t *testing.T) {
 	if llm.FixtureKey(llm.TierDistill, base) != llm.FixtureKey(llm.TierDistill, reordered) {
 		t.Error("the same schema written differently keys differently")
 	}
+	// The same, for a number and a byte an encoder escapes: a fixture is
+	// written by hand and so is the schema it answers.
+	spelled := llm.Request{System: "s", Messages: base.Messages, MaxTokens: base.MaxTokens,
+		Schema: &llm.Schema{Name: "x", Definition: json.RawMessage(`{"type":"object","maxProperties":0,"properties":{"a":{"type":"string","maxLength":4,"enum":["a & b"]}}}`)}}
+	respelled := spelled
+	respelled.Schema = &llm.Schema{Name: "x", Definition: json.RawMessage(`{"properties":{"a":{"enum":["a & b"],"maxLength":4.0,"type":"string"}},"maxProperties":0,"type":"object"}`)}
+	if llm.FixtureKey(llm.TierDistill, spelled) != llm.FixtureKey(llm.TierDistill, respelled) {
+		t.Error("a schema whose numbers are spelled differently keys differently")
+	}
 
 	for _, tt := range []struct {
 		name   string
