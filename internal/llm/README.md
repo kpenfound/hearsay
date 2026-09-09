@@ -16,5 +16,58 @@ prompt — because a prompt is domain logic, not provider plumbing.
 the fake and a recorded fixture; a test that would need a new fixture records it
 deliberately and checks it in.
 
+## How it fits together
+
+```
+config.Repo.LLM  ->  llm.NewRegistry(cfg, providers.All())  ->  Completer / Embedder
+                          |                                          |
+                          |  retries, backoff, Retry-After,          |
+                          |  per-attempt timeout, token accounting   |
+                          `------------- anthropic.New() ------------'
+```
+
+- **The adapter is thin.** It makes one call, translates in each direction, and
+  says whether trying again could work by returning an `*llm.Error`. Everything
+  cross-cutting is the registry's, so there is one place that knows how a model
+  call behaves and the distiller does not implement any of it.
+- **A tier is built when the registry is, not on the first call.** An unknown
+  provider, a missing credential, a provider with no system prompt or no
+  structured output: all of them are errors from `NewRegistry`, because
+  configuration is read once at startup and a process that cannot make a model
+  call should not be serving.
+- **The fake is the real registry with the network replaced.** `NewFake` builds
+  through `NewRegistry` from the same `Config`, so a test exercises the same
+  request validation, the same defaults, the same retry loop and the same
+  accounting. A request nothing recorded is `ErrNoFixture`, which is what a test
+  that would otherwise reach a provider gets.
+
+## Things to know before changing it
+
+- **Nothing provider-shaped may appear in `Request` or `Response`.** That is the
+  leak ADR-0005 exists to stop: a caller that built a tool block would be a
+  caller that has to be edited to add a second provider. Anthropic's tool call
+  and `tool_choice` live in `anthropic/` and nowhere else.
+- **Structured output is validated here, against the caller's schema**, before
+  the answer is returned. `SchemaKeywords` is the JSON Schema this package
+  understands, and a schema using anything outside it is **refused** rather than
+  sent: a constraint that is passed to the model and not checked on the way back
+  is one the caller would believe was enforced. Widening the subset means
+  teaching `schema.go` to enforce the keyword, in the same change.
+- **`Embedder` is the interface ADR-0005 fixes, and it reports no tokens.**
+  An adapter whose provider counts them implements `UsageEmbedder` as well, and
+  the registry accounts through that; an adapter that does not is counted with
+  no tokens against it rather than with a guess.
+- **The token budget is part of a fixture's key.** A fixture recorded at one
+  budget is not replayed at another, because it is a recording of a call that
+  never happened. `FixtureKey` is exported so a recorder can name a file after
+  the call in it.
+- **A miss, and every provider error, must be free of request content.** A
+  prompt is L1 text on its way to a model and an error string ends up in a log
+  line (ADR-0008). Errors here name the tier, the provider, the model and the
+  key — never the text.
+- **There is no metric emission yet.** `Registry.Usage` is the read, tagged by
+  tier, provider and model, and it is where ADR-0008's metrics come from once
+  `internal/telemetry` has a meter to report through.
+
 See
 [ADR-0005](../../docs/adr/0005-llm-provider-abstraction-with-three-model-tiers.md).
