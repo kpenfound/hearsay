@@ -23,7 +23,16 @@ things about it are worth knowing before you use it:
   transaction that wrote it has finished, and cursors move forward through
   finished transactions only, so a reader that stops and resumes misses nothing.
   The price is that the feed waits behind a write transaction that is still open
-  rather than reading past it.
+  rather than reading past it. It takes the same `Filter` a listing does — a
+  cursor is a position in the whole feed, so the filter narrows what comes back
+  and not where a reader is.
+
+An artifact's history comes back oldest first by default, which is
+[the connector contract](../../docs/connector-contract.md)'s ordering of
+revisions **reversed**. `ListOptions.Newest` is the contract's own direction, and
+that is the one to ask for when you want the *current* revision: an ACL re-sync
+is a new revision, so the first result of the default order carries the access
+list the re-sync replaced.
 
 **Does not belong here:** anything that interprets an event. Distillation is
 `internal/l1`, and no code in this package calls a model. Connectors — the code

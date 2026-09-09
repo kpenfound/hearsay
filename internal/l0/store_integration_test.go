@@ -144,8 +144,11 @@ func TestAReplayWithADifferentSpellingOfOnePayloadIsStillAReplay(t *testing.T) {
 }
 
 // An edit carries a new revision token in its native id, so it is a new event
-// beside the first appearance rather than an overwrite of it — and the two come
-// back in the order docs/connector-contract.md puts them in.
+// beside the first appearance rather than an overwrite of it.
+//
+// The default order is oldest first, which is docs/connector-contract.md's
+// ordering of an artifact's revisions reversed; ListOptions.Newest is the
+// contract's own direction, with the current revision first.
 func TestAnEditIsANewEventAndTheHistoryIsOrdered(t *testing.T) {
 	store, fake, _ := newStore(t)
 	first := fake.NewEvent(connector.KindMessage, "m1", "hello")
@@ -295,11 +298,11 @@ func TestTheChangeFeedDoesNotSkipASlowTransaction(t *testing.T) {
 
 	// While `slow` is in flight the feed holds at the marker rather than
 	// handing out `fast` and stranding `slow` behind the cursor.
-	held, err := store.Changes(t.Context(), marker.Cursor, l0.MaxLimit)
+	held, err := store.Changes(t.Context(), marker.Cursor, l0.Filter{Source: source}, l0.MaxLimit)
 	if err != nil {
 		t.Fatalf("Changes(while a write is in flight) = %v, want no error", err)
 	}
-	if got := nativeIDs(eventsFrom(held, source)); len(got) != 0 {
+	if got := nativeIDs(eventsOf(held)); len(got) != 0 {
 		t.Errorf("the feed handed out %v while a write was in flight, want nothing", got)
 	}
 
@@ -309,6 +312,68 @@ func TestTheChangeFeedDoesNotSkipASlowTransaction(t *testing.T) {
 	want := []string{"slow", "fast"}
 	if got := feed(t, store, marker.Cursor, source, want); !slices.Equal(got, want) {
 		t.Errorf("the feed after the commit = %v, want %v", got, want)
+	}
+}
+
+// The feed takes the same filter a listing does, so an operator or a consumer
+// watching one source is handed that source and not the store. The cursor is a
+// position in the whole feed either way — the filter narrows what comes back,
+// not where a reader is.
+func TestTheChangeFeedTakesAFilter(t *testing.T) {
+	store, fake, source := newStore(t)
+	other, otherSource := newFake(t)
+
+	marker, err := store.Append(t.Context(), fake.NewEvent(connector.KindMessage, "marker", "start"))
+	if err != nil {
+		t.Fatalf("Append(marker) = %v, want no error", err)
+	}
+	for _, event := range []connector.Event{
+		fake.NewEvent(connector.KindMessage, "m1", "mine"),
+		other.NewEvent(connector.KindMessage, "m1", "somebody else's"),
+		fake.NewEvent(connector.KindIssue, "i1", "an issue of mine"),
+	} {
+		if _, err := store.Append(t.Context(), event); err != nil {
+			t.Fatalf("Append(%s) = %v, want no error", event.NativeID, err)
+		}
+	}
+
+	tests := []struct {
+		name   string
+		filter l0.Filter
+		want   []string
+	}{
+		{name: "one source", filter: l0.Filter{Source: source}, want: []string{"m1", "i1"}},
+		{name: "another source", filter: l0.Filter{Source: otherSource}, want: []string{"m1"}},
+		{name: "one kind of one source", filter: l0.Filter{Source: source, Kind: connector.KindIssue}, want: []string{"i1"}},
+		{name: "one artifact", filter: l0.Filter{Source: source, Artifact: "m1"}, want: []string{"m1"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Patient for the same reason feed() is: a transaction in flight
+			// anywhere holds the feed back.
+			deadline := time.Now().Add(10 * time.Second)
+			var got []string
+			for {
+				changes, err := store.Changes(t.Context(), marker.Cursor, tt.filter, l0.MaxLimit)
+				if err != nil {
+					t.Fatalf("Changes(%+v) = %v, want no error", tt.filter, err)
+				}
+				got = nativeIDs(eventsOf(changes))
+				if slices.Equal(got, tt.want) || time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("Changes(%+v) = %v, want %v", tt.filter, got, tt.want)
+			}
+		})
+	}
+
+	// An artifact id means nothing outside its source, on the feed as on a
+	// listing, and the same rule says so.
+	if _, err := store.Changes(t.Context(), marker.Cursor, l0.Filter{Artifact: "m1"}, l0.MaxLimit); err == nil {
+		t.Error("Changes(artifact without source) = nil, want an error")
 	}
 }
 
@@ -475,11 +540,14 @@ func feed(t *testing.T, store *l0.Store, from l0.Cursor, source string, want []s
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		changes, err := store.Changes(t.Context(), from, l0.MaxLimit)
+		// Filtered on the source, not filtered afterwards: the database
+		// outlives one test, and a page of somebody else's events would push
+		// this one's off the end.
+		changes, err := store.Changes(t.Context(), from, l0.Filter{Source: source}, l0.MaxLimit)
 		if err != nil {
 			t.Fatalf("Changes() = %v, want no error", err)
 		}
-		got := nativeIDs(eventsFrom(changes, source))
+		got := nativeIDs(eventsOf(changes))
 		if slices.Equal(got, want) || time.Now().After(deadline) {
 			return got
 		}
@@ -487,22 +555,20 @@ func feed(t *testing.T, store *l0.Store, from l0.Cursor, source string, want []s
 	}
 }
 
-func eventsFrom(changes []l0.Change, source string) []connector.Event {
-	// The feed is the whole store, and the database outlives one test, so a
-	// test reads its own source out of it.
-	events := []connector.Event{}
-	for _, change := range changes {
-		if change.Event.Source == source {
-			events = append(events, change.Event)
-		}
-	}
-	return events
-}
-
+// nativeIDs is the native id of each event, which is what every assertion in
+// this file compares.
 func nativeIDs(events []connector.Event) []string {
 	ids := make([]string, 0, len(events))
 	for _, event := range events {
 		ids = append(ids, event.NativeID)
 	}
 	return ids
+}
+
+func eventsOf(changes []l0.Change) []connector.Event {
+	events := make([]connector.Event, 0, len(changes))
+	for _, change := range changes {
+		events = append(events, change.Event)
+	}
+	return events
 }

@@ -92,8 +92,11 @@ CREATE INDEX l0_events_feed_idx ON l0_events (xact_id, seq);
 -- (source, target). Partial, because only tombstones carry a target.
 CREATE INDEX l0_events_target_idx ON l0_events (source, target) WHERE target IS NOT NULL;
 
--- An artifact's history, in the order the contract puts its revisions in: the
--- observation with no edit time first, then by edit time, then by arrival.
+-- An artifact's history, on the key its revisions are ordered by: the
+-- observation with no edit time, then by edit time, then by arrival. A btree
+-- scans either way, and the descending direction is the one
+-- docs/connector-contract.md puts revisions in — latest first, so the current
+-- revision is first.
 CREATE INDEX l0_events_artifact_idx
     ON l0_events (source, artifact, revision_edited_at NULLS FIRST, seq);
 

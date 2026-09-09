@@ -12,6 +12,12 @@ The one binary Hearsay ships. Each process is a subcommand of it (ADR-0003).
 | `hearsay config validate [path]` | Check a configuration repository. Prints every problem, with file and line. |
 | `hearsay migrate up\|status\|up-to <n>\|down` | Schema migrations, then exit. `down` refuses without `--i-know`. |
 | `hearsay l0 list\|get <id>\|count\|tail` | Inspect the L0 event store. Read-only. |
+
+`migrate` and `l0` take an action word, and each action reads its own flags:
+`l0 list` and `l0 tail` take `--source`, `--kind` and `--artifact`, `migrate
+down` takes `--i-know`. A flag an action does not read is an error rather than a
+no-op, the same way a stray argument is — a filter silently dropped is a wrong
+answer nobody has a reason to doubt.
 | `hearsay version` | Version, commit and build date. |
 
 Every subcommand that runs something — the services, `all`, `config` and

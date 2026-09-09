@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -15,14 +16,23 @@ import (
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
-// databaseFlag registers --database-url on a subcommand that needs Postgres,
-// defaulting to HEARSAY_DATABASE_URL. Prefer the environment variable: a URL on
-// the command line carries its password into the process list, which is why the
-// Dagger module passes it as a secret.
-func databaseFlag(fs *flag.FlagSet, cfg *config.Config) {
-	cfg.Database.URL = envOr("HEARSAY_DATABASE_URL", cfg.Database.URL)
-	fs.StringVar(&cfg.Database.URL, "database-url", cfg.Database.URL,
-		"Postgres connection URL; also HEARSAY_DATABASE_URL")
+// databaseFlag registers --database-url on a subcommand that needs Postgres and
+// returns the function that resolves it once the flags are parsed: the flag
+// where it was given, HEARSAY_DATABASE_URL otherwise. Prefer the variable — a
+// URL on the command line carries its password into the process list, which is
+// why the Dagger module passes it as a secret.
+//
+// The variable is deliberately not the flag's *default*: flag.PrintDefaults
+// prints defaults, so `hearsay l0 --help` on a machine that has the variable set
+// would print the password in it.
+func databaseFlag(fs *flag.FlagSet, cfg *config.Config) func() {
+	flagged := fs.String("database-url", "", "Postgres connection URL; also HEARSAY_DATABASE_URL")
+	return func() {
+		cfg.Database.URL = *flagged
+		if cfg.Database.URL == "" {
+			cfg.Database.URL = envOr("HEARSAY_DATABASE_URL", "")
+		}
+	}
 }
 
 // runMigrate applies the embedded goose migrations (ADR-0006). It is a job that
@@ -31,14 +41,15 @@ func databaseFlag(fs *flag.FlagSet, cfg *config.Config) {
 // deployment step of its own.
 func runMigrate(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, cfg, _ := newFlagSet("migrate", stderr)
-	databaseFlag(fs, cfg)
+	resolveDatabase := databaseFlag(fs, cfg)
 	// `down` destroys what the migration held, so it takes a second word from
 	// whoever runs it (ADR-0006). Recovery in production is a restore.
-	iKnow := fs.Bool("i-know", false, "for `down`: yes, roll back the last migration and lose what it held")
+	iKnow := fs.Bool("i-know", false, "for down: yes, roll back the last migration and lose what it held")
 	action, err := parseAction(fs, args, "up")
 	if err != nil {
 		return err
 	}
+	resolveDatabase()
 	// Work out what to do before opening anything, so that a typo in the action
 	// is a typo rather than a connection failure.
 	do, err := migrateAction(fs, action, iKnow)
@@ -63,7 +74,7 @@ func runMigrate(ctx context.Context, args []string, stdout, stderr io.Writer) er
 func migrateAction(fs *flag.FlagSet, action string, iKnow *bool) (func(context.Context, *db.Migrator, io.Writer) error, error) {
 	switch action {
 	case "up":
-		if err := noArgs(fs, action); err != nil {
+		if err := checkArgs(fs, action); err != nil {
 			return nil, err
 		}
 		return func(ctx context.Context, m *db.Migrator, w io.Writer) error {
@@ -72,6 +83,9 @@ func migrateAction(fs *flag.FlagSet, action string, iKnow *bool) (func(context.C
 		}, nil
 
 	case "up-to":
+		if err := checkFlags(fs, action); err != nil {
+			return nil, err
+		}
 		if fs.NArg() != 1 {
 			return nil, errors.New("up-to takes one argument: the migration version to stop at")
 		}
@@ -85,7 +99,7 @@ func migrateAction(fs *flag.FlagSet, action string, iKnow *bool) (func(context.C
 		}, nil
 
 	case "down":
-		if err := noArgs(fs, action); err != nil {
+		if err := checkArgs(fs, action, "i-know"); err != nil {
 			return nil, err
 		}
 		if !*iKnow {
@@ -97,7 +111,7 @@ func migrateAction(fs *flag.FlagSet, action string, iKnow *bool) (func(context.C
 		}, nil
 
 	case "status":
-		if err := noArgs(fs, action); err != nil {
+		if err := checkArgs(fs, action); err != nil {
 			return nil, err
 		}
 		return printStatus, nil
@@ -125,10 +139,37 @@ func parseAction(fs *flag.FlagSet, args []string, fallback string) (string, erro
 	return action, nil
 }
 
-// noArgs rejects a word after an action that takes none.
-func noArgs(fs *flag.FlagSet, action string) error {
+// checkArgs rejects a word after an action that takes none, and any flag the
+// action does not read.
+func checkArgs(fs *flag.FlagSet, action string, reads ...string) error {
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q: %s takes none", fs.Arg(0), action)
+	}
+	return checkFlags(fs, action, reads...)
+}
+
+// commonFlags are the flags every subcommand has and every action of one uses:
+// the logger's, and the database for the subcommands that open one. Everything
+// else belongs to an action, and a flag set on an action that does not read it
+// is an error rather than a no-op — a filter silently dropped is a wrong answer
+// nobody has a reason to doubt.
+var commonFlags = []string{"log-level", "log-format", "database-url"}
+
+func checkFlags(fs *flag.FlagSet, action string, reads ...string) error {
+	read := make(map[string]bool, len(commonFlags)+len(reads))
+	for _, name := range append(commonFlags, reads...) {
+		read[name] = true
+	}
+	// Visit walks the flags that were *set*, so a default nobody asked for —
+	// --config's HEARSAY_CONFIG, for one — is not an error.
+	var ignored []string
+	fs.Visit(func(f *flag.Flag) {
+		if !read[f.Name] {
+			ignored = append(ignored, "--"+f.Name)
+		}
+	})
+	if len(ignored) > 0 {
+		return fmt.Errorf("%s does not read %s", action, strings.Join(ignored, ", "))
 	}
 	return nil
 }

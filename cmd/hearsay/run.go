@@ -228,10 +228,11 @@ func runConnectors(ctx context.Context, args []string, stdout, stderr io.Writer)
 // (ADR-0003).
 func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, cfg, configPath := newFlagSet("all", stderr)
-	databaseFlag(fs, cfg)
+	resolveDatabase := databaseFlag(fs, cfg)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	resolveDatabase()
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}

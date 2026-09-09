@@ -179,12 +179,20 @@ func TestL0AndMigrateAgainstARealDatabase(t *testing.T) {
 	})
 
 	// tail follows until the process is interrupted, and ending that way is not
-	// a failure.
-	t.Run("l0 tail returns when the context is cancelled", func(t *testing.T) {
+	// a failure. --source narrows what it follows: an operator watching one
+	// noisy source has to get that source and not the store.
+	t.Run("l0 tail follows one source and returns when the context is cancelled", func(t *testing.T) {
+		other := connector.NewFake(connector.SourceConfig{ID: source + "b", Type: connector.FakeType})
+		if _, err := l0.New(pool).Append(t.Context(), other.NewEvent(connector.KindMessage, "m1", "another source")); err != nil {
+			t.Fatalf("Append(another source) = %v, want no error", err)
+		}
+
 		ctx, cancel := context.WithCancel(t.Context())
 		var stdout, stderr bytes.Buffer
 		done := make(chan error, 1)
-		go func() { done <- run(ctx, []string{"l0", "tail", "--interval", "50ms"}, &stdout, &stderr) }()
+		go func() {
+			done <- run(ctx, []string{"l0", "tail", "--source", source, "--interval", "50ms"}, &stdout, &stderr)
+		}()
 		time.Sleep(200 * time.Millisecond)
 		cancel()
 		select {
@@ -197,6 +205,9 @@ func TestL0AndMigrateAgainstARealDatabase(t *testing.T) {
 		}
 		if !strings.Contains(stdout.String(), appended.ID) {
 			t.Errorf("l0 tail did not print the event:\n%s", stdout.String())
+		}
+		if strings.Contains(stdout.String(), source+"b") {
+			t.Errorf("l0 tail --source printed another source's events:\n%s", stdout.String())
 		}
 	})
 }

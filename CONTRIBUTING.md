@@ -162,11 +162,15 @@ golangci-lint fmt --diff   # fails if anything is unformatted
 golangci-lint fmt          # fixes it
 ```
 
-The module has one third-party dependency, `go.yaml.in/yaml/v3`, which parses
-the configuration format (ADR-0009). Once it and the Go release `go.mod` asks
-for are in the module cache, all of that works with no network and no services
-running. With an older Go and the default `GOTOOLCHAIN=auto`, the first build
-downloads that toolchain too.
+The module has three third-party dependencies, each named by an accepted ADR:
+`go.yaml.in/yaml/v3` parses the configuration format (ADR-0009),
+`github.com/jackc/pgx/v5` is the Postgres driver (ADR-0004), and
+`github.com/pressly/goose/v3` applies the migrations (ADR-0006). Once those and
+the Go release `go.mod` asks for are in the module cache, all of that works with
+no network and no services running — `go test ./...` included, because the tests
+that need Postgres carry the `integration` build tag and skip without
+`HEARSAY_DATABASE_URL`. With an older Go and the default `GOTOOLCHAIN=auto`, the
+first build downloads that toolchain too.
 
 That is a fallback, not a second gate: the pull request is judged by
 `dagger check`, which Dagger Cloud runs on every commit whether or not you could
@@ -262,13 +266,19 @@ go run ./cmd/hearsay l0 count                        # events by source and kind
 go run ./cmd/hearsay l0 list --source github-acme    # what a source has ingested
 go run ./cmd/hearsay l0 list --source github-acme --artifact acme/api#12
 go run ./cmd/hearsay l0 get evt:github-acme:acme%2Fapi%2312
-go run ./cmd/hearsay l0 tail                         # follow the change feed
+go run ./cmd/hearsay l0 tail --source github-acme     # follow the change feed
 ```
 
 `list` prints what an event is and where it came from and no payload; `get`
 prints the whole event, which is what asking for one by id means. `count`
 reports what was ever ingested beside what a read returns: L0 is append-only, so
 a deletion is a tombstone that hides an event and keeps its row.
+
+`list` and `tail` take the same `--source`, `--kind` and `--artifact`; `get` and
+`count` take none of them and say so rather than ignoring one. An artifact's
+history is listed oldest first, and `--newest` is the order
+[the connector contract](docs/connector-contract.md) puts revisions in, with the
+current one first.
 
 ## Layout
 

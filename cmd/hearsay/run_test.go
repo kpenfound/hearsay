@@ -137,6 +137,46 @@ func TestRun(t *testing.T) {
 			wantErr: `cursor "yesterday"`,
 		},
 		{
+			name:    "l0 refuses an artifact without a source",
+			args:    []string{"l0", "list", "--artifact", "acme/api#1"},
+			wantErr: "needs a source",
+		},
+		{
+			name:    "l0 tail refuses an artifact without a source too",
+			args:    []string{"l0", "tail", "--artifact", "acme/api#1"},
+			wantErr: "needs a source",
+		},
+		{
+			name:    "l0 count does not filter, and says so",
+			args:    []string{"l0", "count", "--source", "github-acme"},
+			wantErr: "count does not read --source",
+		},
+		{
+			name:    "l0 get takes no filter",
+			args:    []string{"l0", "get", "--kind", "message", "evt:a:b"},
+			wantErr: "get does not read --kind",
+		},
+		{
+			name:    "l0 tail does not order",
+			args:    []string{"l0", "tail", "--newest"},
+			wantErr: "tail does not read --newest",
+		},
+		{
+			name:    "l0 list does not tail",
+			args:    []string{"l0", "list", "--interval", "1s", "--cursor", "1.2"},
+			wantErr: "list does not read --cursor, --interval",
+		},
+		{
+			name:    "migrate up does not take the flag down needs",
+			args:    []string{"migrate", "up", "--i-know"},
+			wantErr: "up does not read --i-know",
+		},
+		{
+			name:    "migrate does not read a configuration repository",
+			args:    []string{"migrate", "status", "--config", "./config"},
+			wantErr: "status does not read --config",
+		},
+		{
 			name:    "a service rejects an unknown flag",
 			args:    []string{"api", "--verbose"},
 			wantErr: "flag provided but not defined",
@@ -339,6 +379,47 @@ func TestLogFlagsAndEnvironment(t *testing.T) {
 			t.Errorf("stderr = %q, want nothing below error level", stderr.String())
 		}
 	})
+}
+
+// A connection URL carries a password, and `--help` goes to a terminal, a CI
+// transcript or a screen share. The environment variable must not be the flag's
+// default, because flag.PrintDefaults prints defaults.
+func TestHelpDoesNotPrintTheDatabasePassword(t *testing.T) {
+	const password = "correct-horse-battery-staple"
+	t.Setenv("HEARSAY_DATABASE_URL", "postgres://hearsay:"+password+"@localhost:5432/hearsay")
+	for _, args := range [][]string{
+		{"l0", "--help"},
+		{"migrate", "--help"},
+		{"all", "--help"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if err := run(t.Context(), args, &stdout, &stderr); err != nil {
+				t.Fatalf("run(%q) = %v, want nil", args, err)
+			}
+			if out := stdout.String() + stderr.String(); strings.Contains(out, password) {
+				t.Errorf("--help printed the password:\n%s", out)
+			}
+			if !strings.Contains(stderr.String(), "database-url") {
+				t.Errorf("--help does not mention --database-url:\n%s", stderr.String())
+			}
+		})
+	}
+}
+
+// The flag still works, and still beats the environment.
+func TestDatabaseURLFlagBeatsTheEnvironment(t *testing.T) {
+	t.Setenv("HEARSAY_DATABASE_URL", "postgres://hearsay@localhost:5432/from-the-environment")
+	var stdout, stderr bytes.Buffer
+	// Port 1 is reserved and nothing listens on it, so this gets as far as the
+	// connection and no further.
+	err := run(t.Context(), []string{"l0", "count", "--database-url", "postgres://hearsay@127.0.0.1:1/from-the-flag"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run(l0 count) against a port nothing listens on = nil, want an error")
+	}
+	if !strings.Contains(err.Error(), "from-the-flag") {
+		t.Errorf("run used %v, want the database the flag names", err)
+	}
 }
 
 // Both subcommands that need Postgres say so rather than failing on a

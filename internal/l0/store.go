@@ -219,45 +219,71 @@ func (s *Store) Get(ctx context.Context, id string) (connector.Event, error) {
 	return ev, nil
 }
 
-// ListOptions narrows and orders a listing. The zero value is the whole store,
-// oldest first, up to [DefaultLimit] events.
-type ListOptions struct {
-	// Source lists one configured source only.
+// Filter narrows a read to part of the store. The zero value is all of it. Both
+// reads take one, so "only this source" means the same thing on a listing and on
+// the feed.
+type Filter struct {
+	// Source reads one configured source only.
 	Source string
-	// Kind lists one kind only.
+	// Kind reads one kind only.
 	Kind connector.Kind
-	// Artifact lists one artifact's history — its first appearance and every
+	// Artifact reads one artifact's history — its first appearance and every
 	// revision of it — and requires Source, because an artifact id means
 	// nothing outside the source that minted it.
 	Artifact string
+}
+
+// Validate reports a filter that cannot mean what it says. Both reads call it,
+// and so does anything that wants to refuse a filter before opening a database.
+func (f Filter) Validate() error {
+	if f.Artifact != "" && f.Source == "" {
+		return errors.New("reading by artifact needs a source: an artifact id is only unique within one")
+	}
+	return nil
+}
+
+// where adds the filter's predicates to a query.
+func (f Filter) where(q *query) {
+	if f.Source != "" {
+		q.and("e.source", f.Source)
+	}
+	if f.Kind != "" {
+		q.and("e.kind", string(f.Kind))
+	}
+	if f.Artifact != "" {
+		q.and("e.artifact", f.Artifact)
+	}
+}
+
+// ListOptions narrows and orders a listing. The zero value is the whole store,
+// oldest first, up to [DefaultLimit] events.
+type ListOptions struct {
+	Filter
 	// Limit is how many events to return, capped at [MaxLimit].
 	Limit int
 	// Newest reverses the order, which is what an operator asking "what has
-	// arrived" wants.
+	// arrived" wants — and, for one artifact, it is the order
+	// docs/connector-contract.md puts its revisions in.
 	Newest bool
 }
 
 // List returns the events an option set selects, excluding everything a
 // tombstone covers.
 //
-// The order is the one docs/connector-contract.md puts an artifact's revisions
-// in: by the artifact's own time, then the observation with no edit time (the
-// first appearance) before those that have one, then by edit time, then by
-// arrival. Newest reverses all four.
+// The default order is oldest first: by the artifact's own time, then the
+// observation with no edit time (the first appearance) before those that have
+// one, then by edit time, then by arrival. That is
+// docs/connector-contract.md's ordering of an artifact's revisions **reversed**;
+// Newest is the contract's own direction, so with Newest the current revision of
+// an artifact is the first result. Whoever wants the current one asks for
+// Newest — an ACL re-sync is a new revision, and taking the first of the default
+// order would read the access list the re-sync replaced.
 func (s *Store) List(ctx context.Context, opts ListOptions) ([]connector.Event, error) {
-	if opts.Artifact != "" && opts.Source == "" {
-		return nil, errors.New("listing by artifact needs a source: an artifact id is only unique within one")
+	if err := opts.Validate(); err != nil {
+		return nil, err
 	}
 	q := &query{sql: `SELECT ` + eventColumns + ` FROM l0_events e WHERE ` + notRetractedSQL}
-	if opts.Source != "" {
-		q.and("e.source", opts.Source)
-	}
-	if opts.Kind != "" {
-		q.and("e.kind", string(opts.Kind))
-	}
-	if opts.Artifact != "" {
-		q.and("e.artifact", opts.Artifact)
-	}
+	opts.where(q)
 	if opts.Newest {
 		q.sql += ` ORDER BY e.occurred_at DESC, e.revision_edited_at DESC NULLS LAST, e.seq DESC`
 	} else {
@@ -344,7 +370,9 @@ type Change struct {
 }
 
 // Changes is the change feed: the events that arrived after a cursor, oldest
-// first, for the distiller to consume and for `watch` later.
+// first, for the distiller to consume and for `watch` later. The filter narrows
+// what comes back and nothing else — a cursor is a position in the whole feed,
+// so the same one means the same place whatever a reader is watching.
 //
 // It never skips an event. A row becomes readable here only once the
 // transaction that wrote it has finished, and cursors only move forward through
@@ -355,16 +383,23 @@ type Change struct {
 // Tombstoned events are not on the feed; the tombstones themselves are, which
 // is how a consumer learns to walk provenance forward and re-derive without
 // them.
-func (s *Store) Changes(ctx context.Context, from Cursor, limit int) ([]Change, error) {
-	rows, err := s.db.Query(ctx, `
-SELECT e.xact_id::text, e.seq, e.ingested_at, `+eventColumns+`
+func (s *Store) Changes(ctx context.Context, from Cursor, filter Filter, limit int) ([]Change, error) {
+	if err := filter.Validate(); err != nil {
+		return nil, err
+	}
+	q := &query{sql: `
+SELECT e.xact_id::text, e.seq, e.ingested_at, ` + eventColumns + `
   FROM l0_events e
- WHERE (e.xact_id, e.seq) > ($1::xid8, $2::bigint)
+ WHERE (e.xact_id, e.seq) > (` + `$1::xid8, $2::bigint)
    AND e.xact_id < pg_snapshot_xmin(pg_current_snapshot())
-   AND `+notRetractedSQL+`
+   AND ` + notRetractedSQL}
+	q.args = []any{strconv.FormatUint(from.xact, 10), from.seq}
+	filter.where(q)
+	q.sql += `
  ORDER BY e.xact_id, e.seq
- LIMIT $3`,
-		strconv.FormatUint(from.xact, 10), from.seq, int64(Limit(limit)))
+ LIMIT ` + q.placeholder(int64(Limit(limit)))
+
+	rows, err := s.db.Query(ctx, q.sql, q.args...)
 	if err != nil {
 		return nil, fmt.Errorf("reading the change feed: %w", err)
 	}
