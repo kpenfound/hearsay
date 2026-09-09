@@ -250,6 +250,9 @@ Adoption dies at the config step if identity mapping and connector onboarding ar
 
 ## Architecture and deployment
 
+The implementation decisions behind this section — language, process model, storage,
+LLM tiers, migrations, queue and observability — are recorded in [`docs/adr/`](adr/).
+
 One Postgres with pgvector and full-text search holds all four layers. Vectors are an index on the L1 table, not a separate store. L2 is relational with recursive CTEs for hierarchy and supersession; it is small and shallow enough that a graph database is not warranted at the start, and the layering allows moving L2 alone later.
 
 Four processes:
