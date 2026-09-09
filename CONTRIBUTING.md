@@ -15,9 +15,13 @@ without the reasons.
 - Go, at the release `go.mod` declares. The floor tracks the current Go release
   rather than the oldest one that compiles, and it is raised deliberately, in
   its own commit ([ADR-0010](docs/adr/0010-go-version-floor-tracks-the-current-release.md)).
-  `go.mod` is the only place that version is written; with the default
-  `GOTOOLCHAIN=auto`, an older toolchain fetches the right one on the first
-  build.
+  With the default `GOTOOLCHAIN=auto`, an older toolchain fetches the right one
+  on the first build.
+
+  `go.mod` is the only place a person writes that version, but it is not the
+  only file that carries one: raising the floor also re-pins `dagger.lock`, and
+  `.dagger/go.mod` is the SDK's, not ours. [Raising the Go
+  floor](#raising-the-go-floor) has both.
 - [Dagger](https://dagger.io) and a container runtime. Dagger is how everything
   runs: lint, tests, the binary, the image, migrations and the local stack.
 
@@ -113,6 +117,34 @@ ahead of the released engine: an SDK newer than `v1.0.0-beta.11` loads as a
 module that can author nothing, and `dagger generate` then quietly skips
 `.dagger` instead of writing the bindings. Move both pins together, with
 `dagger update` for the lock, when the workspace moves to a new release.
+
+`.dagger/go.mod` has a `go` directive of its own, currently a minor release
+behind the root module's. It is the generated module's, set by the SDK, and it
+moves with the SDK pin — leave it alone. Editing it to match `go.mod` is not a
+silent mistake: `dagger-go-sdk:generate` fails with `existing go.mod has
+unsupported version`.
+
+### Raising the Go floor
+
+The floor tracks the current Go release rather than the oldest one that compiles
+([ADR-0010](docs/adr/0010-go-version-floor-tracks-the-current-release.md)). Raise
+it in its own commit, doing nothing else, so a new toolchain's stricter vet or
+lint lands somewhere it can be read:
+
+1. Edit the `go` directive in `go.mod`. That is the only place a person writes
+   the version.
+2. Re-pin `dagger.lock`. It records the resolved digest of
+   `docker.io/library/golang:<the go directive>`, and nothing derives that from
+   `go.mod`. The lock is a record of what a run resolved: it is never pruned,
+   and `dagger update` only "refreshes entries already recorded", so it will
+   neither add the new pin nor drop the old one. Delete the superseded
+   `golang:` line and let a run that actually resolves the new image record it.
+3. Confirm it took — `grep golang: dagger.lock` should name the release you just
+   moved to, and nothing else.
+
+Step 3 is not optional and no check does it for you. A lock left pinning the
+release you moved off passes all seven checks, because the pin only decides
+which image a *cold* resolution gets.
 
 ### Without Dagger
 

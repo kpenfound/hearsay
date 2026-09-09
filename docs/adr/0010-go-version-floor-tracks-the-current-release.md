@@ -33,12 +33,14 @@ reads it, but CLAUDE.md sends anyone asking *why* to `docs/adr/`, and ADR-0002
 is what they find. That is issue #41.
 
 There is a second reason to change the rule rather than change `go.mod` back.
-A declared floor of 1.24 was untested prose: `.dagger/main.go` reads the `go`
-directive out of `go.mod` and builds every container from `golang:<that
-version>`, so every check ran on 1.27.1 and only on 1.27.1. The day someone
-wrote a 1.27-only construct, no gate would have noticed and the floor would have
-been wrong without anyone touching it. A number no gate exercises is a claim,
-not a constraint.
+A declared floor of 1.24 was untested prose: nothing ever built Hearsay at it.
+`.dagger/main.go` reads the `go` directive out of `go.mod` and runs the Go
+commands in `golang:<that version>` (`goBase`), and the linter — which runs in
+its own image, `golangci/golangci-lint` — reaches the same release through
+`GOTOOLCHAIN=auto` in `withGoCaches`. So every check ran on 1.27.1 and only on
+1.27.1. The day someone wrote a 1.27-only construct, no gate would have noticed
+and the floor would have been wrong without anyone touching it. A number no gate
+exercises is a claim, not a constraint.
 
 ## Decision
 
@@ -54,12 +56,26 @@ static binary — stands unchanged.
   releases are picked up when one matters or when the line is being touched
   anyway; a floor a patch or two behind the newest is not a defect to file.
 - **Raising it stays what ADR-0002 said it was**: deliberate, and its own
-  commit, doing nothing else. That commit is where a new toolchain's stricter
-  vet or lint shows up, which is the point of keeping it separate.
-- **`go.mod` is the only place the version is written.** `.dagger/main.go`
-  derives the toolchain from the `go` directive; CONTRIBUTING.md names the file
-  rather than the number. Raising the floor is a one-line diff with nothing else
-  to keep in step.
+  commit, carrying no other change. That commit is where a new toolchain's
+  stricter vet or lint shows up, which is the point of keeping it separate.
+- **The rule is about the root module's `go` directive**, and `go.mod` is the
+  only place a person writes that number. `.dagger/main.go` derives the
+  toolchain from the directive and CONTRIBUTING.md names the file rather than
+  the number, so there is no prose copy to keep in step.
+- **The raise is two committed artifacts, not one line.** `dagger.lock` records
+  the resolved digest of `docker.io/library/golang:<the go directive>`, and
+  nothing derives it from `go.mod`: it is a record of what a run resolved, it is
+  never pruned, and `dagger update` "refreshes entries already recorded" and so
+  neither adds the new pin nor drops the superseded one. Left alone, the lock
+  goes on pinning the release the floor just moved off, and no check fails. The
+  raising commit re-pins it and removes the stale entry.
+- **`.dagger/go.mod` is not covered by this rule.** It belongs to the module
+  Dagger's Go SDK generates, its `go` directive is the SDK's to set, and it
+  moves with the SDK commit pinned in `dagger.toml` and the `engineVersion` in
+  `.dagger/dagger-module.toml` — not with Hearsay's floor, which it is expected
+  to sit behind. Raising it by hand is a build failure rather than a silent
+  wrong: the `dagger-go-sdk:generate` check refuses it with "existing go.mod has
+  unsupported version".
 
 ## Alternatives considered
 
@@ -93,10 +109,15 @@ static binary — stands unchanged.
 ## Consequences
 
 - Raising the floor raises everything at once. `.dagger/main.go`'s `goVersion`
-  reads the `go` directive and pulls `golang:<version>`, so lint, unit tests,
-  integration tests, the binary and the image all move on the same one-line
-  commit, and `dagger check` is what says whether the new release breaks
-  Hearsay.
+  reads the `go` directive, `goBase` runs the Go commands in
+  `golang:<version>`, and the linter's own image picks up the same release
+  through `GOTOOLCHAIN=auto`. So vet, lint, the tests, the binary and the image
+  all move together, and `dagger check` is what says whether the new release
+  breaks Hearsay.
+- The raising commit has to re-pin `dagger.lock`, and reviewing one means
+  looking at it. That is the one thing about a raise that is not automatic and
+  not caught by a gate: an unrepinned lock still passes every check while
+  pinning the wrong image.
 - The declared floor is exercised rather than asserted: every check builds and
   runs at exactly the version `go.mod` names.
 - Somebody still has to do it. The floor does not follow Go automatically, and
