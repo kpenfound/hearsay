@@ -49,7 +49,7 @@ An event is one thing that happened at one source.
 | `source` | string | yes | The configured source instance the event came from. |
 | `native_id` | string | yes | The source's identity for *this observation*. Ingest is idempotent on it. |
 | `kind` | string | yes | What the event is: a core kind or a `<vendor>.<name>` extension. |
-| `time` | RFC 3339 timestamp | yes | When it happened **at the source**, not when Hearsay saw it. Ingest time belongs to the store. |
+| `time` | RFC 3339 timestamp | yes | When the artifact happened **at the source** — not when Hearsay saw it, and not when this revision of it did. Every revision of an artifact carries the same value. |
 | `payload` | object | yes | The standard metadata below, plus anything else under `native`. |
 | `acl` | array | yes, non-empty | Who may read it, as the source described it. |
 
@@ -234,6 +234,7 @@ in the connector rather than something to retry:
 13. `payload.revision` is present exactly when `native_id` is
     `artifact@<token>`, `token` is non-empty, and `payload.revision.token`
     equals it.
+14. `payload.revision.edited_at`, where set, is not earlier than `time`.
 
 ## Idempotency, edits and deletions
 
@@ -261,8 +262,29 @@ token in the native id.
 carries the same `payload.artifact`, a `native_id` of `<artifact>@<token>` and a
 `payload.revision` naming the token and, where the source says, when the edit
 happened. Every earlier revision stays in L0 — that is the provenance for
-anything distilled from it — and the latest revision of an artifact by `time` is
-the current one.
+anything distilled from it — and the newest revision of an artifact is the
+current one.
+
+### Which revision is the current one
+
+`time` is when the artifact happened at the source and does not move: a message
+posted at 10:00 that is edited at noon, or has its permissions changed a month
+later, still has `time` 10:00 on every revision. That is what makes `time`
+usable for recency and for a thread's ordering, and it means `time` alone cannot
+say which revision is current. The order is:
+
+1. `payload.revision.edited_at`, latest first, for revisions that have one.
+2. `time`, latest first.
+3. Ingest order — the order L0 received them — last.
+
+A connector's part in that is one sentence: **put the source's time for *this
+revision* in `payload.revision.edited_at`, and leave `time` alone.** An edit
+timestamp, a Drive revision's `modifiedTime`, the time a permission change was
+observed. Where the source gives none, omit it and ingest order decides, which
+is correct because a re-emission is by definition later than what it revises.
+`edited_at` is never earlier than `time` — a revision cannot precede the thing
+it revises — and validation rejects an event where it is, since that is the
+symptom of a connector putting the artifact's creation time in the wrong field.
 
 The revision token is whatever the source gives that changes when the
 observation does: an edit timestamp, an ETag, a Drive revision id, a GitHub
@@ -284,9 +306,16 @@ prevent.
 
 So: the connector re-emits each affected artifact with a native id whose
 revision token reflects the new permissions (`<message id>@perm:<version>`), the
-same payload, and the new `acl`. The newest revision of an artifact is the
-current one, so the ACL re-syncs by the same rule edits do, with no second
-mechanism and nothing rewritten in place.
+same payload, the same `time` — the message was still posted when it was posted —
+`payload.revision.edited_at` set to when the permission change happened where the
+source says so, and the new `acl`. The newest revision of an artifact is the
+current one by the order above, so the ACL re-syncs by the same rule edits do,
+with no second mechanism and nothing rewritten in place.
+
+That is why the order is not `time` alone: every revision of a message carries
+the `time` it was posted, so two revisions of one artifact are routinely tied on
+it, and a tie resolved the wrong way would keep `public` on a message in a
+channel that is now private — the leak this section exists to prevent.
 
 Two consequences worth stating plainly, because they are the cost of that
 choice:
@@ -464,9 +493,9 @@ Discord (v0.3.0) and Drive (v0.4.0) work.
 | Issue | `issue` | `acme/api#12` | `acme/api#12@<updated_at>` | repository `acme/api` |
 | Issue or PR comment | `message` | `acme/api#12:comment:998` | `…@<updated_at>` | repository |
 | Pull request | `pull_request` | `acme/api#31` | `…@<updated_at>` | repository |
-| Review | `review` | `acme/api#31:review:77` | same | repository |
+| Review | `review` | `acme/api#31:review:77` | same — a submitted review does not change | repository |
 | Review comment | `review_comment` | `acme/api#31:comment:88` | `…@<updated_at>` | repository |
-| Commit on the default branch | `commit` | `acme/api@<sha>` | same — a commit is immutable | repository |
+| Commit on the default branch | `commit` | `acme/api@<sha>` | same — a commit's content does not change | repository |
 
 `parent` is the issue or pull request for a comment or review, and `thread` is
 the same: GitHub conversations are two levels. Author is the GitHub node id with
@@ -480,9 +509,15 @@ list endpoints with the page cursor. Deleting a comment sends
 
 Every native id with an `@` carries `payload.revision.token` equal to the part
 after it, so an issue at `acme/api#12@2026-09-09T12:00:00Z` has that timestamp as
-its token. A repository going private is an ACL change with no content change:
-the connector re-emits the repository's artifacts with
-`@<updated_at>+perm:private`, since GitHub gives no version for visibility.
+its token. A repository going private is an ACL change with no content change,
+and GitHub gives no version for visibility, so the connector composes the token
+the way the general rule says: `<content token>+perm:private` where the artifact
+has a content token, and `perm:private` alone where it does not. Reviews and
+commits are the second case — a review carries `submitted_at` and never changes,
+a commit's content never changes — so `acme/api@<sha>` re-emits as
+`acme/api@<sha>@perm:private`. Without that clause those two rows would re-emit
+with their original native ids, deduplicate to nothing, and keep `public` on
+every commit in a repository that is no longer public.
 
 Checks out. The one thing worth naming: an edit to an issue body arrives with the
 same `updated_at` granularity as a label change, so a connector emitting on every

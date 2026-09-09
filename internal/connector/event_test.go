@@ -180,6 +180,32 @@ func TestEventValidate(t *testing.T) {
 			},
 		},
 		{
+			// An ACL re-sync: same payload, same time, later edited_at.
+			name: "a revision edited after the artifact happened",
+			mutate: func(e *connector.Event) {
+				e.NativeID = e.Payload.Artifact + "@perm:private"
+				e.Payload.Revision = &connector.Revision{Token: "perm:private", EditedAt: eventTime.Add(time.Hour)}
+				e.ACL = connector.ACL{{Kind: connector.ACLGroup, Source: "github-acme", NativeID: "acme/api"}}
+			},
+		},
+		{
+			name: "a revision edited at the same moment the artifact happened",
+			mutate: func(e *connector.Event) {
+				e.NativeID = e.Payload.Artifact + "@2"
+				e.Payload.Revision = &connector.Revision{Token: "2", EditedAt: eventTime}
+			},
+		},
+		{
+			// The artifact's own time in the revision's field would sort the
+			// edit before the original, which is how a stale ACL survives.
+			name: "a revision edited before the artifact happened",
+			mutate: func(e *connector.Event) {
+				e.NativeID = e.Payload.Artifact + "@2"
+				e.Payload.Revision = &connector.Revision{Token: "2", EditedAt: eventTime.Add(-time.Second)}
+			},
+			wantErr: true,
+		},
+		{
 			name: "a revision token that disagrees with the native id",
 			mutate: func(e *connector.Event) {
 				e.NativeID = e.Payload.Artifact + "@2"

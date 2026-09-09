@@ -59,7 +59,9 @@ type Event struct {
 	Kind Kind `json:"kind"`
 
 	// Time is when the artifact happened at the source, not when Hearsay saw
-	// it. Ingest time belongs to the store.
+	// it, and not when this revision of it did: every revision of an artifact
+	// carries the same Time, and Payload.Revision.EditedAt is what tells them
+	// apart. Ingest time belongs to the store.
 	Time time.Time `json:"time"`
 
 	// Payload is the standard metadata the distiller reads plus whatever else
@@ -178,7 +180,12 @@ type Revision struct {
 	// the part of the native id after `<artifact>@`, and it changes whenever
 	// the payload or the ACL of the artifact does.
 	Token string `json:"token"`
-	// EditedAt is when the change happened, where the source says.
+	// EditedAt is when this revision came about, where the source says: the
+	// edit, or the permission change. It is what orders an artifact's
+	// revisions, because Event.Time is the same on all of them — the artifact
+	// happened when it happened — so it is never earlier than Event.Time.
+	// Where the source gives no time for the change, leave it zero and the
+	// store orders by arrival.
 	EditedAt time.Time `json:"edited_at,omitzero"`
 }
 
@@ -510,6 +517,12 @@ func (p Payload) validateRevision(e Event) error {
 		return fmt.Errorf("%w: native_id %q carries revision token %q and payload.revision is absent", ErrInvalidEvent, e.NativeID, token)
 	case p.Revision.Token != token:
 		return fmt.Errorf("%w: payload.revision.token %q is not the revision token %q in native_id %q", ErrInvalidEvent, p.Revision.Token, token, e.NativeID)
+	case !p.Revision.EditedAt.IsZero() && p.Revision.EditedAt.Before(e.Time):
+		// Revisions of one artifact share a time — the artifact happened when
+		// it happened — so edited_at is what orders them. A revision that
+		// precedes the thing it revises is a connector putting the artifact's
+		// own time in the field, and it would sort an edit before the original.
+		return fmt.Errorf("%w: payload.revision.edited_at %s is before time %s", ErrInvalidEvent, p.Revision.EditedAt.Format(time.RFC3339), e.Time.Format(time.RFC3339))
 	}
 	return nil
 }
