@@ -177,6 +177,13 @@ func TestRun(t *testing.T) {
 			wantErr: "status does not read --config",
 		},
 		{
+			// down is the only action with a flag of its own, so this pins its
+			// list from both sides: --i-know passes the gate, --config does not.
+			name:    "migrate down takes --i-know and nothing else",
+			args:    []string{"migrate", "down", "--i-know", "--config", "./config"},
+			wantErr: "down does not read --config",
+		},
+		{
 			name:    "a service rejects an unknown flag",
 			args:    []string{"api", "--verbose"},
 			wantErr: "flag provided but not defined",
