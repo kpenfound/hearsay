@@ -149,6 +149,49 @@ func TestABusyWorkerStillReclaimsExpiredLeases(t *testing.T) {
 	}
 }
 
+// The other half of the same tick, and the ordinary case: a worker with
+// nothing to do still reclaims. The drain loop's non-blocking check cannot
+// cover this one — an idle worker sits in the outer select, which is what
+// receives the tick — so both places that read it are load-bearing, and each
+// is the only one for a worker in one of the two states.
+func TestAnIdleWorkerReclaimsAnExpiredLease(t *testing.T) {
+	kind := newKind(t, false)
+	pool := newPool(t)
+
+	enqueue(t, pool, queue.Request{Kind: kind, TargetID: "evt-abandoned"})
+	abandoning := newClient(t, queue.Config{Kind: kind, Lease: time.Millisecond})
+	if got := claim(t, abandoning); len(got) != 1 {
+		t.Fatalf("the staged claim = %v, want the one job, which is then abandoned", got)
+	}
+
+	var (
+		mu  sync.Mutex
+		ran []string
+	)
+	// There is nothing pending — the only job is `running` on a lease that has
+	// gone — so this worker claims nothing until its maintenance reclaims it.
+	// The polling floor is long, so a reclaim is the only thing that can put
+	// the job back within the wait.
+	_, stop := run(t, queue.Config{
+		Kind:                kind,
+		Lease:               30 * time.Second,
+		MaintenanceInterval: 100 * time.Millisecond,
+		PollInterval:        time.Minute,
+	}, func(_ context.Context, job queue.Job) error {
+		mu.Lock()
+		ran = append(ran, job.TargetID)
+		mu.Unlock()
+		return nil
+	})
+
+	waitFor(t, "the idle worker to reclaim the abandoned job and run it", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Contains(ran, "evt-abandoned")
+	})
+	stop()
+}
+
 // LISTEN/NOTIFY is what makes a job start now rather than at the next poll.
 // The polling floor here is a minute, so a job that is handled within seconds
 // was handled because the enqueue announced it.
