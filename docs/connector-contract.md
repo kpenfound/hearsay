@@ -144,7 +144,7 @@ about it. Everything else the connector wants to keep goes in `native`.
 | `links` | array of strings | where the source gives them | URLs the artifact carries, verbatim. L1 turns them into typed references; a connector does not. |
 | `parent` | artifact id | where there is a parent | The thing this one hangs off: the issue a comment is on, the message a reply answers. |
 | `thread` | artifact id | where there is a thread | The root of the conversation, which is what the distiller assembles a thread from. On a two-level source it equals `parent`. |
-| `revision` | object | exactly when `native_id` is `artifact@<token>` | `{token, edited_at?}`, and `token` is that token — see idempotency below. |
+| `revision` | object | exactly when `native_id` is `artifact@<token>` | `{token, edited_at?}`: `token` is that token, and `edited_at` is when *this revision* came about, which is what orders an artifact's revisions — see idempotency below. |
 | `target` | artifact id | on tombstones only | The artifact the tombstone retracts. |
 | `native` | any JSON | no | The source's own object, verbatim. Nothing above L0 reads it, and nothing the fields above ask for may be hidden in it. |
 
@@ -269,30 +269,33 @@ current one.
 
 `time` is when the artifact happened at the source and does not move: a message
 posted at 10:00 that is edited at noon, or has its permissions changed a month
-later, still has `time` 10:00 on every revision. That is what makes `time`
-usable for recency and for a thread's ordering, and it means `time` alone cannot
-say which revision is current. The order is:
+later, still has `time` 10:00 on every revision. That is what makes `time` usable
+for recency and for a thread's ordering — and it is why `time` is **not** what
+orders revisions. Every revision of an artifact is tied on it by construction.
 
-1. `payload.revision.edited_at`, latest first, for revisions that have one.
-2. `time`, latest first.
-3. Ingest order — the order L0 received them — last.
+Revisions of one artifact are ordered by:
+
+1. `payload.revision.edited_at`, latest first, where both have one.
+2. Ingest order — the order L0 received them — otherwise.
 
 A connector's part in that is one sentence: **put the source's time for *this
 revision* in `payload.revision.edited_at`, and leave `time` alone.** An edit
 timestamp, a Drive revision's `modifiedTime`, the time a permission change was
-observed. Where the source gives none, omit it and ingest order decides, which
-is correct because a re-emission is by definition later than what it revises.
-`edited_at` is never earlier than `time` — a revision cannot precede the thing
-it revises — and validation rejects an event where it is, since that is the
-symptom of a connector putting the artifact's creation time in the wrong field.
+observed. Where the source gives none, omit it and ingest order decides, which is
+correct because a re-emission is by definition later than what it revises.
+
+`edited_at` is never earlier than `time` — a revision cannot precede the thing it
+revises — and validation rejects an event where it is, because that is the
+symptom of a connector putting the artifact's own time in the revision's field,
+which is exactly the mistake that would order an edit before the original.
 
 The revision token is whatever the source gives that changes when the
 observation does: an edit timestamp, an ETag, a Drive revision id, a GitHub
 `updated_at`. It is opaque to Hearsay. A connector whose source has no single
 token for that — content in one version field, permissions in another — composes
 one, `<content token>+<permission token>`, and puts it in `payload.revision`
-verbatim. `payload.revision.edited_at` still says when the source says the
-change happened.
+verbatim. Where an artifact has no content token at all — something the source
+treats as immutable — the token is the permission part alone.
 
 ### When only the access list changes
 
@@ -312,10 +315,9 @@ source says so, and the new `acl`. The newest revision of an artifact is the
 current one by the order above, so the ACL re-syncs by the same rule edits do,
 with no second mechanism and nothing rewritten in place.
 
-That is why the order is not `time` alone: every revision of a message carries
-the `time` it was posted, so two revisions of one artifact are routinely tied on
-it, and a tie resolved the wrong way would keep `public` on a message in a
-channel that is now private — the leak this section exists to prevent.
+An ACL re-sync is the case that makes the ordering rule load-bearing: the
+original and the re-emission are tied on `time`, and resolving that tie towards
+the original would keep `public` on a message in a channel that is now private.
 
 Two consequences worth stating plainly, because they are the cost of that
 choice:
