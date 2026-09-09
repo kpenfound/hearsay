@@ -397,8 +397,13 @@ func (h *Hearsay) withGoCaches(ctr *dagger.Container) *dagger.Container {
 var goDirective = regexp.MustCompile(`(?m)^go\s+(\d+\.\d+(?:\.\d+)?)\s*$`)
 
 // goVersion is the toolchain go.mod asks for. Reading it rather than pinning it
-// here is what keeps the containers from drifting from the module: raising the
-// floor stays the one-line commit CONTRIBUTING.md describes.
+// here is what keeps the containers from drifting from the module: the floor
+// moves in go.mod and nothing here has to be edited to follow (ADR-0010).
+//
+// dagger.lock is the exception, and it is not automatic. It records the
+// resolved digest of golang:<this version>, so a raise leaves it pinning the
+// release the floor moved off until someone re-pins it, and no check fails
+// meanwhile. CONTRIBUTING.md's "Raising the Go floor" has the procedure.
 func (h *Hearsay) goVersion(ctx context.Context) (string, error) {
 	mod, err := h.Source.File("go.mod").Contents(ctx)
 	if err != nil {
