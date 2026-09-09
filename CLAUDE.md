@@ -10,7 +10,10 @@ provenance, and serves scoped context bundles to coding agents. Read
 [docs/design.md](docs/design.md) before changing anything structural — it is the
 source of truth for the product, and every work item points at a section of it.
 The implementation decisions are in [docs/adr/](docs/adr/), and an accepted ADR
-is superseded, never edited.
+is superseded, never edited. The L0 event a connector emits, and the interface it
+implements, are specified in
+[docs/connector-contract.md](docs/connector-contract.md); that document and
+`internal/connector` change together or not at all.
 
 ## Commands
 

@@ -187,6 +187,12 @@ Changing one is a design change: write an ADR that supersedes the old one
 (`docs/adr/README.md` explains how), and do not edit an accepted ADR to say
 something different.
 
+The L0 event shape and the interface a connector implements are specified in
+[docs/connector-contract.md](docs/connector-contract.md), which third parties
+build against. Adding an optional payload field or a core kind is additive and
+only needs that document and `internal/connector` changed together; anything a
+connector outside this repository would have to react to needs the ADR.
+
 ## Pull requests
 
 - Small commits with messages that say why, not what the diff already shows.
