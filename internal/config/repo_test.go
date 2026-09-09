@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/principal"
 )
 
 // A scope covers a container or it does not; there is no "probably", because
@@ -97,7 +98,7 @@ func TestRepoLookups(t *testing.T) {
 	if _, ok := repo.Scope(""); ok {
 		t.Error("Scope() found something")
 	}
-	if p, ok := repo.Principal("kyle"); !ok || p.Kind != config.PrincipalHuman || len(p.Identities) != 1 {
+	if p, ok := repo.Principal("kyle"); !ok || p.Kind != principal.KindHuman || len(p.Identities) != 1 {
 		t.Errorf("Principal(kyle) = %+v, %v", p, ok)
 	}
 	if _, ok := repo.Principal("robin"); ok {

@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/principal"
 )
 
 // Repo is a configuration repository, loaded and validated: the directory laid
@@ -33,8 +34,11 @@ type Repo struct {
 	Sources []connector.SourceConfig
 	// Scopes is the `scopes/` directory: named bundles of sources.
 	Scopes []Scope
-	// Principals is the `principals/` directory: identity mapping.
-	Principals []Principal
+	// Principals is the `principals/` directory: identity mapping. They come
+	// out as [principal.Principal] values because the identity model, the
+	// resolver and the agent classes are internal/principal's, the way sources
+	// come out as the connector runtime's own type.
+	Principals []principal.Principal
 	// Code is the `code/` directory: code entity seeds.
 	Code []CodeEntity
 	// Authority is the `authority/` directory: who and what may ratify a
@@ -63,13 +67,22 @@ func (r Repo) Scope(id string) (Scope, bool) {
 }
 
 // Principal returns the principal configured with this id.
-func (r Repo) Principal(id string) (Principal, bool) {
+func (r Repo) Principal(id string) (principal.Principal, bool) {
 	for _, p := range r.Principals {
 		if p.ID == id {
 			return p, true
 		}
 	}
-	return Principal{}, false
+	return principal.Principal{}, false
+}
+
+// Resolver builds the identity resolver this configuration describes: the
+// mapping from the identity hints connectors emit to principals.
+//
+// It returns an error only for a mapping [Load] would have rejected, so a Repo
+// that loaded cleanly always yields a resolver.
+func (r Repo) Resolver() (*principal.Resolver, error) {
+	return principal.NewResolver(r.Principals)
 }
 
 // CodeEntity returns the code entity configured with this id.
@@ -162,70 +175,6 @@ type SourceRef struct {
 	Source  string
 	Project string
 }
-
-// Principal is one entry of `principals/`: who someone is, across every source
-// they appear in. Without this a stance has no consistent author and authority
-// cannot be checked (docs/design.md#configuration).
-type Principal struct {
-	// ID is the Hearsay principal id: what a stance's author, an owner and an
-	// authority policy all name.
-	ID string
-	// Name is the person's or agent's name, for a human reading config.
-	Name string
-	// Kind separates people from agents, because what they may do differs.
-	Kind PrincipalKind
-	// Class is an agent's access class (docs/design.md#access-control). It is
-	// required on an agent and empty on a human.
-	Class AgentClass
-	// Identities are the source-native identities that are this principal.
-	Identities []Identity
-}
-
-// Identity is one principal in one source.
-type Identity struct {
-	// Source is the source id the identity belongs to.
-	Source string
-	// NativeID is the source's stable id for the identity — a Discord user id,
-	// a GitHub node id, a Google account id. It is what an identity mapping
-	// should be keyed on, because it survives a rename.
-	NativeID string
-	// Handle is the login, @-name or email address the source shows. It is
-	// what a person can type, and it is the fallback key when no native id is
-	// configured: a handle-only identity stops matching the day its owner
-	// renames, which is why NativeID exists.
-	Handle string
-}
-
-// PrincipalKind is what sort of principal an entry is.
-type PrincipalKind string
-
-// The principal kinds.
-const (
-	// PrincipalHuman is a person.
-	PrincipalHuman PrincipalKind = "human"
-	// PrincipalAgent is an agent. Agents are principals too, and an agent's
-	// class decides what it may read and write.
-	PrincipalAgent PrincipalKind = "agent"
-)
-
-// AgentClass is an agent's access class (docs/design.md#access-control).
-type AgentClass string
-
-// The agent classes.
-const (
-	// ClassObserver reads scoped L3 and L1 and writes nothing.
-	ClassObserver AgentClass = "observer"
-	// ClassWorker reads its scope plus linked code entities and may assert.
-	ClassWorker AgentClass = "worker"
-	// ClassOrchestrator reads several scopes, may assert and may subscribe.
-	ClassOrchestrator AgentClass = "orchestrator"
-	// ClassSteward may ratify and merge topics. It exists so the door is
-	// there, closed: ratification is a human action by default.
-	ClassSteward AgentClass = "steward"
-)
-
-// agentClasses is every value [AgentClass] may take.
-var agentClasses = []AgentClass{ClassObserver, ClassWorker, ClassOrchestrator, ClassSteward}
 
 // CodeEntity is one entry of `code/`: the map from how people talk about code
 // to where the code is and who owns it. Hearsay holds no code, so an entity is

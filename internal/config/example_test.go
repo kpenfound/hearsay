@@ -10,6 +10,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/principal"
 )
 
 // docsPath is the schema documentation, which carries the example this package
@@ -119,11 +120,11 @@ func TestDocsExampleIsTheConfigurationItDescribes(t *testing.T) {
 	}
 
 	agent, ok := repo.Principal("shed")
-	if !ok || agent.Kind != config.PrincipalAgent || agent.Class != config.ClassWorker {
+	if !ok || agent.Kind != principal.KindAgent || agent.Class != principal.ClassWorker {
 		t.Errorf("principal shed = %+v, %v, want an agent of class worker", agent, ok)
 	}
 	human, ok := repo.Principal("kyle")
-	if !ok || human.Kind != config.PrincipalHuman {
+	if !ok || human.Kind != principal.KindHuman {
 		t.Errorf("principal kyle = %+v, %v, want a human", human, ok)
 	}
 
@@ -238,7 +239,7 @@ func normalize(r config.Repo) config.Repo {
 	r.Digest = ""
 	slices.SortFunc(r.Sources, func(a, b connector.SourceConfig) int { return strings.Compare(a.ID, b.ID) })
 	slices.SortFunc(r.Scopes, func(a, b config.Scope) int { return strings.Compare(a.ID, b.ID) })
-	slices.SortFunc(r.Principals, func(a, b config.Principal) int { return strings.Compare(a.ID, b.ID) })
+	slices.SortFunc(r.Principals, func(a, b principal.Principal) int { return strings.Compare(a.ID, b.ID) })
 	slices.SortFunc(r.Code, func(a, b config.CodeEntity) int { return strings.Compare(a.ID, b.ID) })
 	return r
 }
