@@ -388,6 +388,17 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 			want: []string{`authority/a.yaml:4: authority policy "api": ratified_by.artifacts: "spec" ratifies on its own`},
 		},
 		{
+			// The other direction of the same contradiction: the `*` ranking is
+			// narrow but consistent with what `*` ratifies, and the scope names
+			// a ratifier that the ranking it inherited leaves out. The scope's
+			// file is the one that made the two halves meet.
+			name: "a ratifier that contradicts an inherited ranking",
+			files: with(map[string]string{"authority/a.yaml": "" +
+				"- scope: \"*\"\n  ranking: [meeting, merged_pr]\n" +
+				"- scope: api\n  ratified_by:\n    artifacts: [spec]\n"}),
+			want: []string{`authority/a.yaml:3: authority policy "api": ratified_by.artifacts: "spec" ratifies on its own`},
+		},
+		{
 			// The contradiction is entirely inside the `*` policy. Every scope
 			// inherits it, and none of them introduced it, so it is one problem
 			// on one line however many scopes there are.
