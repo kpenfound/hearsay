@@ -35,6 +35,8 @@ Every source connector writes L0 only. An event is `{id, source, native_id, kind
 
 Agent activity is a first-class source. An agent's tool calls and proposals enter L0 so that later assertions can trace back to what the agent retrieved and chose.
 
+The exact shape a connector emits — the id format, the `kind` vocabulary, the metadata `payload` must carry, how idempotency, edits and deletions work, and the interface a connector implements — is [the connector contract](connector-contract.md).
+
 ## L1: distilled documents
 
 A common envelope plus a per-kind body. Every L1 doc is one row in one table.
@@ -124,7 +126,7 @@ Tiers:
 - Inferred. The assertion pipeline's best reading. Agents cite it and proceed.
 - Contested. Recent stances disagree. Agents ask before acting.
 
-Source authority is configured per scope (see Configuration). A merged PR outranks a meeting, which outranks a Slack thread, which outranks a DM, unless a scope says otherwise.
+Source authority is configured per scope ([config.md](config.md#authority)). A merged PR outranks a meeting, which outranks a Slack thread, which outranks a DM, unless a scope says otherwise.
 
 ### Anchors
 
@@ -238,7 +240,8 @@ L0 is append-only, but deletion is required (a pasted secret, a departed employe
 
 ## Configuration
 
-A repo, applied like GitOps.
+A repo, applied like GitOps. The schema is [config.md](config.md); what follows
+is what each part is for.
 
 - `sources/` connector configs: channels, repos, Drive folders, refresh cadence.
 - `scopes/` named bundles of sources (Cerebras-style projects) and the tracker mapping for `tracker_item` entities.
@@ -247,6 +250,8 @@ A repo, applied like GitOps.
 - `authority/` which principals and sources can produce ratified stances, per scope.
 
 Adoption dies at the config step if identity mapping and connector onboarding are not near-zero effort. Defaults should cover a GitHub-plus-Slack team with a single file.
+
+Configuration is read once, at startup: a change to it is a deploy, and every process reports the digest of what it read ([ADR-0009](adr/0009-configuration-as-a-gitops-directory.md)).
 
 ## Architecture and deployment
 
@@ -287,6 +292,4 @@ Agent memory layers (Mem0, Zep/Graphiti, Letta, Cognee, Neo4j Agent Memory) pers
 
 ## Open questions
 
-- Entity hierarchy rules. How `part_of` edges are built (repo structure, tracker hierarchy, manual) and who may restructure them.
-- Authority config schema. What a per-scope authority declaration looks like and how it composes with identity mapping.
-- Connector contract. The exact L0 event shape and metadata a plugin must emit, since this is the adoption boundary for other teams.
+- Entity hierarchy rules. `code/` seeds `part_of` edges by hand and the loader refuses a cycle in them ([config.md](config.md#code)); how they are built from repo structure and tracker hierarchy, and who may restructure them afterwards, is still open.

@@ -10,7 +10,10 @@ provenance, and serves scoped context bundles to coding agents. Read
 [docs/design.md](docs/design.md) before changing anything structural — it is the
 source of truth for the product, and every work item points at a section of it.
 The implementation decisions are in [docs/adr/](docs/adr/), and an accepted ADR
-is superseded, never edited.
+is superseded, never edited. The L0 event a connector emits, and the interface it
+implements, are specified in
+[docs/connector-contract.md](docs/connector-contract.md); that document and
+`internal/connector` change together or not at all.
 
 ## Commands
 
@@ -40,10 +43,11 @@ golangci-lint fmt         # format (gofmt + goimports); --diff to only check
 go run ./cmd/hearsay help # the subcommands
 ```
 
-That block runs offline with no services: the module has no dependencies yet,
-and no test touches a database or a model provider. The one exception is the
-toolchain itself — on a machine whose Go is older than the release `go.mod` asks
-for, the first build downloads it.
+That block runs offline with no services: no test touches a database or a model
+provider. Two things need the network once — the Go toolchain, on a machine
+whose Go is older than the release `go.mod` asks for, and the one dependency
+(`go.yaml.in/yaml/v3`, the configuration parser, ADR-0009) until it is in the
+module cache.
 
 Running a service locally:
 
@@ -51,10 +55,15 @@ Running a service locally:
 go run ./cmd/hearsay api          # one service
 go run ./cmd/hearsay all          # all four in one process, dev only
 go run ./cmd/hearsay api --log-level debug --log-format text
+go run ./cmd/hearsay api --config ./config   # the configuration repository
+go run ./cmd/hearsay config validate ./config
 ```
 
 The four services are stubs. Each starts, logs, and exits cleanly on Ctrl-C;
-none of them does any work yet.
+none of them does any work yet. Each reads the configuration repository first
+when `--config` (or `HEARSAY_CONFIG`) names one, and refuses to start if it is
+invalid; configuration is read once, at startup, and a change to it is a
+restart (ADR-0009). The format is [docs/config.md](docs/config.md).
 
 Migrations are `go run ./cmd/hearsay migrate up|status|up-to <n>|down`, or
 `dagger api call hearsay migrate --database-url=...` against a database. The command

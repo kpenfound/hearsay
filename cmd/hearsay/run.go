@@ -48,6 +48,7 @@ func commands() []command {
 			return api.Run(ctx, cfg, api.Deps{})
 		})},
 		{"all", "", "Run all four services in one process. Local development only.", runAll},
+		{"config", "validate [path]", "Check a configuration repository and say what is wrong with it.", runConfig},
 		{"migrate", "up|status|up-to <n>|down", "Apply schema migrations and exit.", runMigrate},
 		{"version", "", "Print version, commit and build date.", runVersion},
 		{"help", "", "Print this message.", runHelp},
@@ -97,8 +98,10 @@ func usage(w io.Writer) {
 
 // newFlagSet builds a flag set for a subcommand, with the flags every
 // subcommand shares already registered on it. The returned config carries the
-// defaults, overridden by the environment; parsing args overrides both.
-func newFlagSet(name string, w io.Writer) (*flag.FlagSet, *config.Config) {
+// defaults, overridden by the environment; parsing args overrides both. The
+// third result is where `--config` put the path of the configuration
+// repository, which is empty when the process was given none.
+func newFlagSet(name string, w io.Writer) (*flag.FlagSet, *config.Config, *string) {
 	fs := flag.NewFlagSet("hearsay "+name, flag.ContinueOnError)
 	fs.SetOutput(w)
 
@@ -107,7 +110,38 @@ func newFlagSet(name string, w io.Writer) (*flag.FlagSet, *config.Config) {
 	cfg.Log.Format = envOr("HEARSAY_LOG_FORMAT", cfg.Log.Format)
 	fs.StringVar(&cfg.Log.Level, "log-level", cfg.Log.Level, "log level: debug, info, warn or error")
 	fs.StringVar(&cfg.Log.Format, "log-format", cfg.Log.Format, "log format: json, text or auto")
-	return fs, &cfg
+	configPath := fs.String("config", envOr("HEARSAY_CONFIG", ""), "the configuration repository: a directory, or a single YAML file")
+	return fs, &cfg, configPath
+}
+
+// loadConfig loads the configuration repository into cfg and logs what it
+// found, or says that there is none.
+//
+// A process started without a configuration runs empty — it ingests nothing and
+// serves no bundles — which is what evaluating the binary looks like and is why
+// this warns rather than refuses. An invalid configuration is a startup failure
+// (ADR-0009): configuration is read once, so a mistake in it must stop the
+// process rather than surface on the first request.
+func loadConfig(ctx context.Context, cfg *config.Config, path string) error {
+	log := telemetry.Logger(ctx)
+	if path == "" {
+		log.WarnContext(ctx, "no configuration: nothing is ingested and no bundle can be served, pass --config")
+		return nil
+	}
+	repo, err := config.Load(path)
+	if err != nil {
+		return err
+	}
+	cfg.Repo = repo
+	log.InfoContext(ctx, "configuration loaded",
+		"config_path", repo.Path,
+		"config_digest", repo.Digest,
+		"sources", len(repo.Sources),
+		"scopes", len(repo.Scopes),
+		"principals", len(repo.Principals),
+		"code_entities", len(repo.Code),
+	)
+	return nil
 }
 
 func envOr(key, fallback string) string {
@@ -125,7 +159,7 @@ func envOr(key, fallback string) string {
 // [service.RunAll]. Setting it here as well would put the field on every line
 // twice.
 func withLogger(ctx context.Context, serviceName string, cfg *config.Config, stderr io.Writer) (context.Context, error) {
-	log, err := telemetry.NewLogger(cfg.Log, stderr)
+	log, err := telemetry.NewLogger(cfg.Log.Level, cfg.Log.Format, stderr)
 	if err != nil {
 		return ctx, err
 	}
@@ -154,7 +188,7 @@ func instanceName() string {
 // service: parse the common flags, build the logger, hand over to start.
 func runService(name string, start func(ctx context.Context, cfg *config.Config) error) func(context.Context, []string, io.Writer, io.Writer) error {
 	return func(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-		fs, cfg := newFlagSet(name, stderr)
+		fs, cfg, configPath := newFlagSet(name, stderr)
 		if err := fs.Parse(args); err != nil {
 			return err
 		}
@@ -165,12 +199,15 @@ func runService(name string, start func(ctx context.Context, cfg *config.Config)
 		if err != nil {
 			return err
 		}
+		if err := loadConfig(ctx, cfg, *configPath); err != nil {
+			return err
+		}
 		return start(ctx, cfg)
 	}
 }
 
 func runConnectors(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	fs, cfg := newFlagSet(connectors.Name, stderr)
+	fs, cfg, configPath := newFlagSet(connectors.Name, stderr)
 	var sources sourceList
 	fs.Var(&sources, "source", "run only this configured connector; repeat the flag for several. The default is all of them.")
 	if err := fs.Parse(args); err != nil {
@@ -183,6 +220,9 @@ func runConnectors(ctx context.Context, args []string, stdout, stderr io.Writer)
 	if err != nil {
 		return err
 	}
+	if err := loadConfig(ctx, cfg, *configPath); err != nil {
+		return err
+	}
 	return connectors.Run(ctx, cfg, connectors.Deps{Sources: sources})
 }
 
@@ -190,7 +230,7 @@ func runConnectors(ctx context.Context, args []string, stdout, stderr io.Writer)
 // Hearsay does not need four terminals; it is never a deployment target
 // (ADR-0003).
 func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	fs, cfg := newFlagSet("all", stderr)
+	fs, cfg, configPath := newFlagSet("all", stderr)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -200,6 +240,13 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	// No service name on the process logger: RunAll names each of the four.
 	ctx, err := withLogger(ctx, "", cfg, stderr)
 	if err != nil {
+		return err
+	}
+	// The process logger has no service field here, because RunAll gives each
+	// of the four its own. Loading the configuration is the command's own work
+	// and happens before any of them start, so that one line says `all` rather
+	// than going out without the field every other line carries.
+	if err := loadConfig(telemetry.With(ctx, "service", "all"), cfg, *configPath); err != nil {
 		return err
 	}
 
@@ -219,11 +266,100 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	})
 }
 
+// runConfig is the configuration subcommand. `validate` is the whole of it: it
+// loads a configuration repository the way a service would and reports
+// everything wrong with it, so that a bad change is caught by CI on the
+// configuration repository rather than by a deployment (ADR-0009).
+func runConfig(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	// Flags come before the action or after it — `hearsay config --help` and
+	// `hearsay config validate --config x` are both things people type — and
+	// flag stops at the first argument that is not a flag. So: parse, take the
+	// action, parse what was behind it.
+	fs, _, configPath := newFlagSet("config", stderr)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		return errors.New("no action given: want validate")
+	}
+	action := fs.Arg(0)
+	if err := fs.Parse(fs.Args()[1:]); err != nil {
+		return err
+	}
+	if action != "validate" {
+		return fmt.Errorf("unknown action %q: want validate", action)
+	}
+	if fs.NArg() > 1 {
+		return fmt.Errorf("unexpected argument %q", fs.Arg(1))
+	}
+
+	// The path is the argument, the --config flag, or the working directory,
+	// which is what running this in a checkout of the configuration repository
+	// should mean.
+	path := *configPath
+	if fs.NArg() == 1 {
+		path = fs.Arg(0)
+	}
+	if path == "" {
+		path = "."
+	}
+
+	repo, err := config.Load(path)
+	if err != nil {
+		return err
+	}
+	printSummary(stdout, repo)
+	return nil
+}
+
+// printSummary is what `hearsay config validate` prints when there is nothing
+// wrong: enough for a person to see that the configuration is the one they
+// meant, and the digest a running process reports so the two can be compared.
+func printSummary(w io.Writer, repo config.Repo) {
+	fmt.Fprintf(w, "%s is valid\n", repo.Path)
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintf(tw, "  sources\t%d\t%s\n", len(repo.Sources), summarize(sourceIDs(repo)))
+	fmt.Fprintf(tw, "  scopes\t%d\t%s\n", len(repo.Scopes), summarize(scopeIDs(repo)))
+	fmt.Fprintf(tw, "  principals\t%d\n", len(repo.Principals))
+	fmt.Fprintf(tw, "  code entities\t%d\n", len(repo.Code))
+	fmt.Fprintf(tw, "  authority\t%d\t%s\n", len(repo.Authority.Scopes()), summarize(repo.Authority.Scopes()))
+	fmt.Fprintf(tw, "  digest\t\t%s\n", repo.Digest)
+	_ = tw.Flush()
+}
+
+func sourceIDs(repo config.Repo) []string {
+	ids := make([]string, 0, len(repo.Sources))
+	for _, s := range repo.Sources {
+		ids = append(ids, s.ID)
+	}
+	return ids
+}
+
+func scopeIDs(repo config.Repo) []string {
+	ids := make([]string, 0, len(repo.Scopes))
+	for _, s := range repo.Scopes {
+		ids = append(ids, s.ID)
+	}
+	return ids
+}
+
+// summarize lists ids for the summary, keeping a long list to one line.
+func summarize(ids []string) string {
+	const max = 6
+	if len(ids) == 0 {
+		return ""
+	}
+	if len(ids) > max {
+		return strings.Join(ids[:max], ", ") + ", ..."
+	}
+	return strings.Join(ids, ", ")
+}
+
 // runMigrate will apply the embedded goose migrations (ADR-0006). The
 // migrations and the database connection land with the L0 store; until then it
 // refuses rather than pretending the schema is current.
 func runMigrate(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	fs, _ := newFlagSet("migrate", stderr)
+	fs, _, _ := newFlagSet("migrate", stderr)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

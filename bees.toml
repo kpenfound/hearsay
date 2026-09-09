@@ -339,6 +339,10 @@ enabled = true
 # developer that cannot run `dagger check` cannot check its own work.
 sandbox = "none"
 #shell = "/bin/bash"
+# Dagger is how this repository builds, lints and tests, and it needs the Docker
+# socket and the Dagger registry — both of which the "claude" sandbox denies. A
+# developer that cannot run `dagger check` cannot check its own work.
+sandbox = "none"
 [roles.developer.env]
 # The Dagger release this workspace is on. A CLI from a package manager is
 # older, and reads the workspace without being able to run it; see

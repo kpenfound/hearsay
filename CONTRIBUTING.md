@@ -132,11 +132,11 @@ golangci-lint fmt --diff   # fails if anything is unformatted
 golangci-lint fmt          # fixes it
 ```
 
-The module has no third-party dependencies today, so all of that works on a
-fresh clone with no network and no services running — once you have the Go
-release `go.mod` asks for. With an older one and the default `GOTOOLCHAIN=auto`,
-the first build downloads that toolchain, and only that first build needs the
-network.
+The module has one third-party dependency, `go.yaml.in/yaml/v3`, which parses
+the configuration format (ADR-0009). Once it and the Go release `go.mod` asks
+for are in the module cache, all of that works with no network and no services
+running. With an older Go and the default `GOTOOLCHAIN=auto`, the first build
+downloads that toolchain too.
 
 That is a fallback, not a second gate: the pull request is judged by
 `dagger check`, which Dagger Cloud runs on every commit whether or not you could
@@ -147,6 +147,7 @@ run it yourself.
 ```sh
 go run ./cmd/hearsay help              # every subcommand and what it does
 go run ./cmd/hearsay version
+go run ./cmd/hearsay config validate ./config
 go run ./cmd/hearsay api               # one service
 go run ./cmd/hearsay all               # all four in one process, dev only
 go run ./cmd/hearsay connectors --source github
@@ -165,6 +166,25 @@ The four services are stubs: they start, log that they are stubs, and return
 when the process is interrupted. That shutdown behaviour is not a placeholder —
 `hearsay all` composes all four, so a service that ignores cancellation hangs
 local development, and there is a test that keeps it honest.
+
+## Configuration
+
+```sh
+go run ./cmd/hearsay config validate ./config   # every problem, with file and line
+go run ./cmd/hearsay api --config ./config      # what a service reads at startup
+```
+
+Configuration is a directory of YAML applied like GitOps, or a single file that
+expands to it. [docs/config.md](docs/config.md) is the schema and
+[ADR-0009](docs/adr/0009-configuration-as-a-gitops-directory.md) is why it looks
+like that. Two things to know before changing the loader: it is read once, at
+startup, so a change to configuration is a restart; and it reports every problem
+rather than the first, because fixing configuration one error at a time is what
+makes it miserable.
+
+The complete example in docs/config.md is loaded by the tests in
+`internal/config`, both as one file and as a directory, and the two have to come
+out the same. An example that stops working stops the build, which is the point.
 
 ## Migrations
 
@@ -285,6 +305,12 @@ signature and the L0 event shape are contracts that other work depends on.
 Changing one is a design change: write an ADR that supersedes the old one
 (`docs/adr/README.md` explains how), and do not edit an accepted ADR to say
 something different.
+
+The L0 event shape and the interface a connector implements are specified in
+[docs/connector-contract.md](docs/connector-contract.md), which third parties
+build against. Adding an optional payload field or a core kind is additive and
+only needs that document and `internal/connector` changed together; anything a
+connector outside this repository would have to react to needs the ADR.
 
 ## Pull requests
 

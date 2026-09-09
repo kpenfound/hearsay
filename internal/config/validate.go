@@ -1,0 +1,816 @@
+package config
+
+import (
+	"encoding/json"
+	"fmt"
+	"maps"
+	"slices"
+	"strings"
+	"time"
+	"unicode"
+
+	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/principal"
+)
+
+// maxEntityIDLen bounds an entity id. Entity ids travel in bundles and in L2
+// rows the way event ids travel in L0, so they get a stated bound rather than
+// whatever someone pastes.
+const maxEntityIDLen = 512
+
+// build turns the decoded documents into a [Repo] and records a problem for
+// everything wrong with them. It never stops early: a configuration with four
+// mistakes should take one round trip to fix, not four.
+//
+// The order is the dependency order. Sources are validated first because
+// everything else references them, then principals, then the code entities that
+// name principals as owners, then the scopes that name both, and last the
+// authority policies, which reference all of it. An object that failed
+// validation is still put in the Repo, so that a reference to it by id still
+// resolves and one mistake is reported once. The exception is an object whose
+// id is what is wrong ([loader.claimID]): there is then genuinely nothing of
+// that name, and everything that named it says so.
+func (l *loader) build() Repo {
+	// Anything recorded before this point is a file that did not parse or a
+	// key that is not a field. What such a file was meant to say is unknown, so
+	// every reference into it would be reported as missing and the whole
+	// configuration would look empty. Report what could not be read, and check
+	// the rest once it can be.
+	if l.probs.any() {
+		return Repo{}
+	}
+
+	var r Repo
+	r.Sources = l.buildSources()
+	r.Principals = l.buildPrincipals(r)
+	r.Code = l.buildCode(r)
+	r.Scopes = l.buildScopes(r)
+	r.Authority = l.buildAuthority(r)
+
+	// These two count what was written rather than what survived validation. A
+	// source whose id is malformed is not in r.Sources, and telling its author
+	// that nothing is configured on top of telling them the id is wrong would
+	// be a second problem about the first one.
+	if len(l.sources) == 0 {
+		l.probs.add("", 0, "", "no sources are configured: Hearsay would ingest nothing")
+	}
+	if len(l.scopes) == 0 {
+		l.probs.add("", 0, "", "no scopes are configured: Hearsay would serve no bundles")
+	}
+	return r
+}
+
+// at locates one object of the configuration, for error messages.
+type at struct {
+	file  string
+	line  int
+	noun  string
+	label string
+}
+
+// locate names an object by its id, falling back to its position in the file
+// for an object whose id is the thing that is wrong.
+func locate[T any](d doc[T], noun, id string, i int) at {
+	label := fmt.Sprintf("%s %d", noun, i+1)
+	if id != "" {
+		label = fmt.Sprintf("%s %q", noun, id)
+	}
+	return at{file: d.file, line: d.line, noun: noun, label: label}
+}
+
+// claimID checks one object's id and reports whether the object may go into the
+// [Repo]. wrong is what is wrong with the id itself, and is empty when the id is
+// well formed; each caller phrases its own, because an id is described in the
+// vocabulary of the thing it names. The duplicate check is here because it is
+// the same one for all of them.
+//
+// An object whose id is missing or malformed is kept out of the Repo. There is
+// nothing of that name, so a reference that repeats the id is a problem in its
+// own right and has to be reported in this pass rather than in the one after the
+// id is fixed — a configuration with four mistakes takes one round trip. A
+// duplicate id is the other way round: there is something of that name, so the
+// object is kept and only the collision is reported.
+func (l *loader) claimID(a at, id, wrong string, defined map[string]string) bool {
+	switch {
+	case wrong != "":
+		l.bad(a, "id", "%s", wrong)
+		return false
+	case defined[id] != "":
+		l.bad(a, "id", "a %s with id %q is already configured at %s", a.noun, id, defined[id])
+	default:
+		defined[id] = position(a.file, a.line)
+	}
+	return true
+}
+
+// bad records a problem with one field of one object. An empty field means the
+// object as a whole.
+func (l *loader) bad(a at, field, format string, args ...any) {
+	where := a.label
+	if field != "" {
+		where += ": " + field
+	}
+	l.probs.add(a.file, a.line, where, format, args...)
+}
+
+// names checks a list of names: no blanks, no duplicates, and [AnyValue] only
+// where it is allowed and only on its own, because `[*, x]` reads as though x
+// were narrowing something it is not. check reports what is wrong with one
+// name, or empty if it is fine; it is not called for [AnyValue].
+func (l *loader) names(a at, field string, items []string, allowAny bool, check func(string) string) {
+	seen := make(map[string]bool, len(items))
+	for i, name := range items {
+		f := fmt.Sprintf("%s[%d]", field, i)
+		switch {
+		case name == "":
+			l.bad(a, f, "is empty")
+		case seen[name]:
+			l.bad(a, f, "%q is listed twice", name)
+		case name == AnyValue && !allowAny:
+			l.bad(a, f, "%q is not allowed here: list them explicitly", AnyValue)
+		case name == AnyValue && len(items) > 1:
+			l.bad(a, f, "%q covers everything, so it must be the only entry", AnyValue)
+		case name != AnyValue && check != nil:
+			if msg := check(name); msg != "" {
+				l.bad(a, f, "%s", msg)
+			}
+		}
+		seen[name] = true
+	}
+}
+
+// buildSources validates `sources/` and returns what a connector consumes.
+func (l *loader) buildSources() []connector.SourceConfig {
+	out := make([]connector.SourceConfig, 0, len(l.sources))
+	defined := make(map[string]string, len(l.sources))
+
+	for i, d := range l.sources {
+		src := d.v
+		a := locate(d, "source", src.ID, i)
+
+		var wrong string
+		switch {
+		case src.ID == "":
+			wrong = "is required: it is the id every event from this source carries"
+		case !connector.ValidSourceID(src.ID):
+			wrong = fmt.Sprintf("%q is not a source id: 1 to %d bytes of lowercase letters, digits, - and _, starting with a letter or a digit", src.ID, connector.MaxSourceIDLen)
+		}
+		keep := l.claimID(a, src.ID, wrong, defined)
+
+		switch {
+		case src.Type == "":
+			l.bad(a, "type", "is required: it selects the connector, such as github, discord or drive")
+		case !isName(src.Type):
+			l.bad(a, "type", "%q is not a connector type: lowercase letters, digits, - and _", src.Type)
+		}
+
+		if len(src.Containers) == 0 {
+			l.bad(a, "containers", "is required: ingest is default deny, so a source with no containers ingests nothing. List the repositories, channels or folders, or %q for all of them", connector.AllowAll)
+		}
+		l.names(a, "containers", src.Containers, true, nil)
+
+		cfg := connector.SourceConfig{
+			ID:         src.ID,
+			Type:       src.Type,
+			Containers: slices.Clone(src.Containers),
+			Secrets:    maps.Clone(src.Secrets),
+		}
+
+		if src.Refresh != "" {
+			refresh, err := time.ParseDuration(src.Refresh)
+			switch {
+			case err != nil:
+				l.bad(a, "refresh", "%q is not a duration: want something like 30s, 5m or 1h", src.Refresh)
+			case refresh < 0:
+				l.bad(a, "refresh", "%s is negative", src.Refresh)
+			default:
+				cfg.Refresh = refresh
+			}
+		}
+
+		if len(src.Settings) > 0 {
+			settings, err := json.Marshal(src.Settings)
+			if err != nil {
+				l.bad(a, "settings", "cannot be read as JSON, which is how a connector receives it: %v", err)
+			} else {
+				cfg.Settings = settings
+			}
+		}
+
+		for _, name := range slices.Sorted(maps.Keys(src.Secrets)) {
+			if !isEnvVarName(src.Secrets[name]) {
+				l.bad(a, "secrets."+name, "%q is not the name of an environment variable: config names a secret and the runtime supplies its value, so this never holds the value itself", src.Secrets[name])
+			}
+		}
+
+		if keep {
+			out = append(out, cfg)
+		}
+	}
+	return out
+}
+
+// buildPrincipals validates `principals/`.
+func (l *loader) buildPrincipals(r Repo) []principal.Principal {
+	out := make([]principal.Principal, 0, len(l.principals))
+	defined := make(map[string]string, len(l.principals))
+	// identities maps a source-native identity to the principal that claimed
+	// it, so that two principals cannot both be the same person in one source.
+	identities := make(map[string]string)
+	// teams are checked once every principal is known, because a member is a
+	// reference to one and the ids are not all read yet.
+	type team struct {
+		a at
+		p principalDoc
+	}
+	var teams []team
+
+	for i, d := range l.principals {
+		p := d.v
+		a := locate(d, "principal", p.ID, i)
+
+		var wrong string
+		switch {
+		case p.ID == "":
+			wrong = "is required: it is what a stance's author, an owner and an authority policy all name"
+		case !principal.ValidID(p.ID):
+			wrong = fmt.Sprintf("%q is not a principal id: lowercase letters, digits, - and _, starting with a letter or a digit", p.ID)
+		}
+		keep := l.claimID(a, p.ID, wrong, defined)
+
+		// Most principals are people, so kind defaults to human; an agent or a
+		// team says so, because what each may do differs.
+		kind := principal.Kind(p.Kind)
+		if p.Kind == "" {
+			kind = principal.KindHuman
+		}
+		class := principal.Class(p.Class)
+		// What a principal of no known kind was meant to be is unknown, so the
+		// rules that depend on the kind are not run at all. A class, an
+		// identity and a membership are each required or forbidden according
+		// to the kind, so every one of them would report the same mistake
+		// again in its own words.
+		if !kind.Valid() {
+			l.bad(a, "kind", "%q is not a principal kind: want one of %s", p.Kind, join(principal.Kinds()))
+		} else {
+			switch {
+			case kind == principal.KindAgent && p.Class == "":
+				l.bad(a, "class", "is required on an agent: it decides what the agent may read and write. Want one of %s", join(principal.Classes()))
+			case kind != principal.KindAgent && p.Class != "":
+				l.bad(a, "class", "is an agent's access class, and this principal is a %s", kind)
+			case p.Class != "" && !class.Valid():
+				l.bad(a, "class", "%q is not an agent class: want one of %s", p.Class, join(principal.Classes()))
+			}
+
+			if kind == principal.KindTeam {
+				if len(p.Identities) == 0 && len(p.Members) == 0 {
+					l.bad(a, "members", "is required on a team with no identities: a team that neither lists its people nor names a group in a source stands for nobody")
+				}
+				teams = append(teams, team{a, p})
+			} else {
+				if len(p.Identities) == 0 {
+					l.bad(a, "identities", "is required: a principal with no source identity is never matched to anything anyone said")
+				}
+				if len(p.Members) > 0 {
+					l.bad(a, "members", "is a team's membership, and this principal is a %s", kind)
+				}
+			}
+		}
+
+		// The identities are checked either way: an identity two principals
+		// both claim is a mistake in the other one too.
+		built := principal.Principal{
+			ID:         p.ID,
+			Name:       p.Name,
+			Kind:       kind,
+			Class:      class,
+			Identities: l.buildIdentities(r, a, p, identities),
+			Members:    slices.Clone(p.Members),
+		}
+		if keep {
+			out = append(out, built)
+		}
+	}
+
+	kept := make(map[string]principal.Principal, len(out))
+	for _, p := range out {
+		kept[p.ID] = p
+	}
+	for _, t := range teams {
+		l.names(t.a, "members", t.p.Members, false, func(id string) string {
+			member, ok := kept[id]
+			switch {
+			case id == t.p.ID:
+				return "a team cannot be a member of itself"
+			case !ok:
+				return fmt.Sprintf("no principal is configured with id %q", id)
+			case member.Kind == principal.KindTeam:
+				return fmt.Sprintf("%q is a team, and a team may not contain a team: list its people and agents", id)
+			}
+			return ""
+		})
+	}
+	return out
+}
+
+// buildIdentities validates one principal's identities and records them so that
+// a second principal claiming the same one is caught.
+func (l *loader) buildIdentities(r Repo, a at, p principalDoc, identities map[string]string) []principal.Identity {
+	out := make([]principal.Identity, 0, len(p.Identities))
+	for j, id := range p.Identities {
+		field := fmt.Sprintf("identities[%d]", j)
+		if _, ok := r.Source(id.Source); id.Source == "" {
+			l.bad(a, field+".source", "is required")
+		} else if !ok {
+			l.bad(a, field+".source", "no source is configured with id %q", id.Source)
+		}
+		if id.NativeID == "" && principal.FoldHandle(id.Handle) == "" {
+			l.bad(a, field, "needs a native_id or a handle: a native id survives a rename, a handle is what a person can type")
+		}
+		// A handle is claimed folded, because that is how the resolver matches
+		// it: two principals writing one login in different cases is caught
+		// here rather than becoming an ambiguous author at ingest.
+		for _, c := range []struct{ key, written, matched, note string }{
+			{"native_id", id.NativeID, id.NativeID, ""},
+			{"handle", id.Handle, principal.FoldHandle(id.Handle), ", and handles are matched ignoring case"},
+		} {
+			if c.matched == "" {
+				continue
+			}
+			claim := id.Source + " " + c.key + " " + c.matched
+			if owner, taken := identities[claim]; taken && owner != p.ID {
+				l.bad(a, field+"."+c.key, "%q in source %q is already principal %q: one identity is one person%s",
+					c.written, id.Source, owner, c.note)
+				continue
+			}
+			identities[claim] = p.ID
+		}
+		// The schema type and the identity model carry the same three fields,
+		// so the compiler checks this conversion: adding a field to one without
+		// the other fails the build rather than dropping it silently.
+		out = append(out, principal.Identity(id))
+	}
+	return out
+}
+
+// buildCode validates `code/`.
+func (l *loader) buildCode(r Repo) []CodeEntity {
+	out := make([]CodeEntity, 0, len(l.code))
+	all := make([]CodeEntity, 0, len(l.code))
+	defined := make(map[string]string, len(l.code))
+	aliases := make(map[string]string)
+	located := make(map[string]at, len(l.code))
+
+	for i, d := range l.code {
+		e := d.v
+		a := locate(d, "code entity", e.ID, i)
+
+		var wrong string
+		switch {
+		case e.ID == "":
+			wrong = "is required: it is what documents and stances reference"
+		case !strings.HasPrefix(e.ID, "code:") || len(e.ID) == len("code:"):
+			wrong = fmt.Sprintf("%q is not a code entity id: they start with `code:`, as in code:acme/api:engine/server", e.ID)
+		case len(e.ID) > maxEntityIDLen:
+			wrong = fmt.Sprintf("is %d bytes, and an entity id is at most %d", len(e.ID), maxEntityIDLen)
+		case strings.ContainsFunc(e.ID, unicode.IsSpace):
+			wrong = fmt.Sprintf("%q contains whitespace", e.ID)
+		}
+		keep := l.claimID(a, e.ID, wrong, defined)
+		located[e.ID] = a
+
+		entityType := CodeEntityType(e.Type)
+		switch {
+		case e.Type == "":
+			l.bad(a, "type", "is required: want one of %s", join(codeEntityTypes))
+		case !slices.Contains(codeEntityTypes, entityType):
+			l.bad(a, "type", "%q is not a code entity type: want one of %s", e.Type, join(codeEntityTypes))
+		}
+
+		l.names(a, "owners", e.Owners, false, func(id string) string {
+			if _, ok := r.Principal(id); !ok {
+				return fmt.Sprintf("no principal is configured with id %q", id)
+			}
+			return ""
+		})
+		l.names(a, "path_patterns", e.PathPatterns, false, nil)
+		l.names(a, "part_of", e.PartOf, false, func(id string) string {
+			if id == e.ID {
+				return "an entity cannot be part of itself"
+			}
+			return ""
+		})
+
+		for j, alias := range e.Aliases {
+			field := fmt.Sprintf("aliases[%d]", j)
+			folded := foldAlias(alias)
+			switch {
+			case folded == "":
+				l.bad(a, field, "is empty")
+			case aliases[folded] == e.ID:
+				l.bad(a, field, "%q is listed twice; aliases are matched ignoring case and surrounding space", alias)
+			case aliases[folded] != "":
+				l.bad(a, field, "%q is already an alias of %q: an alias that means two things resolves to neither", alias, aliases[folded])
+			default:
+				aliases[folded] = e.ID
+			}
+		}
+
+		entity := CodeEntity{
+			ID:           e.ID,
+			Type:         entityType,
+			Name:         e.Name,
+			Aliases:      slices.Clone(e.Aliases),
+			PathPatterns: slices.Clone(e.PathPatterns),
+			PartOf:       slices.Clone(e.PartOf),
+			Owners:       slices.Clone(e.Owners),
+			CodeOwners:   e.CodeOwners,
+		}
+		if e.Repo != nil {
+			entity.Repo = SourceRef{Source: e.Repo.Source, Project: e.Repo.Project}
+			l.checkSourceRef(r, a, "repo", entity.Repo)
+		}
+		if len(e.PathPatterns) > 0 && e.Repo == nil {
+			l.bad(a, "path_patterns", "need a repo to resolve against")
+		}
+		switch {
+		case e.CodeOwners != "" && e.Repo == nil:
+			l.bad(a, "codeowners", "needs a repo: it is a path within one")
+		case e.CodeOwners != "" && !isRepoRelativePath(e.CodeOwners):
+			l.bad(a, "codeowners", "%q is not a path inside the repository", e.CodeOwners)
+		}
+		all = append(all, entity)
+		if keep {
+			out = append(out, entity)
+		}
+	}
+
+	l.checkPartOf(all, out, located)
+	return out
+}
+
+// checkPartOf checks the entity hierarchy: every parent is configured, and the
+// edges do not form a cycle. A cycle would make "the stances an entity inherits
+// from its ancestors" a walk with no end (docs/design.md#l3-derived-views).
+//
+// kept is the entities that went into the Repo, and is what a parent may resolve
+// to. all is every entity that was written, because an entity held out for a
+// malformed id still has edges of its own, and they are still worth checking.
+func (l *loader) checkPartOf(all, kept []CodeEntity, located map[string]at) {
+	byID := make(map[string]CodeEntity, len(kept))
+	for _, e := range kept {
+		byID[e.ID] = e
+	}
+
+	// Depth-first, colouring: 1 is on the current path, 2 is finished and known
+	// to reach no cycle.
+	const (
+		open = 1
+		done = 2
+	)
+	colour := make(map[string]int, len(kept))
+	var walk func(e CodeEntity, path []string)
+	walk = func(e CodeEntity, path []string) {
+		colour[e.ID] = open
+		for i, parent := range e.PartOf {
+			field := fmt.Sprintf("part_of[%d]", i)
+			if parent == "" || parent == e.ID {
+				// Both are already reported where the list is checked, and an
+				// entity that is its own parent is a cycle of one, which would
+				// otherwise be said twice.
+				continue
+			}
+			up, ok := byID[parent]
+			if !ok {
+				l.bad(located[e.ID], field, "no code entity is configured with id %q", parent)
+				continue
+			}
+			switch colour[parent] {
+			case open:
+				cycle := append(slices.Clone(path), e.ID, parent)
+				l.bad(located[e.ID], field, "part_of is a cycle: %s", strings.Join(cycle, " -> "))
+			case done:
+			default:
+				walk(up, append(slices.Clone(path), e.ID))
+			}
+		}
+		colour[e.ID] = done
+	}
+	for _, e := range kept {
+		if colour[e.ID] == 0 {
+			walk(e, nil)
+		}
+	}
+	// The held-out entities last, and unconditionally: nothing can reach one as
+	// a parent, so each is only ever a root, and two of them can share the id
+	// that is what was wrong with them.
+	for _, e := range all {
+		if _, ok := byID[e.ID]; !ok {
+			walk(e, nil)
+		}
+	}
+}
+
+// buildScopes validates `scopes/`.
+func (l *loader) buildScopes(r Repo) []Scope {
+	out := make([]Scope, 0, len(l.scopes))
+	defined := make(map[string]string, len(l.scopes))
+
+	for i, d := range l.scopes {
+		s := d.v
+		a := locate(d, "scope", s.ID, i)
+
+		var wrong string
+		switch {
+		case s.ID == "":
+			wrong = "is required: it is what a bundle request asks for"
+		case !isName(s.ID):
+			wrong = fmt.Sprintf("%q is not a scope id: lowercase letters, digits, - and _, starting with a letter or a digit", s.ID)
+		}
+		// The only thing that names a scope by id is an authority policy, and a
+		// policy's scope is checked for shape before it is looked up, so no
+		// reference reaches this decision today. It is made the same way as the
+		// other three because the rule is the Repo's — it never holds an object
+		// whose id is not an id — and not this loop's.
+		keep := l.claimID(a, s.ID, wrong, defined)
+
+		scope := Scope{ID: s.ID, Name: s.Name, Entities: slices.Clone(s.Entities)}
+		if len(s.Sources) == 0 {
+			l.bad(a, "sources", "is required: a scope is a named bundle of sources")
+		}
+		listed := make(map[string]bool, len(s.Sources))
+		for j, ss := range s.Sources {
+			field := fmt.Sprintf("sources[%d]", j)
+			src, known := r.Source(ss.Source)
+			switch {
+			case ss.Source == "":
+				l.bad(a, field+".source", "is required")
+			case listed[ss.Source]:
+				l.bad(a, field+".source", "source %q is listed twice: put its containers in one entry", ss.Source)
+			case !known:
+				l.bad(a, field+".source", "no source is configured with id %q", ss.Source)
+			}
+			listed[ss.Source] = true
+			containers := ss.Containers
+			if len(containers) == 0 {
+				// Naming no container takes whatever the source ingests, which
+				// is what writing the source id on its own means.
+				containers = []string{connector.AllowAll}
+			}
+			l.names(a, field+".containers", containers, true, func(c string) string {
+				if !known || slices.Contains(src.Containers, connector.AllowAll) || slices.Contains(src.Containers, c) {
+					return ""
+				}
+				return fmt.Sprintf("source %q does not ingest %q, so the scope would never see it", ss.Source, c)
+			})
+			scope.Sources = append(scope.Sources, ScopeSource{Source: ss.Source, Containers: containers})
+		}
+
+		l.names(a, "entities", s.Entities, false, func(id string) string {
+			if _, ok := r.CodeEntity(id); !ok {
+				return fmt.Sprintf("no code entity is configured with id %q", id)
+			}
+			return ""
+		})
+
+		if s.Tracker != nil {
+			scope.Tracker = SourceRef{Source: s.Tracker.Source, Project: s.Tracker.Project}
+			l.checkSourceRef(r, a, "tracker", scope.Tracker)
+			if scope.Tracker.Source != "" && scope.Tracker.Project != "" && !scope.Covers(scope.Tracker.Source, scope.Tracker.Project) {
+				l.bad(a, "tracker", "this scope does not cover %q in source %q, so it would have no tracker items to map",
+					scope.Tracker.Project, scope.Tracker.Source)
+			}
+		}
+		if keep {
+			out = append(out, scope)
+		}
+	}
+	return out
+}
+
+// checkSourceRef checks a pointer into a source: the source is configured, and
+// the project is one of the containers it ingests.
+func (l *loader) checkSourceRef(r Repo, a at, field string, ref SourceRef) {
+	src, known := r.Source(ref.Source)
+	switch {
+	case ref.Source == "":
+		l.bad(a, field+".source", "is required")
+	case !known:
+		l.bad(a, field+".source", "no source is configured with id %q", ref.Source)
+	}
+	switch {
+	case ref.Project == "":
+		l.bad(a, field+".project", "is required: it is the repository or project inside the source, by native id")
+	case known && !slices.Contains(src.Containers, connector.AllowAll) && !slices.Contains(src.Containers, ref.Project):
+		l.bad(a, field+".project", "source %q does not ingest %q", ref.Source, ref.Project)
+	}
+}
+
+// buildAuthority validates `authority/` and merges it onto [DefaultPolicy].
+func (l *loader) buildAuthority(r Repo) Authority {
+	policies := make([]Policy, 0, len(l.authority))
+	defined := make(map[string]string, len(l.authority))
+	// merged is the policies whose merged form is checked below, once every
+	// policy has been layered onto the one it inherits from. Two kinds of policy
+	// are left out of it:
+	//
+	// A policy whose scope is itself what is wrong, because a scope with two
+	// policies has two answers and only one of them survives the merge, so
+	// anything said about the survivor would be attributed to whichever file was
+	// read first.
+	//
+	// A policy that sets neither of the two fields the merged check is about,
+	// because everything it has, it inherited. A contradiction it can be in was
+	// written somewhere else and is reported there; blaming it here as well
+	// would print one sentence once per scope in the configuration.
+	type policyAt struct {
+		scope string
+		at    at
+	}
+	var merged []policyAt
+	ambiguous := make(map[string]bool)
+
+	for i, d := range l.authority {
+		p := d.v
+		a := locate(d, "authority policy", p.Scope, i)
+
+		named := false
+		switch {
+		case p.Scope == "":
+			l.bad(a, "scope", "is required: name a scope, or %q for the policy every other scope inherits", AnyValue)
+		case p.Scope != AnyValue && !isName(p.Scope):
+			l.bad(a, "scope", "%q is not a scope id", p.Scope)
+		case defined[p.Scope] != "":
+			l.bad(a, "scope", "an authority policy for %q is already configured at %s: policies are not merged with each other, so two of them would be two answers", p.Scope, defined[p.Scope])
+			ambiguous[p.Scope] = true
+		default:
+			defined[p.Scope] = position(d.file, d.line)
+			named = true
+			if p.Scope != AnyValue {
+				if _, ok := r.Scope(p.Scope); !ok {
+					l.bad(a, "scope", "no scope is configured with id %q", p.Scope)
+				}
+			}
+		}
+
+		policy := Policy{Scope: p.Scope}
+		if p.Ranking != nil {
+			if len(p.Ranking) == 0 {
+				l.bad(a, "ranking", "is empty: leave it out to inherit the default ranking, or list the artifact classes in authority order")
+			}
+			policy.Ranking = l.artifactClasses(a, "ranking", p.Ranking)
+		}
+		if p.RatifiedBy != nil {
+			policy.RatifiedBy.Artifacts = l.artifactClasses(a, "ratified_by.artifacts", p.RatifiedBy.Artifacts)
+			policy.RatifiedBy.Principals = slices.Clone(p.RatifiedBy.Principals)
+			policy.RatifiedBy.Sources = slices.Clone(p.RatifiedBy.Sources)
+			l.names(a, "ratified_by.principals", p.RatifiedBy.Principals, true, func(id string) string {
+				if _, ok := r.Principal(id); !ok {
+					return fmt.Sprintf("no principal is configured with id %q", id)
+				}
+				return ""
+			})
+			l.names(a, "ratified_by.sources", p.RatifiedBy.Sources, true, func(id string) string {
+				if _, ok := r.Source(id); !ok {
+					return fmt.Sprintf("no source is configured with id %q", id)
+				}
+				return ""
+			})
+		}
+		policies = append(policies, policy)
+		// A nil list is one this file did not set. Either field being present is
+		// enough: the ranking and the ratifiers are the two halves of the same
+		// contradiction, and whichever half arrived last is the one that made it
+		// one.
+		if named && (policy.Ranking != nil || policy.RatifiedBy.Artifacts != nil) {
+			merged = append(merged, policyAt{scope: p.Scope, at: a})
+		}
+	}
+
+	auth := newAuthority(policies)
+	for _, m := range merged {
+		if ambiguous[m.scope] {
+			continue
+		}
+		p := auth.Default()
+		if m.scope != AnyValue {
+			p = auth.ForScope(m.scope)
+		}
+		l.checkRatifiersAreRanked(m.at, p)
+	}
+	return auth
+}
+
+// checkRatifiersAreRanked reports an artifact class that ratifies on its own
+// while the ranking in force leaves it out. Such a class decides a topic with no
+// human in the loop and still loses every disagreement it is in, including to an
+// agent turn, which nobody writes on purpose — and it is easy to write by
+// accident, because narrowing a ranking is how a scope's policy usually starts.
+//
+// It is checked on the merged policy rather than on the file, because a scope
+// that sets one of the two fields inherits the other and neither file is wrong
+// on its own. Which file is told about it is decided by the caller, and is the
+// one that set a field: a policy that inherited both halves introduced nothing,
+// and every scope in the configuration inherits from the same `*`.
+//
+// A policy whose merged ranking is empty is left alone. That only happens where
+// a `ranking: []` was written, which is reported where it was written, and every
+// class would be missing from it.
+func (l *loader) checkRatifiersAreRanked(a at, p Policy) {
+	if len(p.Ranking) == 0 {
+		return
+	}
+	for _, c := range p.RatifiedBy.Artifacts {
+		if !c.Valid() || slices.Contains(p.Ranking, c) {
+			continue
+		}
+		l.bad(a, "ratified_by.artifacts", "%q ratifies on its own, and the ranking in force for this scope leaves it out, so a stance it ratifies is outranked by every class the ranking does list. Rank it, or take it out of ratified_by.artifacts", c)
+	}
+}
+
+// artifactClasses converts a list of artifact class names, reporting the ones
+// that are not classes. A nil list stays nil, because that is what tells the
+// merge to inherit rather than to replace.
+//
+// A name that is not a class is reported and then dropped rather than carried
+// through as one. It is reported where it is written, and a policy that went on
+// to hold it would fail the checks made on the merged policy as well, which is
+// the same mistake said twice.
+func (l *loader) artifactClasses(a at, field string, names []string) []ArtifactClass {
+	if names == nil {
+		return nil
+	}
+	out := make([]ArtifactClass, 0, len(names))
+	l.names(a, field, names, false, func(name string) string {
+		if !ArtifactClass(name).Valid() {
+			return fmt.Sprintf("%q is not an artifact class: want one of %s", name, join(ArtifactClasses()))
+		}
+		return ""
+	})
+	for _, name := range names {
+		if c := ArtifactClass(name); c.Valid() {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// position renders where an object was written, for a message about a second
+// one that collides with it.
+func position(file string, line int) string {
+	if line > 0 {
+		return fmt.Sprintf("%s:%d", file, line)
+	}
+	return file
+}
+
+// join lists the values of a closed vocabulary for an error message.
+func join[T ~string](values []T) string {
+	out := make([]string, len(values))
+	for i, v := range values {
+		out[i] = string(v)
+	}
+	return strings.Join(out, ", ")
+}
+
+// isName reports whether s is a scope id, a principal id or a connector type:
+// the same shape as a source id (docs/connector-contract.md), so that one rule
+// covers every name a person types into configuration and there is only one of
+// them to keep in step.
+func isName(s string) bool { return connector.ValidSourceID(s) }
+
+// isEnvVarName reports whether s names an environment variable, which is what a
+// secret in configuration holds. Rejecting anything else is what stops a token
+// from being pasted into a repository that is checked in.
+func isEnvVarName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := range len(s) {
+		c := s[i]
+		switch {
+		case c >= 'A' && c <= 'Z':
+		case (c >= '0' && c <= '9') || c == '_':
+			if i == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// isRepoRelativePath reports whether s is a path inside a repository: relative,
+// and with nothing that climbs out of it.
+func isRepoRelativePath(s string) bool {
+	if s == "" || strings.HasPrefix(s, "/") || strings.ContainsFunc(s, unicode.IsSpace) {
+		return false
+	}
+	for _, part := range strings.Split(s, "/") {
+		if part == ".." {
+			return false
+		}
+	}
+	return true
+}
