@@ -20,6 +20,13 @@ are being built.
 ## Quick start
 
 ```sh
+dagger call check      # lint, tests and the image: what CI runs
+dagger call dev up     # Postgres plus all four services
+```
+
+Or without [Dagger](https://dagger.io), which needs a container runtime:
+
+```sh
 go build ./...
 go test ./...
 go run ./cmd/hearsay help

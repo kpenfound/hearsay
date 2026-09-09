@@ -1,6 +1,7 @@
-# Build, test and lint. Issue #35 replaces the steps here with calls into the
-# Dagger module, so that CI runs exactly what a developer runs locally. Until
-# then this workflow runs the commands CONTRIBUTING.md documents, directly.
+# CI calls the Dagger module and nothing else, so that what fails here is what
+# fails on a laptop: `dagger call check` is the same command in both places.
+# Adding a check means adding it to Check in .dagger/main.go, which leaves
+# nothing for this file to fall behind on.
 name: ci
 
 on:
@@ -16,40 +17,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: dagger/dagger-for-github@v8.4.1
         with:
-          go-version-file: go.mod
-          cache: false # nothing to cache: the module has no dependencies yet
-      - run: go build ./...
-      - run: go vet ./...
-      - run: go test -race ./...
-
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: false
-      - uses: golangci/golangci-lint-action@v9
-        with:
-          version: v2.13.2
-      # Formatting is part of the lint gate, not a separate ritual.
-      - run: golangci-lint fmt --diff
-
-  tidy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: false
-      - run: go mod tidy
-      - name: go.mod and go.sum are up to date
-        run: git diff --exit-code -- go.mod go.sum
+          # Pinned, and matching dagger.json's engineVersion: an engine and a
+          # module that disagree is a confusing way to fail.
+          version: v0.21.9
+          call: check

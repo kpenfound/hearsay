@@ -1,0 +1,9 @@
+/dagger.gen.go
+/internal/dagger
+/internal/querybuilder
+/internal/telemetry
+
+# The Go SDK regenerates these on every module load, and their contents depend
+# on the engine version in dagger.json rather than on anything written here.
+/go.mod
+/go.sum

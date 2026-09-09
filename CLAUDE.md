@@ -14,6 +14,19 @@ is superseded, never edited.
 
 ## Commands
 
+Dagger runs everything, and CI calls it and nothing else. `dagger functions`
+lists the lot; the module is `.dagger/main.go`.
+
+```sh
+dagger call check         # lint, tidy, the whole suite, the image: what CI runs
+dagger call test          # unit tests, then the integration tests on pgvector
+dagger call dev up        # Postgres plus all four services
+```
+
+Dagger needs a container runtime. Where there is none — an agent sandbox that
+denies the Docker socket, for instance — everything but the integration tests
+runs directly, and CI is the gate that matters:
+
 ```sh
 go build ./...            # build everything
 go test ./...             # the whole suite; add -race before you push
@@ -23,10 +36,10 @@ golangci-lint fmt         # format (gofmt + goimports); --diff to only check
 go run ./cmd/hearsay help # the subcommands
 ```
 
-Everything above runs offline with no services: the module has no dependencies
-yet, and no test touches a database or a model provider. The one exception is
-the toolchain itself — on a machine whose Go is older than the release `go.mod`
-asks for, the first build downloads it.
+That block runs offline with no services: the module has no dependencies yet,
+and no test touches a database or a model provider. The one exception is the
+toolchain itself — on a machine whose Go is older than the release `go.mod` asks
+for, the first build downloads it.
 
 Running a service locally:
 
@@ -39,13 +52,13 @@ go run ./cmd/hearsay api --log-level debug --log-format text
 The four services are stubs. Each starts, logs, and exits cleanly on Ctrl-C;
 none of them does any work yet.
 
-Migrations are `go run ./cmd/hearsay migrate up|status|up-to <n>|down`. The
-command exists and refuses: goose, the migrations and the database connection
-land with the L0 store. Until then it exits non-zero saying so, which is
-deliberate — see [ADR-0006](docs/adr/0006-schema-migrations-with-goose.md).
-
-There is no Dagger module or CI-in-a-container yet; issue #35 adds it, and after
-that `dagger call test` is the command that matters and the one CI runs.
+Migrations are `go run ./cmd/hearsay migrate up|status|up-to <n>|down`, or
+`dagger call migrate --database-url=...` against a database. The command exists
+and refuses: goose, the migrations and the database connection land with the L0
+store. Until then it exits non-zero saying so, which is deliberate — see
+[ADR-0006](docs/adr/0006-schema-migrations-with-goose.md). The migration step
+`dagger call integration-test` will run before the tests is missing for the same
+reason.
 
 ## Layout
 
