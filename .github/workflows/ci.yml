@@ -1,0 +1,52 @@
+# Build, test and lint. Issue #35 replaces the steps here with calls into the
+# Dagger module, so that CI runs exactly what a developer runs locally. Until
+# then this workflow runs the commands CONTRIBUTING.md documents, directly.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.3.1
+      # Formatting is part of the lint gate, not a separate ritual.
+      - run: golangci-lint fmt --diff
+
+  tidy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go mod tidy
+      - name: go.mod and go.sum are up to date
+        run: git diff --exit-code -- go.mod go.sum

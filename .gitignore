@@ -1,2 +1,10 @@
 # busybees state (mail, notes, session transcripts)
 /.bees/
+
+# build output
+/hearsay
+/dist/
+
+# test output
+*.test
+coverage.out
