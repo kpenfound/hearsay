@@ -35,6 +35,8 @@ Every source connector writes L0 only. An event is `{id, source, native_id, kind
 
 Agent activity is a first-class source. An agent's tool calls and proposals enter L0 so that later assertions can trace back to what the agent retrieved and chose.
 
+The exact shape a connector emits — the id format, the `kind` vocabulary, the metadata `payload` must carry, how idempotency, edits and deletions work, and the interface a connector implements — is [the connector contract](connector-contract.md).
+
 ## L1: distilled documents
 
 A common envelope plus a per-kind body. Every L1 doc is one row in one table.
@@ -289,4 +291,3 @@ Agent memory layers (Mem0, Zep/Graphiti, Letta, Cognee, Neo4j Agent Memory) pers
 
 - Entity hierarchy rules. How `part_of` edges are built (repo structure, tracker hierarchy, manual) and who may restructure them.
 - Authority config schema. What a per-scope authority declaration looks like and how it composes with identity mapping.
-- Connector contract. The exact L0 event shape and metadata a plugin must emit, since this is the adoption boundary for other teams.

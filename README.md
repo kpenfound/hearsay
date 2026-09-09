@@ -15,6 +15,8 @@ are being built.
 
 - [docs/design.md](docs/design.md) — what Hearsay is and how it works.
 - [docs/adr/](docs/adr/) — the implementation decisions and why they were made.
+- [docs/connector-contract.md](docs/connector-contract.md) — the L0 event a
+  source connector emits, and the interface it implements.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — how to build, test and run it.
 
 ## Quick start
