@@ -33,22 +33,22 @@ migrations (ADR-0006). No external broker.
 L1 write that causes it. Either both happen or neither does, and there is no outbox to
 reconcile.
 
-**Claim is `FOR UPDATE SKIP LOCKED`**, the standard Postgres queue pattern: a worker
-claims a batch, works it, and marks it done or failed. Roughly:
+Because the enqueue shares the caller's transaction, it must never be able to abort it.
+Job identity is a partial unique index on `(kind, target_id) WHERE state = 'pending'`, and
+a plain `INSERT` against it would raise a unique violation and roll back the L0 or L1
+write that was the point of the transaction. The enqueue is therefore always:
 
 ```sql
-UPDATE queue_job SET state = 'running', started_at = now(), attempt = attempt + 1
-WHERE id IN (
-    SELECT j.id FROM queue_job j
-    WHERE j.kind = $1 AND j.state = 'pending' AND j.run_after <= now()
-      AND (j.serial_key IS NULL OR NOT EXISTS (
-            SELECT 1 FROM queue_job r
-            WHERE r.kind = j.kind AND r.state = 'running' AND r.serial_key = j.serial_key))
-    ORDER BY j.priority DESC, j.run_after
-    FOR UPDATE SKIP LOCKED
-    LIMIT $2)
-RETURNING ...;
+INSERT INTO queue_job (kind, target_id, serial_key, priority, run_after, trace_context)
+VALUES (...)
+ON CONFLICT (kind, target_id) WHERE state = 'pending' DO NOTHING;
 ```
+
+The `WHERE` clause is required for Postgres to infer a partial index. This is the clause
+that makes a duplicate enqueue collapse instead of failing: the deletion walk in
+`docs/design.md` re-distills an affected L1 doc and enqueues an assert job for it, and an
+assert job for that `l1_id` may already be pending from the original distillation. With a
+plain `INSERT`, deletion fails on a queue constraint.
 
 **`serial_key` is the reason this is hand-written.** A job with a `serial_key` never runs
 while another job with the same key is running. The assertion worker sets
@@ -56,14 +56,70 @@ while another job with the same key is running. The assertion worker sets
 leaving different scopes fully parallel. The distiller leaves it null and runs as wide as
 its concurrency setting allows.
 
-`SKIP LOCKED` alone does not make that check correct: two workers claiming
-concurrently each read a snapshot in which the other's job is not yet `running`, and both
-would claim the same key. For kinds that use `serial_key`, the claim transaction first
-takes `pg_advisory_xact_lock(hashtext('claim:' || kind))`, so the running-check and the
-update are atomic with respect to other claims. The lock covers the claim only, not the
-job, so it is held for the duration of one small `UPDATE` while the jobs themselves still
-run in parallel across different keys. Kinds with no `serial_key` skip the lock entirely
-and rely on `SKIP LOCKED`, which is sufficient when any worker may take any job.
+**There are two claim paths, and they are not the same query.** A kind either uses
+`serial_key` or it does not, and the difference is not a clause that can be switched off.
+
+*Unserialized kinds (the distiller)* use the standard Postgres queue pattern: claim a
+batch with `FOR UPDATE SKIP LOCKED`, work it, mark each job done or failed. Any worker may
+take any job, so `SKIP LOCKED` is the whole mechanism.
+
+```sql
+UPDATE queue_job SET state = 'running', started_at = now(), attempt = attempt + 1
+WHERE id IN (
+    SELECT j.id FROM queue_job j
+    WHERE j.kind = $1 AND j.state = 'pending' AND j.run_after <= now()
+    ORDER BY j.priority DESC, j.run_after
+    FOR UPDATE SKIP LOCKED
+    LIMIT $2)
+RETURNING ...;
+```
+
+*Serialized kinds (the assertion worker)* claim **one job at a time**, under an advisory
+lock:
+
+```sql
+-- in the claim transaction, before the UPDATE:
+SELECT pg_advisory_xact_lock(hashtext('claim:' || $1));
+
+UPDATE queue_job SET state = 'running', started_at = now(), attempt = attempt + 1
+WHERE state = 'pending' AND id = (
+    SELECT j.id FROM queue_job j
+    WHERE j.kind = $1 AND j.state = 'pending' AND j.run_after <= now()
+      AND NOT EXISTS (
+            SELECT 1 FROM queue_job r
+            WHERE r.kind = j.kind AND r.state = 'running'
+              AND r.serial_key = j.serial_key)
+    ORDER BY j.priority DESC, j.run_after
+    LIMIT 1)
+RETURNING ...;
+```
+
+The advisory lock is what serializes claims here, so this path does not need
+`FOR UPDATE SKIP LOCKED`; the repeated `state = 'pending'` on the outer `UPDATE` is a
+cheap guard so the statement cannot claim a row that the lease reclaimer moved underneath
+it, and a claim that returns no row is a normal empty poll.
+
+Two separate things would each break the invariant, and each needs its own guard:
+
+- **Across transactions**, two workers claiming concurrently would each read a snapshot in
+  which the other's job is not yet `running`, and both would take the same key. The
+  advisory lock on the kind makes the running-check and the update atomic with respect to
+  other claims. It is held for one small `UPDATE`, not for the job, so jobs still run in
+  parallel across different keys.
+- **Within one statement**, a batch claim would break it even with the lock held. The
+  `NOT EXISTS` is a correlated subquery evaluated against the statement's snapshot, in
+  which *none* of the candidates is `running` yet, so a `LIMIT 5` over five pending jobs
+  sharing one `serial_key` would pass all five and set all five to `running` in one
+  `UPDATE`. `LIMIT 1` is what prevents this: one job per claim, so the next claim sees the
+  previous one as `running` and skips its key.
+
+`LIMIT 1` costs throughput, and it is affordable precisely here: the assertion worker is
+low volume by design, and its jobs are model calls measured in seconds, so a claim
+round-trip per job is noise. If a serialized kind ever needs batching, the shape that
+works is a `LATERAL` picking one job per distinct eligible `serial_key`; that is a change
+to make when something measures it, not now. Note that the obvious `SELECT DISTINCT ON
+(serial_key) ... FOR UPDATE` is not an option — Postgres rejects `FOR UPDATE` with
+`DISTINCT`.
 
 **Wakeup is `LISTEN`/`NOTIFY` with a polling floor.** Workers listen on a channel per job
 kind for low latency, and also poll on an interval (a few seconds) so that a missed
@@ -72,9 +128,9 @@ on transaction commit, so it cannot announce a job that then rolls back.
 
 **Semantics are at-least-once.** A worker that dies mid-job leaves a `running` row whose
 lease expires and is reclaimed. Both workers are idempotent, which is what makes this
-acceptable: re-distilling an L0 event produces the same L1 doc, and job identity is a
-unique key on `(kind, target_id)` for pending work so a duplicate enqueue collapses
-rather than doubling the model spend.
+acceptable: re-distilling an L0 event produces the same L1 doc, and the partial unique
+index on `(kind, target_id)` for pending work, with the `ON CONFLICT DO NOTHING` enqueue
+above, collapses a duplicate enqueue rather than doubling the model spend.
 
 **Retries** are bounded, with exponential backoff and jitter, by setting `run_after`.
 After the limit the job moves to `failed` and stays in the table. A failed job is a
@@ -95,10 +151,13 @@ Completed jobs are deleted after a retention window. Failed jobs are kept.
   Rejected on the one requirement that is not negotiable: River's concurrency controls
   are per queue, so per-scope serialization would mean either a queue per scope, which is
   dynamic and unbounded, or taking an advisory lock inside the job and blocking a worker
-  slot while another scope's work waits. Building the claim query directly costs one SQL
-  statement and a table, and `serial_key` falls out of it. If Hearsay's queue needs grow
-  toward what River offers, adopting it and solving serialization its way is a
-  contained change, because callers use `internal/queue`, not SQL.
+  slot while another scope's work waits. Building the claim directly costs a table and two
+  claim queries, and `serial_key` falls out of it. That is not free — the serialized claim
+  path above is the fiddliest code in this decision, and it is the part most likely to be
+  subtly wrong — but it is bounded, and it is code we can test directly against the
+  invariant the design cares about. If Hearsay's queue needs grow toward what River
+  offers, adopting it and solving serialization its way is a contained change, because
+  callers use `internal/queue`, not SQL.
 - **pgmq.** A Postgres extension providing SQS-like queues. Adds an extension to install
   alongside pgvector, and has the same per-key serialization gap.
 - **Redis-backed (Asynq, Machinery).** Good queues. Both mean a second stateful service
@@ -120,10 +179,20 @@ Completed jobs are deleted after a retention window. Failed jobs are kept.
 - One store still. Nothing to add to the compose file, nothing extra to back up, and a
   restore brings back the queue in the same state as the data.
 - Queue load is database load. A distiller backfill hammering the queue table shares a
-  Postgres with the API's read path. The claim query is indexed for it
+  Postgres with the API's read path. The claim queries are indexed for it
   (`(kind, state, run_after)` partial on pending, and `(kind, state, serial_key)` for the
-  serialization check), and if it ever becomes the bottleneck, the fix is a connection
-  pool split before it is a different queue.
+  serialization check), plus the partial unique index on
+  `(kind, target_id) WHERE state = 'pending'` that the enqueue relies on. If it ever
+  becomes the bottleneck, the fix is a connection pool split before it is a different
+  queue.
+- Claims for serialized kinds are themselves serialized: one advisory lock per kind, one
+  job per claim. Throughput for such a kind is bounded by claim round-trips rather than by
+  worker count, which is fine for the assertion worker and would not be for a high-volume
+  kind. Adding `serial_key` to a busy kind is therefore a decision to revisit this ADR,
+  not a config change.
+- The per-scope serialization invariant is testable and must be tested: concurrent workers
+  against pending jobs sharing one `serial_key` must never show two running at once. That
+  test is the reason for preferring code we own here over a library we would have to bend.
 - `LISTEN`/`NOTIFY` needs a dedicated connection per listening worker, held outside the
   pool, and reconnect handling. The polling floor is what keeps a bug there from being an
   outage.
