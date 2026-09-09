@@ -1037,6 +1037,16 @@ func TestAnErrorHoldingBytesPostgresRefusesIsStillRecorded(t *testing.T) {
 			if tt.readable != "" && !strings.Contains(stored, tt.readable) {
 				t.Errorf("the stored error is %q, want the cause %q still readable in it", stored, tt.readable)
 			}
+			// None of these is long enough to cut once its bytes have been
+			// made storable — a run of invalid bytes collapses to a single
+			// replacement character — so none may be marked as truncated.
+			// This is what makes the order load-bearing: bounding the raw
+			// bytes first and coercing afterwards stores three bytes with an
+			// ellipsis on the end, telling an operator that a message was cut
+			// short when nothing was.
+			if strings.HasSuffix(stored, "…") {
+				t.Errorf("the stored error %q is marked truncated, but it fits the bound once coerced: the bound is counting bytes nobody will read", stored)
+			}
 		})
 	}
 }
