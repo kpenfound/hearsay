@@ -83,14 +83,14 @@ stamp into the binary.
 
 `dev` has no file watcher: restarting is the reload. Stop it, run it again, and
 the rebuild is a cached one. Its database is a throwaway that starts empty every
-time — there is no schema yet, so there is nothing to keep; that is the thing to
-revisit when the L0 store lands.
+time, and `hearsay all` migrates it on the way up (ADR-0006), so the schema is
+there and the rows are not.
 
-`migrate` exits non-zero with "not implemented yet" until goose and the embedded
-migrations arrive, and so does the migration step `integration-test` will run
-before the tests (ADR-0006). Until then `integration-test` proves the database
-itself: it creates the `vector` extension, which fails on a Postgres image
-without pgvector.
+`integration-test` runs `hearsay migrate up` between the database and the tests,
+from the code under test, so a missing migration fails the check rather than
+being papered over by a fixture (ADR-0006). That step is also what proves the
+image is the pgvector build: migration 1 creates the `vector` extension, which
+stock Postgres cannot.
 
 The Go toolchain and version of the linter come from the repository, not from
 this document: the containers read the `go` directive out of `go.mod`, and the
@@ -162,11 +162,15 @@ golangci-lint fmt --diff   # fails if anything is unformatted
 golangci-lint fmt          # fixes it
 ```
 
-The module has one third-party dependency, `go.yaml.in/yaml/v3`, which parses
-the configuration format (ADR-0009). Once it and the Go release `go.mod` asks
-for are in the module cache, all of that works with no network and no services
-running. With an older Go and the default `GOTOOLCHAIN=auto`, the first build
-downloads that toolchain too.
+The module has three third-party dependencies, each named by an accepted ADR:
+`go.yaml.in/yaml/v3` parses the configuration format (ADR-0009),
+`github.com/jackc/pgx/v5` is the Postgres driver (ADR-0004), and
+`github.com/pressly/goose/v3` applies the migrations (ADR-0006). Once those and
+the Go release `go.mod` asks for are in the module cache, all of that works with
+no network and no services running — `go test ./...` included, because the tests
+that need Postgres carry the `integration` build tag and skip without
+`HEARSAY_DATABASE_URL`. With an older Go and the default `GOTOOLCHAIN=auto`, the
+first build downloads that toolchain too.
 
 That is a fallback, not a second gate: the pull request is judged by
 `dagger check`, which Dagger Cloud runs on every commit whether or not you could
@@ -219,20 +223,62 @@ out the same. An example that stops working stops the build, which is the point.
 ## Migrations
 
 ```sh
-go run ./cmd/hearsay migrate up          # apply everything pending
-go run ./cmd/hearsay migrate status      # applied and pending
-go run ./cmd/hearsay migrate up-to <n>
-go run ./cmd/hearsay migrate down        # dev only
+export HEARSAY_DATABASE_URL=postgres://hearsay:hearsay@localhost:5432/hearsay
+
+go run ./cmd/hearsay migrate up            # apply everything pending
+go run ./cmd/hearsay migrate status        # applied and pending
+go run ./cmd/hearsay migrate up-to 1
+go run ./cmd/hearsay migrate down --i-know # dev only, and it means it
 
 dagger api call hearsay migrate --database-url=env:HEARSAY_DATABASE_URL --action=status
 ```
 
-All four exit non-zero with "not implemented yet" today: goose, the embedded
-migrations and the database connection land with the L0 store. When they do:
-migrations are plain SQL in `internal/db/migrations/`, embedded in the binary,
-applied by `hearsay migrate` as a deploy job, and **never** automatically on
-service startup. See
+Migrations are plain SQL in `internal/db/migrations/`, embedded in the binary
+with `go:embed`, applied by `hearsay migrate` as a deploy job, and **never**
+automatically on service startup — the one exception is `hearsay all`, which is
+local development only and migrates for itself. Read
 [ADR-0006](docs/adr/0006-schema-migrations-with-goose.md) before writing one.
+
+The rules that matter when you add one:
+
+- `NNNNN_short_description.sql`, next number, and **never edit a merged
+  migration** — fix it forward. A reviewer treats a modified existing migration
+  as a defect.
+- `-- +goose Up` and `-- +goose Down` in every file. Where a down would destroy
+  something it did not create, the down section says so and fails.
+- One transaction per migration; anything Postgres will not run in one (
+  `CREATE INDEX CONCURRENTLY`) gets goose's `NO TRANSACTION` annotation and a
+  migration to itself.
+- Anything already running changes by expand-and-contract, never in one step.
+
+Every process that reads the database checks the schema version at startup and
+refuses one older than the migrations in its own binary. A database *newer* than
+the binary is fine, so a rollout can be migrated forward before every replica
+has been replaced.
+
+`--database-url` also reads `HEARSAY_DATABASE_URL`, and that is the one to
+prefer: a URL on a command line puts its password in the process list.
+
+## Reading L0
+
+```sh
+go run ./cmd/hearsay l0 count                        # events by source and kind
+go run ./cmd/hearsay l0 list --source github-acme    # what a source has ingested
+go run ./cmd/hearsay l0 list --source github-acme --artifact acme/api#12
+go run ./cmd/hearsay l0 get evt:github-acme:acme%2Fapi%2312
+go run ./cmd/hearsay l0 tail --source github-acme     # follow the change feed
+```
+
+`list` prints what an event is and where it came from and no payload; `get`
+prints the whole event, which is what asking for one by id means. `count`
+reports what was ever ingested beside what a read returns: L0 is append-only, so
+a deletion is a tombstone that hides an event and keeps its row.
+
+`list` and `tail` take the same `--source`, `--kind` and `--artifact`; `get` and
+`count` take none of them and say so rather than ignoring one. An artifact's
+history is listed oldest first, and `--newest` is the order
+[the connector contract](docs/connector-contract.md) puts revisions in, with the
+current one first.
 
 ## Layout
 

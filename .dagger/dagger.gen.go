@@ -350,27 +350,27 @@ func invoke(ctx context.Context, parentJSON []byte, parentName string, fnName st
 						dag.Function("Build",
 							dag.TypeDef().WithObject("File")).
 							WithDescription("Build compiles the hearsay binary for Linux.").
-							WithSourceMap(dag.SourceMap("main.go", 212, 1)).
-							WithArg("arch", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind).WithOptional(true), dagger.FunctionWithArgOpts{Description: "Target architecture (amd64, arm64). Defaults to the engine's own.", SourceMap: dag.SourceMap("main.go", 216, 2)}).
-							WithArg("version", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind).WithOptional(true), dagger.FunctionWithArgOpts{Description: "Version to stamp into the binary. Defaults to what internal/version works\nout for itself.", SourceMap: dag.SourceMap("main.go", 221, 2)})).
+							WithSourceMap(dag.SourceMap("main.go", 195, 1)).
+							WithArg("arch", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind).WithOptional(true), dagger.FunctionWithArgOpts{Description: "Target architecture (amd64, arm64). Defaults to the engine's own.", SourceMap: dag.SourceMap("main.go", 199, 2)}).
+							WithArg("version", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind).WithOptional(true), dagger.FunctionWithArgOpts{Description: "Version to stamp into the binary. Defaults to what internal/version works\nout for itself.", SourceMap: dag.SourceMap("main.go", 204, 2)})).
 					WithFunction(
 						dag.Function("Dev",
 							dag.TypeDef().WithObject("Service")).
 							WithDescription("Dev runs the local stack: Postgres with pgvector, and all four services in one\nprocess (ADR-0003's `hearsay all`).\n\n\tdagger up dev\n\nThere is no file watcher. Restarting is the reload: stop the command and run\nit again, and the rebuild is a cached one.").
-							WithSourceMap(dag.SourceMap("main.go", 344, 1)).
+							WithSourceMap(dag.SourceMap("main.go", 324, 1)).
 							WithUp()).
 					WithFunction(
 						dag.Function("Image",
 							dag.TypeDef().WithObject("Container")).
 							WithDescription("Image builds the container image hearsay ships in. One image runs all four\nservices; the subcommand is the argument (ADR-0003).").
-							WithSourceMap(dag.SourceMap("main.go", 249, 1)).
-							WithArg("arch", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind).WithOptional(true), dagger.FunctionWithArgOpts{Description: "Target architecture (amd64, arm64). Defaults to the engine's own.", SourceMap: dag.SourceMap("main.go", 253, 2)}).
-							WithArg("version", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind).WithOptional(true), dagger.FunctionWithArgOpts{Description: "Version to stamp into the binary.", SourceMap: dag.SourceMap("main.go", 257, 2)})).
+							WithSourceMap(dag.SourceMap("main.go", 232, 1)).
+							WithArg("arch", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind).WithOptional(true), dagger.FunctionWithArgOpts{Description: "Target architecture (amd64, arm64). Defaults to the engine's own.", SourceMap: dag.SourceMap("main.go", 236, 2)}).
+							WithArg("version", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind).WithOptional(true), dagger.FunctionWithArgOpts{Description: "Version to stamp into the binary.", SourceMap: dag.SourceMap("main.go", 240, 2)})).
 					WithFunction(
 						dag.Function("ImageCheck",
 							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
 							WithDescription("ImageCheck builds the container image, so that an image that no longer builds\nfails here rather than at a release.").
-							WithSourceMap(dag.SourceMap("main.go", 190, 1)).
+							WithSourceMap(dag.SourceMap("main.go", 173, 1)).
 							WithCheck()).
 					WithFunction(
 						dag.Function("IntegrationTest",
@@ -387,21 +387,21 @@ func invoke(ctx context.Context, parentJSON []byte, parentName string, fnName st
 					WithFunction(
 						dag.Function("Migrate",
 							dag.TypeDef().WithKind(dagger.TypeDefKindStringKind)).
-							WithDescription("Migrate applies the schema migrations to a database (ADR-0006).\n\n\tdagger api call hearsay migrate --database-url=env:HEARSAY_DATABASE_URL\n\nADR-0006 spells that `dagger call migrate`, which was the command in Dagger\n0.21. The function is the one the ADR names; only the CLI verb moved.\n\nEvery action exits non-zero with \"not implemented yet\" until goose and the\nembedded migrations land with the L0 store.").
-							WithSourceMap(dag.SourceMap("main.go", 301, 1)).
-							WithArg("databaseURL", dag.TypeDef().WithObject("Secret"), dagger.FunctionWithArgOpts{Description: "Postgres connection URL, for example\npostgres://hearsay:hearsay@localhost:5432/hearsay.", SourceMap: dag.SourceMap("main.go", 304, 2)}).
-							WithArg("action", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind).WithOptional(true), dagger.FunctionWithArgOpts{Description: "up, status, up-to or down.", SourceMap: dag.SourceMap("main.go", 309, 2), DefaultValue: dagger.JSON("\"up\"")}).
-							WithArg("arg", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind).WithOptional(true), dagger.FunctionWithArgOpts{Description: "The target version, for up-to.", SourceMap: dag.SourceMap("main.go", 313, 2)})).
+							WithDescription("Migrate applies the schema migrations to a database (ADR-0006).\n\n\tdagger api call hearsay migrate --database-url=env:HEARSAY_DATABASE_URL\n\nADR-0006 spells that `dagger call migrate`, which was the command in Dagger\n0.21. The function is the one the ADR names; only the CLI verb moved.").
+							WithSourceMap(dag.SourceMap("main.go", 281, 1)).
+							WithArg("databaseURL", dag.TypeDef().WithObject("Secret"), dagger.FunctionWithArgOpts{Description: "Postgres connection URL, for example\npostgres://hearsay:hearsay@localhost:5432/hearsay.", SourceMap: dag.SourceMap("main.go", 284, 2)}).
+							WithArg("action", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind).WithOptional(true), dagger.FunctionWithArgOpts{Description: "up, status, up-to or down.", SourceMap: dag.SourceMap("main.go", 289, 2), DefaultValue: dagger.JSON("\"up\"")}).
+							WithArg("arg", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind).WithOptional(true), dagger.FunctionWithArgOpts{Description: "The target version, for up-to.", SourceMap: dag.SourceMap("main.go", 293, 2)})).
 					WithFunction(
 						dag.Function("Postgres",
 							dag.TypeDef().WithObject("Service")).
 							WithDescription("Postgres is the throwaway Postgres with pgvector that the integration test and\nthe dev stack run against.").
-							WithSourceMap(dag.SourceMap("main.go", 282, 1))).
+							WithSourceMap(dag.SourceMap("main.go", 265, 1))).
 					WithFunction(
 						dag.Function("Test",
 							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
 							WithDescription("Test runs the whole suite: the unit tests, and the integration tests against a\nreal Postgres with pgvector. Both are checks in their own right, so\n`dagger check` runs them in parallel; this is for asking for exactly the two.").
-							WithSourceMap(dag.SourceMap("main.go", 204, 1))).
+							WithSourceMap(dag.SourceMap("main.go", 187, 1))).
 					WithFunction(
 						dag.Function("TidyCheck",
 							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).

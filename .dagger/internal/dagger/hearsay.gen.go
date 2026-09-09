@@ -197,9 +197,6 @@ type HearsayMigrateOpts struct {
 //
 // ADR-0006 spells that `dagger call migrate`, which was the command in Dagger
 // 0.21. The function is the one the ADR names; only the CLI verb moved.
-//
-// Every action exits non-zero with "not implemented yet" until goose and the
-// embedded migrations land with the L0 store.
 func (r *Hearsay) Migrate(ctx context.Context, databaseUrl *Secret, opts ...HearsayMigrateOpts) (string, error) {
 	assertNotNil("databaseUrl", databaseUrl)
 	if r.migrate != nil {
