@@ -84,6 +84,7 @@ type principalDoc struct {
 	Kind       string        `yaml:"kind"`
 	Class      string        `yaml:"class"`
 	Identities []identityDoc `yaml:"identities"`
+	Members    []string      `yaml:"members"`
 }
 
 // identityDoc is one principal in one source.

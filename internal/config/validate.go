@@ -10,6 +10,7 @@ import (
 	"unicode"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/principal"
 )
 
 // maxEntityIDLen bounds an entity id. Entity ids travel in bundles and in L2
@@ -210,12 +211,19 @@ func (l *loader) buildSources() []connector.SourceConfig {
 }
 
 // buildPrincipals validates `principals/`.
-func (l *loader) buildPrincipals(r Repo) []Principal {
-	out := make([]Principal, 0, len(l.principals))
+func (l *loader) buildPrincipals(r Repo) []principal.Principal {
+	out := make([]principal.Principal, 0, len(l.principals))
 	defined := make(map[string]string, len(l.principals))
 	// identities maps a source-native identity to the principal that claimed
 	// it, so that two principals cannot both be the same person in one source.
 	identities := make(map[string]string)
+	// teams are checked once every principal is known, because a member is a
+	// reference to one and the ids are not all read yet.
+	type team struct {
+		a at
+		p principalDoc
+	}
+	var teams []team
 
 	for i, d := range l.principals {
 		p := d.v
@@ -225,54 +233,90 @@ func (l *loader) buildPrincipals(r Repo) []Principal {
 		switch {
 		case p.ID == "":
 			wrong = "is required: it is what a stance's author, an owner and an authority policy all name"
-		case !isName(p.ID):
+		case !principal.ValidID(p.ID):
 			wrong = fmt.Sprintf("%q is not a principal id: lowercase letters, digits, - and _, starting with a letter or a digit", p.ID)
 		}
 		keep := l.claimID(a, p.ID, wrong, defined)
 
-		// Most principals are people, so kind defaults to human; an agent says
-		// so, because what it may do differs.
-		kind := PrincipalKind(p.Kind)
+		// Most principals are people, so kind defaults to human; an agent or a
+		// team says so, because what each may do differs.
+		kind := principal.Kind(p.Kind)
 		if p.Kind == "" {
-			kind = PrincipalHuman
+			kind = principal.KindHuman
 		}
-		if kind != PrincipalHuman && kind != PrincipalAgent {
-			l.bad(a, "kind", "%q is not a principal kind: want %s or %s", p.Kind, PrincipalHuman, PrincipalAgent)
+		class := principal.Class(p.Class)
+		// What a principal of no known kind was meant to be is unknown, so the
+		// rules that depend on the kind are not run at all. A class, an
+		// identity and a membership are each required or forbidden according
+		// to the kind, so every one of them would report the same mistake
+		// again in its own words.
+		if !kind.Valid() {
+			l.bad(a, "kind", "%q is not a principal kind: want one of %s", p.Kind, join(principal.Kinds()))
+		} else {
+			switch {
+			case kind == principal.KindAgent && p.Class == "":
+				l.bad(a, "class", "is required on an agent: it decides what the agent may read and write. Want one of %s", join(principal.Classes()))
+			case kind != principal.KindAgent && p.Class != "":
+				l.bad(a, "class", "is an agent's access class, and this principal is a %s", kind)
+			case p.Class != "" && !class.Valid():
+				l.bad(a, "class", "%q is not an agent class: want one of %s", p.Class, join(principal.Classes()))
+			}
+
+			if kind == principal.KindTeam {
+				if len(p.Identities) == 0 && len(p.Members) == 0 {
+					l.bad(a, "members", "is required on a team with no identities: a team that neither lists its people nor names a group in a source stands for nobody")
+				}
+				teams = append(teams, team{a, p})
+			} else {
+				if len(p.Identities) == 0 {
+					l.bad(a, "identities", "is required: a principal with no source identity is never matched to anything anyone said")
+				}
+				if len(p.Members) > 0 {
+					l.bad(a, "members", "is a team's membership, and this principal is a %s", kind)
+				}
+			}
 		}
 
-		class := AgentClass(p.Class)
-		switch {
-		case kind == PrincipalAgent && p.Class == "":
-			l.bad(a, "class", "is required on an agent: it decides what the agent may read and write. Want one of %s", join(agentClasses))
-		case kind != PrincipalAgent && p.Class != "":
-			l.bad(a, "class", "is an agent's access class, and this principal is a %s", kind)
-		case p.Class != "" && !slices.Contains(agentClasses, class):
-			l.bad(a, "class", "%q is not an agent class: want one of %s", p.Class, join(agentClasses))
-		}
-
-		if len(p.Identities) == 0 {
-			l.bad(a, "identities", "is required: a principal with no source identity is never matched to anything anyone said")
-		}
 		// The identities are checked either way: an identity two principals
 		// both claim is a mistake in the other one too.
-		principal := Principal{
+		built := principal.Principal{
 			ID:         p.ID,
 			Name:       p.Name,
 			Kind:       kind,
 			Class:      class,
 			Identities: l.buildIdentities(r, a, p, identities),
+			Members:    slices.Clone(p.Members),
 		}
 		if keep {
-			out = append(out, principal)
+			out = append(out, built)
 		}
+	}
+
+	kept := make(map[string]principal.Principal, len(out))
+	for _, p := range out {
+		kept[p.ID] = p
+	}
+	for _, t := range teams {
+		l.names(t.a, "members", t.p.Members, false, func(id string) string {
+			member, ok := kept[id]
+			switch {
+			case id == t.p.ID:
+				return "a team cannot be a member of itself"
+			case !ok:
+				return fmt.Sprintf("no principal is configured with id %q", id)
+			case member.Kind == principal.KindTeam:
+				return fmt.Sprintf("%q is a team, and a team may not contain a team: list its people and agents", id)
+			}
+			return ""
+		})
 	}
 	return out
 }
 
 // buildIdentities validates one principal's identities and records them so that
 // a second principal claiming the same one is caught.
-func (l *loader) buildIdentities(r Repo, a at, p principalDoc, identities map[string]string) []Identity {
-	out := make([]Identity, 0, len(p.Identities))
+func (l *loader) buildIdentities(r Repo, a at, p principalDoc, identities map[string]string) []principal.Identity {
+	out := make([]principal.Identity, 0, len(p.Identities))
 	for j, id := range p.Identities {
 		field := fmt.Sprintf("identities[%d]", j)
 		if _, ok := r.Source(id.Source); id.Source == "" {
@@ -280,25 +324,31 @@ func (l *loader) buildIdentities(r Repo, a at, p principalDoc, identities map[st
 		} else if !ok {
 			l.bad(a, field+".source", "no source is configured with id %q", id.Source)
 		}
-		if id.NativeID == "" && id.Handle == "" {
+		if id.NativeID == "" && principal.FoldHandle(id.Handle) == "" {
 			l.bad(a, field, "needs a native_id or a handle: a native id survives a rename, a handle is what a person can type")
 		}
-		for _, claimed := range []struct{ key, value string }{{"native_id", id.NativeID}, {"handle", id.Handle}} {
-			key, value := claimed.key, claimed.value
-			if value == "" {
+		// A handle is claimed folded, because that is how the resolver matches
+		// it: two principals writing one login in different cases is caught
+		// here rather than becoming an ambiguous author at ingest.
+		for _, c := range []struct{ key, written, matched, note string }{
+			{"native_id", id.NativeID, id.NativeID, ""},
+			{"handle", id.Handle, principal.FoldHandle(id.Handle), ", and handles are matched ignoring case"},
+		} {
+			if c.matched == "" {
 				continue
 			}
-			claim := id.Source + " " + key + " " + value
+			claim := id.Source + " " + c.key + " " + c.matched
 			if owner, taken := identities[claim]; taken && owner != p.ID {
-				l.bad(a, field+"."+key, "%q in source %q is already principal %q: one identity is one person", value, id.Source, owner)
+				l.bad(a, field+"."+c.key, "%q in source %q is already principal %q: one identity is one person%s",
+					c.written, id.Source, owner, c.note)
 				continue
 			}
 			identities[claim] = p.ID
 		}
-		// The schema type and the parsed type carry the same three fields, so
-		// the compiler checks this conversion: adding a field to one without
+		// The schema type and the identity model carry the same three fields,
+		// so the compiler checks this conversion: adding a field to one without
 		// the other fails the build rather than dropping it silently.
-		out = append(out, Identity(id))
+		out = append(out, principal.Identity(id))
 	}
 	return out
 }

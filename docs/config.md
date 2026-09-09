@@ -141,8 +141,8 @@ part of onboarding worth spending effort on.
 ```yaml
 - id: kyle                   # required; the id stances, owners and authority use
   name: Kyle Penfound        # optional
-  kind: human                # optional; human (the default) or agent
-  identities:                # required; at least one
+  kind: human                # optional; human (the default), agent or team
+  identities:                # required on a human and an agent; at least one
     - source: github
       native_id: "MDQ6VXNlcjE="
       handle: kpenfound
@@ -155,21 +155,118 @@ part of onboarding worth spending effort on.
   identities:
     - source: github
       handle: "shed-agent[bot]"
+
+- id: api-team
+  kind: team
+  members: [kyle, shed]      # principal ids; a team may not contain a team
 ```
 
 An identity needs a `native_id`, a `handle`, or both.
 
 - `native_id` is the source's stable id — a GitHub node id, a Discord user id, a
-  Google account id. It survives a rename, so it is the key to match on.
+  Google account id. It survives a rename, so it is the key to match on. It is
+  matched byte for byte: a GitHub node id is base64, and its case is meaning.
 - `handle` is the login, @-name or email address the source shows: what a person
   can actually type. A handle-only identity stops matching the day its owner
   renames themselves. That is a real cost, and it is still the right default for
   onboarding — write handles to get started, and fill in native ids for the
-  people whose history matters.
+  people whose history matters. Handles are matched ignoring case and
+  surrounding space, so `KPenfound` and `kpenfound` are one handle.
 
-Two principals may not claim the same identity in the same source. An agent's
-`class` is what it may read and write ([access control](design.md#access-control));
-a human does not have one.
+Two principals may not claim the same identity in the same source.
+
+### The id, and how it is minted
+
+A principal id is written by hand, here, and nothing derives it from a source: a
+principal outlives any one source's idea of who they are. It is 1 to 64 bytes of
+lowercase letters, digits, `-` and `_`, starting with a letter or a digit — the
+same shape as a source id and a scope id, so there is one rule for every name a
+person types into configuration.
+
+It is then used bare wherever a principal is named: a stance's author, an
+`owners` entry, an authority policy, an L1 participant, and an L2 entity of type
+`person` or `team`, which carry the type beside the id rather than in it
+([design](design.md#l1-distilled-documents)). This is the difference from a code
+entity's `code:` or a tracker item's `tracker:<source>:<project>#<item>` — those
+name something *inside* a source and need a namespace to stay apart. A principal
+id names nothing inside a source, so it has no prefix and there is nothing to
+derive.
+
+### The three kinds
+
+`human` is a person, and is the default because most principals are people.
+
+`agent` is an agent — agents are principals too, and say what they said the same
+way a person does. An agent's `class` is what it may read and write
+([access control](design.md#access-control)) and is required; a human and a team
+do not have one.
+
+`team` is a group. A team owns code entities and stands in a source's ACLs as a
+group; it never authors anything, because a team cannot say something — one of
+its members does. A team says who it is in one of two ways, and may use both:
+
+- `members`, a list of principal ids. A team may not contain a team, so this is
+  a list and not a hierarchy: nest teams in the source, and list the people here.
+- `identities`, when the source has the group itself — a GitHub team, a Discord
+  role. Then the source keeps the membership and the mapping only has to name
+  it, which is what makes a team worth configuring at all.
+
+A team with neither names nobody and is rejected.
+
+A group is looked up by both keys, like anyone else, because a source names one
+both ways: a GitHub team is a node id in an ACL and the slug `acme/api-team` in
+CODEOWNERS. Writing only the slug is enough, and is what onboarding produces.
+Write the group as the source spells it — `acme/api-team`, not the
+`@acme/api-team` a CODEOWNERS line carries, the way a tracker item is `1234` and
+not `#1234`.
+
+### How an identity resolves
+
+Every event a connector emits carries identity hints: who wrote the artifact,
+who else took part, who was mentioned. A hint is what the source says — a native
+id, a handle, sometimes an email address — and never a Hearsay principal id
+([the connector contract](connector-contract.md)). Turning one into the other is
+the resolver's job, and it works from what is written here.
+
+- **Matching is per source.** A handle in one source is no evidence about a
+  handle in another, so a person is listed once per source they appear in.
+- **Three keys.** The hint's native id, its handle, and its email address, which
+  is matched against handles — an identity in `drive` or a calendar attendee is
+  written as an email in `handle`, because that is what a person can type.
+- **Every key that matches counts.** Keys that agree are one match. Keys that
+  name *different* principals are ambiguous, and the identity is left unresolved
+  rather than decided by preferring the stable id: they disagree only when this
+  file has fallen behind a rename in the source, and quietly preferring one key
+  would hide that for good.
+- **Nothing is silently dropped.** An identity that is unknown or ambiguous is
+  recorded for a person to map. The event keeps the hint — L0 is append-only —
+  so authorship comes back on its own once the mapping is fixed and the
+  documents are distilled again. No placeholder principal is invented.
+- **That record is bounded**, at 4096 distinct identities per process. Its keys
+  come from sources, so an unbounded one would hold every bot that ever posted.
+  Past the bound a process counts the sightings it dropped instead of keeping
+  them, and reports the count beside the list: a non-zero count says the list is
+  a sample and the mapping is a long way behind. The events themselves are
+  untouched either way, so nothing is lost that re-distilling cannot recover.
+
+### Agent classes
+
+An agent's class is the ceiling on what it may do, from
+[access control](design.md#access-control). The four are a chain: each may do
+everything the one before it may.
+
+|Class|Reads|Writes|
+|---|---|---|
+|`observer`|the L1 and L3 of the scopes it is granted|nothing|
+|`worker`|its scopes, plus the code entities they link to|`assert` (proposals)|
+|`orchestrator`|the same, and it is usually granted several scopes|`assert`, subscribe|
+|`steward`|everything ingested|ratify, merge topics|
+
+An agent never gets more than the person it is acting for: a read runs as the
+intersection of the agent's grants and theirs. Ratifying and merging topics are
+human actions, and an agent does not get them from the steward class alone — the
+class exists so the door is there, closed. Which scopes a principal is granted
+is not configured here yet; enforcement lands in v0.2.0 and v0.6.0.
 
 ## `code/`
 
@@ -349,8 +446,9 @@ is checked in one pass.
 
 Beyond the per-field rules above, the loader checks what only makes sense across
 objects: every reference resolves (a scope's sources, a policy's principals, an
-owner, a parent entity), no two objects share an id, no two principals claim one
-identity, no alias means two things, `part_of` has no cycles, and there is at
+owner, a team's members, a parent entity), no two objects share an id, no two
+principals claim one identity, no team contains a team, no alias means two
+things, `part_of` has no cycles, and there is at
 least one source and one scope — a configuration with neither ingests nothing
 and serves nothing.
 
@@ -440,6 +538,16 @@ principals:
       - source: github
         handle: shed-agent[bot]
 
+  # The GitHub team owns the engine, so the source keeps the membership and
+  # this only has to name it.
+  - id: api-team
+    name: API team
+    kind: team
+    identities:
+      - source: github
+        native_id: MDQ6VGVhbTE=
+        handle: acme/api-team
+
 code:
   - id: code:acme/api
     type: project
@@ -456,7 +564,7 @@ code:
     aliases: [engine, the engine, engine server]
     path_patterns: [engine/server/**]
     part_of: [code:acme/api]
-    owners: [kyle]
+    owners: [kyle, api-team]
     repo:
       source: github
       project: acme/api
@@ -569,6 +677,19 @@ entities: [code:acme/api, code:acme/api:engine/server]
       handle: shed-agent[bot]
 ```
 
+<!-- example: dir/principals/teams.yaml -->
+```yaml
+# principals/teams.yaml — the GitHub team owns the engine, so the source keeps
+# the membership and this only has to name it.
+- id: api-team
+  name: API team
+  kind: team
+  identities:
+    - source: github
+      native_id: MDQ6VGVhbTE=
+      handle: acme/api-team
+```
+
 <!-- example: dir/code/api.yaml -->
 ```yaml
 # code/api.yaml
@@ -587,7 +708,7 @@ entities: [code:acme/api, code:acme/api:engine/server]
   aliases: [engine, the engine, engine server]
   path_patterns: [engine/server/**]
   part_of: [code:acme/api]
-  owners: [kyle]
+  owners: [kyle, api-team]
   repo:
     source: github
     project: acme/api
@@ -622,9 +743,13 @@ here that stops working stops the build.
 
 Named deliberately, so that the absence is a decision rather than an oversight.
 
-- **Teams as principals.** CODEOWNERS names teams, and owners here are people
-  and agents. Teams need a membership model that composes with identity
-  mapping; until then, list the people.
+- **Nested teams.** A team may not contain a team. GitHub and Discord both nest
+  groups; flattening them here keeps membership a list rather than a second
+  hierarchy to walk and to check for cycles. Claim the group as an identity and
+  let the source do the nesting.
+- **Per-principal grants.** Which scopes a principal may read is part of the
+  identity model but is not configured here yet: only the agent class ceiling
+  is. Enforcement, and the grants it reads, land in v0.2.0 and v0.6.0.
 - **Reload without a restart.** ADR-0009 has the reasons and what would have to
   be true first.
 - **Per-scope ACLs.** Access control is inherited from the source at ingest, not

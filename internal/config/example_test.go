@@ -10,6 +10,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/principal"
 )
 
 // docsPath is the schema documentation, which carries the example this package
@@ -119,12 +120,44 @@ func TestDocsExampleIsTheConfigurationItDescribes(t *testing.T) {
 	}
 
 	agent, ok := repo.Principal("shed")
-	if !ok || agent.Kind != config.PrincipalAgent || agent.Class != config.ClassWorker {
+	if !ok || agent.Kind != principal.KindAgent || agent.Class != principal.ClassWorker {
 		t.Errorf("principal shed = %+v, %v, want an agent of class worker", agent, ok)
 	}
 	human, ok := repo.Principal("kyle")
-	if !ok || human.Kind != config.PrincipalHuman {
+	if !ok || human.Kind != principal.KindHuman {
 		t.Errorf("principal kyle = %+v, %v, want a human", human, ok)
+	}
+	// The example's team is a GitHub team, so the source holds the membership
+	// and the mapping only names it.
+	team, ok := repo.Principal("api-team")
+	if !ok || team.Kind != principal.KindTeam || len(team.Members) != 0 || len(team.Identities) != 1 {
+		t.Errorf("principal api-team = %+v, %v, want a team that claims a group", team, ok)
+	}
+
+	// Principals come out as the identity model, so the resolver the example
+	// describes is the one it builds.
+	resolver, err := repo.Resolver()
+	if err != nil {
+		t.Fatalf("Resolver: %v", err)
+	}
+	for _, tt := range []struct {
+		hint connector.Identity
+		want string
+	}{
+		{connector.Identity{Source: "github", Kind: connector.IdentityUser, NativeID: "MDQ6VXNlcjE="}, "kyle"},
+		{connector.Identity{Source: "discord", Kind: connector.IdentityUser, Handle: "Robin"}, "robin"},
+		{connector.Identity{Source: "drive", Kind: connector.IdentityUser, Email: "kyle@acme.example"}, "kyle"},
+		{connector.Identity{Source: "github", Kind: connector.IdentityBot, Handle: "shed-agent[bot]"}, "shed"},
+		{connector.Identity{Source: "github", Kind: connector.IdentityUser, NativeID: "MDQ6VGVhbTE="}, "api-team"},
+	} {
+		if got := resolver.Resolve(tt.hint); got.Status != principal.Resolved || got.Principal.ID != tt.want {
+			t.Errorf("the example resolves %+v to %+v, want %s", tt.hint, got, tt.want)
+		}
+	}
+	// An owner may be a team as well as a person.
+	engine, ok := repo.CodeEntity("code:acme/api:engine/server")
+	if !ok || !slices.Equal(engine.Owners, []string{"kyle", "api-team"}) {
+		t.Errorf("the engine's owners = %v", engine.Owners)
 	}
 
 	// Sources come out as what the connector runtime consumes, allowlist and
@@ -238,7 +271,7 @@ func normalize(r config.Repo) config.Repo {
 	r.Digest = ""
 	slices.SortFunc(r.Sources, func(a, b connector.SourceConfig) int { return strings.Compare(a.ID, b.ID) })
 	slices.SortFunc(r.Scopes, func(a, b config.Scope) int { return strings.Compare(a.ID, b.ID) })
-	slices.SortFunc(r.Principals, func(a, b config.Principal) int { return strings.Compare(a.ID, b.ID) })
+	slices.SortFunc(r.Principals, func(a, b principal.Principal) int { return strings.Compare(a.ID, b.ID) })
 	slices.SortFunc(r.Code, func(a, b config.CodeEntity) int { return strings.Compare(a.ID, b.ID) })
 	return r
 }

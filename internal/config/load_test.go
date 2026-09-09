@@ -5,10 +5,13 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/principal"
 )
 
 // base is the smallest valid configuration, in the directory form. Tests add to
@@ -259,6 +262,67 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 			files: with(map[string]string{"principals/p.yaml": "id: shed\nkind: agent\nclass: superuser\nidentities: [{source: github, handle: shed}]\n"}),
 			want:  []string{`principal "shed": class: "superuser" is not an agent class`},
 		},
+		{
+			name:  "a principal kind that does not exist",
+			files: with(map[string]string{"principals/p.yaml": "id: kyle\nkind: robot\nidentities: [{source: github, handle: kpenfound}]\n"}),
+			want:  []string{`principal "kyle": kind: "robot" is not a principal kind: want one of human, agent, team`},
+		},
+		{
+			// Every other rule about a principal depends on its kind, so a kind
+			// nobody knows is reported once and the rest are not run: with them
+			// this is four problems, all of them the same mistake.
+			name:  "a principal kind that does not exist, and nothing else fits it",
+			files: with(map[string]string{"principals/p.yaml": "id: kyle\nkind: robot\nclass: worker\nmembers: [robin]\n"}),
+			want:  []string{`principal "kyle": kind: "robot" is not a principal kind`},
+		},
+		{
+			// One login written in two cases is one identity, because that is
+			// how the resolver matches it. Catching it here is what stops it
+			// from becoming an ambiguous author at ingest.
+			name: "two principals claiming one handle in different cases",
+			files: with(map[string]string{"principals/p.yaml": "" +
+				"- id: kyle\n  identities: [{source: github, handle: KPenfound}]\n" +
+				"- id: robin\n  identities: [{source: github, handle: kpenfound}]\n"}),
+			want: []string{`principal "robin": identities[0].handle: "kpenfound" in source "github" is already principal "kyle": one identity is one person, and handles are matched ignoring case`},
+		},
+		{
+			name:  "a team that stands for nobody",
+			files: with(map[string]string{"principals/p.yaml": "id: api-team\nkind: team\n"}),
+			want:  []string{`principal "api-team": members: is required on a team with no identities`},
+		},
+		{
+			name:  "a member who is not a principal",
+			files: with(map[string]string{"principals/p.yaml": "id: api-team\nkind: team\nmembers: [kyle]\n"}),
+			want:  []string{`principal "api-team": members[0]: no principal is configured with id "kyle"`},
+		},
+		{
+			name: "a team inside a team",
+			files: with(map[string]string{"principals/p.yaml": "" +
+				"- id: kyle\n  identities: [{source: github, handle: kpenfound}]\n" +
+				"- id: api-team\n  kind: team\n  members: [kyle]\n" +
+				"- id: eng\n  kind: team\n  members: [api-team]\n"}),
+			want: []string{`principal "eng": members[0]: "api-team" is a team, and a team may not contain a team`},
+		},
+		{
+			// Reported once, as being a member of itself, rather than twice by
+			// also being a team inside a team.
+			name:  "a team inside itself",
+			files: with(map[string]string{"principals/p.yaml": "id: eng\nkind: team\nmembers: [eng]\n"}),
+			want:  []string{`principal "eng": members[0]: a team cannot be a member of itself`},
+		},
+		{
+			name:  "a person with members",
+			files: with(map[string]string{"principals/p.yaml": "id: kyle\nmembers: [robin]\nidentities: [{source: github, handle: kpenfound}]\n"}),
+			want:  []string{`principal "kyle": members: is a team's membership, and this principal is a human`},
+		},
+		{
+			name:  "a team with an agent class",
+			files: with(map[string]string{"principals/p.yaml": "id: eng\nkind: team\nclass: steward\nmembers: [kyle]\n"}),
+			want: []string{
+				`principal "eng": class: is an agent's access class, and this principal is a team`,
+				`principal "eng": members[0]: no principal is configured with id "kyle"`,
+			},
+		},
 
 		// Code entities.
 		{
@@ -468,6 +532,62 @@ func containsSubstring(problems []string, want string) bool {
 
 // A problem is reachable through the aggregate, so a caller can pick out the
 // file and line rather than parsing the message.
+// A `principals/` that is valid comes out as the identity model, and the Repo
+// builds the resolver ingest resolves identity hints against.
+func TestLoadPrincipalsAndResolver(t *testing.T) {
+	repo, err := config.Load(writeFiles(t, with(map[string]string{
+		"principals/p.yaml": "" +
+			"- id: kyle\n  name: Kyle Penfound\n  identities: [{source: github, native_id: MDQ6VXNlcjE=, handle: KPenfound}]\n" +
+			// A native id is matched byte for byte, so two that differ only in
+			// case are two identities. A GitHub node id is base64: its case is
+			// meaning rather than spelling.
+			"- id: robin\n  identities: [{source: github, native_id: mdq6vxnlcje=}]\n" +
+			"- id: shed\n  kind: agent\n  class: worker\n  identities: [{source: github, handle: \"shed-agent[bot]\"}]\n" +
+			"- id: api-team\n  kind: team\n  members: [kyle, shed]\n" +
+			// A team that claims a source's group needs no members: the group
+			// is the membership, and the source keeps it up to date.
+			"- id: eng\n  kind: team\n  identities: [{source: github, native_id: MDQ6VGVhbTE=}]\n",
+	})))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	kyle, ok := repo.Principal("kyle")
+	if !ok || kyle.Kind != principal.KindHuman || kyle.Name != "Kyle Penfound" {
+		t.Errorf("Principal(kyle) = %+v, %v", kyle, ok)
+	}
+	// A handle is stored as it was written, and folded when it is matched.
+	if len(kyle.Identities) != 1 || kyle.Identities[0].Handle != "KPenfound" {
+		t.Errorf("kyle's identities = %+v", kyle.Identities)
+	}
+	if len(kyle.Members) != 0 {
+		t.Errorf("kyle has members %v: only a team does", kyle.Members)
+	}
+	if team, ok := repo.Principal("api-team"); !ok || team.Kind != principal.KindTeam ||
+		!slices.Equal(team.Members, []string{"kyle", "shed"}) {
+		t.Errorf("Principal(api-team) = %+v, %v", team, ok)
+	}
+
+	r, err := repo.Resolver()
+	if err != nil {
+		t.Fatalf("Resolver: %v", err)
+	}
+	for _, tt := range []struct {
+		hint connector.Identity
+		want string
+	}{
+		{connector.Identity{Source: "github", Handle: "kpenfound"}, "kyle"},
+		{connector.Identity{Source: "github", NativeID: "MDQ6VXNlcjE="}, "kyle"},
+		{connector.Identity{Source: "github", NativeID: "mdq6vxnlcje="}, "robin"},
+		{connector.Identity{Source: "github", Handle: "shed-agent[bot]"}, "shed"},
+		{connector.Identity{Source: "github", NativeID: "MDQ6VGVhbTE="}, "eng"},
+	} {
+		if got := r.Resolve(tt.hint); got.Status != principal.Resolved || got.Principal.ID != tt.want {
+			t.Errorf("Resolve(%+v) = %+v, want %s", tt.hint, got, tt.want)
+		}
+	}
+}
+
 func TestInvalidErrorUnwrapsToProblems(t *testing.T) {
 	root := writeFiles(t, with(map[string]string{"scopes/api.yaml": "id: api\nsources: [github, discord]\n"}))
 	_, err := config.Load(root)
