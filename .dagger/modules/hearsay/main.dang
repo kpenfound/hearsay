@@ -1,0 +1,318 @@
+"""
+Hearsay's own Dagger module: the binary, the container image, migrations, the
+local dev stack, and the checks the reusable Go module does not cover.
+
+The tests and the generate drift check are the Go module's (github.com/dagger/go,
+installed in dagger.toml). Everything here is what that module could not know
+about Hearsay.
+"""
+type Hearsay {
+  """
+  The repository, as every command here sees it.
+
+  .dagger is excluded because nothing here builds it, and including it would
+  invalidate every cached step on each edit to a module.
+  """
+  source(ws: Workspace!): Directory! {
+    ws.directory("/", exclude: [".git", ".bees", ".dagger", "dist", "hearsay"])
+  }
+
+  """
+  The Go release go.mod asks for.
+
+  Read rather than pinned, so the floor moves in go.mod and nothing here has to
+  be edited to follow (ADR-0010). dagger.lock is the exception: it records the
+  resolved digest of golang:<this version>, and a raise leaves it pinning the
+  release the floor moved off until someone re-pins it. CONTRIBUTING.md's
+  "Raising the Go floor" has the procedure.
+  """
+  goVersion(ws: Workspace!): String! {
+    let goMod = ws.directory("/", include: ["go.mod"]).file("go.mod").contents
+    let directive = goMod.match(`(?m)^go\s+(\d+\.\d+(?:\.\d+)?)\s*$`)
+    if (directive == null) {
+      raise "go.mod has no go directive"
+    } else {
+      directive.captures[0]!
+    }
+  }
+
+  """
+  The container every Go command runs in: the toolchain go.mod asks for, the
+  caches, and the source at /src.
+  """
+  goBase(ws: Workspace!): Container! {
+    withGoCaches(container.from("golang:" + goVersion(ws)))
+      .withMountedDirectory("/src", source(ws))
+      .withWorkdir("/src")
+  }
+
+  """
+  golangci-lint's own image, sharing the Go caches so that the toolchain it
+  fetches is fetched once.
+
+  The version is the one CONTRIBUTING.md tells a contributor to match. The
+  image carries a Go toolchain of its own, which may be older than the one
+  go.mod asks for; GOTOOLCHAIN=auto fetches the right one into the shared
+  module cache. The linter binary itself must be built with a Go release at
+  least as new as go.mod's, or it refuses to load the config — the reason the
+  Go module's own lint check is switched off in dagger.toml.
+  """
+  let lintBase(ws: Workspace!): Container! {
+    withGoCaches(container.from("golangci/golangci-lint:v2.13.2"))
+      .withEnvVariable("GOLANGCI_LINT_CACHE", "/cache/golangci-lint")
+      .withMountedCache("/cache/golangci-lint", cacheVolume("hearsay-golangci-lint"))
+      .withMountedDirectory("/src", source(ws))
+      .withWorkdir("/src")
+  }
+
+  let withGoCaches(ctr: Container!): Container! {
+    ctr
+      .withEnvVariable("GOPATH", "/go")
+      .withEnvVariable("GOCACHE", "/cache/go-build")
+      .withEnvVariable("GOTOOLCHAIN", "auto")
+      .withMountedCache("/go/pkg/mod", cacheVolume("hearsay-go-mod"))
+      .withMountedCache("/cache/go-build", cacheVolume("hearsay-go-build"))
+  }
+
+  """
+  Lint the module: go vet, golangci-lint and the formatter check.
+
+  Formatting is part of the lint gate, not a separate ritual: `fmt --diff`
+  prints what `golangci-lint fmt` would change and fails if there is anything.
+  """
+  lint(ws: Workspace!): Void @check {
+    # A record evaluates its fields concurrently, so vet and the linter run in
+    # parallel and the check fails on whichever finishes first with an error.
+    {{
+      vet: goBase(ws).withExec(["go", "vet", "./..."]).sync,
+      golangci: lintBase(ws)
+        .withExec(["golangci-lint", "run"])
+        .withExec(["golangci-lint", "fmt", "--diff"])
+        .sync,
+    }}
+    null
+  }
+
+  """
+  Runs the tests tagged `integration` against a real Postgres with pgvector.
+
+  ADR-0006 puts `hearsay migrate up` between the database and the tests, so
+  that a missing migration fails the check rather than being papered over by a
+  fixture. It runs from the code under test, and it is also what proves the
+  image is the pgvector build: migration 1 creates the extension, and stock
+  Postgres fails there — the mistake ADR-0004 warns about.
+
+  The Go module's own test check runs the untagged tests; these carry the tag
+  so that a plain `go test ./...` skips them on a machine with no Postgres.
+  """
+  integrationTest(ws: Workspace!): Void @check {
+    goBase(ws)
+      .withServiceBinding("postgres", postgres)
+      .withEnvVariable("HEARSAY_DATABASE_URL", databaseUrl)
+      .withExec(["go", "run", "./cmd/hearsay", "migrate", "up"])
+      .withExec(["go", "test", "-race", "-tags=integration", "./..."])
+      .sync
+    null
+  }
+
+  """
+  Fails if `go mod tidy` would change go.mod or go.sum.
+  """
+  tidyCheck(ws: Workspace!): Void @check {
+    goBase(ws)
+      .withExec(["sh", "-c", """
+        set -e
+        cp go.mod /tmp/go.mod.before
+        cp go.sum /tmp/go.sum.before
+        go mod tidy
+        diff -u /tmp/go.mod.before go.mod
+        diff -u /tmp/go.sum.before go.sum
+      """])
+      .sync
+    null
+  }
+
+  """
+  Builds the container image, so that an image that no longer builds fails here
+  rather than at a release.
+  """
+  imageCheck(ws: Workspace!): Void @check {
+    image(ws).sync
+    null
+  }
+
+  """
+  The hearsay binary, compiled for Linux on the engine's own architecture.
+  Static (CGO_ENABLED=0), so the runtime image only has to supply certificates
+  and timezones.
+  """
+  build(
+    ws: Workspace!,
+    """
+    Version to stamp into the binary. Empty means what internal/version works
+    out for itself.
+    """
+    version: String! = "",
+  ): File! {
+    let ldflags = if (version == "") {
+      "-s -w"
+    } else {
+      "-s -w -X github.com/kpenfound/hearsay/internal/version.version=" + version
+    }
+    goBase(ws)
+      .withEnvVariable("CGO_ENABLED", "0")
+      .withEnvVariable("GOOS", "linux")
+      # go build does not create the directory it is told to write into.
+      .withDirectory("/out", directory)
+      .withExec(["go", "build", "-trimpath", "-ldflags", ldflags, "-o", "/out/hearsay", "./cmd/hearsay"])
+      .file("/out/hearsay")
+  }
+
+  """
+  The container image hearsay ships in. One image runs all four services; the
+  subcommand is the argument (ADR-0003).
+  """
+  image(
+    ws: Workspace!,
+    """
+    Version to stamp into the binary.
+    """
+    version: String! = "",
+  ): Container! {
+    container
+      .from("alpine:3.22")
+      .withExec(["apk", "add", "--no-cache", "ca-certificates", "tzdata"])
+      .withFile("/usr/local/bin/hearsay", build(ws, version: version))
+      .withUser("nobody")
+      .withEntrypoint(["/usr/local/bin/hearsay"])
+      # The base image's CMD would otherwise be handed to hearsay as a
+      # subcommand. With no default the image prints its usage and exits
+      # non-zero, which is the right answer to "run hearsay" with no service.
+      .withoutDefaultArgs
+  }
+
+  """
+  The throwaway Postgres the tests and the dev stack run against.
+
+  The pgvector build, not stock Postgres: ADR-0004 puts the embedding column on
+  the L1 table, so a plain server fails on the first migration. Postgres 16 is
+  the minimum that ADR sets. The credentials are a local throwaway's and the
+  same everywhere.
+  """
+  postgres: Service! {
+    container
+      .from("pgvector/pgvector:pg16")
+      .withEnvVariable("POSTGRES_USER", "hearsay")
+      .withEnvVariable("POSTGRES_PASSWORD", "hearsay")
+      .withEnvVariable("POSTGRES_DB", "hearsay")
+      .withExposedPort(5432)
+      .asService(useEntrypoint: true)
+  }
+
+  """
+  The connection URL for that Postgres, reachable under the service binding
+  alias `postgres`. The binary reads it from HEARSAY_DATABASE_URL.
+  """
+  databaseUrl: String! = "postgres://hearsay:hearsay@postgres:5432/hearsay?sslmode=disable"
+
+  """
+  Applies the schema migrations to a database (ADR-0006), as a job from the
+  image that is being deployed rather than a container of its own.
+  """
+  migrate(
+    ws: Workspace!,
+    """
+    Postgres connection URL, for example
+    postgres://hearsay:hearsay@localhost:5432/hearsay.
+    """
+    databaseUrl: Secret!,
+    """
+    up, status, up-to or down.
+    """
+    action: String! = "up",
+    """
+    The target version, for up-to.
+    """
+    arg: String! = "",
+  ): String! {
+    image(ws)
+      .withSecretVariable("HEARSAY_DATABASE_URL", databaseUrl)
+      .withExec(["migrate", action] + (if (arg == "") { [] :: [String!]! } else { [arg] }), useEntrypoint: true)
+      .stdout
+  }
+
+  """
+  The image with its runtime dependencies attached: Postgres bound as a service
+  and HEARSAY_DATABASE_URL pointing at it. Everything that runs the binary for
+  development builds on this.
+  """
+  let runtime(ws: Workspace!): Container! {
+    image(ws)
+      .withServiceBinding("postgres", postgres)
+      .withEnvVariable("HEARSAY_DATABASE_URL", databaseUrl)
+  }
+
+  """
+  The runtime plus what a person or a test plan poking at it needs: root, so
+  `apk add` works for whatever the session turns out to need, and psql already
+  pointed at the database.
+  """
+  let sandbox(ws: Workspace!): Container! {
+    runtime(ws)
+      .withUser("root")
+      .withExec(["apk", "add", "--no-cache", "postgresql16-client"])
+      .withEnvVariable("PGHOST", "postgres")
+      .withEnvVariable("PGUSER", "hearsay")
+      .withEnvVariable("PGPASSWORD", "hearsay")
+      .withEnvVariable("PGDATABASE", "hearsay")
+  }
+
+  """
+  An interactive shell in an isolated copy of the runtime: the image hearsay
+  ships in, the binary on PATH, Postgres running beside it, and both
+  HEARSAY_DATABASE_URL and psql pointed at it. Changes are live: it is built
+  from the working tree, and the rebuild is a cached one.
+
+      dagger api call hearsay playground
+  """
+  playground(ws: Workspace!): Container! {
+    sandbox(ws).terminal
+  }
+
+  """
+  Runs a test plan in the same environment as `playground`, without a terminal.
+  The script is written to /test.sh and run with sh; the result is its combined
+  stdout and stderr, followed by its exit code. The exit code is reported rather
+  than raised, so a failing plan still returns its transcript.
+
+      dagger api call hearsay qa --script 'hearsay version; psql -c "select 1"'
+  """
+  qa(
+    ws: Workspace!,
+    """
+    The shell script to run, as the contents of /test.sh.
+    """
+    script: String!,
+  ): String! {
+    sandbox(ws)
+      .withNewFile("/test.sh", script)
+      .withExec(["sh", "-c", "sh /test.sh 2>&1; echo \"exit code: $?\""])
+      .stdout
+  }
+
+  """
+  The local stack: Postgres with pgvector, and all four services in one process
+  (ADR-0003's `hearsay all`).
+
+  There is no file watcher. Restarting is the reload: stop `dagger up` and run
+  it again, and the rebuild is a cached one.
+  """
+  dev(ws: Workspace!): Service! @up {
+    runtime(ws)
+      # The API is a stub and listens on nothing, so the port is here for the
+      # tunnel rather than for a server. Drop the health check exemption when
+      # the API grows a listener.
+      .withExposedPort(8080, description: "hearsay API (HTTP and MCP)", experimentalSkipHealthcheck: true)
+      .asService(useEntrypoint: true, args: ["all", "--log-level", "debug", "--log-format", "text"])
+  }
+}

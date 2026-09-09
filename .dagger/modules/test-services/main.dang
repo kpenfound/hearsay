@@ -1,0 +1,26 @@
+"""
+The container the reusable Go module runs Hearsay's tests in.
+
+The Go module (github.com/dagger/go) owns the test logic and knows nothing
+about Hearsay. Its `base` setting in dagger.toml is wired to `goTestBase`
+here, so every container it runs `go test` in has the database beside it.
+Everything project-specific — the Go release, the Postgres — comes from the
+hearsay module, so it is written down once.
+"""
+type TestServices {
+  """
+  A Go image with Postgres bound as a service and HEARSAY_DATABASE_URL pointing
+  at it.
+
+  Deliberately minimal — only an image, a service binding and an address. The
+  Go module adds its own source, working directory and caches on top. The image
+  must be the Go module's own base image (alpine), because it also builds the
+  module's helper binaries.
+  """
+  goTestBase(ws: Workspace!): Container! {
+    container
+      .from("golang:" + hearsay.goVersion(ws) + "-alpine")
+      .withServiceBinding("postgres", hearsay.postgres)
+      .withEnvVariable("HEARSAY_DATABASE_URL", hearsay.databaseUrl)
+  }
+}

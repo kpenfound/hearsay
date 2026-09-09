@@ -18,10 +18,10 @@ without the reasons.
   With the default `GOTOOLCHAIN=auto`, an older toolchain fetches the right one
   on the first build.
 
-  `go.mod` is the only place a person writes that version, but it is not the
-  only file that carries one: raising the floor also re-pins `dagger.lock`, and
-  `.dagger/go.mod` is the SDK's, not ours. [Raising the Go
-  floor](#raising-the-go-floor) has both.
+  `go.mod` is the only place a person writes that version: the Dagger module
+  reads the `go` directive and runs every Go command in `golang:<that>`. It is
+  not the only file that carries one, though — `dagger.lock` pins that image's
+  digest. [Raising the Go floor](#raising-the-go-floor) has both.
 - [Dagger](https://dagger.io) and a container runtime. Dagger is how everything
   runs: lint, tests, the binary, the image, migrations and the local stack.
 
@@ -33,8 +33,9 @@ without the reasons.
   export DAGGER_X_RELEASE=v1.0.0-beta.11   # or --x-release=v1.0.0-beta.11 per command
   ```
 
-  `.dagger/dagger-module.toml` pins the same version, and `dagger.toml` is the
-  workspace: which modules are installed and how they are configured.
+  `dagger.toml` is the workspace: which modules are installed and how they are
+  configured. Each module under `.dagger/modules/` pins the same engine version
+  in its `dagger-module.toml`.
 - [golangci-lint](https://golangci-lint.run) v2 for lint and formatting, if you
   want to run it outside Dagger. The module pins the version it runs; match it
   if a lint failure looks like a disagreement.
@@ -55,74 +56,129 @@ dagger check hearsay:lint      # run one
 dagger check --failfast        # stop at the first failure instead of seeing all of them
 ```
 
-The checks are the `+check` functions in `.dagger/main.go`:
+Two modules share the work. The reusable Go module,
+[`github.com/dagger/go`](https://github.com/dagger/go), finds every `go.mod`
+in the workspace and owns the tests and the `go generate` drift check; it knows
+nothing about Hearsay. `hearsay`, in `.dagger/modules/hearsay/main.dang`, is
+ours and holds everything that module could not know: lint, the integration
+tests, the tidy and image checks, the binary, the image, migrations and the dev
+stack.
 
-| Check | Does |
-|---|---|
-| `lint` | `go vet`, `golangci-lint run`, `golangci-lint fmt --diff` |
-| `tidy-check` | fails if `go mod tidy` would change `go.mod` or `go.sum` |
-| `unit-test` | `go test -race ./...` |
-| `integration-test` | the same, tagged `integration`, against a pgvector Postgres |
-| `image-check` | builds the binary and the container image |
+| Check | From | Does |
+|---|---|---|
+| `go:test-all` | Go module | `go test ./...` in every Go module, each test its own span |
+| `go:generate-all` | Go module | fails if `go generate` would change a committed file |
+| `go:lint-all` | Go module | switched off (`lint = ["!**"]` in `dagger.toml`); passes without doing anything |
+| `hearsay:lint` | hearsay | `go vet`, `golangci-lint run`, `golangci-lint fmt --diff` |
+| `hearsay:integration-test` | hearsay | `hearsay migrate up`, then `go test -race -tags=integration ./...`, against a pgvector Postgres |
+| `hearsay:tidy-check` | hearsay | fails if `go mod tidy` would change `go.mod` or `go.sum` |
+| `hearsay:image-check` | hearsay | builds the binary and the container image |
+| `dagger-dang-sdk:generate` | Dang SDK | fails if the SDK would regenerate anything under `.dagger` |
 
-Everything else is an ordinary function, addressed as `<module> <function>` —
-the workspace holds the Go SDK as well as `hearsay`, so the module name is not
-optional:
+`go:lint-all` is off because the Go module pins a `golangci-lint` built with
+Go 1.26, which refuses a `go.mod` that asks for 1.27. `hearsay:lint` runs the
+same linter at a release built with the current Go, and adds `go vet` and the
+formatter check. Turn the module's own check back on when its pin catches up,
+if there is a reason to prefer it.
+
+A third module, `test-services` in `.dagger/modules/test-services/`, is the
+adapter between the two. Its one function, `go-test-base`, is a Go image with
+`hearsay`'s Postgres bound as a service and `HEARSAY_DATABASE_URL` pointing at
+it, and the Go module's `base` setting in `dagger.toml` is wired to it. That is
+how the Go module gets the Go release `go.mod` asks for, and a database beside
+every test it runs. Today no test it runs uses the database: the ones that need
+Postgres carry the `integration` build tag and run in `hearsay:integration-test`
+instead, after the migrations. The other setting, `includeExtraFiles`, mounts
+`docs/config.md` and `cmd/hearsay/README.md`, which tests read and which live
+outside `testdata/`; a test that opens another such file needs it added there.
+
+Everything else is an ordinary function, addressed as `<module> <function>`:
 
 ```sh
-dagger up dev                               # Postgres plus all four services
-dagger api call hearsay test                # the unit and integration checks, those two only
+dagger up                                   # Postgres plus all four services (hearsay:dev)
 dagger api call hearsay build -o ./hearsay  # the Linux binary
 dagger api call hearsay image               # the container image hearsay ships in
 dagger api call hearsay migrate --database-url=env:HEARSAY_DATABASE_URL
+dagger api call hearsay playground          # a shell in the runtime, binary on PATH, Postgres beside it
+dagger api call hearsay qa --script '...'   # the same, running a script; returns its output
+dagger api call hearsay go-version          # what go.mod asks for; every Go container uses it
+dagger api call test-services go-test-base  # the container the Go module receives
+dagger settings go                          # the Go module's settings and their values
 dagger api functions                        # the modules; add a name for its functions
 ```
 
-`build` and `image` take `--arch` (default: the engine's) and `--version` to
-stamp into the binary.
+`build` and `image` take `--version` to stamp into the binary.
+
+### Trying a change
+
+`playground` and `qa` run the change you have in the working tree, in
+isolation. Both are the shipped image, rebuilt from the tree (a cached build
+when nothing changed), with Postgres bound as a service, `HEARSAY_DATABASE_URL`
+set, and `psql` installed and pointed at the database.
+
+`playground` opens a shell in it:
+
+```sh
+dagger api call hearsay playground
+```
+
+`qa` is the same environment without a terminal: it writes `--script` to
+`/test.sh`, runs it with `sh`, and returns the combined stdout and stderr with
+the exit code on the last line. The exit code is reported, not raised, so a
+failing plan still returns its transcript.
+
+```sh
+dagger api call hearsay qa --script '
+hearsay version
+psql -c "select 1"
+hearsay migrate status
+'
+```
+
+`qa` is the one to reach for from anything without a terminal — a coding
+agent, a script, a CI step — and the one to prefer when the test plan is known
+in advance, because the transcript is reviewable and the run is repeatable.
+The same script produces a cached result until the tree changes.
 
 `dev` has no file watcher: restarting is the reload. Stop it, run it again, and
 the rebuild is a cached one. Its database is a throwaway that starts empty every
 time, and `hearsay all` migrates it on the way up (ADR-0006), so the schema is
 there and the rows are not.
 
-`integration-test` runs `hearsay migrate up` between the database and the tests,
-from the code under test, so a missing migration fails the check rather than
-being papered over by a fixture (ADR-0006). That step is also what proves the
-image is the pgvector build: migration 1 creates the `vector` extension, which
-stock Postgres cannot.
+`hearsay:integration-test` runs `hearsay migrate up` between the database and
+the tests, from the code under test, so a missing migration fails the check
+rather than being papered over by a fixture (ADR-0006). That step is also what
+proves the image is the pgvector build: migration 1 creates the `vector`
+extension, which stock Postgres cannot. The tests it runs carry the
+`integration` build tag and read `HEARSAY_DATABASE_URL`; the check's output has
+a services section showing Postgres starting alongside them.
 
-The Go toolchain and version of the linter come from the repository, not from
-this document: the containers read the `go` directive out of `go.mod`, and the
-linter version is a constant in `.dagger/main.go`.
+The Go toolchain and the linter version come from the repository, not from
+this document: `hearsay` reads the `go` directive out of `go.mod`, and the
+linter image is a constant in its `main.dang`.
 
 ### Changing the module
 
-`.dagger/` is a Go module of its own, and its generated bindings
-(`dagger.gen.go`, `internal/`) are **committed**, not regenerated at runtime.
-After changing `.dagger/main.go`:
+The modules under `.dagger/modules/` are written in
+[Dang](https://github.com/dagger/dang-sdk). They have no generated code, so
+editing `main.dang` is the whole change; `dagger api functions hearsay` shows
+whether it still loads, and `dagger api call` runs one function. Type errors
+surface when a function is first called, not when the module is listed.
 
-```sh
-dagger generate    # review the changeset, apply it, and commit the result
-```
+`test-services` depends on `hearsay` (its `dagger-module.toml` says so), not
+the other way round, so the Go release and the Postgres are written down once,
+in `hearsay`.
 
-Dagger does not regenerate those files when it loads the module, so a missing
-or stale one is a load failure, not a slow first run. `dagger check` runs the
-generators as read-only checks of their own (`dagger-go-sdk:generate`), so
-forgetting to commit the changeset fails the same gate a broken test does.
+`dagger.toml` pins the Dang SDK to a commit rather than tracking its `main`:
+the SDK's `main` moves ahead of the released engine, and an SDK newer than
+`v1.0.0-beta.11` loads as a module that can author nothing, so
+`dagger module init` and `dagger-dang-sdk:generate` stop working. The commit
+is the one Dagger's own workspace locks at that release. Move it with the
+engine version, not on its own.
 
-`dagger.toml` pins the Go SDK to a commit rather than tracking its `main`, and
-`dagger.lock` pins the container images the module pulls. The SDK's `main` moves
-ahead of the released engine: an SDK newer than `v1.0.0-beta.11` loads as a
-module that can author nothing, and `dagger generate` then quietly skips
-`.dagger` instead of writing the bindings. Move both pins together, with
-`dagger update` for the lock, when the workspace moves to a new release.
-
-`.dagger/go.mod` has a `go` directive of its own, currently a minor release
-behind the root module's. It is the generated module's, set by the SDK, and it
-moves with the SDK pin — leave it alone. Editing it to match `go.mod` is not a
-silent mistake: `dagger-go-sdk:generate` fails with `existing go.mod has
-unsupported version`.
+The Go module tracks its `main`. `dagger.lock` records the commit that
+resolved to, and the container images every module pulls; `dagger update`
+refreshes what is recorded there.
 
 ### Raising the Go floor
 
@@ -132,25 +188,26 @@ it in its own commit, doing nothing else, so a new toolchain's stricter vet or
 lint lands somewhere it can be read:
 
 1. Edit the `go` directive in `go.mod`. That is the only place a person writes
-   the version.
-2. Re-pin `dagger.lock`. It records the resolved digest of
-   `docker.io/library/golang:<the go directive>`, and nothing derives that from
-   `go.mod`. The lock is a record of what a run resolved: it is never pruned,
-   and `dagger update` only "refreshes entries already recorded", so it will
-   neither add the new pin nor drop the old one. Delete the superseded
-   `golang:` line and let a run that actually resolves the new image record it.
+   the version: `hearsay` reads it, and `test-services` asks `hearsay`.
+2. Re-pin `dagger.lock`. It records the resolved digests of
+   `golang:<the go directive>` and `golang:<the go directive>-alpine`, and it
+   is never pruned: `dagger update` only "refreshes entries already recorded",
+   so it will neither add the new pins nor drop the old ones. Delete the
+   superseded `golang:` lines and let a run that actually resolves the new
+   images record them. `golang:1.25-alpine` is the Dang SDK's own runtime, not
+   ours — leave it.
 3. Confirm it took — `grep golang: dagger.lock` should name the release you just
-   moved to, and nothing else.
+   moved to, plus the SDK's, and nothing else.
 
 Step 3 is not optional and no check does it for you. A lock left pinning the
-release you moved off passes all seven checks, because the pin only decides
-which image a *cold* resolution gets.
+release you moved off passes every check, because the pin only decides which
+image a *cold* resolution gets.
 
 ### Without Dagger
 
 Dagger needs a container runtime, which is not always available — a sandbox
 that denies the Docker socket and the Dagger registry is the case to plan for.
-Everything but the integration tests runs directly:
+Everything but the tests that need Postgres runs directly:
 
 ```sh
 go build ./...
@@ -340,11 +397,11 @@ instead of adding a second README.
   undo the fix and watch the test fail — a regression test that passes either
   way guards nothing.
 - Integration tests that need Postgres carry the `integration` build tag, and
-  read the connection URL from `HEARSAY_DATABASE_URL`. The `integration-test`
-  check brings the database up and sets it; nothing else does, so a
-  plain `go test ./...` skips them rather than failing on a machine with no
-  Postgres. Tests never build a schema of their own — they run the real
-  migrations, so a missing migration fails CI instead of hiding.
+  read the connection URL from `HEARSAY_DATABASE_URL`. The
+  `hearsay:integration-test` check brings the database up and sets it; nothing
+  else does, so a plain `go test ./...` skips them rather than failing on a
+  machine with no Postgres. Tests never build a schema of their own — they run
+  the real migrations, so a missing migration fails CI instead of hiding.
 
 ### Model calls
 
@@ -396,4 +453,6 @@ connector outside this repository would have to react to needs the ADR.
   nothing while a silent one costs a round.
 - `dagger check` passes before you push — or, where Dagger cannot run,
   `go test -race ./...` and `golangci-lint run`, and say so in the description.
+- A change to what the binary does was tried, with `dagger api call hearsay qa`
+  or `playground`, and the pull request says how.
 - Merge `main` into your branch before opening or updating a pull request.
