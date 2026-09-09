@@ -139,7 +139,7 @@ func TestFakeHandlerEmitsWhatIsPostedToIt(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			before := len(rec.Events())
-			req := httptest.NewRequest(tt.method, "/ingest/fake-eng", strings.NewReader(tt.body))
+			req := httptest.NewRequestWithContext(t.Context(), tt.method, "/ingest/fake-eng", strings.NewReader(tt.body))
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, req)
 
