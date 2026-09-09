@@ -110,7 +110,7 @@ notes_max_bytes = 22768
 # large-first. Ties are broken by age, oldest first.
 #dispatch_order = "small-first"
 # How many size/l issues developers may work on at once. 0 means no cap.
-#max_large_in_flight = 1
+#max_large_in_flight = 2
 # Hand an open pull request that conflicts with the default branch back to its
 # developer (mail, and an approved issue returns to ready ahead of new work).
 pr_fix_conflicts = true
