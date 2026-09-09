@@ -86,6 +86,24 @@ func TestEventIDRoundTrip(t *testing.T) {
 	}
 }
 
+// Whoever sizes the id column reads MaxEventIDLen, so it has to be the bound
+// the encoding actually produces rather than the native id's length: a native
+// id of non-ASCII text passes validation and encodes to three bytes per byte.
+func TestEventIDLengthBound(t *testing.T) {
+	source := strings.Repeat("s", connector.MaxSourceIDLen)
+	nativeID := strings.Repeat("ü", connector.MaxNativeIDLen/2) // two bytes each, both escaped
+	ev := connector.Event{Source: source, NativeID: nativeID}
+	if len(ev.NativeID) != connector.MaxNativeIDLen {
+		t.Fatalf("the fixture is %d bytes, want %d", len(ev.NativeID), connector.MaxNativeIDLen)
+	}
+
+	// This is the worst case exactly: the longest source, and a native id of
+	// nothing but bytes that percent-encode to three each.
+	if got, want := len(connector.EventID(source, nativeID)), connector.MaxEventIDLen; got != want {
+		t.Errorf("EventID() on the worst case is %d bytes, and MaxEventIDLen says %d", got, want)
+	}
+}
+
 func TestEventIDIsStableAcrossReEmission(t *testing.T) {
 	// Idempotency rests on this: the same observation emitted twice must land
 	// on the same id, or ingest cannot deduplicate it.
@@ -159,6 +177,42 @@ func TestEventValidate(t *testing.T) {
 			mutate: func(e *connector.Event) {
 				e.NativeID = e.Payload.Artifact + "@2"
 				e.Payload.Revision = &connector.Revision{Token: "2", EditedAt: eventTime}
+			},
+		},
+		{
+			name: "a revision token that disagrees with the native id",
+			mutate: func(e *connector.Event) {
+				e.NativeID = e.Payload.Artifact + "@2"
+				e.Payload.Revision = &connector.Revision{Token: "9", EditedAt: eventTime}
+			},
+			wantErr: true,
+		},
+		{
+			name: "a revision in the native id and no payload.revision",
+			mutate: func(e *connector.Event) {
+				e.NativeID = e.Payload.Artifact + "@2"
+			},
+			wantErr: true,
+		},
+		{
+			name:    "a payload.revision with no revision in the native id",
+			mutate:  func(e *connector.Event) { e.Payload.Revision = &connector.Revision{Token: "2"} },
+			wantErr: true,
+		},
+		{
+			name: "a native id ending in @ with no token",
+			mutate: func(e *connector.Event) {
+				e.NativeID = e.Payload.Artifact + "@"
+				e.Payload.Revision = &connector.Revision{Token: "2"}
+			},
+			wantErr: true,
+		},
+		{
+			name: "an artifact that contains an @ of its own",
+			mutate: func(e *connector.Event) {
+				e.Kind = connector.KindCommit
+				e.NativeID = "acme/api@0b5ed1f"
+				e.Payload.Artifact = e.NativeID
 			},
 		},
 		{
@@ -330,8 +384,11 @@ func TestEventValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "revision without a token",
-			mutate:  func(e *connector.Event) { e.Payload.Revision = &connector.Revision{EditedAt: eventTime} },
+			name: "revision without a token",
+			mutate: func(e *connector.Event) {
+				e.NativeID = e.Payload.Artifact + "@2"
+				e.Payload.Revision = &connector.Revision{EditedAt: eventTime}
+			},
 			wantErr: true,
 		},
 	}
@@ -435,6 +492,8 @@ func TestKindValid(t *testing.T) {
 // so the field names are pinned here rather than left to the struct tags.
 func TestEventJSONIsTheWireFormat(t *testing.T) {
 	ev := validEvent()
+	// An edit, so that the revision fields are on the wire too.
+	ev.NativeID = ev.Payload.Artifact + "@2"
 	ev.ID = connector.EventID(ev.Source, ev.NativeID)
 	ev.Payload.Revision = &connector.Revision{Token: "2", EditedAt: eventTime}
 	ev.Payload.Native = json.RawMessage(`{"reactions":3}`)

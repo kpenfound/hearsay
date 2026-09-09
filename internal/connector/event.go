@@ -8,10 +8,20 @@ import (
 	"time"
 )
 
-// MaxNativeIDLen is the longest native id a connector may emit, in bytes. It is
-// a limit on the event id too, which is derived from it, and it exists so that
-// the id can be a key in every store it passes through.
-const MaxNativeIDLen = 512
+// The length limits, in bytes. They exist so that an event id can be a key in
+// every store it passes through, and so that whoever sizes the column has a
+// number rather than an assumption.
+const (
+	// MaxSourceIDLen is the longest source id config may name.
+	MaxSourceIDLen = 64
+	// MaxNativeIDLen is the longest native id a connector may emit.
+	MaxNativeIDLen = 512
+	// MaxEventIDLen is the longest event id [EventID] can produce, which is the
+	// worst case of the encoding rather than the length of a native id:
+	// `evt:`, the source, `:`, and a native id of nothing but bytes that
+	// percent-encode to three each.
+	MaxEventIDLen = len("evt:") + MaxSourceIDLen + len(":") + 3*MaxNativeIDLen
+)
 
 // ErrInvalidEvent is returned by [Event.Validate] and wrapped by every
 // validation failure, so a caller can tell a malformed event from an IO error
@@ -120,8 +130,9 @@ type Payload struct {
 	// same value as Parent.
 	Thread string `json:"thread,omitempty"`
 
-	// Revision describes an edit: it is set on every event whose NativeID
-	// carries a revision, and absent on an artifact's first appearance.
+	// Revision describes one observation of an artifact that can change. It is
+	// set exactly when NativeID is `Artifact@<token>`, and its Token is that
+	// token: validation holds the two to each other.
 	Revision *Revision `json:"revision,omitempty"`
 
 	// Target is the artifact id a tombstone retracts. It is required on
@@ -160,13 +171,14 @@ const (
 	ContainerWorkspace ContainerKind = "workspace"
 )
 
-// Revision describes one edit of an artifact.
+// Revision names one version of an artifact that can change.
 type Revision struct {
 	// Token is the source's own version token: an edit timestamp, an ETag, a
-	// Drive revision id. It is opaque to Hearsay, and it is the part of the
-	// native id after the `@`.
+	// Drive revision id, a permission version. It is opaque to Hearsay, it is
+	// the part of the native id after `<artifact>@`, and it changes whenever
+	// the payload or the ACL of the artifact does.
 	Token string `json:"token"`
-	// EditedAt is when the edit happened, where the source says.
+	// EditedAt is when the change happened, where the source says.
 	EditedAt time.Time `json:"edited_at,omitzero"`
 }
 
@@ -351,7 +363,9 @@ func (k Kind) Valid() bool {
 //
 // The format is `evt:<source>:<native id>`, with any byte outside the safe set
 // percent-encoded. Sources contain no colon, so the id splits on its first two
-// and [ParseEventID] gets the native id back byte for byte.
+// and [ParseEventID] gets the native id back byte for byte. The result is at
+// most [MaxEventIDLen] bytes — three times the native id in the worst case,
+// not the same length as it.
 func EventID(source, nativeID string) string {
 	return "evt:" + source + ":" + encodeSegment(nativeID)
 }
@@ -470,8 +484,32 @@ func (p Payload) validate(e Event) error {
 		return fmt.Errorf("%w: a tombstone's payload.artifact is its own, not payload.target %q", ErrInvalidEvent, p.Target)
 	case !tombstone && p.Target != "":
 		return fmt.Errorf("%w: payload.target is set on kind %q, which is not a tombstone", ErrInvalidEvent, e.Kind)
-	case p.Revision != nil && p.Revision.Token == "":
-		return fmt.Errorf("%w: payload.revision.token is empty", ErrInvalidEvent)
+	}
+	return p.validateRevision(e)
+}
+
+// validateRevision holds the native id and payload.revision to each other. The
+// revision token is the part of the native id after the artifact, so the two
+// agree or the event is lying about which observation it is: a distiller that
+// reads payload.revision to tell an edit from a first appearance would take a
+// revision event for the artifact's first, and an artifact with an empty token
+// would have two event ids for one unchanged observation.
+func (p Payload) validateRevision(e Event) error {
+	if e.NativeID == p.Artifact {
+		if p.Revision != nil {
+			return fmt.Errorf("%w: payload.revision is set but native_id %q carries no revision token", ErrInvalidEvent, e.NativeID)
+		}
+		return nil
+	}
+
+	token := strings.TrimPrefix(e.NativeID, p.Artifact+"@")
+	switch {
+	case token == "":
+		return fmt.Errorf("%w: native_id %q ends in @ with no revision token", ErrInvalidEvent, e.NativeID)
+	case p.Revision == nil:
+		return fmt.Errorf("%w: native_id %q carries revision token %q and payload.revision is absent", ErrInvalidEvent, e.NativeID, token)
+	case p.Revision.Token != token:
+		return fmt.Errorf("%w: payload.revision.token %q is not the revision token %q in native_id %q", ErrInvalidEvent, p.Revision.Token, token, e.NativeID)
 	}
 	return nil
 }

@@ -258,13 +258,27 @@ func (r *Registry) New(ctx context.Context, src SourceConfig) (Connector, error)
 	if err != nil {
 		return nil, fmt.Errorf("source %q: building connector %q: %w", src.ID, src.Type, err)
 	}
+	// A factory establishes what the source needs, so a connector this rejects
+	// may already hold a socket and a goroutine reading it. Nothing else can
+	// close it — New is the only thing holding it — so New does.
 	_, poller := c.(Poller)
 	_, pusher := c.(Pusher)
 	if !poller && !pusher {
-		return nil, fmt.Errorf("source %q: connector %q: %w", src.ID, src.Type, ErrNoIngestMode)
+		return nil, closeRejected(ctx, c, fmt.Errorf("source %q: connector %q: %w", src.ID, src.Type, ErrNoIngestMode))
 	}
 	if desc := c.Describe(); desc.Type != src.Type {
-		return nil, fmt.Errorf("source %q: connector registered as %q describes itself as %q", src.ID, src.Type, desc.Type)
+		return nil, closeRejected(ctx, c, fmt.Errorf("source %q: connector registered as %q describes itself as %q", src.ID, src.Type, desc.Type))
 	}
 	return c, nil
+}
+
+// closeRejected closes a connector New is about to throw away, and returns the
+// reason it is being thrown away with any close failure joined to it: the
+// rejection is what the caller needs to read first, and a connector that also
+// fails to shut down is worth knowing about.
+func closeRejected(ctx context.Context, c Connector, reason error) error {
+	if err := c.Close(ctx); err != nil {
+		return errors.Join(reason, fmt.Errorf("closing the rejected connector: %w", err))
+	}
+	return reason
 }

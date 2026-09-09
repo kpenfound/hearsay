@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/connector"
@@ -71,6 +73,56 @@ func TestFakePollReturnsItsError(t *testing.T) {
 	}
 	if got := len(rec.Events()); got != 0 {
 		t.Errorf("recorded %d events, want none", got)
+	}
+}
+
+// A test may feed a connector something is already polling, which is what
+// Enqueue is for: appending to Queue from another goroutine is a race.
+func TestFakeEnqueueIsSafeWhileAPollLoopRuns(t *testing.T) {
+	src := fakeSource()
+	fake := connector.NewFake(src)
+	rec := &connector.Recorder{}
+
+	polling := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(polling)
+		for range 50 {
+			if err := fake.Poll(t.Context(), rec); err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+
+	<-polling
+	for i := range 50 {
+		fake.Enqueue(fake.NewEvent(connector.KindMessage, "m"+strconv.Itoa(i), "hello"))
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("Poll() = %v, want no error", err)
+	}
+	// Whatever the interleaving, a drain after the loop leaves nothing behind.
+	if err := fake.Poll(t.Context(), rec); err != nil {
+		t.Fatalf("Poll() = %v, want no error", err)
+	}
+	if got := len(rec.Events()); got != 50 {
+		t.Errorf("recorded %d events, want 50", got)
+	}
+}
+
+func TestFakeBackfillRejectsANonsenseCursor(t *testing.T) {
+	fake := connector.NewFake(fakeSource())
+	fake.Pages = [][]connector.Event{{fake.NewEvent(connector.KindMessage, "m1", "one")}}
+	rec := &connector.Recorder{}
+
+	for _, cursor := range []connector.Cursor{"page one", "-1"} {
+		t.Run(string(cursor), func(t *testing.T) {
+			if _, err := fake.Backfill(t.Context(), rec, cursor); err == nil {
+				t.Errorf("Backfill(%q) = nil error, want an error", cursor)
+			}
+		})
 	}
 }
 
@@ -238,33 +290,65 @@ func TestRegistry(t *testing.T) {
 		}
 	})
 
-	t.Run("refuses a connector that cannot ingest", func(t *testing.T) {
+	// A factory establishes what the source needs before New can reject the
+	// connector, so a rejected connector may hold a socket and the goroutine
+	// reading it. New is the only thing holding it, so it has to close it.
+	t.Run("closes a connector that cannot ingest", func(t *testing.T) {
 		reg := connector.NewRegistry()
+		c := &inert{}
 		if err := reg.Register("inert", func(context.Context, connector.SourceConfig) (connector.Connector, error) {
-			return inert{}, nil
+			return c, nil
 		}); err != nil {
 			t.Fatalf("Register() = %v, want no error", err)
 		}
 		src := fakeSource()
 		src.Type = "inert"
 		if _, err := reg.New(t.Context(), src); !errors.Is(err, connector.ErrNoIngestMode) {
-			t.Errorf("New() = %v, want ErrNoIngestMode", err)
+			t.Fatalf("New() = %v, want ErrNoIngestMode", err)
+		}
+		if !c.closed.Load() {
+			t.Error("the rejected connector was not closed")
 		}
 	})
 
-	t.Run("refuses a connector that describes itself as another type", func(t *testing.T) {
+	t.Run("closes a connector that describes itself as another type", func(t *testing.T) {
 		reg := connector.NewRegistry()
+		var built *connector.Fake
 		if err := reg.Register("mislabelled", func(_ context.Context, src connector.SourceConfig) (connector.Connector, error) {
-			f := connector.NewFake(src)
-			f.Type = connector.FakeType
-			return f, nil
+			built = connector.NewFake(src)
+			built.Type = connector.FakeType
+			return built, nil
 		}); err != nil {
 			t.Fatalf("Register() = %v, want no error", err)
 		}
 		src := fakeSource()
 		src.Type = "mislabelled"
 		if _, err := reg.New(t.Context(), src); err == nil {
-			t.Error("New() = nil error, want an error about the descriptor")
+			t.Fatal("New() = nil error, want an error about the descriptor")
+		}
+		// A closed Fake refuses to ingest, which is how the test sees that it
+		// was closed without reaching into it.
+		if err := built.Poll(t.Context(), &connector.Recorder{}); !errors.Is(err, connector.ErrClosed) {
+			t.Errorf("Poll() on the rejected connector = %v, want ErrClosed", err)
+		}
+	})
+
+	t.Run("reports a rejected connector that also fails to close", func(t *testing.T) {
+		reg := connector.NewRegistry()
+		closeErr := errors.New("socket stuck")
+		if err := reg.Register("inert", func(context.Context, connector.SourceConfig) (connector.Connector, error) {
+			return &inert{closeErr: closeErr}, nil
+		}); err != nil {
+			t.Fatalf("Register() = %v, want no error", err)
+		}
+		src := fakeSource()
+		src.Type = "inert"
+		_, err := reg.New(t.Context(), src)
+		if !errors.Is(err, connector.ErrNoIngestMode) {
+			t.Errorf("New() = %v, want it to wrap ErrNoIngestMode", err)
+		}
+		if !errors.Is(err, closeErr) {
+			t.Errorf("New() = %v, want it to carry the close failure too", err)
 		}
 	})
 
@@ -317,11 +401,19 @@ func TestSourceConfigDecodeSettings(t *testing.T) {
 	}
 }
 
-// inert implements Connector and neither ingest mode.
-type inert struct{}
+// inert implements Connector and neither ingest mode, and records the close it
+// is owed.
+type inert struct {
+	closeErr error
+	closed   atomic.Bool
+}
 
-func (inert) Describe() connector.Descriptor { return connector.Descriptor{Type: "inert"} }
-func (inert) Health(context.Context) connector.Health {
+func (*inert) Describe() connector.Descriptor { return connector.Descriptor{Type: "inert"} }
+func (*inert) Health(context.Context) connector.Health {
 	return connector.Health{Status: connector.HealthOK}
 }
-func (inert) Close(context.Context) error { return nil }
+
+func (i *inert) Close(context.Context) error {
+	i.closed.Store(true)
+	return i.closeErr
+}

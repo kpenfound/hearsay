@@ -17,7 +17,7 @@ const safeBytes = "-._~:@/#+=,"
 // deliberately narrow: source ids appear in event ids, which are split on their
 // colons, and they are typed into config by hand.
 func isSourceID(s string) bool {
-	if s == "" || len(s) > 64 {
+	if s == "" || len(s) > MaxSourceIDLen {
 		return false
 	}
 	for i := range len(s) {

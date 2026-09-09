@@ -26,15 +26,18 @@ var ErrClosed = errors.New("connector is closed")
 // [Backfiller], so a runtime can be exercised through any of the three ingest
 // paths without a network.
 //
-// Set the fields before the connector is run; they are read under the fake's
-// own lock, so a test may also append to Queue while a poll loop is running.
+// Every exported field is set before the connector is run and not touched
+// afterwards: the fake's lock is its own, so writing a field while something is
+// polling is a data race the race detector will report. A test that wants to
+// add events to a running fake calls [Fake.Enqueue], which takes the lock.
 type Fake struct {
 	// Type is what Describe reports. It defaults to FakeType.
 	Type string
 	// Kinds is what Describe declares. It defaults to every core kind, so a
 	// scripted event is never rejected for a kind the fake forgot to declare.
 	Kinds []Kind
-	// Queue is what the next Poll emits. Poll drains it.
+	// Queue is what the next Poll emits. Poll drains it. Use Enqueue to add to
+	// it once the fake is running.
 	Queue []Event
 	// Pages is what Backfill returns, one page per call, oldest first.
 	Pages [][]Event
@@ -128,6 +131,14 @@ func (f *Fake) Close(context.Context) error {
 	return nil
 }
 
+// Enqueue adds events for the next Poll to emit, under the fake's lock, so a
+// test may feed a fake that something is already polling.
+func (f *Fake) Enqueue(events ...Event) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Queue = append(f.Queue, events...)
+}
+
 // Poll implements [Poller]: it emits and drains Queue.
 func (f *Fake) Poll(ctx context.Context, sink Sink) error {
 	f.mu.Lock()
@@ -171,6 +182,9 @@ func (f *Fake) Backfill(ctx context.Context, sink Sink, from Cursor) (BackfillRe
 		n, err := strconv.Atoi(string(from))
 		if err != nil {
 			return BackfillResult{}, fmt.Errorf("fake backfill cursor %q: %w", from, err)
+		}
+		if n < 0 {
+			return BackfillResult{}, fmt.Errorf("fake backfill cursor %q: negative page", from)
 		}
 		page = n
 	}
