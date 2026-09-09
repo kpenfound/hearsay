@@ -525,3 +525,36 @@ func TestSingleFileForm(t *testing.T) {
 		t.Errorf("Load() = %v, want it to say what a single file looks like", err)
 	}
 }
+
+// Problems come out in file and line order, so that the same broken
+// configuration prints the same list every run — a person walks the files top
+// to bottom, and CI output diffs cleanly.
+func TestProblemsAreOrderedByFileAndLine(t *testing.T) {
+	root := writeFiles(t, map[string]string{
+		"sources/github.yaml": "" +
+			"- id: github\n  type: github\n  containers: [acme/api]\n  refresh: soon\n" +
+			"- id: github\n  type: github\n  containers: [\"*\", acme/api]\n",
+		"scopes/api.yaml":   "id: api\nsources: [github, discord]\n",
+		"principals/p.yaml": "id: kyle\nidentities: [{source: nope, handle: k}]\n",
+	})
+
+	var invalid *config.InvalidError
+	if _, err := config.Load(root); !errors.As(err, &invalid) {
+		t.Fatalf("Load() = %v, want an *InvalidError", err)
+	}
+	want := []string{
+		"principals/p.yaml:1:",
+		"scopes/api.yaml:1:",
+		"sources/github.yaml:1:",
+		"sources/github.yaml:5:",
+		"sources/github.yaml:5:",
+	}
+	if len(invalid.Problems) != len(want) {
+		t.Fatalf("got %d problems, want %d:\n%v", len(invalid.Problems), len(want), invalid)
+	}
+	for i, prefix := range want {
+		if got := invalid.Problems[i].Error(); !strings.HasPrefix(got, prefix) {
+			t.Errorf("problem %d is %q, want it to start with %q", i, got, prefix)
+		}
+	}
+}
