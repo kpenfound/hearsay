@@ -388,6 +388,15 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 			want: []string{`authority/a.yaml:4: authority policy "api": ratified_by.artifacts: "spec" ratifies on its own`},
 		},
 		{
+			// A policy that names no scope is in force nowhere, so what it
+			// would have meant is not a second thing to fix. The ranking here
+			// leaves out the merged_pr it would have inherited as a ratifier,
+			// and that is not reported.
+			name:  "a policy whose scope is not a scope id, and a ranking that would contradict it",
+			files: with(map[string]string{"authority/a.yaml": "scope: API\nranking: [meeting]\n"}),
+			want:  []string{`authority policy "API": scope: "API" is not a scope id`},
+		},
+		{
 			// The other direction of the same contradiction: the `*` ranking is
 			// narrow but consistent with what `*` ratifies, and the scope names
 			// a ratifier that the ranking it inherited leaves out. The scope's
