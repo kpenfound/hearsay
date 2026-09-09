@@ -20,17 +20,112 @@ without the reasons.
   project should start on a supported one, which is a direction from a person
   and outranks the ADR. The ADR is accepted, so it is not edited; whether its
   floor line gets superseded is a person's call.
-- [golangci-lint](https://golangci-lint.run) v2 for lint and formatting. CI pins
-  the version it runs; match it if a lint failure looks like a disagreement.
-- Postgres 16 with [pgvector](https://github.com/pgvector/pgvector) — for the
-  database work that is coming. Nothing in the repository needs it yet.
+- [Dagger](https://dagger.io) and a container runtime. Dagger is how everything
+  runs: lint, tests, the binary, the image, migrations and the local stack.
 
-## Build, test, lint
+  The workspace is on **`v1.0.0-beta.11`**, which Homebrew and winget do not
+  carry. Whatever CLI you have will run that release on demand if you tell it
+  to, building and caching it the first time:
+
+  ```sh
+  export DAGGER_X_RELEASE=v1.0.0-beta.11   # or --x-release=v1.0.0-beta.11 per command
+  ```
+
+  `.dagger/dagger-module.toml` pins the same version, and `dagger.toml` is the
+  workspace: which modules are installed and how they are configured.
+- [golangci-lint](https://golangci-lint.run) v2 for lint and formatting, if you
+  want to run it outside Dagger. The module pins the version it runs; match it
+  if a lint failure looks like a disagreement.
+- Postgres 16 with [pgvector](https://github.com/pgvector/pgvector) — only if
+  you want a database Dagger did not start for you.
+
+## Dagger
+
+One tool for everything that runs code, so that CI and a laptop cannot disagree.
+There is **no GitHub Actions workflow** in this repository: Dagger Cloud runs the
+same checks on every commit, so a workflow would only be a second, slower copy of
+`dagger check`.
+
+```sh
+dagger check                   # every check below, in parallel; this is the gate
+dagger check -l                # list them
+dagger check hearsay:lint      # run one
+dagger check --failfast        # stop at the first failure instead of seeing all of them
+```
+
+The checks are the `+check` functions in `.dagger/main.go`:
+
+| Check | Does |
+|---|---|
+| `lint` | `go vet`, `golangci-lint run`, `golangci-lint fmt --diff` |
+| `tidy-check` | fails if `go mod tidy` would change `go.mod` or `go.sum` |
+| `unit-test` | `go test -race ./...` |
+| `integration-test` | the same, tagged `integration`, against a pgvector Postgres |
+| `image-check` | builds the binary and the container image |
+
+Everything else is an ordinary function, addressed as `<module> <function>` —
+the workspace holds the Go SDK as well as `hearsay`, so the module name is not
+optional:
+
+```sh
+dagger up dev                               # Postgres plus all four services
+dagger api call hearsay test                # the unit and integration checks, those two only
+dagger api call hearsay build -o ./hearsay  # the Linux binary
+dagger api call hearsay image               # the container image hearsay ships in
+dagger api call hearsay migrate --database-url=env:HEARSAY_DATABASE_URL
+dagger api functions                        # the modules; add a name for its functions
+```
+
+`build` and `image` take `--arch` (default: the engine's) and `--version` to
+stamp into the binary.
+
+`dev` has no file watcher: restarting is the reload. Stop it, run it again, and
+the rebuild is a cached one. Its database is a throwaway that starts empty every
+time — there is no schema yet, so there is nothing to keep; that is the thing to
+revisit when the L0 store lands.
+
+`migrate` exits non-zero with "not implemented yet" until goose and the embedded
+migrations arrive, and so does the migration step `integration-test` will run
+before the tests (ADR-0006). Until then `integration-test` proves the database
+itself: it creates the `vector` extension, which fails on a Postgres image
+without pgvector.
+
+The Go toolchain and version of the linter come from the repository, not from
+this document: the containers read the `go` directive out of `go.mod`, and the
+linter version is a constant in `.dagger/main.go`.
+
+### Changing the module
+
+`.dagger/` is a Go module of its own, and its generated bindings
+(`dagger.gen.go`, `internal/`) are **committed**, not regenerated at runtime.
+After changing `.dagger/main.go`:
+
+```sh
+dagger generate    # review the changeset, apply it, and commit the result
+```
+
+Dagger does not regenerate those files when it loads the module, so a missing
+or stale one is a load failure, not a slow first run. `dagger check` runs the
+generators as read-only checks of their own (`dagger-go-sdk:generate`), so
+forgetting to commit the changeset fails the same gate a broken test does.
+
+`dagger.toml` pins the Go SDK to a commit rather than tracking its `main`, and
+`dagger.lock` pins the container images the module pulls. The SDK's `main` moves
+ahead of the released engine: an SDK newer than `v1.0.0-beta.11` loads as a
+module that can author nothing, and `dagger generate` then quietly skips
+`.dagger` instead of writing the bindings. Move both pins together, with
+`dagger update` for the lock, when the workspace moves to a new release.
+
+### Without Dagger
+
+Dagger needs a container runtime, which is not always available — a sandbox
+that denies the Docker socket and the Dagger registry is the case to plan for.
+Everything but the integration tests runs directly:
 
 ```sh
 go build ./...
 go test ./...
-go test -race ./...   # what CI runs; run it before you push
+go test -race ./...
 go vet ./...
 golangci-lint run
 golangci-lint fmt --diff   # fails if anything is unformatted
@@ -43,10 +138,9 @@ for are in the module cache, all of that works with no network and no services
 running. With an older Go and the default `GOTOOLCHAIN=auto`, the first build
 downloads that toolchain too.
 
-CI runs those same commands on every pull request. Issue #35 replaces the
-workflow with calls into a Dagger module so CI and local development run
-literally the same code; until it lands, `.github/workflows/ci.yml` runs the
-commands above directly.
+That is a fallback, not a second gate: the pull request is judged by
+`dagger check`, which Dagger Cloud runs on every commit whether or not you could
+run it yourself.
 
 ## Running it
 
@@ -99,6 +193,8 @@ go run ./cmd/hearsay migrate up          # apply everything pending
 go run ./cmd/hearsay migrate status      # applied and pending
 go run ./cmd/hearsay migrate up-to <n>
 go run ./cmd/hearsay migrate down        # dev only
+
+dagger api call hearsay migrate --database-url=env:HEARSAY_DATABASE_URL --action=status
 ```
 
 All four exit non-zero with "not implemented yet" today: goose, the embedded
@@ -167,9 +263,12 @@ instead of adding a second README.
 - Every bug fix comes with the test that fails without it. Before you push,
   undo the fix and watch the test fail — a regression test that passes either
   way guards nothing.
-- Integration tests that need Postgres run against a real database brought up by
-  the test harness, applying the real migrations. Tests never build a schema of
-  their own, so a missing migration fails CI instead of hiding.
+- Integration tests that need Postgres carry the `integration` build tag, and
+  read the connection URL from `HEARSAY_DATABASE_URL`. The `integration-test`
+  check brings the database up and sets it; nothing else does, so a
+  plain `go test ./...` skips them rather than failing on a machine with no
+  Postgres. Tests never build a schema of their own — they run the real
+  migrations, so a missing migration fails CI instead of hiding.
 
 ### Model calls
 
@@ -219,5 +318,6 @@ connector outside this repository would have to react to needs the ADR.
 - The description says what changed, how you tested it, and any choice you made
   that the issue left open — reviewers rule on those, and stating one costs
   nothing while a silent one costs a round.
-- `go test -race ./...` and `golangci-lint run` pass before you push.
+- `dagger check` passes before you push — or, where Dagger cannot run,
+  `go test -race ./...` and `golangci-lint run`, and say so in the description.
 - Merge `main` into your branch before opening or updating a pull request.

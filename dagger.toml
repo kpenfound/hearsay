@@ -1,0 +1,28 @@
+# The Dagger workspace. `dagger check` runs every check the hearsay module
+# exposes, in parallel; `dagger up dev` starts the local stack. There is no CI
+# workflow — Dagger Cloud runs the same checks on every commit.
+#
+# `dagger.lock` beside this file pins what the modules resolve to. Regenerate it
+# with `dagger update` after changing anything here.
+
+[modules.hearsay]
+source = ".dagger"
+
+# The Go SDK authors the module in .dagger: this is the entry `dagger sdk install
+# go` writes, and `dagger generate` uses it to regenerate the committed bindings.
+#
+# Pinned to a commit, unlike dagger's own workspace, which tracks the SDK's main
+# branch and pins the resolved SHA in dagger.lock. The SDK's main runs ahead of
+# the released engine, and an SDK too new for the engine version in
+# .dagger/dagger-module.toml loads as a module that can author nothing: no
+# initModule, no initClient, so `dagger generate` skips .dagger and leaves the
+# bindings missing rather than failing. This commit is the one dagger itself
+# locked at v1.0.0-beta.11. Move it with the engine version, not on its own.
+[modules.dagger-go-sdk]
+source = "github.com/dagger/go-sdk@9b6c556101f8fdace897aa3ed1ff9e3efb344e34"
+
+[modules.dagger-go-sdk.as-sdk]
+name = "go"
+
+[[modules.dagger-go-sdk.as-sdk.modules]]
+path = ".dagger"

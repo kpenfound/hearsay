@@ -17,6 +17,23 @@ implements, are specified in
 
 ## Commands
 
+Dagger runs everything. The workspace is `dagger.toml`, the module is
+`.dagger/main.go`, and the gates are its `+check` functions — `lint`,
+`tidy-check`, `unit-test`, `integration-test`, `image-check`. There is no CI
+workflow: Dagger Cloud runs `dagger check` on every commit.
+
+```sh
+export DAGGER_X_RELEASE=v1.0.0-beta.11   # the release this workspace is on
+dagger check              # every check, in parallel; -l lists them
+dagger up dev             # Postgres plus all four services
+dagger api functions      # the modules; `dagger api call hearsay <fn>` runs one
+dagger generate           # after editing .dagger/main.go; commit the result
+```
+
+Dagger needs a container runtime. Where there is none — a sandbox that denies
+the Docker socket, for instance — everything but the integration tests runs
+directly, and Dagger Cloud is the gate that matters:
+
 ```sh
 go build ./...            # build everything
 go test ./...             # the whole suite; add -race before you push
@@ -26,11 +43,11 @@ golangci-lint fmt         # format (gofmt + goimports); --diff to only check
 go run ./cmd/hearsay help # the subcommands
 ```
 
-Everything above runs offline with no services: no test touches a database or a
-model provider. Two things need the network once — the Go toolchain, on a
-machine whose Go is older than the release `go.mod` asks for, and the one
-dependency (`go.yaml.in/yaml/v3`, the configuration parser, ADR-0009) until it
-is in the module cache.
+That block runs offline with no services: no test touches a database or a model
+provider. Two things need the network once — the Go toolchain, on a machine
+whose Go is older than the release `go.mod` asks for, and the one dependency
+(`go.yaml.in/yaml/v3`, the configuration parser, ADR-0009) until it is in the
+module cache.
 
 Running a service locally:
 
@@ -48,13 +65,13 @@ when `--config` (or `HEARSAY_CONFIG`) names one, and refuses to start if it is
 invalid; configuration is read once, at startup, and a change to it is a
 restart (ADR-0009). The format is [docs/config.md](docs/config.md).
 
-Migrations are `go run ./cmd/hearsay migrate up|status|up-to <n>|down`. The
-command exists and refuses: goose, the migrations and the database connection
-land with the L0 store. Until then it exits non-zero saying so, which is
-deliberate — see [ADR-0006](docs/adr/0006-schema-migrations-with-goose.md).
-
-There is no Dagger module or CI-in-a-container yet; issue #35 adds it, and after
-that `dagger call test` is the command that matters and the one CI runs.
+Migrations are `go run ./cmd/hearsay migrate up|status|up-to <n>|down`, or
+`dagger api call hearsay migrate --database-url=...` against a database. The command
+exists and refuses: goose, the migrations and the database connection land with
+the L0 store. Until then it exits non-zero saying so, which is deliberate — see
+[ADR-0006](docs/adr/0006-schema-migrations-with-goose.md). The migration step the
+`integration-test` check will run before the tests is missing for the same
+reason.
 
 ## Layout
 
