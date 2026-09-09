@@ -12,14 +12,12 @@ without the reasons.
 
 ## Prerequisites
 
-- Go 1.27.1 or newer (`go.mod` declares the minimum; it is raised deliberately,
-  in its own commit).
-
-  ADR-0002 sets the floor at Go 1.24 and says it is raised when something needs
-  a newer feature. Nothing does — the floor is the current release because a new
-  project should start on a supported one, which is a direction from a person
-  and outranks the ADR. The ADR is accepted, so it is not edited; whether its
-  floor line gets superseded is a person's call.
+- Go, at the release `go.mod` declares. The floor tracks the current Go release
+  rather than the oldest one that compiles, and it is raised deliberately, in
+  its own commit ([ADR-0010](docs/adr/0010-go-version-floor-tracks-the-current-release.md)).
+  `go.mod` is the only place that version is written; with the default
+  `GOTOOLCHAIN=auto`, an older toolchain fetches the right one on the first
+  build.
 - [Dagger](https://dagger.io) and a container runtime. Dagger is how everything
   runs: lint, tests, the binary, the image, migrations and the local stack.
 
