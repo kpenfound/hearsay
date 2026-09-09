@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -144,24 +145,25 @@ func parseAction(fs *flag.FlagSet, argv []string, fallback string) (action strin
 }
 
 // parseWords parses argv into the flag set and returns the positional words in
-// order.
+// order. `--` ends the flags for good, so everything behind it is a word even
+// if it looks like one; splitting on it up front, before the loop that lets a
+// flag follow a word, means a flag earlier in the same round cannot make the
+// loop consume it and re-parse what comes after as flags.
 func parseWords(fs *flag.FlagSet, argv []string) ([]string, error) {
+	head, tail := argv, []string(nil)
+	if i := slices.Index(argv, "--"); i >= 0 {
+		head, tail = argv[:i], argv[i+1:]
+	}
 	var words []string
 	for {
-		// `--` ends the flags for good, so everything behind it is a word even
-		// if it looks like one. Parse honours that for the run it is given;
-		// looping past it would not.
-		if len(argv) > 0 && argv[0] == "--" {
-			return append(words, argv[1:]...), nil
-		}
-		if err := fs.Parse(argv); err != nil {
+		if err := fs.Parse(head); err != nil {
 			return nil, err
 		}
 		if fs.NArg() == 0 {
-			return words, nil
+			return append(words, tail...), nil
 		}
 		words = append(words, fs.Arg(0))
-		argv = fs.Args()[1:]
+		head = fs.Args()[1:]
 	}
 }
 
