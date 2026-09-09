@@ -1,0 +1,408 @@
+# Template: issue-driven
+#
+# A person writes feature issues and the full staff takes them from there: the
+# product manager breaks each one into work items, the project manager triages
+# them, developers and reviewers build them, and QA tests the default branch
+# after every merge. A person approves each feature a bee proposes and merges
+# each approved pull request.
+
+# bees.toml — configuration for a busybees software factory.
+#
+# Every option is listed here. Lines starting with "#" are commented out and
+# show the default value; uncomment a line to change it. Run
+# `bees config show` to see the resolved settings for every role.
+
+# Format version of this file. bees refuses files newer than it understands and
+# upgrades older ones in memory. Leave it alone; bees releases that change the
+# format say what to do.
+version = 1
+
+#===============================================================================
+# Project
+#===============================================================================
+[project]
+# Git remote the factory fetches from and pushes to.
+#remote = "origin"
+# GitHub repository, as owner/name. Derived from the remote's URL when unset.
+#repo = "kpenfound/hearsay"
+# Branch developers branch from and QA tests. Derived from the remote's HEAD
+# when unset.
+#default_branch = "main"
+# What the product is and how to build, test and run it belong in the
+# repository's own documentation (README, CONTRIBUTING, CLAUDE.md); the roles
+# read it and keep what they learn in their notes.
+# Directory for mail, notes, session logs and scheduler state, relative to
+# this file. `bees init` adds it to .gitignore.
+#state_dir = ".bees"
+# Prefix for developer branches (bees/issue-12).
+#branch_prefix = "bees/"
+
+#===============================================================================
+# Visibility filter — which issues and pull requests the factory can see.
+# Criteria are ANDed. Everything the factory creates is made to match.
+#===============================================================================
+[filter]
+# The factory's label; also the base name of the workflow labels
+# (bees:triage, bees:ready, bees:in-progress, ...).
+label = "bees"
+# Set to false to let assignee, milestone and/or creator alone define
+# visibility. The label is still applied to everything the factory creates.
+#require_label = true
+# Only see items assigned to this GitHub login. "@me" means the gh user.
+# Useful when one person runs busybees for their share of a shared repo.
+#assignee = "@me"
+# Only see items in this milestone.
+#milestone = ""
+# Only see items opened by this GitHub login. What the factory opens itself
+# is visible too, whoever it acts as.
+creator = "kpenfound"
+
+#===============================================================================
+# GitHub account the factory acts as. Unset (the default) means the machine
+# owner's own gh login, so every issue, comment and label edit looks like it
+# came from the person running bees.
+#
+# login and token go together: set both, or neither. filter.assignee = "@me"
+# above is NOT affected — it says whose work the factory picks up, so it keeps
+# resolving to the person's own gh login.
+#===============================================================================
+[github]
+# GitHub login the factory acts as.
+#login = "busybees-bot"
+# A token for that login. A "$VAR" reference is expanded from the environment
+# bees runs in, so the secret itself stays out of this file.
+#token = "$BEES_GITHUB_TOKEN"
+# Identity for commits made by developer sessions. Either may be set on its
+# own; whichever is unset stays the machine's own git identity.
+#git_name = "busybees"
+#git_email = "busybees@example.com"
+
+#===============================================================================
+# Scheduler
+#===============================================================================
+[scheduler]
+# How often GitHub is polled for work. Each poll costs two API calls; keep it
+# infrequent. Sessions make their own gh calls on top of this.
+poll_interval = "5m"
+# How long to pause polling after GitHub reports a rate limit.
+rate_limit_backoff = "15m"
+# Concurrent developer workers. Each runs a sequential developer <-> reviewer
+# loop for one issue; reviewer concurrency follows developer concurrency.
+max_developers = 2
+# Developer/reviewer iterations before an issue is escalated to a human.
+#max_review_rounds = 3
+# Extra attempts for a session that failed for infrastructure reasons (timeout,
+# API error, exhausted turns). A session that ran and reported is never retried.
+# 0 disables retrying.
+#retries = 1
+# How long to wait before retrying a session.
+#retry_delay = "10m"
+# Run the retry with the role's fallback_model as its primary model.
+#retry_with_fallback = true
+# Issues handed to the project manager per session.
+#triage_batch_size = 5
+# Sessions a role runs between two passes in which it is also asked to
+# consolidate its notes file into the standard sections.
+#notes_consolidate_every = 10
+# Ask for consolidation early once a notes file grows past this many bytes.
+notes_max_bytes = 22768
+# Which ready issue a free developer takes next: small-first, oldest or
+# large-first. Ties are broken by age, oldest first.
+#dispatch_order = "small-first"
+# How many size/l issues developers may work on at once. 0 means no cap.
+#max_large_in_flight = 1
+# Hand an open pull request that conflicts with the default branch back to its
+# developer (mail, and an approved issue returns to ready ahead of new work).
+pr_fix_conflicts = true
+# Do the same when a pull request merely fell behind the default branch.
+pr_keep_updated = true
+# Build a blocked_by chain of work items under the same feature as a stack of
+# branches and pull requests, each depending on its predecessor's, instead of
+# independently.
+#stacked_prs = false
+# Review every open pull request in the filter that the factory did not write
+# (its head branch does not start with branch_prefix), without waiting for the
+# review-requested label. With filter.assignee set, that is the pull requests
+# assigned to the factory.
+review_assigned_prs = false
+# A feature issue a bee creates is a proposal: it carries bees:proposal and a
+# person approves it by removing the label. false lets a bee break its own
+# features down without a person's approval.
+feature_proposals = true
+# GitHub logins and/or org/team slugs the factory turns to when it needs a
+# person: mentioned in the needs-human comment and in the product manager's
+# questions, and asked to review an approved pull request. No leading @.
+#notify = ["your-github-login", "your-org/your-team"]
+# Minimum time between product manager runs (mail in the PM inbox triggers an
+# earlier run).
+#product_manager_interval = "1h"
+# Minimum time between QA runs. QA only runs when something was merged (mail in
+# the QA inbox triggers an earlier run).
+#qa_interval = "30m"
+# Work hours: outside this window GitHub is polled every off_hours_poll_interval
+# instead of poll_interval (the mailbox keeps running at full speed). Leave it
+# empty to poll around the clock. A window that starts after it ends wraps
+# midnight and belongs to the day it starts on ("22:00-06:00" on "fri" runs
+# into Saturday morning).
+# The first poll of the work day happens the moment the window opens, whatever
+# off_hours_poll_interval is.
+#work_hours = "09:00-18:00"
+# Default: 1h, or poll_interval when that is longer.
+#off_hours_poll_interval = "1h"
+#work_days = ["mon", "tue", "wed", "thu", "fri"]
+# IANA timezone the window is read in (default: the machine's local time).
+#timezone = "America/New_York"
+# Cost budgets in USD, spent against the session ledger ("bees cost").
+# 0 means unlimited, which is the default: budgets are opt-in.
+# Total across every session run for one work item. Checked between stages: the
+# session that passes it finishes, then the issue is escalated to a human.
+#max_cost_per_issue = 25.0
+# Whole factory, rolling 24 hours. At or over it no new session starts; the
+# sessions already running finish.
+max_cost_per_day = 300.0
+# How far the rolling 24 hours has to fall back, as a percentage of
+# max_cost_per_day, before new sessions start again: at 80, a factory paused at
+# $100.00 resumes under $80.00 rather than at $99.99.
+max_cost_per_day_resume_percent = 80.0
+# A single session. Checked after it ran (claude cannot be stopped on cost), and
+# an over-budget session is treated as failed.
+#max_cost_per_session = 10.0
+# Keep temp worktrees after sessions finish (debugging).
+#keep_workspaces = false
+# Where temp worktrees are created (default: the system temp dir).
+#workspace_root = ""
+
+#===============================================================================
+# Console logging. The --log-format / --log-level flags and the
+# BEES_LOG_FORMAT / BEES_LOG_LEVEL environment variables override these.
+#===============================================================================
+[logging]
+# Console log format: text or json. JSON is for running bees as a service.
+#format = "text"
+# Console log level: debug, info, warn or error. --quiet is a per-invocation
+# shorthand and has no key here; "warn" is the closest equivalent.
+#level = "info"
+
+#===============================================================================
+# Global role settings — apply to every role, merged with [roles.<name>]:
+# prompts concatenate (global first), skills union, env and mcp servers union
+# (the role wins on a name conflict), scalars fall back to global then defaults.
+#===============================================================================
+[global]
+# Text appended to every role's base prompt.
+#prompt = """
+#"""
+# File whose contents are appended after prompt (relative to this file).
+#prompt_file = "docs/team-conventions.md"
+# Skills by git URL: <url>[@ref][#sub/dir], cloned and exposed to claude as
+# plugins. Skills in the repository's .claude/skills/ and in ~/.claude/skills/
+# are available automatically and need not be listed.
+skills = [
+  "https://github.com/poteto/plugins#pstack/skills/unslop",
+]
+# How stale a skill clone may get before it is pulled: never, always or a
+# duration. Global only; see "bees skills".
+#skills_refresh = "24h"
+# claude model, and the model used once it has hit its usage limit.
+#model = "opus"
+#fallback_model = "sonnet"
+# CLI backend a session runs as.
+agent = "claude"        # claude | codex
+# Effort level: low, medium, high or max.
+#effort = "high"
+# Agentic turns per session and wall-clock limit.
+#max_turns = 200
+#timeout = "45m"
+# Tool restrictions passed straight to claude.
+#allowed_tools = []
+disallowed_tools = ["Artifact"]
+# Shell for claude's Bash tool in sessions (exported as $SHELL).
+#shell = "/bin/bash"
+# How much of the machine a session can reach: none, claude or container.
+# Set it per role in [roles.<name>] to box the roles that run untrusted code
+# harder than the ones that only read the repository.
+sandbox = "claude"
+# Image a container session runs in (sandbox = "container"): it must hold
+# the agent, git and gh. Name one per role for a role that runs the product.
+#sandbox_image = "ghcr.io/acme/widgets-bees:latest"
+# Path, relative to this file, to a dagger/container-use environment
+# definition the container sandbox builds and runs instead of sandbox_image.
+#container_use_environment = "dagger/container-use"
+
+# Environment variables exported into every session (claude, its Bash tool,
+# MCP servers, git). $VARS are expanded from the bees environment. Roles can
+# add or override entries in [roles.<name>.env].
+#[global.env]
+#CI = "true"
+#NPM_TOKEN = "$NPM_TOKEN"
+
+# MCP servers available to every role, one table per server. stdio servers
+# use command/args/env; remote servers use url (+ type = "http" | "sse",
+# headers). $VARS in env and headers are expanded from the bees environment.
+# Every session also gets the built-in "bees" server (mail, issues, outcome);
+# the name "bees" is reserved and cannot be configured here.
+#[global.mcp.github]
+#command = "npx"
+#args = ["-y", "@modelcontextprotocol/server-github"]
+#env = { GITHUB_PERSONAL_ACCESS_TOKEN = "$GITHUB_TOKEN" }
+#
+#[global.mcp.docs]
+#type = "http"
+#url = "https://mcp.example.com/docs"
+#headers = { Authorization = "Bearer $DOCS_TOKEN" }
+
+#===============================================================================
+# Per-role settings. Every key from [global] is valid here, plus enabled;
+# the developer also takes commit_flags, max_size, model_by_size and the
+# best-of-N keys, the product manager min_issue_size, and the reviewer the
+# auto-merge keys.
+#===============================================================================
+
+# Owns the product vision and feature issues; breaks features into work items.
+[roles.product_manager]
+#prompt = """
+#"""
+# Smallest work item size to aim for when breaking a feature into work items:
+# xs, s, m or l. A hint on the split, not a floor: a smaller work item is still
+# created wherever the work needs one. Unset, there is no floor.
+min_issue_size = "s"
+#prompt_file = ""
+#skills = []
+model = "sonnet"
+#fallback_model = "sonnet"
+#agent = "claude"        # claude | codex
+#effort = "high"
+#max_turns = 200
+#timeout = "45m"
+enabled = true
+#shell = "/bin/bash"
+#[roles.product_manager.env]
+#EXAMPLE = "value"
+#[roles.product_manager.mcp.example]
+#command = "example-mcp"
+
+# Triages issues into build-ready work and answers developer questions.
+[roles.project_manager]
+#prompt = """
+#"""
+#prompt_file = ""
+#skills = []
+model = "sonnet"
+#fallback_model = "sonnet"
+#agent = "claude"        # claude | codex
+#effort = "high"
+#max_turns = 200
+#timeout = "45m"
+enabled = true
+#shell = "/bin/bash"
+#[roles.project_manager.env]
+#EXAMPLE = "value"
+#[roles.project_manager.mcp.example]
+#command = "example-mcp"
+
+# Implements one issue on a branch and opens a pull request.
+[roles.developer]
+#prompt = """
+#"""
+# Extra flags for every git commit the developer makes.
+#commit_flags = "--gpg-sign --signoff"
+# Largest size a developer takes: xs, s, m, l or xl. Anything bigger is sent
+# back to triage for the project manager to split.
+max_size = "xl"
+# Run a cheaper (or stronger) model for some work item sizes. Keys are the
+# sizes xs, s, m, l and xl; a size with no entry uses model above.
+model_by_size = { xs = "sonnet", s = "sonnet" }
+# Best of N: how many developer attempts one work item gets, keyed by size. An
+# assembler session then picks the pull request from the attempts. A size with
+# no entry gets one attempt, and an empty table is best-of-N off.
+#best_of_n_by_size = { l = 3 }
+# Model and prompt for each attempt, and for the assembler that picks between
+# them. Unset, an attempt runs the model and prompt above and so does the
+# assembler.
+#best_of_n_model = "opus"
+#best_of_n_prompt = """
+#"""
+#assembler_model = "opus"
+#assembler_prompt = """
+#"""
+#prompt_file = ""
+#skills = []
+#model = "opus"
+#fallback_model = "sonnet"
+#agent = "claude"        # claude | codex
+#effort = "high"
+#max_turns = 200
+#timeout = "45m"
+enabled = true
+#shell = "/bin/bash"
+#[roles.developer.env]
+#EXAMPLE = "value"
+#[roles.developer.mcp.example]
+#command = "example-mcp"
+
+# Reviews pull requests and, optionally, merges them once checks are green.
+[roles.reviewer]
+#prompt = """
+#"""
+#prompt_file = ""
+#skills = []
+#model = "opus"
+#fallback_model = "sonnet"
+#agent = "claude"        # claude | codex
+#effort = "high"
+#max_turns = 200
+#timeout = "45m"
+# Disabling the reviewer treats pull requests as approved as soon as the
+# developer opens them.
+enabled = true
+# Merge approved pull requests automatically once its checks are green: the
+# required checks if the branch has any, otherwise every check the pull
+# request reports; with no checks at all it merges and says so. Off: humans
+# merge. When checks fail the reviewer diagnoses the main error and hands it
+# to the developer to fix (up to max_check_fix_rounds).
+auto_merge = true
+# squash, merge or rebase.
+#merge_method = "squash"
+# Wait after approval before polling checks; some take a moment to start.
+#checks_wait = "1m"
+# How often to poll the checks while waiting (one API call each).
+#checks_poll_interval = "2m"
+# Escalate to a human if checks are still pending after this long.
+#checks_timeout = "30m"
+#max_check_fix_rounds = 2
+# Read the pull request's checks before the first review, so the reviewer
+# starts from a green pull request. A failing check goes to the reviewer in
+# checks mode first, exactly as it does after approval.
+#pre_review_checks = true
+# Review anyway when those checks are still pending after this long.
+#pre_review_checks_timeout = "10m"
+# The review stages, in order. Each gets its own focus and its own verdict,
+# and an approval needs every one of them to pass. One or more of
+# implementation, completeness, cleanliness, style, product-fit. product-fit
+# judges the change against the work item's parent feature and is off by
+# default.
+stages = ["implementation", "completeness"]
+#shell = "/bin/bash"
+#[roles.reviewer.env]
+#EXAMPLE = "value"
+#[roles.reviewer.mcp.example]
+#command = "example-mcp"
+
+# Tests the default branch after merges, files bugs, reports to the PM.
+[roles.qa]
+#prompt = """
+#"""
+#prompt_file = ""
+#skills = []
+#model = "opus"
+#fallback_model = "sonnet"
+#agent = "claude"        # claude | codex
+#effort = "high"
+#max_turns = 200
+#timeout = "45m"
+enabled = false
+#shell = "/bin/bash"
+#[roles.qa.env]
+#EXAMPLE = "value"
+#[roles.qa.mcp.example]
+#command = "example-mcp"
