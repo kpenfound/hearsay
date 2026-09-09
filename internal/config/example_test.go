@@ -94,8 +94,13 @@ func TestDocsExampleIsTheConfigurationItDescribes(t *testing.T) {
 	// The scope's policy sets a ranking and the artifacts that ratify, and
 	// inherits the principals from the `*` policy.
 	policy := repo.Authority.ForScope("api")
-	if !policy.Outranks(config.ArtifactMergedPR, config.ArtifactMeeting) {
-		t.Error("a merged PR does not outrank a meeting in scope api")
+	// The example's whole point as an override: this team decides in meetings,
+	// so the scope inverts the two positions the default fixes.
+	if !policy.Outranks(config.ArtifactMeeting, config.ArtifactMergedPR) {
+		t.Error("a meeting does not outrank a merged PR in scope api, and the example says it does")
+	}
+	if !repo.Authority.Default().Outranks(config.ArtifactMergedPR, config.ArtifactMeeting) {
+		t.Error("overriding one scope's ranking changed the default the other scopes inherit")
 	}
 	if !policy.RatifiedByArtifact(config.ArtifactSpec, "drive") {
 		t.Error("a spec does not ratify in scope api, and the example says it does")
@@ -103,9 +108,14 @@ func TestDocsExampleIsTheConfigurationItDescribes(t *testing.T) {
 	if !policy.RatifiedByPrincipal("kyle") || policy.RatifiedByPrincipal("shed") {
 		t.Errorf("ratifiers in scope api = %v, want the inherited [kyle robin]", policy.RatifiedBy.Principals)
 	}
-	// A class the scope's ranking leaves out ranks below every class in it.
-	if policy.Outranks(config.ArtifactSpec, config.ArtifactDM) {
-		t.Error("spec is not in the scope's ranking, so it should not outrank a class that is")
+	// The scope's ranking lists every class, so nothing in it is unranked: a
+	// class that ratifies and does not rank is a contradiction the loader
+	// refuses, and an example that reads as a model to copy has to be clear of
+	// it.
+	for _, c := range config.ArtifactClasses() {
+		if _, ok := policy.Rank(c); !ok {
+			t.Errorf("the example's ranking for scope api leaves out %s", c)
+		}
 	}
 
 	agent, ok := repo.Principal("shed")

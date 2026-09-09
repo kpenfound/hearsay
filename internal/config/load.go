@@ -77,29 +77,38 @@ func Load(fsPath string) (Repo, error) {
 }
 
 // singleFileIn returns the name of the single configuration file in dir, or
-// empty if dir is in the directory form. A directory holding both forms is an
-// error rather than a merge: which of the two a source came from would decide
-// what happens to it, and nothing in the file says which.
+// empty if dir is in the directory form. Two things are an error rather than a
+// choice this makes on the reader's behalf: a directory holding both forms,
+// because which of the two a source came from would decide what happens to it
+// and nothing in the file says which; and a directory holding two candidates for
+// the single file, because reading one of them and none of the other is how a
+// whole file of configuration goes missing in silence.
 func singleFileIn(dir string) (string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return "", fmt.Errorf("reading configuration directory %s: %w", dir, err)
 	}
-	var single string
-	var dirs []string
+	var singles, dirs []string
 	for _, e := range entries {
 		switch {
 		case e.IsDir() && slices.Contains(configDirs, e.Name()):
 			dirs = append(dirs, e.Name())
-		case !e.IsDir() && single == "" && slices.Contains(singleFileNames, e.Name()):
-			single = e.Name()
+		case !e.IsDir() && slices.Contains(singleFileNames, e.Name()):
+			singles = append(singles, e.Name())
 		}
 	}
-	if single != "" && len(dirs) > 0 {
-		return "", fmt.Errorf("%s holds both configuration forms: %s and the %s directory. Use one or the other",
-			dir, single, strings.Join(dirs, ", "))
+	if len(singles) > 1 {
+		return "", fmt.Errorf("%s holds %s: two single-file configurations, and only one of them would be read. Keep one",
+			dir, strings.Join(singles, " and "))
 	}
-	return single, nil
+	if len(singles) == 1 && len(dirs) > 0 {
+		return "", fmt.Errorf("%s holds both configuration forms: %s and the %s directory. Use one or the other",
+			dir, singles[0], strings.Join(dirs, ", "))
+	}
+	if len(singles) == 0 {
+		return "", nil
+	}
+	return singles[0], nil
 }
 
 // loader accumulates what one Load reads: the decoded objects with where each

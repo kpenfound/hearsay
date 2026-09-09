@@ -110,6 +110,20 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 			},
 		},
 		{
+			// The referrer names the id as written, so this is the one round
+			// trip: nothing of that name is configured, because the name is
+			// what is wrong with it.
+			name: "a source id that is not a source id, named by the scope that wants it",
+			files: with(map[string]string{
+				"sources/github.yaml": "id: GitHub\ntype: github\ncontainers: [acme/api]\n",
+				"scopes/api.yaml":     "id: api\nsources: [GitHub]\n",
+			}),
+			want: []string{
+				`source "GitHub": id: "GitHub" is not a source id`,
+				`scope "api": sources[0].source: no source is configured with id "GitHub"`,
+			},
+		},
+		{
 			name: "two sources with one id",
 			files: with(map[string]string{
 				"sources/other.yaml": "id: github\ntype: discord\ncontainers: [x]\n",
@@ -182,6 +196,20 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 			},
 		},
 		{
+			// Both are wrong in the same way and both are said in one pass. A
+			// policy's scope is checked for shape before it is looked up, so
+			// this is two rules agreeing rather than a reference resolving.
+			name: "a scope id that is not a scope id, named by the policy that wants it",
+			files: with(map[string]string{
+				"scopes/api.yaml":  "id: API\nsources: [github]\n",
+				"authority/a.yaml": "scope: API\n",
+			}),
+			want: []string{
+				`scope "API": id: "API" is not a scope id`,
+				`authority policy "API": scope: "API" is not a scope id`,
+			},
+		},
+		{
 			name:  "a scope naming an entity that is not configured",
 			files: with(map[string]string{"scopes/api.yaml": "id: api\nsources: [github]\nentities: [code:acme/api]\n"}),
 			want:  []string{`scope "api": entities[0]: no code entity is configured with id "code:acme/api"`},
@@ -204,6 +232,17 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 				"- id: kyle\n  identities: [{source: github, handle: kpenfound}]\n" +
 				"- id: robin\n  identities: [{source: github, handle: kpenfound}]\n"}),
 			want: []string{`principal "robin": identities[0].handle: "kpenfound" in source "github" is already principal "kyle"`},
+		},
+		{
+			name: "a principal id that is not a principal id, named as an owner",
+			files: with(map[string]string{
+				"principals/p.yaml": "id: Kyle\nidentities: [{source: github, handle: kpenfound}]\n",
+				"code/c.yaml":       "id: code:acme/api\ntype: project\nowners: [Kyle]\n",
+			}),
+			want: []string{
+				`principal "Kyle": id: "Kyle" is not a principal id`,
+				`code entity "code:acme/api": owners[0]: no principal is configured with id "Kyle"`,
+			},
 		},
 		{
 			name:  "an agent with no class",
@@ -241,6 +280,32 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 			name:  "a parent that is not configured",
 			files: with(map[string]string{"code/c.yaml": "id: code:acme/api:x\ntype: module\npart_of: [code:acme/api]\n"}),
 			want:  []string{`code entity "code:acme/api:x": part_of[0]: no code entity is configured with id "code:acme/api"`},
+		},
+		{
+			name: "a code entity id in the wrong namespace, named as a parent and by a scope",
+			files: with(map[string]string{
+				"code/c.yaml": "" +
+					"- id: acme/api\n  type: project\n" +
+					"- id: code:acme/api:x\n  type: module\n  part_of: [acme/api]\n",
+				"scopes/api.yaml": "id: api\nsources: [github]\nentities: [acme/api]\n",
+			}),
+			want: []string{
+				`code entity "acme/api": id: "acme/api" is not a code entity id`,
+				`code entity "code:acme/api:x": part_of[0]: no code entity is configured with id "acme/api"`,
+				`scope "api": entities[0]: no code entity is configured with id "acme/api"`,
+			},
+		},
+		{
+			// An entity the loader is holding out of the configuration is still
+			// an entity somebody wrote, and its own edges are still checked.
+			name: "a parent that is not configured, on an entity whose own id is malformed",
+			files: with(map[string]string{
+				"code/c.yaml": "id: acme/api\ntype: project\npart_of: [code:acme]\n",
+			}),
+			want: []string{
+				`code entity "acme/api": id: "acme/api" is not a code entity id`,
+				`code entity "acme/api": part_of[0]: no code entity is configured with id "code:acme"`,
+			},
 		},
 		{
 			name: "a hierarchy that loops",
@@ -305,6 +370,22 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 			name:  "a wildcard in a ranking",
 			files: with(map[string]string{"authority/a.yaml": "scope: api\nranking: [\"*\"]\n"}),
 			want:  []string{`authority policy "api": ranking[0]: "*" is not allowed here`},
+		},
+		{
+			name:  "a class that ratifies on its own but is not ranked",
+			files: with(map[string]string{"authority/a.yaml": "scope: api\nranking: [meeting]\nratified_by:\n  artifacts: [merged_pr]\n"}),
+			want:  []string{`authority policy "api": ratified_by.artifacts: "merged_pr" ratifies on its own, and the ranking in force for this scope leaves it out`},
+		},
+		{
+			// The ranking and the ratifier are in two different policies and
+			// neither is wrong on its own: it is the policy the scope ends up
+			// with that contradicts itself, and the file that narrowed the
+			// ranking is where it was introduced.
+			name: "a narrowed ranking that contradicts an inherited ratifier",
+			files: with(map[string]string{"authority/a.yaml": "" +
+				"- scope: \"*\"\n  ratified_by:\n    artifacts: [spec]\n" +
+				"- scope: api\n  ranking: [merged_pr, meeting]\n"}),
+			want: []string{`authority/a.yaml:4: authority policy "api": ratified_by.artifacts: "spec" ratifies on its own`},
 		},
 		{
 			name:  "a ratifier who is not a principal",
@@ -374,6 +455,30 @@ func TestLoadRejectsBothFormsAtOnce(t *testing.T) {
 	if _, err := config.Load(writeFiles(t, files)); err == nil ||
 		!strings.Contains(err.Error(), "holds both configuration forms") {
 		t.Errorf("Load() = %v, want it to refuse a directory holding both forms", err)
+	}
+}
+
+// The single file has two spellings, and a directory holding both of them is
+// two configurations. Reading either one and not the other loses a whole file
+// with nothing said, which is the failure the format is shaped to avoid.
+func TestLoadRejectsTwoSingleFiles(t *testing.T) {
+	const one = "sources:\n  - id: github\n    type: github\n    containers: [acme/api]\nscopes:\n  - id: api\n    sources: [github]\n"
+	const two = "sources:\n  - id: discord\n    type: discord\n    containers: [\"1\"]\nscopes:\n  - id: chat\n    sources: [discord]\n"
+
+	root := writeFiles(t, map[string]string{"hearsay.yaml": one, "hearsay.yml": two})
+	repo, err := config.Load(root)
+	if err == nil {
+		t.Fatalf("Load() loaded %d sources and %d scopes, want an error naming both files",
+			len(repo.Sources), len(repo.Scopes))
+	}
+	for _, want := range []string{"hearsay.yaml", "hearsay.yml"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Load() = %v, want the error to name %s", err, want)
+		}
+	}
+	// Either one on its own is still the single-file form.
+	if _, err := config.Load(writeFiles(t, map[string]string{"hearsay.yml": one})); err != nil {
+		t.Errorf("Load(a directory holding hearsay.yml) = %v, want no error", err)
 	}
 }
 

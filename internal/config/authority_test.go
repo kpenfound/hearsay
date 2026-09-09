@@ -165,7 +165,7 @@ func TestAuthorityComposition(t *testing.T) {
 		},
 		{
 			name:      "a scope with no policy of its own gets the default",
-			authority: "- scope: api\n  ranking: [meeting]\n",
+			authority: "- scope: api\n  ranking: [meeting, merged_pr]\n",
 			scope:     "web",
 			want:      config.DefaultPolicy(),
 		},

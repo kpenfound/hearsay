@@ -17,7 +17,7 @@ and hands over shapes those packages already take: sources come out as
 "does this outrank that" and "does this ratify" rather than as fields to
 interpret.
 
-**Two rules the code depends on and a reader would not guess:**
+**Three rules the code depends on and a reader would not guess:**
 
 - A list that is absent and a list that is present but empty mean different
   things in an authority policy. Absent inherits; empty inherits nothing. That
@@ -25,6 +25,12 @@ interpret.
   `repo.go` keep the parsed one, rather than decoding straight into the second.
 - A file that does not parse stops validation. What the file was meant to say is
   unknown, so every reference into it would be reported as missing.
+- An object that failed validation is still put in the `Repo`, so that one
+  mistake is reported once rather than once per thing that points at it — except
+  when the id itself is what failed, and then it is held out, because there is
+  nothing of that name for a reference to resolve to and saying so is the second
+  half of the same mistake rather than a new one. `loader.claimID` is the rule; a
+  duplicate id is not covered by it, because something of that name does exist.
 
 The format is [docs/config.md](../../docs/config.md), the reasons are
 [ADR-0009](../../docs/adr/0009-configuration-as-a-gitops-directory.md), and the

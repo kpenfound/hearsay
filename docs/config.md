@@ -38,8 +38,11 @@ HEARSAY_CONFIG=./config hearsay all       # the flag also reads the environment
 ```
 
 A directory holding a `hearsay.yaml` and none of the five directories is the
-single-file form; pointing `--config` at the directory finds the file. A
-directory holding both is an error rather than a merge.
+single-file form; pointing `--config` at the directory finds the file. The file
+may also be named `hearsay.yml`. Two things about such a directory are errors
+rather than a guess: holding both forms, because nothing says which of the two a
+source came from; and holding both `hearsay.yaml` and `hearsay.yml`, because
+only one of them would be read and the other would go missing in silence.
 
 **Rules that apply to every file:**
 
@@ -210,8 +213,17 @@ ones and proceed, and stop on contested ones
   ratified_by:
     principals: [kyle, robin]
 
-- scope: api                 # an override for one scope
-  ranking: [merged_pr, meeting, issue, chat_thread, dm, agent]
+- scope: api                 # an override for one scope: this team decides in
+  ranking:                   # meetings, so a meeting outranks a merged PR
+    - meeting
+    - merged_pr
+    - spec
+    - issue
+    - pull_request
+    - commit
+    - chat_thread
+    - dm
+    - agent
   ratified_by:
     artifacts: [merged_pr, spec]
 ```
@@ -225,6 +237,23 @@ front of you, and being able to read the policy off one file is the point.
 A list that is present but empty inherits nothing: `principals: []` means nobody
 may ratify by hand in this scope. `ranking: []` is an error rather than "nothing
 outranks anything" — leave the field out to inherit.
+
+**A ranking that leaves a class out puts it at the bottom.** A class the ranking
+does not list ranks below every class that it does, and the omitted classes tie
+with each other, so between two of them nothing outranks anything and the more
+recent stance decides. Writing `ranking: [merged_pr, meeting]` is therefore a
+decision about all nine classes and not just two: it puts the other seven level
+with `agent`. Write the whole order out when you mean the whole order — the
+example above overrides one position and still lists nine.
+
+A class that ratifies **on its own** has to be in the ranking in force for the
+scope, and the loader refuses a policy where it is not. `artifacts: [spec]`
+under a ranking that omits `spec` says a spec is authoritative enough to settle
+a topic with no human in the loop and also loses every disagreement it is in,
+which is not a policy anyone means to write. Ranking is inherited as readily as
+ratification, so this is checked on the policy as it ends up, not on one file:
+narrowing a scope's ranking can contradict a `ratified_by` it inherited from
+`*`, and the scope's file is where the contradiction was introduced.
 
 There is at most one policy per scope, and at most one `*`. Two policies for one
 scope would be two answers.
@@ -321,6 +350,13 @@ owner, a parent entity), no two objects share an id, no two principals claim one
 identity, no alias means two things, `part_of` has no cycles, and there is at
 least one source and one scope — a configuration with neither ingests nothing
 and serves nothing.
+
+An object whose own id is missing or malformed is reported *and* treated as not
+being there, so a scope naming a source called `GitHub` is told both that
+`GitHub` is not a source id and that nothing of that name is configured, in one
+pass rather than in two. A duplicate id is the other way round: something of
+that name does exist, so only the collision is reported and everything pointing
+at it is left alone.
 
 Run it in CI on the configuration repository. It needs no database, no network
 and no credentials, so it is a fast gate on a pull request.
@@ -428,7 +464,11 @@ authority:
       principals: [kyle, robin]
 
   - scope: api
-    ranking: [merged_pr, meeting, issue, chat_thread, dm, agent]
+    # This team decides in meetings, so a meeting outranks a merged PR here.
+    # All nine classes are listed: one left out would rank below every one that
+    # is, level with `agent`.
+    ranking:
+      [meeting, merged_pr, spec, issue, pull_request, commit, chat_thread, dm, agent]
     ratified_by:
       artifacts: [merged_pr, spec]
 ```
@@ -561,8 +601,12 @@ ratified_by:
 <!-- example: dir/authority/api.yaml -->
 ```yaml
 # authority/api.yaml
+# This team decides in meetings, so a meeting outranks a merged PR here.
+# All nine classes are listed: one left out would rank below every one that is,
+# level with `agent`.
 scope: api
-ranking: [merged_pr, meeting, issue, chat_thread, dm, agent]
+ranking:
+  [meeting, merged_pr, spec, issue, pull_request, commit, chat_thread, dm, agent]
 ratified_by:
   artifacts: [merged_pr, spec]
 ```

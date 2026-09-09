@@ -27,8 +27,8 @@ const maxEntityIDLen = 512
 // authority policies, which reference all of it. An object that failed
 // validation is still put in the Repo, so that a reference to it by id still
 // resolves and one mistake is reported once. The exception is an object whose
-// id is what is wrong: there is then genuinely nothing of that name, and
-// everything that named it says so.
+// id is what is wrong ([loader.claimID]): there is then genuinely nothing of
+// that name, and everything that named it says so.
 func (l *loader) build() Repo {
 	// Anything recorded before this point is a file that did not parse or a
 	// key that is not a field. What such a file was meant to say is unknown, so
@@ -46,10 +46,14 @@ func (l *loader) build() Repo {
 	r.Scopes = l.buildScopes(r)
 	r.Authority = l.buildAuthority(r)
 
-	if len(r.Sources) == 0 {
+	// These two count what was written rather than what survived validation. A
+	// source whose id is malformed is not in r.Sources, and telling its author
+	// that nothing is configured on top of telling them the id is wrong would
+	// be a second problem about the first one.
+	if len(l.sources) == 0 {
 		l.probs.add("", 0, "", "no sources are configured: Hearsay would ingest nothing")
 	}
-	if len(r.Scopes) == 0 {
+	if len(l.scopes) == 0 {
 		l.probs.add("", 0, "", "no scopes are configured: Hearsay would serve no bundles")
 	}
 	return r
@@ -59,6 +63,7 @@ func (l *loader) build() Repo {
 type at struct {
 	file  string
 	line  int
+	noun  string
 	label string
 }
 
@@ -69,7 +74,32 @@ func locate[T any](d doc[T], noun, id string, i int) at {
 	if id != "" {
 		label = fmt.Sprintf("%s %q", noun, id)
 	}
-	return at{file: d.file, line: d.line, label: label}
+	return at{file: d.file, line: d.line, noun: noun, label: label}
+}
+
+// claimID checks one object's id and reports whether the object may go into the
+// [Repo]. wrong is what is wrong with the id itself, and is empty when the id is
+// well formed; each caller phrases its own, because an id is described in the
+// vocabulary of the thing it names. The duplicate check is here because it is
+// the same one for all of them.
+//
+// An object whose id is missing or malformed is kept out of the Repo. There is
+// nothing of that name, so a reference that repeats the id is a problem in its
+// own right and has to be reported in this pass rather than in the one after the
+// id is fixed — a configuration with four mistakes takes one round trip. A
+// duplicate id is the other way round: there is something of that name, so the
+// object is kept and only the collision is reported.
+func (l *loader) claimID(a at, id, wrong string, defined map[string]string) bool {
+	switch {
+	case wrong != "":
+		l.bad(a, "id", "%s", wrong)
+		return false
+	case defined[id] != "":
+		l.bad(a, "id", "a %s with id %q is already configured at %s", a.noun, id, defined[id])
+	default:
+		defined[id] = position(a.file, a.line)
+	}
+	return true
 }
 
 // bad records a problem with one field of one object. An empty field means the
@@ -117,16 +147,14 @@ func (l *loader) buildSources() []connector.SourceConfig {
 		src := d.v
 		a := locate(d, "source", src.ID, i)
 
+		var wrong string
 		switch {
 		case src.ID == "":
-			l.bad(a, "id", "is required: it is the id every event from this source carries")
+			wrong = "is required: it is the id every event from this source carries"
 		case !connector.ValidSourceID(src.ID):
-			l.bad(a, "id", "%q is not a source id: 1 to %d bytes of lowercase letters, digits, - and _, starting with a letter or a digit", src.ID, connector.MaxSourceIDLen)
-		case defined[src.ID] != "":
-			l.bad(a, "id", "a source with id %q is already configured at %s", src.ID, defined[src.ID])
-		default:
-			defined[src.ID] = position(d.file, d.line)
+			wrong = fmt.Sprintf("%q is not a source id: 1 to %d bytes of lowercase letters, digits, - and _, starting with a letter or a digit", src.ID, connector.MaxSourceIDLen)
 		}
+		keep := l.claimID(a, src.ID, wrong, defined)
 
 		switch {
 		case src.Type == "":
@@ -174,7 +202,9 @@ func (l *loader) buildSources() []connector.SourceConfig {
 			}
 		}
 
-		out = append(out, cfg)
+		if keep {
+			out = append(out, cfg)
+		}
 	}
 	return out
 }
@@ -191,16 +221,14 @@ func (l *loader) buildPrincipals(r Repo) []Principal {
 		p := d.v
 		a := locate(d, "principal", p.ID, i)
 
+		var wrong string
 		switch {
 		case p.ID == "":
-			l.bad(a, "id", "is required: it is what a stance's author, an owner and an authority policy all name")
+			wrong = "is required: it is what a stance's author, an owner and an authority policy all name"
 		case !isName(p.ID):
-			l.bad(a, "id", "%q is not a principal id: lowercase letters, digits, - and _, starting with a letter or a digit", p.ID)
-		case defined[p.ID] != "":
-			l.bad(a, "id", "a principal with id %q is already configured at %s", p.ID, defined[p.ID])
-		default:
-			defined[p.ID] = position(d.file, d.line)
+			wrong = fmt.Sprintf("%q is not a principal id: lowercase letters, digits, - and _, starting with a letter or a digit", p.ID)
 		}
+		keep := l.claimID(a, p.ID, wrong, defined)
 
 		// Most principals are people, so kind defaults to human; an agent says
 		// so, because what it may do differs.
@@ -225,13 +253,18 @@ func (l *loader) buildPrincipals(r Repo) []Principal {
 		if len(p.Identities) == 0 {
 			l.bad(a, "identities", "is required: a principal with no source identity is never matched to anything anyone said")
 		}
-		out = append(out, Principal{
+		// The identities are checked either way: an identity two principals
+		// both claim is a mistake in the other one too.
+		principal := Principal{
 			ID:         p.ID,
 			Name:       p.Name,
 			Kind:       kind,
 			Class:      class,
 			Identities: l.buildIdentities(r, a, p, identities),
-		})
+		}
+		if keep {
+			out = append(out, principal)
+		}
 	}
 	return out
 }
@@ -273,6 +306,7 @@ func (l *loader) buildIdentities(r Repo, a at, p principalDoc, identities map[st
 // buildCode validates `code/`.
 func (l *loader) buildCode(r Repo) []CodeEntity {
 	out := make([]CodeEntity, 0, len(l.code))
+	all := make([]CodeEntity, 0, len(l.code))
 	defined := make(map[string]string, len(l.code))
 	aliases := make(map[string]string)
 	located := make(map[string]at, len(l.code))
@@ -281,20 +315,18 @@ func (l *loader) buildCode(r Repo) []CodeEntity {
 		e := d.v
 		a := locate(d, "code entity", e.ID, i)
 
+		var wrong string
 		switch {
 		case e.ID == "":
-			l.bad(a, "id", "is required: it is what documents and stances reference")
+			wrong = "is required: it is what documents and stances reference"
 		case !strings.HasPrefix(e.ID, "code:") || len(e.ID) == len("code:"):
-			l.bad(a, "id", "%q is not a code entity id: they start with `code:`, as in code:acme/api:engine/server", e.ID)
+			wrong = fmt.Sprintf("%q is not a code entity id: they start with `code:`, as in code:acme/api:engine/server", e.ID)
 		case len(e.ID) > maxEntityIDLen:
-			l.bad(a, "id", "is %d bytes, and an entity id is at most %d", len(e.ID), maxEntityIDLen)
+			wrong = fmt.Sprintf("is %d bytes, and an entity id is at most %d", len(e.ID), maxEntityIDLen)
 		case strings.ContainsFunc(e.ID, unicode.IsSpace):
-			l.bad(a, "id", "%q contains whitespace", e.ID)
-		case defined[e.ID] != "":
-			l.bad(a, "id", "a code entity with id %q is already configured at %s", e.ID, defined[e.ID])
-		default:
-			defined[e.ID] = position(d.file, d.line)
+			wrong = fmt.Sprintf("%q contains whitespace", e.ID)
 		}
+		keep := l.claimID(a, e.ID, wrong, defined)
 		located[e.ID] = a
 
 		entityType := CodeEntityType(e.Type)
@@ -357,19 +389,26 @@ func (l *loader) buildCode(r Repo) []CodeEntity {
 		case e.CodeOwners != "" && !isRepoRelativePath(e.CodeOwners):
 			l.bad(a, "codeowners", "%q is not a path inside the repository", e.CodeOwners)
 		}
-		out = append(out, entity)
+		all = append(all, entity)
+		if keep {
+			out = append(out, entity)
+		}
 	}
 
-	l.checkPartOf(out, located)
+	l.checkPartOf(all, out, located)
 	return out
 }
 
 // checkPartOf checks the entity hierarchy: every parent is configured, and the
 // edges do not form a cycle. A cycle would make "the stances an entity inherits
 // from its ancestors" a walk with no end (docs/design.md#l3-derived-views).
-func (l *loader) checkPartOf(entities []CodeEntity, located map[string]at) {
-	byID := make(map[string]CodeEntity, len(entities))
-	for _, e := range entities {
+//
+// kept is the entities that went into the Repo, and is what a parent may resolve
+// to. all is every entity that was written, because an entity held out for a
+// malformed id still has edges of its own, and they are still worth checking.
+func (l *loader) checkPartOf(all, kept []CodeEntity, located map[string]at) {
+	byID := make(map[string]CodeEntity, len(kept))
+	for _, e := range kept {
 		byID[e.ID] = e
 	}
 
@@ -379,7 +418,7 @@ func (l *loader) checkPartOf(entities []CodeEntity, located map[string]at) {
 		open = 1
 		done = 2
 	)
-	colour := make(map[string]int, len(entities))
+	colour := make(map[string]int, len(kept))
 	var walk func(e CodeEntity, path []string)
 	walk = func(e CodeEntity, path []string) {
 		colour[e.ID] = open
@@ -407,8 +446,16 @@ func (l *loader) checkPartOf(entities []CodeEntity, located map[string]at) {
 		}
 		colour[e.ID] = done
 	}
-	for _, e := range entities {
+	for _, e := range kept {
 		if colour[e.ID] == 0 {
+			walk(e, nil)
+		}
+	}
+	// The held-out entities last, and unconditionally: nothing can reach one as
+	// a parent, so each is only ever a root, and two of them can share the id
+	// that is what was wrong with them.
+	for _, e := range all {
+		if _, ok := byID[e.ID]; !ok {
 			walk(e, nil)
 		}
 	}
@@ -423,16 +470,19 @@ func (l *loader) buildScopes(r Repo) []Scope {
 		s := d.v
 		a := locate(d, "scope", s.ID, i)
 
+		var wrong string
 		switch {
 		case s.ID == "":
-			l.bad(a, "id", "is required: it is what a bundle request asks for")
+			wrong = "is required: it is what a bundle request asks for"
 		case !isName(s.ID):
-			l.bad(a, "id", "%q is not a scope id: lowercase letters, digits, - and _, starting with a letter or a digit", s.ID)
-		case defined[s.ID] != "":
-			l.bad(a, "id", "a scope with id %q is already configured at %s", s.ID, defined[s.ID])
-		default:
-			defined[s.ID] = position(d.file, d.line)
+			wrong = fmt.Sprintf("%q is not a scope id: lowercase letters, digits, - and _, starting with a letter or a digit", s.ID)
 		}
+		// The only thing that names a scope by id is an authority policy, and a
+		// policy's scope is checked for shape before it is looked up, so no
+		// reference reaches this decision today. It is made the same way as the
+		// other three because the rule is the Repo's — it never holds an object
+		// whose id is not an id — and not this loop's.
+		keep := l.claimID(a, s.ID, wrong, defined)
 
 		scope := Scope{ID: s.ID, Name: s.Name, Entities: slices.Clone(s.Entities)}
 		if len(s.Sources) == 0 {
@@ -481,7 +531,9 @@ func (l *loader) buildScopes(r Repo) []Scope {
 					scope.Tracker.Project, scope.Tracker.Source)
 			}
 		}
-		out = append(out, scope)
+		if keep {
+			out = append(out, scope)
+		}
 	}
 	return out
 }
@@ -508,6 +560,17 @@ func (l *loader) checkSourceRef(r Repo, a at, field string, ref SourceRef) {
 func (l *loader) buildAuthority(r Repo) Authority {
 	policies := make([]Policy, 0, len(l.authority))
 	defined := make(map[string]string, len(l.authority))
+	// merged is the policies whose merged form is checked below, once every
+	// policy has been layered onto the one it inherits from. A policy whose
+	// scope is itself what is wrong is not in it: a scope with two policies has
+	// two answers and only one of them survives the merge, so anything said
+	// about the survivor would be attributed to whichever file was read first.
+	type policyAt struct {
+		scope string
+		at    at
+	}
+	var merged []policyAt
+	ambiguous := make(map[string]bool)
 
 	for i, d := range l.authority {
 		p := d.v
@@ -520,8 +583,10 @@ func (l *loader) buildAuthority(r Repo) Authority {
 			l.bad(a, "scope", "%q is not a scope id", p.Scope)
 		case defined[p.Scope] != "":
 			l.bad(a, "scope", "an authority policy for %q is already configured at %s: policies are not merged with each other, so two of them would be two answers", p.Scope, defined[p.Scope])
+			ambiguous[p.Scope] = true
 		default:
 			defined[p.Scope] = position(d.file, d.line)
+			merged = append(merged, policyAt{scope: p.Scope, at: a})
 			if p.Scope != AnyValue {
 				if _, ok := r.Scope(p.Scope); !ok {
 					l.bad(a, "scope", "no scope is configured with id %q", p.Scope)
@@ -555,12 +620,52 @@ func (l *loader) buildAuthority(r Repo) Authority {
 		}
 		policies = append(policies, policy)
 	}
-	return newAuthority(policies)
+
+	auth := newAuthority(policies)
+	for _, m := range merged {
+		if ambiguous[m.scope] {
+			continue
+		}
+		p := auth.Default()
+		if m.scope != AnyValue {
+			p = auth.ForScope(m.scope)
+		}
+		l.checkRatifiersAreRanked(m.at, p)
+	}
+	return auth
+}
+
+// checkRatifiersAreRanked reports an artifact class that ratifies on its own
+// while the ranking in force leaves it out. Such a class decides a topic with no
+// human in the loop and still loses every disagreement it is in, including to an
+// agent turn, which nobody writes on purpose — and it is easy to write by
+// accident, because narrowing a ranking is how a scope's policy usually starts.
+//
+// It is checked on the merged policy rather than on the file, because a scope
+// that sets one of the two fields inherits the other: neither file is wrong on
+// its own, and the scope's is where the ranking that made it wrong is written.
+func (l *loader) checkRatifiersAreRanked(a at, p Policy) {
+	if len(p.Ranking) == 0 {
+		// An empty ranking is reported where it is written, and every class
+		// would be missing from it.
+		return
+	}
+	for _, c := range p.RatifiedBy.Artifacts {
+		if !c.Valid() || slices.Contains(p.Ranking, c) {
+			continue
+		}
+		l.bad(a, "ratified_by.artifacts", "%q ratifies on its own, and the ranking in force for this scope leaves it out, so a stance it ratifies is outranked by every class the ranking does list. Rank it, or take it out of ratified_by.artifacts", c)
+	}
 }
 
 // artifactClasses converts a list of artifact class names, reporting the ones
 // that are not classes. A nil list stays nil, because that is what tells the
 // merge to inherit rather than to replace.
+//
+// A name that is not a class is reported and then dropped rather than carried
+// through as one. It is reported where it is written, and a policy that went on
+// to hold it would fail the checks made on the merged policy as well, which is
+// the same mistake said twice.
 func (l *loader) artifactClasses(a at, field string, names []string) []ArtifactClass {
 	if names == nil {
 		return nil
@@ -573,7 +678,9 @@ func (l *loader) artifactClasses(a at, field string, names []string) []ArtifactC
 		return ""
 	})
 	for _, name := range names {
-		out = append(out, ArtifactClass(name))
+		if c := ArtifactClass(name); c.Valid() {
+			out = append(out, c)
+		}
 	}
 	return out
 }
