@@ -134,15 +134,20 @@ func TestMigrateUpAndDown(t *testing.T) {
 		}
 	}
 
-	// Down reverses one migration at a time, and the events table goes with it.
-	if _, err := migrator.Down(t.Context()); err != nil {
-		t.Fatalf("Down() = %v, want no error", err)
-	}
-	if version, err := migrator.Version(t.Context()); err != nil || version != newest-1 {
-		t.Fatalf("Version(after down) = %d, %v, want %d", version, err, newest-1)
-	}
-	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM l0_events`).Scan(&events); err == nil {
-		t.Error("l0_events is still there after rolling its migration back")
+	// Down reverses one migration at a time, and the table each one created
+	// goes with it. The tables are named here newest first, so a migration
+	// added later is a line added at the top of this list.
+	for i, table := range []string{"queue_job", "l0_events"} {
+		want := newest - int64(i) - 1
+		if _, err := migrator.Down(t.Context()); err != nil {
+			t.Fatalf("Down() = %v, want no error", err)
+		}
+		if version, err := migrator.Version(t.Context()); err != nil || version != want {
+			t.Fatalf("Version(after down) = %d, %v, want %d", version, err, want)
+		}
+		if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM `+table).Scan(&events); err == nil {
+			t.Errorf("%s is still there after rolling its migration back", table)
+		}
 	}
 
 	// And up again, so that a down migration that leaves the schema in a state
