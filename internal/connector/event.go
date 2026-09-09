@@ -410,16 +410,16 @@ func (e Event) Validate() error {
 }
 
 func (p Payload) validate(e Event) error {
+	// An extension kind is validated against the core kind it says it behaves
+	// like, which is the same fallback everything above L0 uses.
 	rule, core := coreKinds[e.Kind]
-	switch {
-	case core && p.BaseKind != "":
+	if core && p.BaseKind != "" {
 		return fmt.Errorf("%w: base_kind is set on core kind %q", ErrInvalidEvent, e.Kind)
-	case !core && p.BaseKind == "":
-		return fmt.Errorf("%w: extension kind %q has no base_kind", ErrInvalidEvent, e.Kind)
-	case !core:
+	}
+	if !core {
 		var ok bool
 		if rule, ok = coreKinds[p.BaseKind]; !ok {
-			return fmt.Errorf("%w: base_kind %q is not a core kind", ErrInvalidEvent, p.BaseKind)
+			return fmt.Errorf("%w: extension kind %q needs a base_kind that is a core kind, and has %q", ErrInvalidEvent, e.Kind, p.BaseKind)
 		}
 	}
 

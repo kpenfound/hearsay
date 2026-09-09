@@ -358,6 +358,50 @@ func TestEventValidate(t *testing.T) {
 	}
 }
 
+// A rejected event is a bug in a connector someone has to find, so the error
+// names the field rather than the event.
+func TestValidateNamesTheFieldThatIsWrong(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*connector.Event)
+		want   string
+	}{
+		{
+			name:   "an extension kind with no base kind",
+			mutate: func(e *connector.Event) { e.Kind = "figma.comment" },
+			want:   "base_kind",
+		},
+		{
+			name:   "no artifact",
+			mutate: func(e *connector.Event) { e.Payload.Artifact = "" },
+			want:   "payload.artifact",
+		},
+		{
+			name:   "an author with no native id",
+			mutate: func(e *connector.Event) { e.Payload.Author.NativeID = "" },
+			want:   "payload.author.native_id",
+		},
+		{
+			name:   "an acl entry that names nothing",
+			mutate: func(e *connector.Event) { e.ACL = connector.ACL{{Kind: connector.ACLGroup, Source: "github-acme"}} },
+			want:   "acl[0]",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ev := validEvent()
+			tt.mutate(&ev)
+			err := ev.Validate()
+			if err == nil {
+				t.Fatalf("Validate() = nil, want an error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("Validate() = %q, want it to name %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestKindValid(t *testing.T) {
 	tests := []struct {
 		kind      connector.Kind
