@@ -33,7 +33,7 @@ func runL0(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		cursor   = fs.String("cursor", "", "for tail: resume after this cursor instead of the beginning")
 		interval = fs.Duration("interval", 2*time.Second, "for tail: how often to look for new events")
 	)
-	action, err := parseAction(fs, args, "")
+	action, actionArgs, err := parseAction(fs, args, "")
 	if err != nil {
 		return err
 	}
@@ -43,7 +43,7 @@ func runL0(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	resolveDatabase()
 	// Work out what to do before opening anything, so that a typo in the action
 	// is a typo rather than a connection failure.
-	do, err := l0Action(fs, action, l0.ListOptions{
+	do, err := l0Action(fs, action, actionArgs, l0.ListOptions{
 		Filter: l0.Filter{
 			Source:   *source,
 			Kind:     connector.Kind(*kind),
@@ -75,10 +75,10 @@ func runL0(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 // each action reads: a filter an action would ignore is refused here rather
 // than dropped, because `hearsay l0 tail --source x` following every source in
 // the store is not something an operator would notice.
-func l0Action(fs *flag.FlagSet, action string, opts l0.ListOptions, cursor string, interval time.Duration) (func(context.Context, *l0.Store, io.Writer) error, error) {
+func l0Action(fs *flag.FlagSet, action string, args []string, opts l0.ListOptions, cursor string, interval time.Duration) (func(context.Context, *l0.Store, io.Writer) error, error) {
 	switch action {
 	case "list":
-		if err := checkArgs(fs, action, "source", "kind", "artifact", "limit", "newest"); err != nil {
+		if err := checkArgs(fs, action, args, "source", "kind", "artifact", "limit", "newest"); err != nil {
 			return nil, err
 		}
 		if err := opts.Validate(); err != nil {
@@ -97,10 +97,10 @@ func l0Action(fs *flag.FlagSet, action string, opts l0.ListOptions, cursor strin
 		if err := checkFlags(fs, action); err != nil {
 			return nil, err
 		}
-		if fs.NArg() != 1 {
+		if len(args) != 1 {
 			return nil, errors.New("get takes one argument: the event id")
 		}
-		id := fs.Arg(0)
+		id := args[0]
 		return func(ctx context.Context, store *l0.Store, w io.Writer) error {
 			event, err := store.Get(ctx, id)
 			if err != nil {
@@ -115,7 +115,7 @@ func l0Action(fs *flag.FlagSet, action string, opts l0.ListOptions, cursor strin
 		}, nil
 
 	case "count":
-		if err := checkArgs(fs, action); err != nil {
+		if err := checkArgs(fs, action, args); err != nil {
 			return nil, err
 		}
 		return func(ctx context.Context, store *l0.Store, w io.Writer) error {
@@ -128,7 +128,7 @@ func l0Action(fs *flag.FlagSet, action string, opts l0.ListOptions, cursor strin
 		}, nil
 
 	case "tail":
-		if err := checkArgs(fs, action, "source", "kind", "artifact", "limit", "cursor", "interval"); err != nil {
+		if err := checkArgs(fs, action, args, "source", "kind", "artifact", "limit", "cursor", "interval"); err != nil {
 			return nil, err
 		}
 		if err := opts.Validate(); err != nil {

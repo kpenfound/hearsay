@@ -184,6 +184,34 @@ func TestRun(t *testing.T) {
 			wantErr: "down does not read --config",
 		},
 		{
+			// A flag behind the argument is a flag, not a second argument: the
+			// two actions that take one would otherwise report "takes one
+			// argument" about a command line that gave exactly one.
+			name:    "l0 get takes a flag after the event id",
+			args:    []string{"l0", "get", "evt:a:b", "--kind", "message"},
+			wantErr: "get does not read --kind",
+		},
+		{
+			name:    "migrate up-to takes a flag after the version",
+			args:    []string{"migrate", "up-to", "1", "--i-know"},
+			wantErr: "up-to does not read --i-know",
+		},
+		{
+			name:    "l0 get still rejects a second argument",
+			args:    []string{"l0", "get", "evt:a:b", "evt:c:d"},
+			wantErr: "get takes one argument",
+		},
+		{
+			name:    "migrate up-to still rejects a second argument",
+			args:    []string{"migrate", "up-to", "1", "2"},
+			wantErr: "up-to takes one argument",
+		},
+		{
+			name:    "config validate takes a flag after the path",
+			args:    []string{"config", "validate", "testdata/does-not-exist", "--log-level", "debug"},
+			wantErr: "testdata/does-not-exist",
+		},
+		{
 			name:    "a service rejects an unknown flag",
 			args:    []string{"api", "--verbose"},
 			wantErr: "flag provided but not defined",

@@ -275,7 +275,7 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 // configuration repository rather than by a deployment (ADR-0009).
 func runConfig(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, _, configPath := newFlagSet("config", stderr)
-	action, err := parseAction(fs, args, "")
+	action, actionArgs, err := parseAction(fs, args, "")
 	if err != nil {
 		return err
 	}
@@ -285,16 +285,16 @@ func runConfig(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	if action != "validate" {
 		return fmt.Errorf("unknown action %q: want validate", action)
 	}
-	if fs.NArg() > 1 {
-		return fmt.Errorf("unexpected argument %q", fs.Arg(1))
+	if len(actionArgs) > 1 {
+		return fmt.Errorf("unexpected argument %q", actionArgs[1])
 	}
 
 	// The path is the argument, the --config flag, or the working directory,
 	// which is what running this in a checkout of the configuration repository
 	// should mean.
 	path := *configPath
-	if fs.NArg() == 1 {
-		path = fs.Arg(0)
+	if len(actionArgs) == 1 {
+		path = actionArgs[0]
 	}
 	if path == "" {
 		path = "."

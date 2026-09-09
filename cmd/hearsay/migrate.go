@@ -45,14 +45,14 @@ func runMigrate(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	// `down` destroys what the migration held, so it takes a second word from
 	// whoever runs it (ADR-0006). Recovery in production is a restore.
 	iKnow := fs.Bool("i-know", false, "for down: yes, roll back the last migration and lose what it held")
-	action, err := parseAction(fs, args, "up")
+	action, actionArgs, err := parseAction(fs, args, "up")
 	if err != nil {
 		return err
 	}
 	resolveDatabase()
 	// Work out what to do before opening anything, so that a typo in the action
 	// is a typo rather than a connection failure.
-	do, err := migrateAction(fs, action, iKnow)
+	do, err := migrateAction(fs, action, actionArgs, iKnow)
 	if err != nil {
 		return err
 	}
@@ -71,10 +71,10 @@ func runMigrate(ctx context.Context, args []string, stdout, stderr io.Writer) er
 
 // migrateAction turns the action word and what follows it into the work to do.
 // It is the one place the vocabulary lives.
-func migrateAction(fs *flag.FlagSet, action string, iKnow *bool) (func(context.Context, *db.Migrator, io.Writer) error, error) {
+func migrateAction(fs *flag.FlagSet, action string, args []string, iKnow *bool) (func(context.Context, *db.Migrator, io.Writer) error, error) {
 	switch action {
 	case "up":
-		if err := checkArgs(fs, action); err != nil {
+		if err := checkArgs(fs, action, args); err != nil {
 			return nil, err
 		}
 		return func(ctx context.Context, m *db.Migrator, w io.Writer) error {
@@ -86,12 +86,12 @@ func migrateAction(fs *flag.FlagSet, action string, iKnow *bool) (func(context.C
 		if err := checkFlags(fs, action); err != nil {
 			return nil, err
 		}
-		if fs.NArg() != 1 {
+		if len(args) != 1 {
 			return nil, errors.New("up-to takes one argument: the migration version to stop at")
 		}
-		version, err := strconv.ParseInt(fs.Arg(0), 10, 64)
+		version, err := strconv.ParseInt(args[0], 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("%q is not a migration version: %w", fs.Arg(0), err)
+			return nil, fmt.Errorf("%q is not a migration version: %w", args[0], err)
 		}
 		return func(ctx context.Context, m *db.Migrator, w io.Writer) error {
 			applied, err := m.UpTo(ctx, version)
@@ -99,7 +99,7 @@ func migrateAction(fs *flag.FlagSet, action string, iKnow *bool) (func(context.C
 		}, nil
 
 	case "down":
-		if err := checkArgs(fs, action, "i-know"); err != nil {
+		if err := checkArgs(fs, action, args, "i-know"); err != nil {
 			return nil, err
 		}
 		if !*iKnow {
@@ -111,7 +111,7 @@ func migrateAction(fs *flag.FlagSet, action string, iKnow *bool) (func(context.C
 		}, nil
 
 	case "status":
-		if err := checkArgs(fs, action); err != nil {
+		if err := checkArgs(fs, action, args); err != nil {
 			return nil, err
 		}
 		return printStatus, nil
@@ -121,29 +121,55 @@ func migrateAction(fs *flag.FlagSet, action string, iKnow *bool) (func(context.C
 	}
 }
 
-// parseAction handles the flags-either-side parsing every subcommand with an
-// action word needs: `hearsay migrate --database-url x status` and
-// `hearsay migrate status --database-url x` are both things people type, and
-// flag stops at the first word that is not a flag.
-func parseAction(fs *flag.FlagSet, args []string, fallback string) (string, error) {
-	if err := fs.Parse(args); err != nil {
-		return "", err
+// parseAction handles the flags-anywhere parsing every subcommand with an action
+// word needs. `hearsay migrate --database-url x status`,
+// `hearsay migrate status --database-url x` and
+// `hearsay l0 get <id> --database-url x` are all things people type; flag stops
+// at the first word that is not a flag, so the only way to see every flag is to
+// go round again after each word. It returns the action — the first word, or
+// fallback when there is none — and the words after it.
+//
+// A flag left unparsed would land in NArg and be reported as a stray argument,
+// which is the wrong problem: the two actions that take an argument would say
+// "takes one argument" about a command line that gave one.
+func parseAction(fs *flag.FlagSet, argv []string, fallback string) (action string, args []string, err error) {
+	words, err := parseWords(fs, argv)
+	if err != nil {
+		return "", nil, err
 	}
-	if fs.NArg() == 0 {
-		return fallback, nil
+	if len(words) == 0 {
+		return fallback, nil, nil
 	}
-	action := fs.Arg(0)
-	if err := fs.Parse(fs.Args()[1:]); err != nil {
-		return "", err
+	return words[0], words[1:], nil
+}
+
+// parseWords parses argv into the flag set and returns the positional words in
+// order.
+func parseWords(fs *flag.FlagSet, argv []string) ([]string, error) {
+	var words []string
+	for {
+		// `--` ends the flags for good, so everything behind it is a word even
+		// if it looks like one. Parse honours that for the run it is given;
+		// looping past it would not.
+		if len(argv) > 0 && argv[0] == "--" {
+			return append(words, argv[1:]...), nil
+		}
+		if err := fs.Parse(argv); err != nil {
+			return nil, err
+		}
+		if fs.NArg() == 0 {
+			return words, nil
+		}
+		words = append(words, fs.Arg(0))
+		argv = fs.Args()[1:]
 	}
-	return action, nil
 }
 
 // checkArgs rejects a word after an action that takes none, and any flag the
 // action does not read.
-func checkArgs(fs *flag.FlagSet, action string, reads ...string) error {
-	if fs.NArg() > 0 {
-		return fmt.Errorf("unexpected argument %q: %s takes none", fs.Arg(0), action)
+func checkArgs(fs *flag.FlagSet, action string, args []string, reads ...string) error {
+	if len(args) > 0 {
+		return fmt.Errorf("unexpected argument %q: %s takes none", args[0], action)
 	}
 	return checkFlags(fs, action, reads...)
 }

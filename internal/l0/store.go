@@ -390,7 +390,7 @@ func (s *Store) Changes(ctx context.Context, from Cursor, filter Filter, limit i
 	q := &query{sql: `
 SELECT e.xact_id::text, e.seq, e.ingested_at, ` + eventColumns + `
   FROM l0_events e
- WHERE (e.xact_id, e.seq) > (` + `$1::xid8, $2::bigint)
+ WHERE (e.xact_id, e.seq) > ($1::xid8, $2::bigint)
    AND e.xact_id < pg_snapshot_xmin(pg_current_snapshot())
    AND ` + notRetractedSQL}
 	q.args = []any{strconv.FormatUint(from.xact, 10), from.seq}
