@@ -79,8 +79,11 @@ rests on: a connector that re-emits an observation produces the same id, and
 anything holding an id (a bundle's provenance pointer, an L1 doc's `l0_refs`) can
 recover the source and native id without a lookup.
 
-An event id is at most 512 bytes before encoding, which is the limit on
-`native_id`.
+A `native_id` is at most 512 bytes. An event id is longer than that, because
+encoding turns one unsafe byte into three: the bound is
+`len("evt:") + len(source) + 1 + 3 × 512`, at most **1605 bytes** for the longest
+source id. Size the column from that number, not from the native id's limit — a
+512-byte native id of non-ASCII text is legal and produces a 1551-byte id.
 
 ### Kinds
 
@@ -141,7 +144,7 @@ about it. Everything else the connector wants to keep goes in `native`.
 | `links` | array of strings | where the source gives them | URLs the artifact carries, verbatim. L1 turns them into typed references; a connector does not. |
 | `parent` | artifact id | where there is a parent | The thing this one hangs off: the issue a comment is on, the message a reply answers. |
 | `thread` | artifact id | where there is a thread | The root of the conversation, which is what the distiller assembles a thread from. On a two-level source it equals `parent`. |
-| `revision` | object | on every event after an artifact's first | `{token, edited_at?}` — see idempotency below. |
+| `revision` | object | exactly when `native_id` is `artifact@<token>` | `{token, edited_at?}`, and `token` is that token — see idempotency below. |
 | `target` | artifact id | on tombstones only | The artifact the tombstone retracts. |
 | `native` | any JSON | no | The source's own object, verbatim. Nothing above L0 reads it, and nothing the fields above ask for may be hidden in it. |
 
@@ -226,8 +229,11 @@ in the connector rather than something to retry:
 10. The kind's author and content requirements are met.
 11. Every identity has a well-formed source, a non-empty `native_id` and a known
     kind; every participant has a known role.
-12. A tombstone has a `target`; nothing else does.
-13. `payload.revision`, if present, has a non-empty `token`.
+12. A tombstone has a `target`, and it is not the tombstone's own `artifact`;
+    nothing else has a `target`.
+13. `payload.revision` is present exactly when `native_id` is
+    `artifact@<token>`, `token` is non-empty, and `payload.revision.token`
+    equals it.
 
 ## Idempotency, edits and deletions
 
@@ -246,9 +252,10 @@ is unsure whether it already sent something re-sends it. That is what makes a
 webhook overlapping a backfill safe, and it is why a connector is not required to
 remember what it has emitted.
 
-The rule that makes it work: **two emissions that could carry different payloads
-must have different native ids.** If a source can change an artifact, the
-connector puts the source's own version token in the native id.
+The rule that makes it work: **two emissions that could differ in `payload` or
+in `acl` must have different native ids.** If a source can change an artifact —
+its content or who may read it — the connector puts the source's own version
+token in the native id.
 
 **An edit is a new event**, never an overwrite: L0 is append-only. The new event
 carries the same `payload.artifact`, a `native_id` of `<artifact>@<token>` and a
@@ -257,9 +264,44 @@ happened. Every earlier revision stays in L0 — that is the provenance for
 anything distilled from it — and the latest revision of an artifact by `time` is
 the current one.
 
-The revision token is whatever the source gives that changes when the content
-does: an edit timestamp, an ETag, a Drive revision id, a GitHub `updated_at`. It
-is opaque to Hearsay.
+The revision token is whatever the source gives that changes when the
+observation does: an edit timestamp, an ETag, a Drive revision id, a GitHub
+`updated_at`. It is opaque to Hearsay. A connector whose source has no single
+token for that — content in one version field, permissions in another — composes
+one, `<content token>+<permission token>`, and puts it in `payload.revision`
+verbatim. `payload.revision.edited_at` still says when the source says the
+change happened.
+
+### When only the access list changes
+
+An artifact whose ACL changed and whose content did not is a **new revision**,
+not an exception. Discord channel `C123` is public, so every message in it
+carries `acl: [{public}]`; someone makes the channel private. Nothing about any
+message changed, so no `edited_timestamp` changed, so re-emitting with the same
+native ids would deduplicate to nothing and L0 would keep `public` on every one
+of them forever — which is what design.md's "re-syncs on change" exists to
+prevent.
+
+So: the connector re-emits each affected artifact with a native id whose
+revision token reflects the new permissions (`<message id>@perm:<version>`), the
+same payload, and the new `acl`. The newest revision of an artifact is the
+current one, so the ACL re-syncs by the same rule edits do, with no second
+mechanism and nothing rewritten in place.
+
+Two consequences worth stating plainly, because they are the cost of that
+choice:
+
+- **It is a bulk operation.** A container that changes visibility means
+  re-emitting every artifact in it. That is what a re-sync is; the runtime (#8)
+  schedules it like a backfill, and re-emitting an artifact whose permissions
+  have not changed is deduplicated away, so an interrupted re-sync can be run
+  again.
+- **Until the re-emission lands, L0 holds the old ACL.** Ingest is eventually
+  consistent with the source's permissions, and it is more permissive than the
+  source in the window between the change and the re-sync. A source whose
+  permissions must be enforced at read time in real time is not served by ACL
+  inheritance at all; that is a read-path decision and belongs to access control
+  (issue #21), not to a connector.
 
 **A deletion at the source is a tombstone event**: a new event of kind
 `tombstone` whose `payload.target` is the artifact id it retracts, timed when the
@@ -436,6 +478,12 @@ list endpoints with the page cursor. Deleting a comment sends
 `issue_comment.deleted`, which is a `tombstone` with artifact
 `acme/api#12:comment:998:tombstone` and `target` the comment's artifact id.
 
+Every native id with an `@` carries `payload.revision.token` equal to the part
+after it, so an issue at `acme/api#12@2026-09-09T12:00:00Z` has that timestamp as
+its token. A repository going private is an ACL change with no content change:
+the connector re-emits the repository's artifacts with
+`@<updated_at>+perm:private`, since GitHub gives no version for visibility.
+
 Checks out. The one thing worth naming: an edit to an issue body arrives with the
 same `updated_at` granularity as a label change, so a connector emitting on every
 `issues` webhook produces revisions whose content is identical. That is
@@ -460,6 +508,14 @@ contract draws between container and thread is load-bearing here. Reactions carr
 their author and no text, which is why `reaction` requires neither. ACL for an
 allowlisted private channel is `{group, native_id: <channel id>}`, so the member
 set is resolved at read time.
+
+Discord has no version number for a channel's permissions, so a channel that
+changes visibility is the composed-token case: the connector re-emits the
+channel's messages with a token of `perm:<hash of the channel's permission
+overwrites>`, or `<edited_timestamp>+perm:<hash>` for a message that had also
+been edited. Because the member set is a `group` entry rather than a list of
+people, this is only needed when the *shape* of access changes — public to
+private — not when somebody joins or leaves the channel.
 
 One gap found while writing this, and the reason a tombstone is its own artifact.
 Discord's `MESSAGE_DELETE` carries no timestamp for the deletion, so the obvious
@@ -486,6 +542,11 @@ interfaces rather than a mode field. ACL comes from the file's permissions:
 share to `identity`. A transcript's author is often the meeting bot rather than a
 person, which is why `transcript` does not require one; attendees go in
 `participants` with role `attendee`.
+
+Drive is the source where the ACL moves most and the composed token earns its
+keep: sharing a document changes the permission list and not the head revision
+id, so the token is `<head revision id>+perm:<permission list etag>`, and the
+re-share lands as a new revision with the same content and a new `acl`.
 
 Two things Drive needs that the contract deliberately leaves to the connector: a
 file that moves between folders changes container, and the connector emits the
