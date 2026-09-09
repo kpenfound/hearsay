@@ -15,12 +15,17 @@ them, the way it parses `sources/` into `connector.SourceConfig`. It imports
 `internal/connector`, for the identity hints an event carries, and nothing else
 of Hearsay's — keep it that way, because everything above L0 imports this.
 
-**Four things the code depends on and a reader would not guess:**
+**Five things the code depends on and a reader would not guess:**
 
 - **Matching is per source.** A handle in one source is no evidence about a
   handle in another. A person is listed once per source they appear in, and an
   email address matches an identity whose `handle` was written as one, in the
   same source.
+- **A group is matched by both keys too.** `ResolveGroup` looks in the native id
+  *and* the handle namespace, because a source names a group both ways — a
+  GitHub team is a node id in an ACL and a slug in CODEOWNERS — and a team whose
+  configuration has only the slug would otherwise be reachable by nothing. The
+  caller passes it undecorated: `acme/api-team`, not `@acme/api-team`.
 - **Keys that disagree are ambiguous, not a precedence contest.** A native id
   survives a rename and a handle does not, so it is the key to *write down* —
   but when a hint's native id and handle name two different principals, the
@@ -29,7 +34,10 @@ of Hearsay's — keep it that way, because everything above L0 imports this.
 - **Nothing unresolved is dropped, and nothing is minted for it.** An unknown or
   ambiguous identity is recorded for a person to map. L0 keeps the hint, so
   authorship comes back when the documents are distilled again; a placeholder
-  principal id would leak into stances and outlive the gap it stood for.
+  principal id would leak into stances and outlive the gap it stood for. The
+  record is bounded, and past the bound `Overflow` counts *sightings* rather
+  than the identities they belong to — counting those would mean remembering
+  them, which is the memory the bound refuses.
 - **A team never acts.** It owns things and stands in for a source's group. One
   of its members is who said something, so `AgentRead` and `HumanRead` refuse a
   team.

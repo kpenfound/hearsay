@@ -117,9 +117,16 @@ func TestHumanRead(t *testing.T) {
 		t.Error("a person may not ratify their own read")
 	}
 
-	for _, p := range []principal.Principal{shed, team, {ID: "nobody"}} {
+	for _, p := range []principal.Principal{
+		shed,
+		team,
+		{ID: "nobody"},
+		// Nothing would be accountable for these reads.
+		{Kind: principal.KindHuman},
+		{ID: "Kyle Penfound", Kind: principal.KindHuman},
+	} {
 		if _, err := principal.HumanRead(p, grant); !errors.Is(err, principal.ErrCannotAct) {
-			t.Errorf("HumanRead(%s) error = %v, want ErrCannotAct", p.ID, err)
+			t.Errorf("HumanRead(%+v) error = %v, want ErrCannotAct", p, err)
 		}
 	}
 }
@@ -214,6 +221,11 @@ func TestAgentReadRefuses(t *testing.T) {
 		{"a team cannot delegate a read", shed, team, "a team cannot delegate a read"},
 		{"an agent with no class", principal.Principal{ID: "x", Kind: principal.KindAgent}, kyle, `class ""`},
 		{"an agent with a class that does not exist", principal.Principal{ID: "x", Kind: principal.KindAgent, Class: "admin"}, kyle, `class "admin"`},
+		// Every bundle served records who asked and on whose behalf, so both
+		// halves need an id worth recording.
+		{"an agent with no id", principal.Principal{Kind: principal.KindAgent, Class: principal.ClassWorker}, kyle, `"" is not a principal id`},
+		{"a person with no id", shed, principal.Principal{Kind: principal.KindHuman}, `"" is not a principal id`},
+		{"a person whose id is not an id", shed, principal.Principal{ID: "Kyle", Kind: principal.KindHuman}, `"Kyle" is not a principal id`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

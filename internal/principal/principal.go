@@ -20,6 +20,13 @@ type Principal struct {
 	// bytes of lowercase letters, digits, `-` and `_`, starting with a letter
 	// or a digit ([ValidID]). Nothing derives it from a source, because a
 	// principal outlives any one source's idea of who they are.
+	//
+	// It is used bare wherever a principal is named — a stance's author, an
+	// owner, an authority policy, an L1 participant, an L2 entity of type
+	// `person` or `team`, which carry the type beside the id rather than in it
+	// (docs/design.md#l1-distilled-documents). Unlike a code entity's `code:`
+	// or a tracker item's `tracker:`, it needs no namespace: it names nothing
+	// inside a source, so there is nothing for a prefix to disambiguate.
 	ID string
 	// Name is the person's, agent's or team's name, for a human reading
 	// configuration. It is a display name, never a key.
@@ -37,25 +44,6 @@ type Principal struct {
 	// a team. Anything that is not a team has none — configuration rejects a
 	// person who lists members rather than quietly ignoring them.
 	Members []string
-}
-
-// EntityID is the id this principal has as an L2 entity of type `person`,
-// `agent` or `team` (docs/design.md#entities). Entity ids are namespaced by
-// what they name — `code:`, `tracker:` — so a principal's is namespaced by its
-// kind, and the bare [Principal.ID] is what owners, authority policies and an
-// L1 participant use.
-//
-// It is empty for a principal whose kind is unknown, because an id that cannot
-// say what it names is worse than no id.
-func (p Principal) EntityID() string {
-	switch p.Kind {
-	case KindHuman:
-		return "person:" + p.ID
-	case KindAgent, KindTeam:
-		return string(p.Kind) + ":" + p.ID
-	default:
-		return ""
-	}
 }
 
 // Identity is one principal in one source, as configuration writes it down. It

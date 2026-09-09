@@ -135,6 +135,13 @@ func AgentRead(agent, human Principal, agentGrant, humanGrant Grant) (Effective,
 }
 
 func mustBe(p Principal, want Kind, verb string) error {
+	// The id first, because it is what an audit event carries: a read whose
+	// principal has no id is a read nobody is accountable for, and this is the
+	// package access control fails closed against.
+	if !ValidID(p.ID) {
+		return fmt.Errorf("%w: %q is not a principal id, so nothing would be accountable for the read",
+			ErrCannotAct, p.ID)
+	}
 	if p.Kind == want {
 		return nil
 	}

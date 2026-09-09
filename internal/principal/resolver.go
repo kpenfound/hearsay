@@ -12,10 +12,11 @@ import (
 )
 
 // MaxUnresolved is how many distinct unresolved identities one resolver
-// remembers. The record is a queue of work for a person, not a log: past this
-// many, further distinct identities are counted by [Resolver.Overflow] and not
-// kept, because the keys come from sources and an ingest process that ran for a
-// month would otherwise hold every bot that ever posted.
+// remembers. The record is a queue of work for a person, not a log: once it
+// holds this many, a sighting of an identity that has no entry yet is counted
+// by [Resolver.Overflow] and not kept, because the keys come from sources and
+// an ingest process that ran for a month would otherwise hold every bot that
+// ever posted.
 const MaxUnresolved = 4096
 
 // ErrIdentityClaimed is returned by [NewResolver] when two principals claim the
@@ -207,16 +208,41 @@ func (r *Resolver) Resolve(hint connector.Identity) Resolution {
 // lookup [connector.ACLEntry] defers to read time: the entry names the group,
 // and membership is resolved against this mapping.
 //
+// The group is matched by both keys, the same way an identity hint is, because
+// a source names a group both ways and configuration accepts either: a GitHub
+// team is a node id in an ACL and the slug `acme/api-team` in CODEOWNERS, and a
+// team that only has a slug written down would otherwise be reachable by no
+// lookup at all. Two keys means two principals can match, and then the group is
+// [Ambiguous] like any other identity.
+//
+// Pass the group as the source spells it, with no decoration: `acme/api-team`,
+// not the `@acme/api-team` a CODEOWNERS line carries. Stripping the source's
+// own syntax is the caller's job, the way a scope's tracker item is a bare
+// `1234` and not `#1234`.
+//
 // A group that resolves to a person or an agent is a configuration mistake, and
 // it is reported as [Resolved] all the same: the caller knows what it asked
 // for, and this is not the place that decides what an ACL means.
-func (r *Resolver) ResolveGroup(source, nativeID string) Resolution {
-	keys := []identityKey{nativeKey(source, nativeID)}
+func (r *Resolver) ResolveGroup(source, group string) Resolution {
+	keys := groupKeys(source, group)
 	res := r.lookup(keys)
 	if res.Status != Resolved {
-		r.record(keys, connector.Identity{Source: source, NativeID: nativeID}, res)
+		r.record(keys, connector.Identity{Source: source, NativeID: group}, res)
 	}
 	return res
+}
+
+// groupKeys is every key a source-native group is matched by. The native key
+// comes first, so that is what an unresolved group is filed under.
+func groupKeys(source, group string) []identityKey {
+	if source == "" || group == "" {
+		return nil
+	}
+	keys := []identityKey{nativeKey(source, group)}
+	if FoldHandle(group) != "" {
+		keys = append(keys, handleKey(source, group))
+	}
+	return keys
 }
 
 // hintKeys is every key an identity hint is matched by. The email is a handle
@@ -340,9 +366,15 @@ func (r *Resolver) Unresolved() []Unresolved {
 	return out
 }
 
-// Overflow reports how many distinct identities were dropped rather than
-// recorded because the record was already holding [MaxUnresolved]. A non-zero
-// count means the mapping is far enough behind that the list is a sample.
+// Overflow reports how many *sightings* were dropped rather than recorded
+// because the record was already holding [MaxUnresolved] identities. A non-zero
+// count means the mapping is far enough behind that [Resolver.Unresolved] is a
+// sample rather than the list.
+//
+// It counts sightings and not the identities they belong to — one new bot
+// posting three times counts three — because counting identities would mean
+// remembering which ones had been seen, and that memory is exactly what the
+// bound exists to refuse.
 func (r *Resolver) Overflow() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()

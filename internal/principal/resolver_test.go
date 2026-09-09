@@ -44,10 +44,20 @@ func mapping() []principal.Principal {
 			},
 		},
 		{
-			ID:         "api-team",
+			ID:      "api-team",
+			Kind:    principal.KindTeam,
+			Members: []string{"kyle", "robin", "shed"},
+			Identities: []principal.Identity{
+				{Source: "github", NativeID: "MDQ6VGVhbTE=", Handle: "acme/api-team"},
+			},
+		},
+		{
+			// A team written down the way onboarding actually writes one: the
+			// slug a person can type, and no node id. It is the only form
+			// CODEOWNERS gives.
+			ID:         "eng",
 			Kind:       principal.KindTeam,
-			Members:    []string{"kyle", "robin", "shed"},
-			Identities: []principal.Identity{{Source: "github", NativeID: "MDQ6VGVhbTE="}},
+			Identities: []principal.Identity{{Source: "github", Handle: "acme/eng"}},
 		},
 	}
 }
@@ -311,6 +321,19 @@ func TestUnresolvedIsBounded(t *testing.T) {
 	if n := r.Overflow(); n != extra {
 		t.Errorf("Overflow() = %d after a repeat sighting, want %d", n, extra)
 	}
+
+	// Overflow counts sightings, not the identities they belong to: one new
+	// bot posting three times counts three. Counting identities would mean
+	// remembering the ones the bound refused to keep.
+	for range 3 {
+		r.Resolve(connector.Identity{Source: "github", NativeID: "one-new-bot"})
+	}
+	if n := r.Overflow(); n != extra+3 {
+		t.Errorf("Overflow() = %d after three sightings of one new identity, want %d", n, extra+3)
+	}
+	if n := len(r.Unresolved()); n != principal.MaxUnresolved {
+		t.Errorf("Unresolved() holds %d, want the bound to still be %d", n, principal.MaxUnresolved)
+	}
 }
 
 // Every connector resolves at once, so the mapping is read and the record
@@ -345,24 +368,48 @@ func TestResolveIsConcurrencySafe(t *testing.T) {
 
 // A source-native group — an ACL entry, a team in CODEOWNERS — resolves to the
 // team that claims it.
+// A source names a group two ways — a node id in an ACL, a slug in CODEOWNERS —
+// and configuration accepts either, so both are looked up. A team written down
+// with a slug and no node id, which is what onboarding produces and the only
+// form CODEOWNERS has, must be reachable.
 func TestResolveGroup(t *testing.T) {
-	r := newResolver(t, mapping())
+	tests := []struct {
+		name   string
+		group  string
+		want   principal.Status
+		wantID string
+	}{
+		{"a node id", "MDQ6VGVhbTE=", principal.Resolved, "api-team"},
+		{"the slug of the same team", "acme/api-team", principal.Resolved, "api-team"},
+		{"a slug is all a CODEOWNERS team has", "acme/eng", principal.Resolved, "eng"},
+		{"a slug in another case", "ACME/Eng", principal.Resolved, "eng"},
+		// The `@` is CODEOWNERS syntax, and stripping it is the caller's job.
+		{"a slug still wearing its CODEOWNERS @", "@acme/eng", principal.Unknown, ""},
+		{"a group nobody claims", "MDQ6VGVhbTk5", principal.Unknown, ""},
+		{"no group at all", "", principal.Unknown, ""},
+		// A group that resolves to a person is a configuration mistake, and it
+		// is reported as resolved all the same: what an ACL means is not
+		// decided here.
+		{"a group that is really a person", "kpenfound", principal.Resolved, "kyle"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := newResolver(t, mapping()).ResolveGroup("github", tt.group)
+			if got.Status != tt.want || got.Principal.ID != tt.wantID {
+				t.Errorf("ResolveGroup(%q) = %+v, want %s %q", tt.group, got, tt.want, tt.wantID)
+			}
+		})
+	}
 
-	got := r.ResolveGroup("github", "MDQ6VGVhbTE=")
-	if got.Status != principal.Resolved || got.Principal.ID != "api-team" || got.Principal.Kind != principal.KindTeam {
-		t.Errorf("ResolveGroup = %+v, want the api-team team", got)
-	}
-	// A group is matched by its native id alone: a handle key of the same text
-	// is a different namespace.
-	if got := r.ResolveGroup("github", "kpenfound"); got.Status != principal.Unknown {
-		t.Errorf("ResolveGroup(a handle) = %+v, want unknown", got)
-	}
-	if got := r.ResolveGroup("github", "MDQ6VGVhbTk5"); got.Status != principal.Unknown {
-		t.Errorf("ResolveGroup(an unmapped group) = %+v, want unknown", got)
-	}
-	// An unmapped group is a mapping a person has to write, like any other.
-	if n := len(r.Unresolved()); n != 2 {
-		t.Errorf("Unresolved() = %d entries, want the two unmapped groups", n)
+	// An unmapped group is a mapping a person has to write, like any other; a
+	// group that resolved leaves no trace, and a group of nothing names nobody
+	// to map.
+	r := newResolver(t, mapping())
+	r.ResolveGroup("github", "MDQ6VGVhbTk5")
+	r.ResolveGroup("github", "acme/api-team")
+	r.ResolveGroup("github", "")
+	if n := len(r.Unresolved()); n != 1 {
+		t.Errorf("Unresolved() = %+v, want just the unmapped group", r.Unresolved())
 	}
 }
 

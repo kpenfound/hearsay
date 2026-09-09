@@ -175,6 +175,23 @@ An identity needs a `native_id`, a `handle`, or both.
 
 Two principals may not claim the same identity in the same source.
 
+### The id, and how it is minted
+
+A principal id is written by hand, here, and nothing derives it from a source: a
+principal outlives any one source's idea of who they are. It is 1 to 64 bytes of
+lowercase letters, digits, `-` and `_`, starting with a letter or a digit — the
+same shape as a source id and a scope id, so there is one rule for every name a
+person types into configuration.
+
+It is then used bare wherever a principal is named: a stance's author, an
+`owners` entry, an authority policy, an L1 participant, and an L2 entity of type
+`person` or `team`, which carry the type beside the id rather than in it
+([design](design.md#l1-distilled-documents)). This is the difference from a code
+entity's `code:` or a tracker item's `tracker:<source>:<project>#<item>` — those
+name something *inside* a source and need a namespace to stay apart. A principal
+id names nothing inside a source, so it has no prefix and there is nothing to
+derive.
+
 ### The three kinds
 
 `human` is a person, and is the default because most principals are people.
@@ -195,6 +212,13 @@ its members does. A team says who it is in one of two ways, and may use both:
   it, which is what makes a team worth configuring at all.
 
 A team with neither names nobody and is rejected.
+
+A group is looked up by both keys, like anyone else, because a source names one
+both ways: a GitHub team is a node id in an ACL and the slug `acme/api-team` in
+CODEOWNERS. Writing only the slug is enough, and is what onboarding produces.
+Write the group as the source spells it — `acme/api-team`, not the
+`@acme/api-team` a CODEOWNERS line carries, the way a tracker item is `1234` and
+not `#1234`.
 
 ### How an identity resolves
 
@@ -218,6 +242,12 @@ the resolver's job, and it works from what is written here.
   recorded for a person to map. The event keeps the hint — L0 is append-only —
   so authorship comes back on its own once the mapping is fixed and the
   documents are distilled again. No placeholder principal is invented.
+- **That record is bounded**, at 4096 distinct identities per process. Its keys
+  come from sources, so an unbounded one would hold every bot that ever posted.
+  Past the bound a process counts the sightings it dropped instead of keeping
+  them, and reports the count beside the list: a non-zero count says the list is
+  a sample and the mapping is a long way behind. The events themselves are
+  untouched either way, so nothing is lost that re-distilling cannot recover.
 
 ### Agent classes
 
