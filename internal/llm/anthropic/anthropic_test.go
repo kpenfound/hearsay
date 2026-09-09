@@ -1,8 +1,10 @@
 package anthropic_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -180,7 +182,72 @@ func TestCompletionTiers(t *testing.T) {
 	if got := (*seen)[1].body["max_tokens"]; got != float64(llm.DefaultMaxTokens) {
 		t.Errorf("the assert tier's max_tokens = %v, want the default %d", got, llm.DefaultMaxTokens)
 	}
+	// A tier that sets no temperature leaves it to the provider.
+	if got, ok := first.body["temperature"]; ok {
+		t.Errorf("temperature = %v, want the field left out where the tier does not set one", got)
+	}
 }
+
+// A temperature of zero is a temperature, and the one an extraction prompt is
+// most likely to want. It has to reach the provider rather than being dropped
+// as a zero value.
+func TestTemperatureZeroIsSent(t *testing.T) {
+	zero := 0.0
+	server, seen := replay(t, recorded{status: 200, file: "assert_answer.json"})
+	r := registry(t, server.URL, map[llm.Tier]llm.TierConfig{
+		llm.TierAssert: {Provider: "anthropic", Model: "claude-sonnet-5", Temperature: &zero},
+	})
+	completer, _ := r.Completer(llm.TierAssert)
+	if _, err := completer.Complete(t.Context(), llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Text: "extract the stance"}}}); err != nil {
+		t.Fatalf("Complete() = %v", err)
+	}
+	got, ok := (*seen)[0].body["temperature"]
+	if !ok || got != float64(0) {
+		t.Errorf("temperature = %v (present: %v), want the 0 the tier configures", got, ok)
+	}
+}
+
+// The HTTP client the registry is built with is the one requests go through:
+// whatever a deployment needs of it — a proxy, a transport with its own
+// instrumentation — applies to model calls too.
+func TestTheRegistrysHTTPClientIsUsed(t *testing.T) {
+	used := false
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		used = true
+		body, err := os.ReadFile(filepath.Join("testdata", "text_answer.json"))
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(body)),
+			Header: http.Header{"Content-Type": []string{"application/json"}}, Request: r}, nil
+	})}
+	config := llm.Config{Tiers: map[llm.Tier]llm.TierConfig{
+		llm.TierDistill: {Provider: "anthropic", Model: "claude-haiku-4-5-20251001"},
+	}}
+	r, err := llm.NewRegistry(config, []llm.Provider{anthropic.New()},
+		llm.WithEnv(func(string) string { return "sk-ant-test" }), llm.WithHTTPClient(client))
+	if err != nil {
+		t.Fatalf("NewRegistry() = %v", err)
+	}
+	completer, _ := r.Completer(llm.TierDistill)
+	resp, err := completer.Complete(t.Context(), llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Text: "hello"}}})
+	if err != nil {
+		t.Fatalf("Complete() = %v", err)
+	}
+	if !used {
+		t.Error("the request did not go through the client the registry was built with")
+	}
+	if resp.Text == "" {
+		t.Error("Complete() returned no text")
+	}
+}
+
+// roundTripperFunc is an [http.RoundTripper] written as a function.
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 // Structured output is a tool the model is told to use, and the caller sees
 // none of that: it supplies a schema and gets JSON satisfying it.
