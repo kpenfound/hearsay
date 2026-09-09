@@ -189,6 +189,15 @@ func TestEventValidate(t *testing.T) {
 			},
 		},
 		{
+			// The contract tells a connector whose source gives no time for
+			// the change to omit it and let ingest order decide.
+			name: "a revision the source gives no time for",
+			mutate: func(e *connector.Event) {
+				e.NativeID = e.Payload.Artifact + "@perm:h2"
+				e.Payload.Revision = &connector.Revision{Token: "perm:h2"}
+			},
+		},
+		{
 			name: "a revision edited at the same moment the artifact happened",
 			mutate: func(e *connector.Event) {
 				e.NativeID = e.Payload.Artifact + "@2"
