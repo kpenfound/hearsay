@@ -459,7 +459,7 @@ In the directory form this is `llm/anything.yaml` holding what is under the
 | `model` | The provider's model id, passed through untouched. |
 | `max_tokens` | The answer budget, on `distill` and `assert`. A call site whose prompt needs a bigger one asks for it; this is the default for the rest. Setting it on `embed` is an error, because an embedding has no answer to budget. |
 | `temperature` | Between 0 and 1, on `distill` and `assert`. Left out, the provider's own default applies. |
-| `dimensions` | The width of the vectors, on `embed`, where it is required. It has to match the `vector(N)` column the embeddings are written to: a process whose embed tier disagrees with the schema refuses to start rather than writing garbage. |
+| `dimensions` | The width of the vectors, on `embed`, where it is required. It has to match the `vector(N)` column the embeddings are written to, so changing it is a migration and a re-embed rather than a configuration edit. The column and the startup check that compares the two arrive with search; there is nothing to disagree with yet. |
 | `base_url` | Replaces the provider's endpoint. This is how a gateway goes in front of a provider. |
 | `api_key_env` | The **name** of the environment variable holding this tier's credential, where it is not the provider's usual one (`ANTHROPIC_API_KEY`). Like `secrets:` on a source, this never holds the credential itself. |
 | `timeout` | A duration bounding one attempt, not the call: a retried call may take it several times over. Default 60s. |

@@ -134,11 +134,13 @@ func validSchemaName(name string) error {
 }
 
 // parseNode reads one schema object. path is the JSON Pointer of the value it
-// describes, so an unknown keyword is reported where it is.
+// describes, so an unknown keyword is reported where it is. Problems here are
+// with the schema rather than with an answer, and say so: the two are read by
+// different people.
 func parseNode(raw json.RawMessage, path string) (*node, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
-		return nil, fmt.Errorf("%s: not a JSON Schema object: %w", at(path), err)
+		return nil, fmt.Errorf("%s: not a JSON Schema object: %w", in(path), err)
 	}
 	n := &node{}
 	for _, key := range sortedKeys(fields) {
@@ -187,7 +189,7 @@ func parseNode(raw json.RawMessage, path string) (*node, error) {
 				key, strings.Join(SchemaKeywords, ", "))
 		}
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", at(path), err)
+			return nil, fmt.Errorf("%s: %w", in(path), err)
 		}
 	}
 	return n, nil
@@ -435,6 +437,16 @@ func enumList(enum []json.RawMessage) string {
 		parts[i] = string(e)
 	}
 	return strings.Join(parts, ", ")
+}
+
+// in names where in the schema a problem is. A schema is written by the caller,
+// so a problem with it is reported against the schema and not against the
+// answer nothing has produced yet.
+func in(path string) string {
+	if path == "" {
+		return "the schema"
+	}
+	return "the schema at " + path
 }
 
 // at names where in the answer a problem is, in JSON Pointer form. The root is

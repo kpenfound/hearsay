@@ -42,7 +42,8 @@ type Embedder interface {
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
 	// Dimensions is the width of the vectors this tier produces. It has to
 	// match the vector(N) column L1 stores them in (ADR-0004), which is what
-	// [CheckDimensions] is for.
+	// [CheckDimensions] compares it against. What comes back from [Embed] is
+	// held to it whether anything checks the column or not.
 	Dimensions() int
 }
 
@@ -186,8 +187,11 @@ func (r Request) Validate() error {
 // CheckDimensions reports whether an embed tier fits the column its vectors are
 // written to: ADR-0004's vector(N) on L1, whose N is fixed by a migration.
 // Changing the embed model to one of a different width is that migration plus a
-// re-embed of every row, not a configuration edit, so a process that finds them
-// disagreeing refuses to start rather than writing garbage (ADR-0005).
+// re-embed of every row, not a configuration edit, which is why ADR-0005 asks
+// for the two to be compared before anything is written rather than after.
+//
+// Nothing calls it yet: the column arrives with search, and the process that
+// writes vectors calls this at startup and refuses to run on a mismatch.
 func CheckDimensions(e Embedder, column int) error {
 	if got := e.Dimensions(); got != column {
 		return fmt.Errorf("%w: the embed tier produces %d values and the column holds %d", ErrDimensions, got, column)
