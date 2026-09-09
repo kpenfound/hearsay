@@ -19,10 +19,11 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache: false # nothing to cache: the module has no dependencies yet
       - run: go build ./...
       - run: go vet ./...
       - run: go test -race ./...
@@ -30,11 +31,12 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - uses: golangci/golangci-lint-action@v8
+          cache: false
+      - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.3.1
       # Formatting is part of the lint gate, not a separate ritual.
@@ -43,10 +45,11 @@ jobs:
   tidy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache: false
       - run: go mod tidy
       - name: go.mod and go.sum are up to date
         run: git diff --exit-code -- go.mod go.sum
