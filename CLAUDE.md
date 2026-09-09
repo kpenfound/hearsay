@@ -17,21 +17,35 @@ implements, are specified in
 
 ## Commands
 
-Dagger runs everything. The workspace is `dagger.toml`, the module is
-`.dagger/main.go`, and the gates are its `+check` functions — `lint`,
-`tidy-check`, `unit-test`, `integration-test`, `image-check`. There is no CI
-workflow: Dagger Cloud runs `dagger check` on every commit.
+Dagger runs everything. The workspace is `dagger.toml`. The tests and the
+`go generate` drift check come from the reusable Go module
+(`github.com/dagger/go`) it installs; lint, the tidy and image checks, the
+binary, the image, migrations and the dev stack are `hearsay`, our own module
+in `.dagger/modules/hearsay/main.dang`, written in Dang. `test-services` beside
+it is the adapter that hands the Go module a container with Postgres attached.
+There is no CI workflow: Dagger Cloud runs `dagger check` on every commit.
 
 ```sh
 export DAGGER_X_RELEASE=v1.0.0-beta.11   # the release this workspace is on
 dagger check              # every check, in parallel; -l lists them
-dagger up dev             # Postgres plus all four services
+dagger up                 # Postgres plus all four services
 dagger api functions      # the modules; `dagger api call hearsay <fn>` runs one
-dagger generate           # after editing .dagger/main.go; commit the result
+dagger api call hearsay qa --script '...'     # run a test plan in the shipped image, Postgres beside it
+dagger settings go        # the Go module's settings
 ```
 
+To try a change end to end, use `qa`. It builds the image from the working
+tree, binds Postgres, sets `HEARSAY_DATABASE_URL`, writes the script to
+`/test.sh`, runs it, and returns the combined output with the exit code on the
+last line. `playground` is the interactive equivalent and needs a terminal, so
+an agent should reach for `qa`, not `playground`. CONTRIBUTING.md has both.
+
+The Go module's own lint check is switched off in `dagger.toml` (its
+golangci-lint is built with an older Go than go.mod asks for); `hearsay:lint`
+is the lint gate.
+
 Dagger needs a container runtime. Where there is none — a sandbox that denies
-the Docker socket, for instance — everything but the integration tests runs
+the Docker socket, for instance — everything but the tests that need Postgres runs
 directly, and Dagger Cloud is the gate that matters:
 
 ```sh
@@ -69,9 +83,8 @@ Migrations are `go run ./cmd/hearsay migrate up|status|up-to <n>|down`, or
 `dagger api call hearsay migrate --database-url=...` against a database. The command
 exists and refuses: goose, the migrations and the database connection land with
 the L0 store. Until then it exits non-zero saying so, which is deliberate — see
-[ADR-0006](docs/adr/0006-schema-migrations-with-goose.md). The migration step the
-`integration-test` check will run before the tests is missing for the same
-reason.
+[ADR-0006](docs/adr/0006-schema-migrations-with-goose.md). The migration step
+before the tests is missing for the same reason.
 
 ## Layout
 

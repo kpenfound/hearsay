@@ -1,8 +1,8 @@
 # internal/llm
 
 The model provider abstraction and the three model tiers: `distill`, `assert`,
-`embed`. Those three names are a contract (ADR-0005) — config, the Dagger module
-and the docs all use them verbatim.
+`embed`. Those three names are a contract (ADR-0005) — config and the docs use
+them verbatim.
 
 **Belongs here:** the tier registry, the `Completer` and `Embedder` interfaces,
 per-provider adapters in subpackages, structured-output handling, retries and
