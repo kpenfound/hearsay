@@ -99,6 +99,21 @@ func (w *Worker) Run(ctx context.Context) error {
 		// stand for many jobs, because Postgres collapses identical
 		// notifications from one transaction.
 		for ctx.Err() == nil {
+			// Maintenance belongs in here as well as in the select below. A
+			// worker with a backlog never leaves this loop — a distiller
+			// backfill is exactly that — and the outer select is the only
+			// other place the tick is read, so expired leases would go
+			// unreclaimed and done rows unpurged for the whole length of the
+			// backfill. That is when there is most of both, and more workers
+			// makes it worse rather than better, because they are all
+			// draining. Non-blocking, so an idle claim is still what ends the
+			// drain.
+			select {
+			case <-maintain.C:
+				w.maintain(ctx)
+			default:
+			}
+
 			jobs, err := w.client.Claim(ctx)
 			if err != nil {
 				if ctx.Err() == nil {
