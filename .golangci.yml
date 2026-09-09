@@ -1,0 +1,59 @@
+# golangci-lint v2 configuration. Run it with `golangci-lint run`.
+#
+# The rule for adding a linter: it has to catch something a reviewer would send
+# back anyway. Style opinions that a reviewer would not raise do not belong here.
+version: "2"
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - bodyclose # a leaked response body is a leaked connection
+    - errorlint # error comparisons that break when an error is wrapped
+    - misspell
+    - noctx # HTTP requests without a context (ADR-0002: context everywhere)
+    - revive
+    - sloglint # ADR-0008 logging conventions
+  settings:
+    errcheck:
+      # Best-effort writes to an already-failing output stream.
+      exclude-functions:
+        - (io.Writer).Write
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: error-return
+        - name: error-strings
+        - name: errorf
+        - name: exported
+        - name: indent-error-flow
+        - name: package-comments
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unreachable-code
+        - name: var-declaration
+    sloglint:
+      no-global: all # the logger comes from the context, never a package global
+      context: scope # pass ctx to slog when one is in scope
+      static-msg: true # the message identifies the event; details are attributes
+      key-naming-case: snake # ADR-0008 field names
+  exclusions:
+    generated: lax
+    rules:
+      # Tests may keep their assertions short.
+      - path: _test\.go
+        linters: [errcheck]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/kpenfound/hearsay
