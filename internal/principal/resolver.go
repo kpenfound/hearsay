@@ -232,8 +232,13 @@ func (r *Resolver) ResolveGroup(source, group string) Resolution {
 	return res
 }
 
-// groupKeys is every key a source-native group is matched by. The native key
-// comes first, so that is what an unresolved group is filed under.
+// groupKeys is every key a source-native group is matched by.
+//
+// The native key comes first, so that is what an unresolved group is filed
+// under, and the filing key therefore never folds. That is the safe way round:
+// folding it would file two node ids differing only in case as one group, and a
+// node id is base64. The price is that a source spelling one slug two ways
+// leaves two entries in the queue, which is noise rather than a wrong answer.
 func groupKeys(source, group string) []identityKey {
 	if source == "" || group == "" {
 		return nil

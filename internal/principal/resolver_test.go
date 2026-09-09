@@ -411,6 +411,23 @@ func TestResolveGroup(t *testing.T) {
 	if n := len(r.Unresolved()); n != 1 {
 		t.Errorf("Unresolved() = %+v, want just the unmapped group", r.Unresolved())
 	}
+
+	// An unresolved group is filed under the id as the source spelled it, which
+	// never folds: two node ids differing only in case are two groups, and a
+	// node id is base64. Two spellings of one slug therefore leave two entries,
+	// which is noise rather than a wrong answer.
+	r2 := newResolver(t, mapping())
+	r2.ResolveGroup("github", "acme/ghost")
+	r2.ResolveGroup("github", "ACME/Ghost")
+	got := r2.Unresolved()
+	if len(got) != 2 {
+		t.Fatalf("Unresolved() = %+v, want the two spellings filed apart", got)
+	}
+	for _, u := range got {
+		if u.Count != 1 {
+			t.Errorf("entry %+v was counted %d times, want 1", u.Identity, u.Count)
+		}
+	}
 }
 
 // A resolver refuses a mapping that would make it decide authorship by map
