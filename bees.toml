@@ -334,16 +334,28 @@ model_by_size = { xs = "sonnet", s = "sonnet" }
 #max_turns = 200
 #timeout = "45m"
 enabled = true
+# Dagger is how this repository builds, lints and tests, and it needs the Docker
+# socket and the Dagger registry — both of which the "claude" sandbox denies. A
+# developer that cannot run `dagger check` cannot check its own work.
+sandbox = "none"
 #shell = "/bin/bash"
-#[roles.developer.env]
-#EXAMPLE = "value"
+[roles.developer.env]
+# The Dagger release this workspace is on. A CLI from a package manager is
+# older, and reads the workspace without being able to run it; see
+# CONTRIBUTING.md.
+DAGGER_X_RELEASE = "v1.0.0-beta.11"
 #[roles.developer.mcp.example]
 #command = "example-mcp"
 
 # Reviews pull requests and, optionally, merges them once checks are green.
 [roles.reviewer]
-#prompt = """
-#"""
+prompt = """
+You do not need to run the tests, the linter or the build yourself: every gate
+this repository has is a Dagger check, and Dagger Cloud runs `dagger check` on
+every commit, so the pull request's own checks already cover that. Read them
+rather than reproducing them, and spend the session on what they cannot tell
+you — whether the change is correct, complete and what the issue asked for.
+"""
 #prompt_file = ""
 #skills = []
 #model = "opus"
