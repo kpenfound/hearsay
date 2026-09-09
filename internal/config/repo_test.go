@@ -34,6 +34,9 @@ func TestScopeCovers(t *testing.T) {
 		{"github", "acme/infra", false}, // ingested, but not in this scope
 		{"discord", "824100000000000001", true},
 		{"drive", "anything", false},
+		// A scope that takes every container of a source still does not cover
+		// an artifact with no container, the way the ingest allowlist does not.
+		{"discord", "", false},
 		{"github", "", false},
 		{"", "", false},
 	}
