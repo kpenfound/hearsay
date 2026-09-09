@@ -1,0 +1,56 @@
+{
+  "completions": [
+    {
+      "tier": "distill",
+      "request": {
+        "system": "You distil one artifact into one document.",
+        "messages": [
+          {"role": "user", "text": "PR #62: the job queue moves to Postgres. Reviewed by robin, merged on Friday."}
+        ],
+        "max_tokens": 2048,
+        "schema": {
+          "name": "distillation",
+          "description": "one L1 document",
+          "definition": {
+            "type": "object",
+            "properties": {
+              "summary": {"type": "string", "minLength": 1, "maxLength": 400},
+              "outcome_kind": {"type": "string", "enum": ["decided", "proposed", "resolved", "informational", "open"]},
+              "open_questions": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
+              "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+            },
+            "required": ["summary", "outcome_kind"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "response": {
+        "json": {
+          "summary": "The job queue moves to Postgres; robin reviewed and it merged on Friday.",
+          "outcome_kind": "decided",
+          "open_questions": [],
+          "confidence": 0.9
+        },
+        "stop_reason": "end",
+        "model": "claude-haiku-4-5-20251001",
+        "tokens": {"input": 412, "output": 96}
+      }
+    },
+    {
+      "tier": "distill",
+      "request": {
+        "system": "You distil one artifact into one document.",
+        "messages": [
+          {"role": "user", "text": "What did the team decide about the queue?"}
+        ],
+        "max_tokens": 2048
+      },
+      "response": {
+        "text": "They decided to put the job queue in Postgres.",
+        "stop_reason": "end",
+        "model": "claude-haiku-4-5-20251001",
+        "tokens": {"input": 88, "output": 12}
+      }
+    }
+  ]
+}

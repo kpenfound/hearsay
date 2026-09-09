@@ -1,9 +1,9 @@
 # Hearsay configuration
 
-What Hearsay ingests, what a scope is, who people are, and who may decide
-things. It is a directory of YAML applied like GitOps — checked in, reviewed,
-deployed — or a single file that says the same thing, for a team that does not
-need five directories yet.
+What Hearsay ingests, what a scope is, who people are, who may decide things,
+and which model answers each tier. It is a directory of YAML applied like GitOps
+— checked in, reviewed, deployed — or a single file that says the same thing,
+for a team that does not need six directories yet.
 
 This document is the schema. [ADR-0009](adr/0009-configuration-as-a-gitops-directory.md)
 is why it is shaped this way, [design.md](design.md#configuration) is what it is
@@ -16,14 +16,16 @@ config/                     config/hearsay.yaml
   sources/*.yaml
   scopes/*.yaml       or    (one file with a
   principals/*.yaml          sources:, scopes:, principals:,
-  code/*.yaml                code: and authority: key)
+  code/*.yaml                code:, authority: and llm: key)
   authority/*.yaml
+  llm/*.yaml
 ```
 
 They are the same configuration. The single file's `sources:` list is what the
-files in `sources/` hold between them, and so on for the other four: expanding
-one form into the other is moving lists between files, and nothing else changes
-— not a default, not a rule, not an id.
+files in `sources/` hold between them, and so on for the rest: expanding one
+form into the other is moving lists between files, and nothing else changes —
+not a default, not a rule, not an id. `llm:` is the one that is a mapping rather
+than a list, because there is one of it and its tiers are named.
 
 Start with the single file. Split it when a directory of it gets long enough
 that two people editing it collide, which is the only thing the split buys.
@@ -37,7 +39,7 @@ hearsay config validate ./config          # check it without starting anything
 HEARSAY_CONFIG=./config hearsay all       # the flag also reads the environment
 ```
 
-A directory holding a `hearsay.yaml` and none of the five directories is the
+A directory holding a `hearsay.yaml` and none of the configuration directories is the
 single-file form; pointing `--config` at the directory finds the file. The file
 may also be named `hearsay.yml`. Two things about such a directory are errors
 rather than a guess: holding both forms, because nothing says which of the two a
@@ -46,13 +48,15 @@ only one of them would be read and the other would go missing in silence.
 
 **Rules that apply to every file:**
 
-- A file in one of the five directories holds one object or a list of them, so
-  a team can keep a file per source or one file for all of them. A file that
-  holds several YAML documents separated by `---` is an error; use a list.
+- A file in one of the five list directories holds one object or a list of
+  them, so a team can keep a file per source or one file for all of them. A
+  file in `llm/` holds the mapping that is under the single file's `llm:` key.
+  A file that holds several YAML documents separated by `---` is an error; use
+  a list.
 - Unknown fields are an error, not a warning. A misspelled key that is ignored
   in silence is the failure this format exists to avoid.
 - Files that are not `.yaml` or `.yml` are ignored, so a README belongs in a
-  configuration repository. A directory that is not one of the five is an
+  configuration repository. A directory that is not one of the six is an
   error, and so is a subdirectory inside one of them: reading none of it
   silently is how configuration goes missing.
 - An empty file is an error. It is either a half-finished edit or a file
@@ -422,6 +426,60 @@ A frozen spec and CODEOWNERS are named alongside a merged pull request in the
 design doc, but nothing can tell a frozen spec from a draft one, so `spec` is a
 deliberate one-line override rather than a default.
 
+## `llm/`
+
+Which provider and which model answers each of the three model tiers
+([ADR-0005](adr/0005-llm-provider-abstraction-with-three-model-tiers.md)). The
+three names are fixed — `distill` is L0 to L1 in the distiller, `assert` is L1
+to L2 in the assertion worker, `embed` is the embeddings retrieval runs on — and
+what backs them is configuration, so changing a model is an edit here and no
+code change.
+
+```yaml
+llm:
+  tiers:
+    distill:                    # optional; the shipped default is a small model
+      provider: anthropic
+      model: claude-haiku-4-5-20251001
+      max_tokens: 2048
+    assert:
+      model: claude-opus-5      # provider and the rest keep the defaults
+    embed:                      # no default: see below
+      provider: <an embedding provider>
+      model: <its embedding model>
+      dimensions: 1024
+```
+
+In the directory form this is `llm/anything.yaml` holding what is under the
+`llm:` key — `tiers:` and the tiers below it.
+
+| Field | Meaning |
+|---|---|
+| `provider` | The adapter that answers this tier. This build ships `anthropic`. A provider that cannot do what the tier needs is an error here, not a degraded call later: Anthropic has no embedding model, so it cannot back `embed`. |
+| `model` | The provider's model id, passed through untouched. |
+| `max_tokens` | The answer budget, on `distill` and `assert`. A call site whose prompt needs a bigger one asks for it; this is the default for the rest. Setting it on `embed` is an error, because an embedding has no answer to budget. |
+| `temperature` | Between 0 and 1, on `distill` and `assert`. Left out, the provider's own default applies. |
+| `dimensions` | The width of the vectors, on `embed`, where it is required. It has to match the `vector(N)` column the embeddings are written to, so changing it is a migration and a re-embed rather than a configuration edit. The column and the startup check that compares the two arrive with search; there is nothing to disagree with yet. |
+| `base_url` | Replaces the provider's endpoint. This is how a gateway goes in front of a provider. |
+| `api_key_env` | The **name** of the environment variable holding this tier's credential, where it is not the provider's usual one (`ANTHROPIC_API_KEY`). Like `secrets:` on a source, this never holds the credential itself. |
+| `timeout` | A duration bounding one attempt, not the call: a retried call may take it several times over. Default 60s. |
+| `max_retries` | How many further attempts a transient failure gets — a rate limit, an overloaded provider, a timeout. Default 3; `-1` is none. |
+| `backoff` | The first retry's delay, doubled per attempt and jittered. Default 500ms. A provider that asks to be left alone for longer with a `Retry-After` header gets what it asked for instead. |
+
+**A tier the file does not name keeps its default**, so this section is what a
+team overrides rather than what it has to write, and a configuration with no
+`llm:` at all still has a working `distill` and `assert` tier. Retries, backoff,
+rate-limit waits, timeouts and token accounting are the same wherever a model is
+called; none of it is any caller's to configure twice.
+
+**The `embed` tier has no default and no shipped provider.** Anthropic has no
+embedding model, and it is the only adapter this build has, so
+`hearsay config validate` refuses `provider: anthropic` on `embed` and there is
+nothing else to name yet. Until an embedding adapter ships, nothing embeds.
+
+**Credentials are never in here.** They come from the environment, per provider,
+because a configuration repository is checked into git (ADR-0005).
+
 ## Validation
 
 ```sh
@@ -582,6 +640,17 @@ authority:
       [meeting, merged_pr, spec, issue, pull_request, commit, chat_thread, dm, agent]
     ratified_by:
       artifacts: [merged_pr, spec]
+
+llm:
+  tiers:
+    # The distill tier keeps the shipped provider and model and gets a bigger
+    # budget; assert keeps everything but the model. A tier nobody names here
+    # is the default, and there is no embed tier because nothing embeds yet.
+    distill:
+      max_tokens: 4096
+    assert:
+      model: claude-opus-5
+      temperature: 0
 ```
 
 And the same thing as a directory. The lists move into files, one object or many
@@ -733,6 +802,17 @@ ranking:
   [meeting, merged_pr, spec, issue, pull_request, commit, chat_thread, dm, agent]
 ratified_by:
   artifacts: [merged_pr, spec]
+```
+
+<!-- example: dir/llm/tiers.yaml -->
+```yaml
+# llm/tiers.yaml — what is under the single file's `llm:` key.
+tiers:
+  distill:
+    max_tokens: 4096
+  assert:
+    model: claude-opus-5
+    temperature: 0
 ```
 
 Both examples are loaded by the tests in `internal/config`, which check that

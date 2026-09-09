@@ -1,0 +1,12 @@
+{
+  "id": "msg_01WrongToolEXAMPLE",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-haiku-4-5-20251001",
+  "content": [
+    {"type": "tool_use", "id": "toolu_01EXAMPLE", "name": "something_else", "input": {"summary": "x", "outcome_kind": "open"}}
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {"input_tokens": 100, "output_tokens": 20}
+}

@@ -1,0 +1,20 @@
+{
+  "completions": [
+    {
+      "tier": "assert",
+      "request": {
+        "system": "You extract one stance and the topic it is about.",
+        "messages": [
+          {"role": "user", "text": "The job queue moves to Postgres; robin reviewed and it merged on Friday."}
+        ],
+        "max_tokens": 4096
+      },
+      "response": {
+        "text": "stance: the queue is Postgres-backed; topic: job queue implementation",
+        "stop_reason": "end",
+        "model": "claude-sonnet-5",
+        "tokens": {"input": 120, "output": 24}
+      }
+    }
+  ]
+}

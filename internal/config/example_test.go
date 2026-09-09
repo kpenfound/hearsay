@@ -10,6 +10,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
@@ -178,6 +179,27 @@ func TestDocsExampleIsTheConfigurationItDescribes(t *testing.T) {
 	}
 	if got, want := src.Secrets["credentials"], "HEARSAY_DRIVE_CREDENTIALS"; got != want {
 		t.Errorf("drive credentials secret = %q, want %q", got, want)
+	}
+
+	// The `llm:` section overrides what it names and keeps the rest of the
+	// shipped default, which is the thing a reader is most likely to get wrong
+	// about it.
+	distill, ok := repo.LLM.Tier(llm.TierDistill)
+	if !ok {
+		t.Fatal("the example has no distill tier")
+	}
+	if distill.MaxTokens != 4096 {
+		t.Errorf("the example's distill budget = %d, want the 4096 it sets", distill.MaxTokens)
+	}
+	if distill.Provider != llm.ProviderAnthropic || distill.Model != llm.Default().Tiers[llm.TierDistill].Model {
+		t.Errorf("the example's distill tier = %+v, want the default provider and model it does not name", distill)
+	}
+	assertTier, _ := repo.LLM.Tier(llm.TierAssert)
+	if assertTier.Model != "claude-opus-5" || assertTier.Temperature == nil {
+		t.Errorf("the example's assert tier = %+v, want the model and temperature it names", assertTier)
+	}
+	if _, ok := repo.LLM.Tier(llm.TierEmbed); ok {
+		t.Error("the example configures an embed tier, and no shipped provider can back one")
 	}
 }
 

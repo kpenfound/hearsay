@@ -248,6 +248,7 @@ is what each part is for.
 - `principals/` identity mapping. `kyle` is Slack U123, GitHub kpenfound, kyle@..., and a calendar attendee. Without this, stances have no consistent author and authority cannot be checked.
 - `code/` entity seeds: CODEOWNERS import, path patterns, initial aliases.
 - `authority/` which principals and sources can produce ratified stances, per scope.
+- `llm/` which provider and model answers each of the three model tiers ([ADR-0005](adr/0005-llm-provider-abstraction-with-three-model-tiers.md)). Credentials are not here; they come from the environment.
 
 Adoption dies at the config step if identity mapping and connector onboarding are not near-zero effort. Defaults should cover a GitHub-plus-Slack team with a single file.
 

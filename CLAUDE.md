@@ -120,8 +120,9 @@ One binary, four services, layers underneath (ADR-0003).
 Every directory in that table has a README saying what belongs in it and what
 does not. Read the one for the package you are about to touch; it is short, and
 it usually names the thing you were about to do wrong. Subpackages — the four
-under `internal/service`, and per-source or per-provider ones later — document
-themselves in their package comments, and inherit the parent's README.
+under `internal/service`, `internal/llm/anthropic` and `internal/llm/providers`,
+and per-source ones later — document themselves in their package comments, and
+inherit the parent's README.
 
 ## Conventions
 

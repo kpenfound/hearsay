@@ -565,6 +565,19 @@ func TestConfigValidate(t *testing.T) {
 			wantStdout: "sha256:",
 		},
 		{
+			// Most of what backs a model tier is usually a default that is
+			// nowhere in the files, so the summary says what each one
+			// resolved to.
+			name:       "the summary says which model answers each tier",
+			args:       []string{"config", "validate", valid},
+			wantStdout: "model tiers",
+		},
+		{
+			name:       "and names the provider and model it resolved to",
+			args:       []string{"config", "validate", valid},
+			wantStdout: "distill=anthropic/",
+		},
+		{
 			name:       "the path may come from the flag instead",
 			args:       []string{"config", "validate", "--config", valid},
 			wantStdout: "is valid",

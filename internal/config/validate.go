@@ -10,6 +10,8 @@ import (
 	"unicode"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/llm"
+	"github.com/kpenfound/hearsay/internal/llm/providers"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
@@ -46,6 +48,7 @@ func (l *loader) build() Repo {
 	r.Code = l.buildCode(r)
 	r.Scopes = l.buildScopes(r)
 	r.Authority = l.buildAuthority(r)
+	r.LLM = l.buildLLM()
 
 	// These two count what was written rather than what survived validation. A
 	// source whose id is malformed is not in r.Sources, and telling its author
@@ -813,4 +816,119 @@ func isRepoRelativePath(s string) bool {
 		}
 	}
 	return true
+}
+
+// buildLLM merges the `llm/` section onto the shipped defaults and checks what
+// it says. A tier the configuration does not name keeps its default, which is
+// why this returns a working configuration for a repository with no `llm/` at
+// all: ADR-0005 puts the shipped model in the config defaults so that bumping
+// it is one line.
+//
+// The exception is the embed tier, which has no default. Anthropic has no
+// embedding model and it is the only adapter this build ships, so an embed tier
+// is something an operator configures; until they do there is no embedder and
+// nothing writes a vector.
+func (l *loader) buildLLM() llm.Config {
+	cfg := llm.Default().Clone()
+	defined := map[string]string{}
+	for _, d := range l.llm {
+		a := at{file: d.file, line: d.line, noun: "llm section", label: "llm"}
+		if len(d.v.Tiers) == 0 {
+			l.bad(a, "tiers", "no model tiers are configured here: remove the section to take the defaults, or name a tier")
+			continue
+		}
+		for _, name := range slices.Sorted(maps.Keys(d.v.Tiers)) {
+			l.buildTier(d, name, d.v.Tiers[name], cfg, defined)
+		}
+	}
+	return cfg
+}
+
+// buildTier merges one tier over its default and validates the result. The
+// checks are [llm.TierConfig.Validate]'s, so that `hearsay config validate` and
+// a service starting up cannot disagree about what a valid tier is; what is
+// added here is a file, a line and the provider catalogue, which the registry
+// checks against the adapters it was handed rather than against a list.
+func (l *loader) buildTier(d doc[llmDoc], name string, td llmTierDoc, cfg llm.Config, defined map[string]string) {
+	line := td.line
+	if line == 0 {
+		line = d.line
+	}
+	a := at{file: d.file, line: line, noun: "model tier", label: fmt.Sprintf("model tier %q", name)}
+
+	tier, err := llm.ParseTier(name)
+	if err != nil {
+		l.bad(a, "", "%s", err)
+		return
+	}
+	if where := defined[name]; where != "" {
+		l.bad(a, "", "the %s tier is already configured at %s", name, where)
+		return
+	}
+	defined[name] = position(a.file, a.line)
+
+	tc := cfg.Tiers[tier]
+	if td.Provider != "" {
+		tc.Provider = td.Provider
+	}
+	if td.Model != "" {
+		tc.Model = td.Model
+	}
+	if td.MaxTokens != 0 {
+		tc.MaxTokens = td.MaxTokens
+	}
+	if td.Temperature != nil {
+		tc.Temperature = td.Temperature
+	}
+	if td.Dimensions != 0 {
+		tc.Dimensions = td.Dimensions
+	}
+	if td.BaseURL != "" {
+		tc.BaseURL = td.BaseURL
+	}
+	if td.APIKeyEnv != "" {
+		tc.APIKeyEnv = td.APIKeyEnv
+	}
+	if td.MaxRetries != 0 {
+		tc.MaxRetries = td.MaxRetries
+	}
+	tc.Timeout = l.duration(a, "timeout", td.Timeout, tc.Timeout)
+	tc.Backoff = l.duration(a, "backoff", td.Backoff, tc.Backoff)
+	cfg.Tiers[tier] = tc
+
+	if err := tc.Validate(tier); err != nil {
+		l.bad(a, "", "%s", err)
+		return
+	}
+	provider, ok := providers.ByName(tc.Provider)
+	if !ok {
+		l.bad(a, "provider", "no such provider %q: this build has adapters for %s",
+			tc.Provider, strings.Join(providers.Names(), ", "))
+		return
+	}
+	// A provider that cannot do what the tier needs is a configuration
+	// problem, not a runtime one: it is the same check the registry makes when
+	// a process starts, made here where it has a file and a line and runs in
+	// CI on the configuration repository (ADR-0005).
+	if err := llm.CanServe(provider.Name(), provider.Capabilities(), tier); err != nil {
+		l.bad(a, "provider", "%s", err)
+	}
+}
+
+// duration reads one of a tier's durations, keeping the default where the file
+// says nothing and reporting anything else it cannot read.
+func (l *loader) duration(a at, field, written string, fallback time.Duration) time.Duration {
+	if written == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(written)
+	switch {
+	case err != nil:
+		l.bad(a, field, "%q is not a duration: want something like 30s, 5m or 1h", written)
+		return fallback
+	case d < 0:
+		l.bad(a, field, "%s is negative", written)
+		return fallback
+	}
+	return d
 }

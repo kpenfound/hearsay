@@ -137,6 +137,7 @@ func loadConfig(ctx context.Context, cfg *config.Config, path string) error {
 		"scopes", len(repo.Scopes),
 		"principals", len(repo.Principals),
 		"code_entities", len(repo.Code),
+		"model_tiers", len(repo.LLM.Configured()),
 	)
 	return nil
 }
@@ -319,8 +320,22 @@ func printSummary(w io.Writer, repo config.Repo) {
 	fmt.Fprintf(tw, "  principals\t%d\n", len(repo.Principals))
 	fmt.Fprintf(tw, "  code entities\t%d\n", len(repo.Code))
 	fmt.Fprintf(tw, "  authority\t%d\t%s\n", len(repo.Authority.Scopes()), summarize(repo.Authority.Scopes()))
+	fmt.Fprintf(tw, "  model tiers\t%d\t%s\n", len(repo.LLM.Configured()), summarize(modelTiers(repo)))
 	fmt.Fprintf(tw, "  digest\t\t%s\n", repo.Digest)
 	_ = tw.Flush()
+}
+
+// modelTiers is what each model tier resolves to, which is worth printing
+// because most of it is usually a default that is nowhere in the files
+// (ADR-0005).
+func modelTiers(repo config.Repo) []string {
+	tiers := repo.LLM.Configured()
+	out := make([]string, 0, len(tiers))
+	for _, t := range tiers {
+		tc, _ := repo.LLM.Tier(t)
+		out = append(out, fmt.Sprintf("%s=%s/%s", t, tc.Provider, tc.Model))
+	}
+	return out
 }
 
 func sourceIDs(repo config.Repo) []string {

@@ -2,9 +2,9 @@
 // from flags and the environment, and the configuration repository that is
 // applied like GitOps.
 //
-// The configuration repository — `sources/`, `scopes/`, `principals/`, `code/`
-// and `authority/`, or the single file that expands to it — is read by [Load],
-// which reports everything wrong with it rather than the first thing. The
+// The configuration repository — `sources/`, `scopes/`, `principals/`, `code/`,
+// `authority/` and `llm/`, or the single file that expands to it — is read by
+// [Load], which reports everything wrong with it rather than the first. The
 // format is documented in docs/config.md and decided in ADR-0009.
 //
 // The parsed configuration reaches the four services as the argument ADR-0003

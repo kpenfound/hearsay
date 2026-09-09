@@ -123,3 +123,59 @@ type ratifiersDoc struct {
 	Sources    []string `yaml:"sources"`
 	Artifacts  []string `yaml:"artifacts"`
 }
+
+// llmDoc is `llm/`, or the `llm:` key of the single file: which provider and
+// which model backs each of the three model tiers (ADR-0005). A tier the file
+// does not name keeps the shipped default, so this section is what a team
+// changes rather than what it has to write.
+type llmDoc struct {
+	Tiers map[string]llmTierDoc `yaml:"tiers"`
+}
+
+// llmTierDoc is one tier's entry. It is the on-disk form of an
+// [llm.TierConfig]: durations are text here, and a field the file leaves out
+// takes the default rather than the zero value.
+type llmTierDoc struct {
+	Provider    string   `yaml:"provider"`
+	Model       string   `yaml:"model"`
+	MaxTokens   int      `yaml:"max_tokens"`
+	Temperature *float64 `yaml:"temperature"`
+	Dimensions  int      `yaml:"dimensions"`
+	BaseURL     string   `yaml:"base_url"`
+	APIKeyEnv   string   `yaml:"api_key_env"`
+	Timeout     string   `yaml:"timeout"`
+	MaxRetries  int      `yaml:"max_retries"`
+	Backoff     string   `yaml:"backoff"`
+
+	// line is where this tier is written, so that a problem with it is
+	// reported against the tier rather than against the section.
+	line int
+}
+
+// UnmarshalYAML decodes one tier and remembers its line.
+//
+// The decoder's own strictness does not reach a type that unmarshals itself, so
+// the keys are checked here: without that, `max_tokens:` misspelled inside a
+// tier would be dropped in silence and the tier would quietly run on the
+// default budget.
+func (t *llmTierDoc) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind != yaml.MappingNode {
+		return fmt.Errorf("line %d: want a mapping of provider, model and the tier's parameters, found %s", n.Line, nodeKind(n))
+	}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		switch key := n.Content[i]; key.Value {
+		case "provider", "model", "max_tokens", "temperature", "dimensions",
+			"base_url", "api_key_env", "timeout", "max_retries", "backoff":
+		default:
+			return fmt.Errorf("line %d: no such field %q in a model tier", key.Line, key.Value)
+		}
+	}
+	type plain llmTierDoc
+	var p plain
+	if err := n.Decode(&p); err != nil {
+		return err
+	}
+	*t = llmTierDoc(p)
+	t.line = n.Line
+	return nil
+}

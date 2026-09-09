@@ -266,7 +266,8 @@ go run ./cmd/hearsay api --config ./config      # what a service reads at startu
 ```
 
 Configuration is a directory of YAML applied like GitOps, or a single file that
-expands to it. [docs/config.md](docs/config.md) is the schema and
+expands to it: what Hearsay ingests, who people are, who may decide things, and
+which model answers each tier. [docs/config.md](docs/config.md) is the schema and
 [ADR-0009](docs/adr/0009-configuration-as-a-gitops-directory.md) is why it looks
 like that. Two things to know before changing the loader: it is read once, at
 startup, so a change to configuration is a restart; and it reports every problem
@@ -348,9 +349,10 @@ packages (`internal/connector`, `internal/llm`, `internal/queue`, `internal/db`,
 **Every top-level package has a README** saying what belongs in it and what does
 not. Read the one for the package you are changing, and update it when the
 answer changes. That is where the boundaries are written down; nothing else
-enforces them. Subpackages — the four under `internal/service`, and the
-per-source and per-provider ones to come — say it in their package comment
-instead of adding a second README.
+enforces them. Subpackages — the four under `internal/service`, the
+provider adapter and its catalogue under `internal/llm`, and the per-source
+ones to come — say it in their package comment instead of adding a second
+README.
 
 ## Conventions
 
@@ -410,6 +412,13 @@ tier registry in `internal/llm` (`distill`, `assert`, `embed`), and tests use
 the fake with a recorded fixture checked into the repository. Recording a new
 fixture is a deliberate act with a real call, done once, reviewed like code. A
 test that would silently make a live call is a bug in the test.
+
+A fixture is a JSON file under the package's own `testdata`, keyed by the
+request it answers (`llm.FixtureKey` computes the key, and the miss prints the
+one to record). `llm.LoadFixtures` refuses a recording that does not describe a
+call this abstraction could have made — an answer that does not satisfy the
+schema its request asked for, two recordings of one request — so a broken
+fixture fails where it is loaded rather than where it is replayed.
 
 ### Logging
 

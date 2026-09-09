@@ -4,12 +4,13 @@ import (
 	"strings"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
 // Repo is a configuration repository, loaded and validated: the directory laid
-// out as `sources/`, `scopes/`, `principals/`, `code/` and `authority/`, or the
-// single file that expands to it (docs/config.md).
+// out as `sources/`, `scopes/`, `principals/`, `code/`, `authority/` and
+// `llm/`, or the single file that expands to it (docs/config.md).
 //
 // Every field is the parsed form of one directory. Sources are
 // [connector.SourceConfig] values because that is what the connector runtime
@@ -44,6 +45,16 @@ type Repo struct {
 	// Authority is the `authority/` directory: who and what may ratify a
 	// stance, per scope, and how sources rank against each other.
 	Authority Authority
+	// LLM is the `llm/` directory: which provider and model backs each of the
+	// three model tiers (ADR-0005), merged onto the shipped defaults, so every
+	// tier a default names is here whether the configuration mentioned it or
+	// not. It is an [llm.Config] because the registry, the tiers and the
+	// adapters are internal/llm's, the way sources are the connector
+	// runtime's own type.
+	//
+	// It is empty on a Repo that was never loaded, which is a process that was
+	// given no configuration and makes no model calls.
+	LLM llm.Config
 }
 
 // Source returns the source configured with this id.
