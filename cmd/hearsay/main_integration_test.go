@@ -5,9 +5,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +18,89 @@ import (
 	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/l0"
 )
+
+// `hearsay all` is local development only, and ADR-0006 has it migrate for
+// itself because a local database is nobody's production. Every other command
+// verifies and refuses.
+func TestAllMigratesTheDatabaseItIsPointedAt(t *testing.T) {
+	if os.Getenv("HEARSAY_DATABASE_URL") == "" {
+		t.Skip("HEARSAY_DATABASE_URL is not set")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	stderr := &syncBuffer{}
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, []string{"all", "--log-format", "json"}, io.Discard, stderr)
+	}()
+
+	// Cancel once the schema line has gone out, so that the migration is never
+	// racing the shutdown.
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(stderr.String(), "schema is current") {
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("`hearsay all` never reported the schema:\n%s", stderr.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("run(all) = %v, want nil", err)
+	}
+	if !strings.Contains(stderr.String(), `"schema_version":`) {
+		t.Errorf("the schema line carries no version:\n%s", stderr.String())
+	}
+}
+
+// A database with no Hearsay schema in it is one every command but `migrate`
+// and `all` refuses, saying what to run (ADR-0006).
+func TestL0RefusesADatabaseBehindTheBinary(t *testing.T) {
+	url := os.Getenv("HEARSAY_DATABASE_URL")
+	if url == "" {
+		t.Skip("HEARSAY_DATABASE_URL is not set")
+	}
+	// The maintenance database every Postgres server has, and nothing migrates.
+	t.Setenv("HEARSAY_DATABASE_URL", swapDatabaseName(url, "postgres"))
+
+	var stdout, stderr bytes.Buffer
+	err := run(t.Context(), []string{"l0", "count"}, &stdout, &stderr)
+	if !errors.Is(err, db.ErrSchemaBehind) {
+		t.Fatalf("run(l0 count) against an unmigrated database = %v, want db.ErrSchemaBehind", err)
+	}
+	if !strings.Contains(err.Error(), "migrate up") {
+		t.Errorf("the error does not say what to run: %v", err)
+	}
+}
+
+// swapDatabaseName points a connection URL at another database on the same
+// server.
+func swapDatabaseName(url, name string) string {
+	base, query, hasQuery := strings.Cut(url, "?")
+	swapped := base[:strings.LastIndex(base, "/")+1] + name
+	if hasQuery {
+		return swapped + "?" + query
+	}
+	return swapped
+}
+
+// syncBuffer is a bytes.Buffer a test can read while a goroutine writes to it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 // The subcommands that talk to Postgres, end to end: the wiring between a flag,
 // a pool and a store is not covered by anything else.
