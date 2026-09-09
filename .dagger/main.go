@@ -48,9 +48,9 @@ const (
 	pgDatabase = "hearsay"
 	pgHost     = "postgres"
 
-	// databaseEnv is how the binary will be told which database to use. Config
-	// is #37's; when it names this variable something else, this is the line
-	// that changes.
+	// databaseEnv is how the binary is told which database to use. It is the
+	// same variable `hearsay --database-url` reads, and renaming it is a
+	// change to both.
 	databaseEnv = "HEARSAY_DATABASE_URL"
 
 	// apiPort is the port the API service will listen on. Nothing listens yet —
@@ -143,41 +143,24 @@ func (h *Hearsay) UnitTest(ctx context.Context) error {
 //
 // +check
 func (h *Hearsay) IntegrationTest(ctx context.Context) error {
-	db := h.Postgres()
-
-	// The suite has no integration tests yet, so a run of zero tests passing is
-	// no evidence that the harness works. Prove the database first: CREATE
-	// EXTENSION fails on a Postgres image without pgvector, which is the
-	// mistake ADR-0004 warns about.
-	_, err := dag.Container().
-		From(postgresImage).
-		WithServiceBinding(pgHost, db).
-		WithEnvVariable("PGPASSWORD", pgPassword).
-		WithExec([]string{
-			"psql", "-h", pgHost, "-U", pgUser, "-d", pgDatabase,
-			"-v", "ON_ERROR_STOP=1",
-			"-c", "CREATE EXTENSION IF NOT EXISTS vector",
-			"-c", "SELECT extname, extversion FROM pg_extension WHERE extname = 'vector'",
-		}).
-		Sync(ctx)
-	if err != nil {
-		return fmt.Errorf("pgvector is not usable on %s: %w", postgresImage, err)
-	}
-
-	// ADR-0006 puts `hearsay migrate up` between the database and the tests, so
-	// that a missing migration fails the check rather than being papered over by
-	// a fixture. The subcommand still refuses (there is nothing to migrate), so
-	// the step goes in with the L0 store.
 	base, err := h.goBase(ctx)
 	if err != nil {
 		return err
 	}
-	_, err = base.
-		WithServiceBinding(pgHost, db).
-		WithEnvVariable(databaseEnv, databaseURL()).
-		WithExec([]string{"go", "test", "-race", "-tags=integration", "./..."}).
-		Sync(ctx)
-	if err != nil {
+	base = base.
+		WithServiceBinding(pgHost, h.Postgres()).
+		WithEnvVariable(databaseEnv, databaseURL())
+
+	// ADR-0006 puts `hearsay migrate up` between the database and the tests, so
+	// that a missing migration fails the check rather than being papered over by
+	// a fixture. It runs from the code under test, and it is also what proves
+	// the image is the pgvector build: migration 1 creates the extension, and
+	// stock Postgres fails there — the mistake ADR-0004 warns about.
+	if _, err := base.WithExec([]string{"go", "run", "./cmd/hearsay", "migrate", "up"}).Sync(ctx); err != nil {
+		return fmt.Errorf("hearsay migrate up: %w", err)
+	}
+
+	if _, err := base.WithExec([]string{"go", "test", "-race", "-tags=integration", "./..."}).Sync(ctx); err != nil {
 		return fmt.Errorf("go test -tags=integration: %w", err)
 	}
 	return nil
@@ -295,9 +278,6 @@ func (h *Hearsay) Postgres() *dagger.Service {
 //
 // ADR-0006 spells that `dagger call migrate`, which was the command in Dagger
 // 0.21. The function is the one the ADR names; only the CLI verb moved.
-//
-// Every action exits non-zero with "not implemented yet" until goose and the
-// embedded migrations land with the L0 store.
 func (h *Hearsay) Migrate(ctx context.Context,
 	// Postgres connection URL, for example
 	// postgres://hearsay:hearsay@localhost:5432/hearsay.

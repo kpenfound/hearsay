@@ -41,7 +41,8 @@ go run ./cmd/hearsay help
 
 The four services — connectors, distiller, assertion worker and API — are
 subcommands of one binary. They are stubs today: they start, log and shut down
-cleanly, and do no work yet.
+cleanly, and do no work yet. The L0 event store underneath them is real:
+`hearsay migrate` builds the schema and `hearsay l0` reads what is in it.
 
 ## License
 

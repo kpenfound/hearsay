@@ -12,12 +12,14 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kpenfound/hearsay/internal/db"
 )
 
 // The four service subcommand names are a contract (ADR-0003): the Dagger
 // module, the compose file and the deployment manifests all name them.
 func TestServiceSubcommandNamesAreTheOnesTheADRFixes(t *testing.T) {
-	want := []string{"connectors", "distiller", "assert-worker", "api", "migrate", "version", "all"}
+	want := []string{"connectors", "distiller", "assert-worker", "api", "migrate", "l0", "version", "all"}
 	have := map[string]bool{}
 	for _, cmd := range commands() {
 		have[cmd.name] = true
@@ -75,9 +77,19 @@ func TestRun(t *testing.T) {
 			wantStdout: "hearsay ",
 		},
 		{
-			name:    "migrate is honest about not being built",
-			args:    []string{"migrate", "up"},
-			wantErr: "not implemented yet",
+			name:    "migrate down refuses without --i-know",
+			args:    []string{"migrate", "down"},
+			wantErr: "--i-know",
+		},
+		{
+			name:    "migrate up-to needs a version",
+			args:    []string{"migrate", "up-to"},
+			wantErr: "one argument",
+		},
+		{
+			name:    "migrate up-to rejects a version that is not a number",
+			args:    []string{"migrate", "up-to", "latest"},
+			wantErr: `"latest" is not a migration version`,
 		},
 		{
 			name:    "version rejects a stray argument",
@@ -98,6 +110,31 @@ func TestRun(t *testing.T) {
 			name:    "migrate rejects an unknown action",
 			args:    []string{"migrate", "sideways"},
 			wantErr: `unknown action "sideways"`,
+		},
+		{
+			name:    "l0 rejects an unknown action",
+			args:    []string{"l0", "grep"},
+			wantErr: `unknown action "grep"`,
+		},
+		{
+			name:    "l0 needs an action",
+			args:    []string{"l0"},
+			wantErr: "no action given",
+		},
+		{
+			name:    "l0 get needs an event id",
+			args:    []string{"l0", "get"},
+			wantErr: "one argument",
+		},
+		{
+			name:    "l0 tail rejects an interval of zero",
+			args:    []string{"l0", "tail", "--interval", "0s"},
+			wantErr: "--interval must be positive",
+		},
+		{
+			name:    "l0 tail rejects a cursor that is not one",
+			args:    []string{"l0", "tail", "--cursor", "yesterday"},
+			wantErr: `cursor "yesterday"`,
 		},
 		{
 			name:    "a service rejects an unknown flag",
@@ -161,6 +198,10 @@ func TestRun(t *testing.T) {
 // passed through.
 func TestServiceSubcommandsReturnWhenTheContextIsCancelled(t *testing.T) {
 	t.Setenv("HEARSAY_INSTANCE", "replica-7")
+	// `all` migrates the database it is pointed at (ADR-0006). These cases are
+	// about the four services coming back, not about a schema, and the
+	// integration-test check sets this variable for the whole run.
+	t.Setenv("HEARSAY_DATABASE_URL", "")
 	tests := []struct {
 		args     []string
 		services []string // the values the service field must take
@@ -300,18 +341,28 @@ func TestLogFlagsAndEnvironment(t *testing.T) {
 	})
 }
 
-func TestMigrateErrorIsNotImplemented(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	err := run(t.Context(), []string{"migrate", "status"}, &stdout, &stderr)
-	if !errors.Is(err, errNotImplemented) {
-		t.Fatalf("run(migrate status) = %v, want it to carry errNotImplemented", err)
-	}
-	if !strings.Contains(err.Error(), "adr") && !strings.Contains(err.Error(), "ADR") {
-		t.Errorf("error %q does not point at the ADR", err)
-	}
-	// run already wraps with the subcommand name, so the handler must not.
-	if n := strings.Count(err.Error(), "migrate"); n != 1 {
-		t.Errorf("error names the subcommand %d times, want once: %v", n, err)
+// Both subcommands that need Postgres say so rather than failing on a
+// connection to nowhere, and both say it before doing anything else.
+func TestSubcommandsThatNeedADatabaseSaySoWhenTheyHaveNone(t *testing.T) {
+	for _, args := range [][]string{
+		{"migrate", "status"},
+		{"l0", "count"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			// The integration-test check sets this for the whole run; these
+			// cases are about the process that was given no database at all.
+			t.Setenv("HEARSAY_DATABASE_URL", "")
+
+			var stdout, stderr bytes.Buffer
+			err := run(t.Context(), args, &stdout, &stderr)
+			if !errors.Is(err, db.ErrNoDatabaseURL) {
+				t.Fatalf("run(%q) = %v, want it to carry db.ErrNoDatabaseURL", args, err)
+			}
+			// run already wraps with the subcommand name, so the handler must not.
+			if n := strings.Count(err.Error(), args[0]); n != 1 {
+				t.Errorf("error names the subcommand %d times, want once: %v", n, err)
+			}
+		})
 	}
 }
 

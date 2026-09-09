@@ -1,7 +1,6 @@
 # internal/db/migrations
 
-Schema migrations, applied by `hearsay migrate` (ADR-0006). Empty until the L0
-store lands.
+Schema migrations, applied by `hearsay migrate` (ADR-0006).
 
 - One file per migration, `NNNNN_short_description.sql`, never edited once
   merged.
@@ -11,6 +10,8 @@ store lands.
   `CREATE INDEX CONCURRENTLY` above all — get goose's `NO TRANSACTION`
   annotation and a migration to themselves.
 - The first migration is `CREATE EXTENSION IF NOT EXISTS vector`.
+- `internal/db`'s tests check the naming and the annotations, so a file that
+  goose could not version fails the build rather than a deployment.
 - Anything running in production changes by expand-and-contract, never in one
   step.
 

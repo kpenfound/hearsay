@@ -20,10 +20,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/version"
 )
 
-// errNotImplemented is what a subcommand returns while it is still a stub, so
-// that running it fails loudly rather than looking like it did something.
-var errNotImplemented = errors.New("not implemented yet")
-
 // command is one hearsay subcommand.
 type command struct {
 	name    string
@@ -50,6 +46,7 @@ func commands() []command {
 		{"all", "", "Run all four services in one process. Local development only.", runAll},
 		{"config", "validate [path]", "Check a configuration repository and say what is wrong with it.", runConfig},
 		{"migrate", "up|status|up-to <n>|down", "Apply schema migrations and exit.", runMigrate},
+		{"l0", "list|get <id>|count|tail", "Inspect the L0 event store.", runL0},
 		{"version", "", "Print version, commit and build date.", runVersion},
 		{"help", "", "Print this message.", runHelp},
 	}
@@ -231,6 +228,7 @@ func runConnectors(ctx context.Context, args []string, stdout, stderr io.Writer)
 // (ADR-0003).
 func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, cfg, configPath := newFlagSet("all", stderr)
+	databaseFlag(fs, cfg)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -242,11 +240,15 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	if err != nil {
 		return err
 	}
-	// The process logger has no service field here, because RunAll gives each
-	// of the four its own. Loading the configuration is the command's own work
-	// and happens before any of them start, so that one line says `all` rather
-	// than going out without the field every other line carries.
-	if err := loadConfig(telemetry.With(ctx, "service", "all"), cfg, *configPath); err != nil {
+	// The process logger has no service field here, because RunAll gives each of
+	// the four its own. Loading the configuration and bringing the schema up are
+	// the command's own work and happen before any of them start, so those lines
+	// say `all` rather than going out without the field every other line carries.
+	setup := telemetry.With(ctx, "service", "all")
+	if err := loadConfig(setup, cfg, *configPath); err != nil {
+		return err
+	}
+	if err := migrateForDev(setup, cfg); err != nil {
 		return err
 	}
 
@@ -271,20 +273,13 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 // everything wrong with it, so that a bad change is caught by CI on the
 // configuration repository rather than by a deployment (ADR-0009).
 func runConfig(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	// Flags come before the action or after it — `hearsay config --help` and
-	// `hearsay config validate --config x` are both things people type — and
-	// flag stops at the first argument that is not a flag. So: parse, take the
-	// action, parse what was behind it.
 	fs, _, configPath := newFlagSet("config", stderr)
-	if err := fs.Parse(args); err != nil {
+	action, err := parseAction(fs, args, "")
+	if err != nil {
 		return err
 	}
-	if fs.NArg() == 0 {
+	if action == "" {
 		return errors.New("no action given: want validate")
-	}
-	action := fs.Arg(0)
-	if err := fs.Parse(fs.Args()[1:]); err != nil {
-		return err
 	}
 	if action != "validate" {
 		return fmt.Errorf("unknown action %q: want validate", action)
@@ -353,27 +348,6 @@ func summarize(ids []string) string {
 		return strings.Join(ids[:max], ", ") + ", ..."
 	}
 	return strings.Join(ids, ", ")
-}
-
-// runMigrate will apply the embedded goose migrations (ADR-0006). The
-// migrations and the database connection land with the L0 store; until then it
-// refuses rather than pretending the schema is current.
-func runMigrate(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	fs, _, _ := newFlagSet("migrate", stderr)
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	action := "up"
-	if fs.NArg() > 0 {
-		action = fs.Arg(0)
-	}
-	switch action {
-	case "up", "status", "up-to", "down":
-		// No "migrate" prefix here: run wraps the error with the subcommand name.
-		return fmt.Errorf("%s: %w, see docs/adr/0006-schema-migrations-with-goose.md", action, errNotImplemented)
-	default:
-		return fmt.Errorf("unknown action %q: want up, status, up-to or down", action)
-	}
 }
 
 func runVersion(ctx context.Context, args []string, stdout, stderr io.Writer) error {

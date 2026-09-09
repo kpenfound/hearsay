@@ -6,6 +6,12 @@ Postgres: the pool, the migrations, and the plumbing the layer packages share.
 `database/sql`), transaction helpers, the startup schema-version check, and the
 migrations in [`migrations/`](migrations).
 
+`Open` gives a pool; `Connect` gives one whose database is at least as new as
+the migrations in this binary, and is what everything but `hearsay migrate`
+uses. `Migrator` is goose, and it is the only thing here that opens a
+`database/sql` handle — goose is a `database/sql` library, and that import lives
+in one file so that nothing else reaches for it.
+
 **Does not belong here:** table-specific queries. The L0 store's SQL lives in
 `internal/l0`, L1's in `internal/l1`, and so on; this package holds what all of
 them need.

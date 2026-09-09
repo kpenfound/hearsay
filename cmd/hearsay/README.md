@@ -10,7 +10,8 @@ The one binary Hearsay ships. Each process is a subcommand of it (ADR-0003).
 | `hearsay api` | The read and assert API. |
 | `hearsay all` | All four in one process. Local development only. |
 | `hearsay config validate [path]` | Check a configuration repository. Prints every problem, with file and line. |
-| `hearsay migrate up\|status\|up-to <n>\|down` | Schema migrations. Not implemented yet. |
+| `hearsay migrate up\|status\|up-to <n>\|down` | Schema migrations, then exit. `down` refuses without `--i-know`. |
+| `hearsay l0 list\|get <id>\|count\|tail` | Inspect the L0 event store. Read-only. |
 | `hearsay version` | Version, commit and build date. |
 
 Every subcommand that runs something — the services, `all`, `config` and
@@ -18,6 +19,12 @@ Every subcommand that runs something — the services, `all`, `config` and
 `HEARSAY_LOG_LEVEL` and `HEARSAY_LOG_FORMAT`. `version` and `help` take no flags
 and no arguments, and say so rather than ignoring what they were given. The
 `instance` field on every log line is the hostname, or `HEARSAY_INSTANCE`.
+
+`--database-url` points at Postgres, and also reads `HEARSAY_DATABASE_URL`,
+which is the one to prefer: a URL on a command line puts its password in the
+process list. It is on the subcommands that use a database — `migrate`, `l0`
+and `all` — and not on the four service subcommands, which do not connect to
+one yet.
 
 `--config` points at the configuration repository, and also reads
 `HEARSAY_CONFIG`. A service loads it before it starts and refuses to start if it
