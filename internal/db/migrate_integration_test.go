@@ -156,8 +156,13 @@ func TestMigrateUpAndDown(t *testing.T) {
 }
 
 // ADR-0006 turns goose's session-level advisory lock on, which is not its
-// default, so that two `migrate up` invocations racing during a flaky deploy
-// are safe: one applies and the other waits.
+// default, so that `migrate up` invocations racing during a flaky deploy are
+// safe: one applies and the others wait.
+//
+// This pins the property rather than the lock. Removing the lock does not make
+// it fail — goose runs each migration in a transaction, and four racing runs
+// serialize on that by themselves — so it is evidence that concurrent
+// migration works, not that the lock is what makes it work.
 func TestTwoMigrationsAtOnceAreSafe(t *testing.T) {
 	url := scratchDatabase(t)
 	newest, err := db.EmbeddedVersion()
