@@ -211,8 +211,8 @@ agent = "claude"        # claude | codex
 # Effort level: low, medium, high or max.
 #effort = "high"
 # Agentic turns per session and wall-clock limit.
-#max_turns = 200
-#timeout = "45m"
+max_turns = 300
+timeout = "1h"
 # Tool restrictions passed straight to claude.
 #allowed_tools = []
 disallowed_tools = ["Artifact"]
