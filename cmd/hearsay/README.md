@@ -12,8 +12,11 @@ The one binary Hearsay ships. Each process is a subcommand of it (ADR-0003).
 | `hearsay migrate up\|status\|up-to <n>\|down` | Schema migrations. Not implemented yet. |
 | `hearsay version` | Version, commit and build date. |
 
-Every subcommand takes `--log-level` and `--log-format`, which also read
-`HEARSAY_LOG_LEVEL` and `HEARSAY_LOG_FORMAT`.
+Every subcommand that runs something — the services, `all` and `migrate` — takes
+`--log-level` and `--log-format`, which also read `HEARSAY_LOG_LEVEL` and
+`HEARSAY_LOG_FORMAT`. `version` and `help` take no flags and no arguments, and
+say so rather than ignoring what they were given. The `instance` field on every
+log line is the hostname, or `HEARSAY_INSTANCE`.
 
 **Belongs here:** flag parsing, building config and dependencies, and calling
 `Run`. Nothing else. A subcommand is a thin wrapper over
