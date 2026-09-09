@@ -416,8 +416,9 @@ is checked in one pass.
 
 Beyond the per-field rules above, the loader checks what only makes sense across
 objects: every reference resolves (a scope's sources, a policy's principals, an
-owner, a parent entity), no two objects share an id, no two principals claim one
-identity, no alias means two things, `part_of` has no cycles, and there is at
+owner, a team's members, a parent entity), no two objects share an id, no two
+principals claim one identity, no team contains a team, no alias means two
+things, `part_of` has no cycles, and there is at
 least one source and one scope — a configuration with neither ingests nothing
 and serves nothing.
 
