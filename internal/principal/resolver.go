@@ -261,9 +261,16 @@ func (r *Resolver) lookup(keys []identityKey) Resolution {
 	}
 }
 
-// Unresolved is one identity that did not resolve, and how often it has been
-// seen. It is the queue of mappings a person has to write: an author nobody can
-// name is not dropped in silence.
+// Unresolved is one identity that did not resolve, and how many sightings of it
+// did not. It is the queue of mappings a person has to write: an author nobody
+// can name is not dropped in silence.
+//
+// Sightings of one identity are one entry, filed under the strongest key the
+// first of them carried. Two sightings can fail differently — one carries a
+// handle the other did not — so the entry says how the last one failed, and
+// counts the ones that failed. A sighting that resolves is not counted and does
+// not clear the entry: the identity still has sightings nobody could attribute,
+// and that is the work.
 //
 // The identity it carries is source data — a display name, an email address —
 // so it is subject to the same rule as any payload and is never logged above
@@ -271,11 +278,12 @@ func (r *Resolver) lookup(keys []identityKey) Resolution {
 type Unresolved struct {
 	// Identity is the hint, as it was last seen.
 	Identity connector.Identity
-	// Status is [Unknown] or [Ambiguous].
+	// Status is [Unknown] or [Ambiguous], from the last sighting.
 	Status Status
-	// Candidates are the principals an ambiguous hint matched.
+	// Candidates are the principals the last sighting matched, when it was
+	// ambiguous.
 	Candidates []string
-	// Count is how many hints have landed on this identity.
+	// Count is how many sightings of this identity did not resolve.
 	Count int
 }
 

@@ -222,10 +222,68 @@ func TestUnresolvedIsRecorded(t *testing.T) {
 		t.Errorf("Overflow() = %d, want 0", n)
 	}
 
-	// The result is a copy, so a caller may hold it while ingest carries on.
+	// The result is a copy, all the way down, so a caller may hold it and pick
+	// it apart while ingest carries on.
 	got[1].Count = 99
-	if again := r.Unresolved(); again[1].Count != 3 {
+	got[0].Candidates[0] = "nobody"
+	again := r.Unresolved()
+	if again[1].Count != 3 {
 		t.Errorf("count after mutating the result = %d, want 3", again[1].Count)
+	}
+	if !slices.Equal(again[0].Candidates, []string{"kyle", "robin"}) {
+		t.Errorf("candidates after mutating the result = %v, want kyle and robin", again[0].Candidates)
+	}
+
+	// An entry shows the identity as it was last seen. The source renamed the
+	// stranger, and the entry is filed under the native id either way: a
+	// person mapping it needs the name the source shows now.
+	renamed := stranger
+	renamed.Handle = "stranger-2"
+	renamed.DisplayName = "A Stranger"
+	r.Resolve(renamed)
+	if got := r.Unresolved(); got[1].Identity != renamed || got[1].Count != 4 {
+		t.Errorf("entry after a rename = %+v, want %+v seen 4 times", got[1], renamed)
+	}
+}
+
+// Two sightings of one identity can fail differently — the second carries a
+// handle the first did not — and the entry says how the last one failed. An
+// entry that still said "unknown" would send a person looking for a mapping
+// that is there and wrong rather than missing.
+func TestUnresolvedTracksTheLatestOutcome(t *testing.T) {
+	r := newResolver(t, mapping())
+	base := connector.Identity{Source: "discord", Kind: connector.IdentityUser, NativeID: "302199999999999999"}
+
+	r.Resolve(base)
+	entry := func(t *testing.T) principal.Unresolved {
+		t.Helper()
+		got := r.Unresolved()
+		if len(got) != 1 {
+			t.Fatalf("Unresolved() = %+v, want one entry: every sighting is the same native id", got)
+		}
+		return got[0]
+	}
+	if got := entry(t); got.Status != principal.Unknown || len(got.Candidates) != 0 {
+		t.Errorf("first sighting = %+v, want unknown with no candidates", got)
+	}
+
+	// The source now gives a handle and an email, and they are two people.
+	ambiguous := base
+	ambiguous.Handle = "kyle"
+	ambiguous.Email = "robin"
+	r.Resolve(ambiguous)
+	if got := entry(t); got.Status != principal.Ambiguous ||
+		!slices.Equal(got.Candidates, []string{"kyle", "robin"}) || got.Count != 2 {
+		t.Errorf("second sighting = %+v, want ambiguous between kyle and robin, seen twice", got)
+	}
+
+	// And back: a sighting that matches nobody clears the candidates rather
+	// than leaving two names against an identity that no longer names them.
+	unknown := base
+	unknown.Handle = "nobody"
+	r.Resolve(unknown)
+	if got := entry(t); got.Status != principal.Unknown || len(got.Candidates) != 0 || got.Count != 3 {
+		t.Errorf("third sighting = %+v, want unknown with no candidates, seen three times", got)
 	}
 }
 
