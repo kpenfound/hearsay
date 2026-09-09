@@ -63,15 +63,17 @@ The checks are the `+check` functions in `.dagger/main.go`:
 | `integration-test` | the same, tagged `integration`, against a pgvector Postgres |
 | `image-check` | builds the binary and the container image |
 
-Everything else is an ordinary function:
+Everything else is an ordinary function, addressed as `<module> <function>` —
+the workspace holds the Go SDK as well as `hearsay`, so the module name is not
+optional:
 
 ```sh
-dagger up dev                          # Postgres plus all four services
-dagger api call test                   # the unit and integration checks, those two only
-dagger api call build -o ./hearsay     # the Linux binary
-dagger api call image                  # the container image hearsay ships in
-dagger api call migrate --database-url=env:HEARSAY_DATABASE_URL
-dagger api functions                   # the full list, with the arguments each takes
+dagger up dev                               # Postgres plus all four services
+dagger api call hearsay test                # the unit and integration checks, those two only
+dagger api call hearsay build -o ./hearsay  # the Linux binary
+dagger api call hearsay image               # the container image hearsay ships in
+dagger api call hearsay migrate --database-url=env:HEARSAY_DATABASE_URL
+dagger api functions                        # the modules; add a name for its functions
 ```
 
 `build` and `image` take `--arch` (default: the engine's) and `--version` to
@@ -102,20 +104,23 @@ After changing `.dagger/main.go`:
 dagger generate    # review the changeset, apply it, and commit the result
 ```
 
-The bindings are **not in the repository yet**: producing them needs an engine,
-and the session that wrote this module had none. Until someone runs
-`dagger generate` once and commits the result, the module does not load — see
-the pull request for #35.
+Dagger does not regenerate those files when it loads the module, so a missing
+or stale one is a load failure, not a slow first run. `dagger check` runs the
+generators as read-only checks of their own (`dagger-go-sdk:generate`), so
+forgetting to commit the changeset fails the same gate a broken test does.
 
-`dagger check` runs the generators as read-only checks too, so stale committed
-output fails the same gate a broken test does.
+`dagger.toml` pins the Go SDK to a commit rather than tracking its `main`, and
+`dagger.lock` pins the container images the module pulls. The SDK's `main` moves
+ahead of the released engine: an SDK newer than `v1.0.0-beta.11` loads as a
+module that can author nothing, and `dagger generate` then quietly skips
+`.dagger` instead of writing the bindings. Move both pins together, with
+`dagger update` for the lock, when the workspace moves to a new release.
 
 ### Without Dagger
 
-Dagger needs a container runtime, which is not always available — an agent
-session running under a sandbox that denies the Docker socket and the Dagger
-registry is the case this project hits. Everything but the integration tests
-runs directly:
+Dagger needs a container runtime, which is not always available — a sandbox
+that denies the Docker socket and the Dagger registry is the case to plan for.
+Everything but the integration tests runs directly:
 
 ```sh
 go build ./...
@@ -169,7 +174,7 @@ go run ./cmd/hearsay migrate status      # applied and pending
 go run ./cmd/hearsay migrate up-to <n>
 go run ./cmd/hearsay migrate down        # dev only
 
-dagger api call migrate --database-url=env:HEARSAY_DATABASE_URL --action=status
+dagger api call hearsay migrate --database-url=env:HEARSAY_DATABASE_URL --action=status
 ```
 
 All four exit non-zero with "not implemented yet" today: goose, the embedded

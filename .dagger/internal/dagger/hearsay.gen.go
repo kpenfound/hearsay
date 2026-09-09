@@ -193,7 +193,7 @@ type HearsayMigrateOpts struct {
 
 // Migrate applies the schema migrations to a database (ADR-0006).
 //
-//	dagger api call migrate --database-url=env:HEARSAY_DATABASE_URL
+//	dagger api call hearsay migrate --database-url=env:HEARSAY_DATABASE_URL
 //
 // ADR-0006 spells that `dagger call migrate`, which was the command in Dagger
 // 0.21. The function is the one the ADR names; only the CLI verb moved.

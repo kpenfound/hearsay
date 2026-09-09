@@ -23,13 +23,13 @@ workflow: Dagger Cloud runs `dagger check` on every commit.
 export DAGGER_X_RELEASE=v1.0.0-beta.11   # the release this workspace is on
 dagger check              # every check, in parallel; -l lists them
 dagger up dev             # Postgres plus all four services
-dagger api functions      # everything else that is callable
+dagger api functions      # the modules; `dagger api call hearsay <fn>` runs one
 dagger generate           # after editing .dagger/main.go; commit the result
 ```
 
-Dagger needs a container runtime. Where there is none — an agent sandbox that
-denies the Docker socket, for instance — everything but the integration tests
-runs directly, and Dagger Cloud is the gate that matters:
+Dagger needs a container runtime. Where there is none — a sandbox that denies
+the Docker socket, for instance — everything but the integration tests runs
+directly, and Dagger Cloud is the gate that matters:
 
 ```sh
 go build ./...            # build everything
@@ -57,7 +57,7 @@ The four services are stubs. Each starts, logs, and exits cleanly on Ctrl-C;
 none of them does any work yet.
 
 Migrations are `go run ./cmd/hearsay migrate up|status|up-to <n>|down`, or
-`dagger api call migrate --database-url=...` against a database. The command
+`dagger api call hearsay migrate --database-url=...` against a database. The command
 exists and refuses: goose, the migrations and the database connection land with
 the L0 store. Until then it exits non-zero saying so, which is deliberate — see
 [ADR-0006](docs/adr/0006-schema-migrations-with-goose.md). The migration step the

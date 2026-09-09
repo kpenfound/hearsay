@@ -20,9 +20,14 @@ are being built.
 ## Quick start
 
 ```sh
+export DAGGER_X_RELEASE=v1.0.0-beta.11   # the release this workspace is on
 dagger check           # lint, tests and the image: every gate, in parallel
 dagger up dev          # Postgres plus all four services
 ```
+
+The export is not optional: Homebrew and winget carry an older CLI, which reads
+this workspace and does nothing useful with it. Any CLI runs the pinned release
+on demand, and caches it the first time.
 
 Or without [Dagger](https://dagger.io), which needs a container runtime:
 

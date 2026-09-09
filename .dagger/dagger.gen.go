@@ -387,7 +387,7 @@ func invoke(ctx context.Context, parentJSON []byte, parentName string, fnName st
 					WithFunction(
 						dag.Function("Migrate",
 							dag.TypeDef().WithKind(dagger.TypeDefKindStringKind)).
-							WithDescription("Migrate applies the schema migrations to a database (ADR-0006).\n\n\tdagger api call migrate --database-url=env:HEARSAY_DATABASE_URL\n\nADR-0006 spells that `dagger call migrate`, which was the command in Dagger\n0.21. The function is the one the ADR names; only the CLI verb moved.\n\nEvery action exits non-zero with \"not implemented yet\" until goose and the\nembedded migrations land with the L0 store.").
+							WithDescription("Migrate applies the schema migrations to a database (ADR-0006).\n\n\tdagger api call hearsay migrate --database-url=env:HEARSAY_DATABASE_URL\n\nADR-0006 spells that `dagger call migrate`, which was the command in Dagger\n0.21. The function is the one the ADR names; only the CLI verb moved.\n\nEvery action exits non-zero with \"not implemented yet\" until goose and the\nembedded migrations land with the L0 store.").
 							WithSourceMap(dag.SourceMap("main.go", 301, 1)).
 							WithArg("databaseURL", dag.TypeDef().WithObject("Secret"), dagger.FunctionWithArgOpts{Description: "Postgres connection URL, for example\npostgres://hearsay:hearsay@localhost:5432/hearsay.", SourceMap: dag.SourceMap("main.go", 304, 2)}).
 							WithArg("action", dag.TypeDef().WithKind(dagger.TypeDefKindStringKind).WithOptional(true), dagger.FunctionWithArgOpts{Description: "up, status, up-to or down.", SourceMap: dag.SourceMap("main.go", 309, 2), DefaultValue: dagger.JSON("\"up\"")}).
