@@ -8,10 +8,12 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -551,6 +553,18 @@ func TestPurgeDeletesDoneJobsAndKeepsFailedOnes(t *testing.T) {
 		}
 	}
 
+	// A listing is of one state, which is what makes a failed job findable
+	// among the finished ones rather than alongside them.
+	for state, want := range map[queue.State]string{queue.StateDone: "done-1", queue.StateFailed: "failed-1"} {
+		listed, err := client.List(t.Context(), state, 0)
+		if err != nil {
+			t.Fatalf("List(%s) = %v, want no error", state, err)
+		}
+		if len(listed) != 1 || listed[0].TargetID != want || listed[0].State != state {
+			t.Errorf("List(%s) = %+v, want only %s", state, listed, want)
+		}
+	}
+
 	// Retention is a nanosecond, so both are past it; only the done one may go.
 	purged, err := client.Purge(t.Context())
 	if err != nil {
@@ -671,6 +685,52 @@ func TestTheTraceContextReachesTheWorker(t *testing.T) {
 	}
 	if plain[0].TraceContext == nil || len(plain[0].TraceContext) != 0 {
 		t.Errorf("a job enqueued with no trace context has %v, want an empty carrier", plain[0].TraceContext)
+	}
+}
+
+// A handler's error is written to the row and logged, so it is bounded: an
+// error that carried a whole document would put the document in both
+// (ADR-0008). The cut is on a rune boundary, which Postgres would refuse if it
+// were not — text is UTF-8 and half a rune is not.
+func TestAnOversizedErrorIsStoredBoundedAndStillValidText(t *testing.T) {
+	kind := newKind(t, false)
+	client := newClient(t, queue.Config{Kind: kind, MaxAttempts: 1})
+	enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
+
+	// A three-byte rune, so that a cut taken at a byte count lands inside one.
+	huge := strings.Repeat("☃", 5000)
+	jobs := claim(t, client)
+	if len(jobs) != 1 {
+		t.Fatalf("Claim = %d jobs, want 1", len(jobs))
+	}
+	if state, _, err := client.Fail(t.Context(), jobs[0], errors.New(huge)); err != nil || state != queue.StateFailed {
+		t.Fatalf("Fail = %q, %v, want the job failed and no error", state, err)
+	}
+
+	failed, err := client.List(t.Context(), queue.StateFailed, 0)
+	if err != nil || len(failed) != 1 {
+		t.Fatalf("List(failed) = %v, %v, want the failed job", failed, err)
+	}
+	stored := failed[0].LastError
+	if len(stored) >= len(huge) {
+		t.Errorf("the stored error is %d bytes, want it bounded well below the %d it was given", len(stored), len(huge))
+	}
+	if !utf8.ValidString(stored) {
+		t.Error("the stored error is not valid UTF-8: the bound cut a rune in half")
+	}
+	if !strings.HasPrefix(huge, strings.TrimSuffix(stored, "…")) {
+		t.Error("the stored error is not the beginning of the error that was reported")
+	}
+}
+
+// The defaults are filled in when the client is built, so a service that
+// configures nothing still has the numbers ADR-0007 describes.
+func TestAClientFillsInTheDefaults(t *testing.T) {
+	client := newClient(t, queue.Config{Kind: newKind(t, false)})
+	got := client.Config()
+	if got.Concurrency != 1 || got.Lease != queue.DefaultLease || got.MaxAttempts != queue.DefaultMaxAttempts ||
+		got.PollInterval != queue.DefaultPollInterval || got.Retention != queue.DefaultRetention {
+		t.Errorf("Config() = %+v, want the defaults filled in", got)
 	}
 }
 

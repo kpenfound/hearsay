@@ -27,7 +27,7 @@ var (
 	_ Querier = (pgx.Tx)(nil)
 )
 
-// jobColumns is a job row, in the order [scanJob] reads it. Unqualified, so
+// jobColumns is a job row, in the order scanJobs reads it. Unqualified, so
 // that it serves a plain SELECT and an UPDATE ... RETURNING alike. The kind is
 // not among them: every statement here is already filtered to one kind, and
 // the client knows whether that kind is serialized, which a row does not.
