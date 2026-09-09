@@ -110,6 +110,14 @@ func TestAppendRefusesToRewriteAnEvent(t *testing.T) {
 	if stored.Payload.Text != "hello" {
 		t.Errorf("payload.text = %q, want the text that was stored first, %q", stored.Payload.Text, "hello")
 	}
+	// The instant survives the round trip, and comes back in UTC rather than in
+	// whatever zone the server's session happens to be in.
+	if !stored.Time.Equal(event.Time) {
+		t.Errorf("time = %s, want %s", stored.Time, event.Time)
+	}
+	if stored.Time.Location() != time.UTC {
+		t.Errorf("time came back in %s, want UTC", stored.Time.Location())
+	}
 	assertCounts(t, store, event.Source, connector.KindMessage, 1, 1)
 }
 
@@ -156,13 +164,29 @@ func TestAnEditIsANewEventAndTheHistoryIsOrdered(t *testing.T) {
 		}
 	}
 
-	history, err := store.List(t.Context(), l0.ListOptions{Source: first.Source, Artifact: "m1"})
-	if err != nil {
-		t.Fatalf("List() = %v, want no error", err)
-	}
-	want := []string{"m1", "m1@r2", "m1@r3"}
-	if got := nativeIDs(history); !slices.Equal(got, want) {
-		t.Errorf("List(artifact m1) = %v, want %v", got, want)
+	// Oldest first, newest first, and a limit that cuts from the far end of
+	// whichever order is in force.
+	for _, tt := range []struct {
+		name string
+		opts l0.ListOptions
+		want []string
+	}{
+		{name: "the whole history", opts: l0.ListOptions{}, want: []string{"m1", "m1@r2", "m1@r3"}},
+		{name: "newest first", opts: l0.ListOptions{Newest: true}, want: []string{"m1@r3", "m1@r2", "m1"}},
+		{name: "the oldest one", opts: l0.ListOptions{Limit: 1}, want: []string{"m1"}},
+		{name: "the newest one", opts: l0.ListOptions{Limit: 1, Newest: true}, want: []string{"m1@r3"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := tt.opts
+			opts.Source, opts.Artifact = first.Source, "m1"
+			history, err := store.List(t.Context(), opts)
+			if err != nil {
+				t.Fatalf("List(%+v) = %v, want no error", opts, err)
+			}
+			if got := nativeIDs(history); !slices.Equal(got, tt.want) {
+				t.Errorf("List(%+v) = %v, want %v", opts, got, tt.want)
+			}
+		})
 	}
 	assertCounts(t, store, first.Source, connector.KindMessage, 3, 3)
 }
