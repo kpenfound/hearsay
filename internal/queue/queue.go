@@ -144,6 +144,16 @@ RETURNING ` + jobColumns
 // a statement begins, so a claim that acquired the lock in the same statement
 // as its UPDATE would read the candidates from before the lock was granted —
 // which is the snapshot in which the other worker's job is not running yet.
+//
+// That reasoning is READ COMMITTED's, and the claim requires it rather than
+// merely expecting it — which is why claimSerialized asks for the level
+// explicitly instead of inheriting default_transaction_isolation. Above READ
+// COMMITTED the snapshot belongs to the transaction rather than to the
+// statement, and it is registered by this statement, before the lock is
+// granted: a worker that waited here would then run its UPDATE against a
+// snapshot from before the holder committed, find no running job for the key,
+// and claim a second one. Splitting the statements buys nothing there, and the
+// advisory lock stops enforcing the invariant it exists for.
 const claimSerialLockSQL = `SELECT pg_advisory_xact_lock(hashtext('claim:' || $1))`
 
 // claimSerialSQL is the serialized claim: one job, whose serial key no running
@@ -196,11 +206,17 @@ func (c *Client) Claim(ctx context.Context) ([]Job, error) {
 // lock is held until it commits, which is what makes the running-check and the
 // update atomic against other claims. It is held for one small UPDATE and not
 // for the job, so different serial keys still run in parallel.
+//
+// The isolation level is named rather than inherited. Nothing else pins it —
+// db.Open passes the URL to pgx as it is, so the level is the server's
+// default_transaction_isolation, which an operator sets in postgresql.conf, on
+// the database, on the role, or in the connection URL — and the serialization
+// invariant only holds under READ COMMITTED. See claimSerialLockSQL.
 func (c *Client) claimSerialized(ctx context.Context) ([]Job, error) {
 	fail := func(err error) error {
 		return fmt.Errorf("claiming a %s job: %w", c.cfg.Kind.Name, err)
 	}
-	tx, err := c.pool.Begin(ctx)
+	tx, err := c.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return nil, fail(err)
 	}

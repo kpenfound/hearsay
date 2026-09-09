@@ -52,6 +52,18 @@ zero; the defaults are the ones the constants document.
 - **A batch claim under the advisory lock still breaks the invariant.**
   `LIMIT 1` on the serialized path is correctness, not throughput; ADR-0007
   works through why.
+- **The serialized claim names READ COMMITTED and requires it.** Its advisory
+  lock works because each statement takes its own snapshot, so the `UPDATE`
+  sees what the previous holder of the lock committed. Above that level the
+  snapshot is the transaction's and is taken by the statement that *waits* for
+  the lock, so a claim would decide a serial key was free using a snapshot from
+  before the job on it started. Nothing else pins the level — `db.Open` passes
+  the URL to pgx as it is — so `claimSerialized` asks for it by name.
+- **An enqueue must never abort the caller's transaction, which is why
+  `Request.Validate` is fussy about bytes.** A NUL or invalid UTF-8 in an id,
+  or a NUL in the trace carrier, is a statement error inside the caller's
+  transaction (22021, 22P05) rather than an error returned to the caller. Any
+  new field written to a row belongs in that validation.
 - **The invariant is tested, not asserted.** The serialized claim's test runs
   concurrent workers over jobs sharing a key and fails if two are ever running
   at once. Keep it that way — it is the reason ADR-0007 chose code we own over
