@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/db"
@@ -354,7 +355,7 @@ func TestASerializedClaimSkipsABusyKeyAndTakesAnother(t *testing.T) {
 func TestAJobThatRunsOutOfAttemptsFailsAndStays(t *testing.T) {
 	kind := newKind(t, false)
 	client := newClient(t, queue.Config{
-		Kind: kind, MaxAttempts: 2, Backoff: time.Millisecond, MaxBackoff: 2 * time.Millisecond,
+		Kind: kind, MaxAttempts: 2, Backoff: time.Second, MaxBackoff: time.Second,
 	})
 	enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
 
@@ -362,6 +363,7 @@ func TestAJobThatRunsOutOfAttemptsFailsAndStays(t *testing.T) {
 	if len(first) != 1 || first[0].Attempt != 1 {
 		t.Fatalf("the first claim = %v, want one job on attempt 1", first)
 	}
+	before := time.Now()
 	state, retry, err := client.Fail(t.Context(), first[0], errors.New("the model timed out"))
 	if err != nil {
 		t.Fatalf("Fail = %v, want no error", err)
@@ -369,8 +371,15 @@ func TestAJobThatRunsOutOfAttemptsFailsAndStays(t *testing.T) {
 	if state != queue.StatePending {
 		t.Errorf("Fail on attempt 1 of 2 = %q, want the job back in %q", state, queue.StatePending)
 	}
-	if retry.In <= 0 || retry.At.IsZero() {
-		t.Errorf("Fail returned retry %+v, want a delay and a time", retry)
+	if retry.In <= 0 || retry.In > time.Second || retry.At.IsZero() {
+		t.Errorf("Fail returned retry %+v, want a delay inside the configured backoff and a time", retry)
+	}
+	// The delay is not only reported, it is when the job actually runs again.
+	// The jitter can draw almost nothing, so this asserts run_after is the
+	// delay that was drawn into the future — not that the delay is long.
+	if earliest := before.Add(retry.In - 20*time.Millisecond); retry.At.Before(earliest) {
+		t.Errorf("the retry is scheduled for %s but the backoff applied was %s from %s: run_after did not move",
+			retry.At, retry.In, before)
 	}
 
 	// Wait out the backoff rather than assuming it has passed.
@@ -662,5 +671,97 @@ func TestTheTraceContextReachesTheWorker(t *testing.T) {
 	}
 	if plain[0].TraceContext == nil || len(plain[0].TraceContext) != 0 {
 		t.Errorf("a job enqueued with no trace context has %v, want an empty carrier", plain[0].TraceContext)
+	}
+}
+
+// The table is the last line of defence, and these are the rows the package's
+// own API cannot produce — which is the point of asserting them here: a
+// constraint is what stops a path added later from producing one quietly. It
+// is also the only place a test writes the queue tables directly.
+func TestTheSchemaRefusesRowsTheQueueWouldNeverWrite(t *testing.T) {
+	kind := newKind(t, false)
+	pool := newPool(t)
+
+	const insert = `
+INSERT INTO queue_job (kind, target_id, serial_key, state, attempt, started_at, lease_expires_at, finished_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
+
+	now := time.Now()
+	noKey := ""
+	tests := []struct {
+		name string
+		// The row, column by column, so that every case inserts a whole one
+		// and a case can only fail on the constraint it is about.
+		serialKey  *string
+		state      string
+		attempt    int
+		startedAt  *time.Time
+		leaseUntil *time.Time
+		finishedAt *time.Time
+		// wantCode is the SQLSTATE, and wantName the constraint or column it
+		// names. Empty wantCode is a row the table must accept.
+		wantCode string
+		wantName string
+	}{
+		{name: "a pending job", serialKey: &noKey, state: "pending"},
+		{name: "a running job with a lease", serialKey: &noKey, state: "running", attempt: 1, startedAt: &now, leaseUntil: &now},
+		{name: "a finished job", serialKey: &noKey, state: "done", attempt: 1, startedAt: &now, finishedAt: &now},
+		{
+			name: "a null serial key", serialKey: nil, state: "pending",
+			wantCode: "23502", wantName: "serial_key",
+		},
+		{
+			name: "a state nothing knows", serialKey: &noKey, state: "claimed",
+			wantCode: "23514", wantName: "queue_job_state_is_known",
+		},
+		{
+			name: "a running job with no lease", serialKey: &noKey, state: "running", attempt: 1, startedAt: &now,
+			wantCode: "23514", wantName: "queue_job_a_lease_is_a_running_job",
+		},
+		{
+			name: "a lease on a job nobody is running", serialKey: &noKey, state: "pending", leaseUntil: &now,
+			wantCode: "23514", wantName: "queue_job_a_lease_is_a_running_job",
+		},
+		{
+			name: "a pending job part-way through a run", serialKey: &noKey, state: "pending", startedAt: &now,
+			wantCode: "23514", wantName: "queue_job_pending_is_not_started",
+		},
+		{
+			name: "a finished job with no finish time", serialKey: &noKey, state: "done", attempt: 1, startedAt: &now,
+			wantCode: "23514", wantName: "queue_job_finished_is_terminal",
+		},
+		{
+			name: "a finish time on a job that is still queued", serialKey: &noKey, state: "pending", finishedAt: &now,
+			wantCode: "23514", wantName: "queue_job_finished_is_terminal",
+		},
+		{
+			name: "a negative attempt count", serialKey: &noKey, state: "pending", attempt: -1,
+			wantCode: "23514", wantName: "queue_job_attempt_is_not_negative",
+		},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := pool.Exec(t.Context(), insert,
+				kind.Name, "target-"+strconv.Itoa(i), tt.serialKey, tt.state, tt.attempt,
+				tt.startedAt, tt.leaseUntil, tt.finishedAt)
+			if tt.wantCode == "" {
+				if err != nil {
+					t.Fatalf("inserting a row the queue does write = %v, want no error", err)
+				}
+				return
+			}
+			var pgErr *pgconn.PgError
+			if !errors.As(err, &pgErr) {
+				t.Fatalf("inserting %s = %v, want a Postgres error", tt.name, err)
+			}
+			// Both, so that a case cannot pass on some other error: a
+			// statement that is simply malformed reports neither of these.
+			if pgErr.Code != tt.wantCode {
+				t.Errorf("SQLSTATE = %s (%s), want %s", pgErr.Code, pgErr.Message, tt.wantCode)
+			}
+			if name := pgErr.ConstraintName + pgErr.ColumnName; name != tt.wantName {
+				t.Errorf("the error names %q, want %q", name, tt.wantName)
+			}
+		})
 	}
 }
