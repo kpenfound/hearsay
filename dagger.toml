@@ -7,7 +7,7 @@
 source = "github.com/dagger/go"
 
 [modules.go.settings]
-includeExtraFiles = ["docs/config.md"]
+includeExtraFiles = ["docs/config.md", "cmd/hearsay/README.md"]
 base = "test-services:go-test-base"
 lint = ["!**"]
 

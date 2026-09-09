@@ -12,12 +12,14 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kpenfound/hearsay/internal/db"
 )
 
 // The four service subcommand names are a contract (ADR-0003): the Dagger
 // module, the compose file and the deployment manifests all name them.
 func TestServiceSubcommandNamesAreTheOnesTheADRFixes(t *testing.T) {
-	want := []string{"connectors", "distiller", "assert-worker", "api", "migrate", "version", "all"}
+	want := []string{"connectors", "distiller", "assert-worker", "api", "migrate", "l0", "version", "all"}
 	have := map[string]bool{}
 	for _, cmd := range commands() {
 		have[cmd.name] = true
@@ -75,9 +77,19 @@ func TestRun(t *testing.T) {
 			wantStdout: "hearsay ",
 		},
 		{
-			name:    "migrate is honest about not being built",
-			args:    []string{"migrate", "up"},
-			wantErr: "not implemented yet",
+			name:    "migrate down refuses without --i-know",
+			args:    []string{"migrate", "down"},
+			wantErr: "--i-know",
+		},
+		{
+			name:    "migrate up-to needs a version",
+			args:    []string{"migrate", "up-to"},
+			wantErr: "one argument",
+		},
+		{
+			name:    "migrate up-to rejects a version that is not a number",
+			args:    []string{"migrate", "up-to", "latest"},
+			wantErr: `"latest" is not a migration version`,
 		},
 		{
 			name:    "version rejects a stray argument",
@@ -98,6 +110,133 @@ func TestRun(t *testing.T) {
 			name:    "migrate rejects an unknown action",
 			args:    []string{"migrate", "sideways"},
 			wantErr: `unknown action "sideways"`,
+		},
+		{
+			name:    "l0 rejects an unknown action",
+			args:    []string{"l0", "grep"},
+			wantErr: `unknown action "grep"`,
+		},
+		{
+			name:    "l0 needs an action",
+			args:    []string{"l0"},
+			wantErr: "no action given",
+		},
+		{
+			name:    "l0 get needs an event id",
+			args:    []string{"l0", "get"},
+			wantErr: "one argument",
+		},
+		{
+			name:    "l0 tail rejects an interval of zero",
+			args:    []string{"l0", "tail", "--interval", "0s"},
+			wantErr: "--interval must be positive",
+		},
+		{
+			name:    "l0 tail rejects a cursor that is not one",
+			args:    []string{"l0", "tail", "--cursor", "yesterday"},
+			wantErr: `cursor "yesterday"`,
+		},
+		{
+			name:    "l0 refuses an artifact without a source",
+			args:    []string{"l0", "list", "--artifact", "acme/api#1"},
+			wantErr: "needs a source",
+		},
+		{
+			name:    "l0 tail refuses an artifact without a source too",
+			args:    []string{"l0", "tail", "--artifact", "acme/api#1"},
+			wantErr: "needs a source",
+		},
+		{
+			name:    "l0 count does not filter, and says so",
+			args:    []string{"l0", "count", "--source", "github-acme"},
+			wantErr: "count does not read --source",
+		},
+		{
+			name:    "l0 get takes no filter",
+			args:    []string{"l0", "get", "--kind", "message", "evt:a:b"},
+			wantErr: "get does not read --kind",
+		},
+		{
+			name:    "l0 tail does not order",
+			args:    []string{"l0", "tail", "--newest"},
+			wantErr: "tail does not read --newest",
+		},
+		{
+			name:    "l0 list does not tail",
+			args:    []string{"l0", "list", "--interval", "1s", "--cursor", "1.2"},
+			wantErr: "list does not read --cursor, --interval",
+		},
+		{
+			name:    "migrate up does not take the flag down needs",
+			args:    []string{"migrate", "up", "--i-know"},
+			wantErr: "up does not read --i-know",
+		},
+		{
+			name:    "migrate does not read a configuration repository",
+			args:    []string{"migrate", "status", "--config", "./config"},
+			wantErr: "status does not read --config",
+		},
+		{
+			// down is the only action with a flag of its own, so this pins its
+			// list from both sides: --i-know passes the gate, --config does not.
+			name:    "migrate down takes --i-know and nothing else",
+			args:    []string{"migrate", "down", "--i-know", "--config", "./config"},
+			wantErr: "down does not read --config",
+		},
+		{
+			// A flag behind the argument is a flag, not a second argument: the
+			// two actions that take one would otherwise report "takes one
+			// argument" about a command line that gave exactly one.
+			name:    "l0 get takes a flag after the event id",
+			args:    []string{"l0", "get", "evt:a:b", "--kind", "message"},
+			wantErr: "get does not read --kind",
+		},
+		{
+			name:    "migrate up-to takes a flag after the version",
+			args:    []string{"migrate", "up-to", "1", "--i-know"},
+			wantErr: "up-to does not read --i-know",
+		},
+		{
+			name:    "l0 get still rejects a second argument",
+			args:    []string{"l0", "get", "evt:a:b", "evt:c:d"},
+			wantErr: "get takes one argument",
+		},
+		{
+			name:    "migrate up-to still rejects a second argument",
+			args:    []string{"migrate", "up-to", "1", "2"},
+			wantErr: "up-to takes one argument",
+		},
+		{
+			name:    "config validate takes a flag after the path",
+			args:    []string{"config", "validate", "testdata/does-not-exist", "--log-level", "debug"},
+			wantErr: "testdata/does-not-exist",
+		},
+		{
+			// Looping past the words must not undo what `--` means. Port 1 is
+			// reserved and nothing listens on it, so the id being taken as an
+			// id rather than as a flag is what gets this to the connection.
+			name:    "-- ends the flags, so an argument may look like one",
+			args:    []string{"l0", "get", "--database-url", "postgres://h@127.0.0.1:1/d", "--", "-looks-like-a-flag"},
+			wantErr: "connecting to postgres",
+		},
+		{
+			// And it stays ended for the words behind the first: without that,
+			// going round again would parse the second as a flag and report
+			// "flag provided but not defined" for a command line whose real
+			// problem is a second argument.
+			name:    "-- keeps its meaning for every word behind it",
+			args:    []string{"l0", "get", "--", "-one", "-two"},
+			wantErr: "get takes one argument",
+		},
+		{
+			name:    "l0 count rejects a stray argument",
+			args:    []string{"l0", "count", "everything"},
+			wantErr: `unexpected argument "everything": count takes none`,
+		},
+		{
+			name:    "migrate status rejects a stray argument",
+			args:    []string{"migrate", "status", "now"},
+			wantErr: `unexpected argument "now": status takes none`,
 		},
 		{
 			name:    "a service rejects an unknown flag",
@@ -161,6 +300,10 @@ func TestRun(t *testing.T) {
 // passed through.
 func TestServiceSubcommandsReturnWhenTheContextIsCancelled(t *testing.T) {
 	t.Setenv("HEARSAY_INSTANCE", "replica-7")
+	// `all` migrates the database it is pointed at (ADR-0006). These cases are
+	// about the four services coming back, not about a schema, and the
+	// integration-test check sets this variable for the whole run.
+	t.Setenv("HEARSAY_DATABASE_URL", "")
 	tests := []struct {
 		args     []string
 		services []string // the values the service field must take
@@ -300,18 +443,69 @@ func TestLogFlagsAndEnvironment(t *testing.T) {
 	})
 }
 
-func TestMigrateErrorIsNotImplemented(t *testing.T) {
+// A connection URL carries a password, and `--help` goes to a terminal, a CI
+// transcript or a screen share. The environment variable must not be the flag's
+// default, because flag.PrintDefaults prints defaults.
+func TestHelpDoesNotPrintTheDatabasePassword(t *testing.T) {
+	const password = "correct-horse-battery-staple"
+	t.Setenv("HEARSAY_DATABASE_URL", "postgres://hearsay:"+password+"@localhost:5432/hearsay")
+	for _, args := range [][]string{
+		{"l0", "--help"},
+		{"migrate", "--help"},
+		{"all", "--help"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if err := run(t.Context(), args, &stdout, &stderr); err != nil {
+				t.Fatalf("run(%q) = %v, want nil", args, err)
+			}
+			if out := stdout.String() + stderr.String(); strings.Contains(out, password) {
+				t.Errorf("--help printed the password:\n%s", out)
+			}
+			if !strings.Contains(stderr.String(), "database-url") {
+				t.Errorf("--help does not mention --database-url:\n%s", stderr.String())
+			}
+		})
+	}
+}
+
+// The flag still works, and still beats the environment.
+func TestDatabaseURLFlagBeatsTheEnvironment(t *testing.T) {
+	t.Setenv("HEARSAY_DATABASE_URL", "postgres://hearsay@localhost:5432/from-the-environment")
 	var stdout, stderr bytes.Buffer
-	err := run(t.Context(), []string{"migrate", "status"}, &stdout, &stderr)
-	if !errors.Is(err, errNotImplemented) {
-		t.Fatalf("run(migrate status) = %v, want it to carry errNotImplemented", err)
+	// Port 1 is reserved and nothing listens on it, so this gets as far as the
+	// connection and no further.
+	err := run(t.Context(), []string{"l0", "count", "--database-url", "postgres://hearsay@127.0.0.1:1/from-the-flag"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run(l0 count) against a port nothing listens on = nil, want an error")
 	}
-	if !strings.Contains(err.Error(), "adr") && !strings.Contains(err.Error(), "ADR") {
-		t.Errorf("error %q does not point at the ADR", err)
+	if !strings.Contains(err.Error(), "from-the-flag") {
+		t.Errorf("run used %v, want the database the flag names", err)
 	}
-	// run already wraps with the subcommand name, so the handler must not.
-	if n := strings.Count(err.Error(), "migrate"); n != 1 {
-		t.Errorf("error names the subcommand %d times, want once: %v", n, err)
+}
+
+// Both subcommands that need Postgres say so rather than failing on a
+// connection to nowhere, and both say it before doing anything else.
+func TestSubcommandsThatNeedADatabaseSaySoWhenTheyHaveNone(t *testing.T) {
+	for _, args := range [][]string{
+		{"migrate", "status"},
+		{"l0", "count"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			// The integration-test check sets this for the whole run; these
+			// cases are about the process that was given no database at all.
+			t.Setenv("HEARSAY_DATABASE_URL", "")
+
+			var stdout, stderr bytes.Buffer
+			err := run(t.Context(), args, &stdout, &stderr)
+			if !errors.Is(err, db.ErrNoDatabaseURL) {
+				t.Fatalf("run(%q) = %v, want it to carry db.ErrNoDatabaseURL", args, err)
+			}
+			// run already wraps with the subcommand name, so the handler must not.
+			if n := strings.Count(err.Error(), args[0]); n != 1 {
+				t.Errorf("error names the subcommand %d times, want once: %v", n, err)
+			}
+		})
 	}
 }
 

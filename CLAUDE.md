@@ -19,8 +19,8 @@ implements, are specified in
 
 Dagger runs everything. The workspace is `dagger.toml`. The tests and the
 `go generate` drift check come from the reusable Go module
-(`github.com/dagger/go`) it installs; lint, the tidy and image checks, the
-binary, the image, migrations and the dev stack are `hearsay`, our own module
+(`github.com/dagger/go`) it installs; lint, the integration tests, the tidy and
+image checks, the binary, the image, migrations and the dev stack are `hearsay`, our own module
 in `.dagger/modules/hearsay/main.dang`, written in Dang. `test-services` beside
 it is the adapter that hands the Go module a container with Postgres attached.
 There is no CI workflow: Dagger Cloud runs `dagger check` on every commit.
@@ -57,11 +57,14 @@ golangci-lint fmt         # format (gofmt + goimports); --diff to only check
 go run ./cmd/hearsay help # the subcommands
 ```
 
-That block runs offline with no services: no test touches a database or a model
-provider. Two things need the network once — the Go toolchain, on a machine
-whose Go is older than the release `go.mod` asks for, and the one dependency
-(`go.yaml.in/yaml/v3`, the configuration parser, ADR-0009) until it is in the
-module cache.
+That block runs offline with no services: no *unit* test touches a database or a
+model provider. The ones that need Postgres carry the `integration` build tag
+and read `HEARSAY_DATABASE_URL`, so a plain `go test ./...` skips them; with a
+database of your own, `go test -tags=integration ./...` runs them. Two things
+need the network once — the Go toolchain, on a machine whose Go is older than
+the release `go.mod` asks for, and the dependencies (the configuration parser
+`go.yaml.in/yaml/v3` per ADR-0009, pgx and goose per ADR-0004 and ADR-0006)
+until they are in the module cache.
 
 Running a service locally:
 
@@ -71,6 +74,7 @@ go run ./cmd/hearsay all          # all four in one process, dev only
 go run ./cmd/hearsay api --log-level debug --log-format text
 go run ./cmd/hearsay api --config ./config   # the configuration repository
 go run ./cmd/hearsay config validate ./config
+go run ./cmd/hearsay l0 count --database-url=...   # what is in the event store
 ```
 
 The four services are stubs. Each starts, logs, and exits cleanly on Ctrl-C;
@@ -80,11 +84,22 @@ invalid; configuration is read once, at startup, and a change to it is a
 restart (ADR-0009). The format is [docs/config.md](docs/config.md).
 
 Migrations are `go run ./cmd/hearsay migrate up|status|up-to <n>|down`, or
-`dagger api call hearsay migrate --database-url=...` against a database. The command
-exists and refuses: goose, the migrations and the database connection land with
-the L0 store. Until then it exits non-zero saying so, which is deliberate — see
-[ADR-0006](docs/adr/0006-schema-migrations-with-goose.md). The migration step
-before the tests is missing for the same reason.
+`dagger api call hearsay migrate --database-url=...` against a database. They are
+plain SQL in `internal/db/migrations/`, embedded with `go:embed`, applied by
+`hearsay migrate` as a deploy job and **never** at service startup — read
+[ADR-0006](docs/adr/0006-schema-migrations-with-goose.md) before writing one, and
+note that a merged migration is never edited. `down` is a development
+convenience and refuses without `--i-know`. `hearsay all` migrates for itself,
+because a local database is nobody's production; every other command that reads
+the database verifies the schema and refuses one that is behind.
+
+The database is `--database-url`, or `HEARSAY_DATABASE_URL`. Prefer the
+environment variable: a URL on a command line puts its password in the process
+list.
+
+`hearsay l0 list|get <id>|count|tail` inspects the event store — what a source
+has ingested, an artifact's history, and the change feed the distiller
+consumes.
 
 ## Layout
 

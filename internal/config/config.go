@@ -18,12 +18,24 @@ package config
 // differs, such as worker concurrency.
 type Config struct {
 	Log Log
+	// Database is the Postgres connection (ADR-0004). It is a process setting
+	// rather than part of the configuration repository: the repository is
+	// checked in, and a connection URL carries a password (ADR-0009).
+	Database Database
 	// Repo is the configuration repository, loaded at startup and never
 	// reloaded while the process runs (ADR-0009). Its zero value is a process
 	// that was started without one: it ingests nothing and serves no bundles,
 	// which is the state `hearsay` runs in until it is pointed at a
 	// configuration.
 	Repo Repo
+}
+
+// Database is how a process reaches Postgres.
+type Database struct {
+	// URL is the connection URL, for example
+	// postgres://hearsay@localhost:5432/hearsay. Empty means the process was
+	// given no database, which every command that needs one refuses.
+	URL string
 }
 
 // Log configures the process logger (ADR-0008).

@@ -94,6 +94,28 @@ type Hearsay {
   }
 
   """
+  Runs the tests tagged `integration` against a real Postgres with pgvector.
+
+  ADR-0006 puts `hearsay migrate up` between the database and the tests, so
+  that a missing migration fails the check rather than being papered over by a
+  fixture. It runs from the code under test, and it is also what proves the
+  image is the pgvector build: migration 1 creates the extension, and stock
+  Postgres fails there — the mistake ADR-0004 warns about.
+
+  The Go module's own test check runs the untagged tests; these carry the tag
+  so that a plain `go test ./...` skips them on a machine with no Postgres.
+  """
+  integrationTest(ws: Workspace!): Void @check {
+    goBase(ws)
+      .withServiceBinding("postgres", postgres)
+      .withEnvVariable("HEARSAY_DATABASE_URL", databaseUrl)
+      .withExec(["go", "run", "./cmd/hearsay", "migrate", "up"])
+      .withExec(["go", "test", "-race", "-tags=integration", "./..."])
+      .sync
+    null
+  }
+
+  """
   Fails if `go mod tidy` would change go.mod or go.sum.
   """
   tidyCheck(ws: Workspace!): Void @check {
@@ -196,9 +218,6 @@ type Hearsay {
   """
   Applies the schema migrations to a database (ADR-0006), as a job from the
   image that is being deployed rather than a container of its own.
-
-  Every action exits non-zero with "not implemented yet" until goose and the
-  embedded migrations land with the L0 store.
   """
   migrate(
     ws: Workspace!,
