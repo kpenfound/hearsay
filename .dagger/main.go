@@ -2,8 +2,9 @@
 //
 // Everything that runs code runs here: lint, the tests, a real Postgres with
 // pgvector for the ones that need a database, the binary, the container image,
-// migrations and the local dev stack. CI calls these functions and does nothing
-// else, so a green pipeline and a green laptop mean the same thing.
+// migrations and the local dev stack. The gates are `+check` functions, so
+// `dagger check` runs them in parallel and reports each one separately, on a
+// laptop and in Dagger Cloud alike.
 package main
 
 import (
@@ -59,51 +60,55 @@ const (
 
 // Hearsay is the module's entry point.
 type Hearsay struct {
-	// The repository to run against.
+	// The repository, read from the workspace.
 	Source *dagger.Directory
 }
 
 func New(
-	// The repository root.
-	//
-	// +defaultPath="/"
-	// +ignore=[".git", ".bees", ".dagger", "dist", "hearsay"]
-	source *dagger.Directory,
+	// The current workspace, auto-populated by Dagger.
+	ws *dagger.Workspace,
 ) *Hearsay {
-	return &Hearsay{Source: source}
+	return &Hearsay{
+		// .dagger is excluded because it is a separate Go module that nothing
+		// here builds, and including it would invalidate every cached step on
+		// each edit to this file.
+		Source: ws.Directory("/", dagger.WorkspaceDirectoryOpts{
+			Exclude: []string{".git", ".bees", ".dagger", "dist", "hearsay"},
+		}),
+	}
 }
 
-// Lint runs go vet, golangci-lint and the formatter check.
-func (h *Hearsay) Lint(ctx context.Context) (string, error) {
+// Lint the module: go vet, golangci-lint and the formatter check.
+//
+// +check
+func (h *Hearsay) Lint(ctx context.Context) error {
 	base, err := h.goBase(ctx)
 	if err != nil {
-		return "", err
+		return err
 	}
-	vet, err := base.WithExec([]string{"go", "vet", "./..."}).Stdout(ctx)
-	if err != nil {
-		return "", fmt.Errorf("go vet: %w", err)
+	if _, err := base.WithExec([]string{"go", "vet", "./..."}).Sync(ctx); err != nil {
+		return fmt.Errorf("go vet: %w", err)
 	}
 
-	lint, err := h.lintBase().WithExec([]string{"golangci-lint", "run"}).Stdout(ctx)
-	if err != nil {
-		return "", fmt.Errorf("golangci-lint run: %w", err)
+	if _, err := h.lintBase().WithExec([]string{"golangci-lint", "run"}).Sync(ctx); err != nil {
+		return fmt.Errorf("golangci-lint run: %w", err)
 	}
 
 	// Formatting is part of the lint gate, not a separate ritual: --diff prints
 	// what `golangci-lint fmt` would change and fails if there is anything.
-	format, err := h.lintBase().WithExec([]string{"golangci-lint", "fmt", "--diff"}).Stdout(ctx)
-	if err != nil {
-		return "", fmt.Errorf("golangci-lint fmt --diff: %w", err)
+	if _, err := h.lintBase().WithExec([]string{"golangci-lint", "fmt", "--diff"}).Sync(ctx); err != nil {
+		return fmt.Errorf("golangci-lint fmt --diff: %w", err)
 	}
-
-	return vet + lint + format + "lint ok\n", nil
+	return nil
 }
 
 // TidyCheck fails if `go mod tidy` would change go.mod or go.sum.
-func (h *Hearsay) TidyCheck(ctx context.Context) (string, error) {
+//
+// +check
+func (h *Hearsay) TidyCheck(ctx context.Context) error {
 	base, err := h.goBase(ctx)
 	if err != nil {
-		return "", err
+		return err
 	}
 	// go.sum does not exist while the module has no dependencies, so both
 	// sides of its comparison are allowed to be missing.
@@ -112,38 +117,39 @@ cp go.mod /tmp/go.mod.before
 if [ -f go.sum ]; then cp go.sum /tmp/go.sum.before; else : > /tmp/go.sum.before; fi
 go mod tidy
 diff -u /tmp/go.mod.before go.mod
-if [ -f go.sum ]; then diff -u /tmp/go.sum.before go.sum; else diff -u /tmp/go.sum.before /dev/null; fi
-echo "go.mod and go.sum are tidy"`
-	out, err := base.WithExec([]string{"sh", "-c", script}).Stdout(ctx)
-	if err != nil {
-		return "", fmt.Errorf("go mod tidy would change go.mod or go.sum: %w", err)
+if [ -f go.sum ]; then diff -u /tmp/go.sum.before go.sum; else diff -u /tmp/go.sum.before /dev/null; fi`
+	if _, err := base.WithExec([]string{"sh", "-c", script}).Sync(ctx); err != nil {
+		return fmt.Errorf("go mod tidy would change go.mod or go.sum: %w", err)
 	}
-	return out, nil
+	return nil
 }
 
 // UnitTest runs the tests that need nothing but the module.
-func (h *Hearsay) UnitTest(ctx context.Context) (string, error) {
+//
+// +check
+func (h *Hearsay) UnitTest(ctx context.Context) error {
 	base, err := h.goBase(ctx)
 	if err != nil {
-		return "", err
+		return err
 	}
-	out, err := base.WithExec([]string{"go", "test", "-race", "./..."}).Stdout(ctx)
-	if err != nil {
-		return "", fmt.Errorf("go test: %w", err)
+	if _, err := base.WithExec([]string{"go", "test", "-race", "./..."}).Sync(ctx); err != nil {
+		return fmt.Errorf("go test: %w", err)
 	}
-	return out, nil
+	return nil
 }
 
 // IntegrationTest runs the tests tagged `integration` against a real Postgres
 // with pgvector.
-func (h *Hearsay) IntegrationTest(ctx context.Context) (string, error) {
+//
+// +check
+func (h *Hearsay) IntegrationTest(ctx context.Context) error {
 	db := h.Postgres()
 
 	// The suite has no integration tests yet, so a run of zero tests passing is
 	// no evidence that the harness works. Prove the database first: CREATE
 	// EXTENSION fails on a Postgres image without pgvector, which is the
 	// mistake ADR-0004 warns about.
-	check, err := dag.Container().
+	_, err := dag.Container().
 		From(postgresImage).
 		WithServiceBinding(pgHost, db).
 		WithEnvVariable("PGPASSWORD", pgPassword).
@@ -153,42 +159,53 @@ func (h *Hearsay) IntegrationTest(ctx context.Context) (string, error) {
 			"-c", "CREATE EXTENSION IF NOT EXISTS vector",
 			"-c", "SELECT extname, extversion FROM pg_extension WHERE extname = 'vector'",
 		}).
-		Stdout(ctx)
+		Sync(ctx)
 	if err != nil {
-		return "", fmt.Errorf("pgvector is not usable on %s: %w", postgresImage, err)
+		return fmt.Errorf("pgvector is not usable on %s: %w", postgresImage, err)
 	}
 
 	// ADR-0006 puts `hearsay migrate up` between the database and the tests, so
-	// that a missing migration fails CI rather than being papered over by a
-	// fixture. The subcommand still refuses (there is nothing to migrate), so
+	// that a missing migration fails the check rather than being papered over by
+	// a fixture. The subcommand still refuses (there is nothing to migrate), so
 	// the step goes in with the L0 store.
 	base, err := h.goBase(ctx)
 	if err != nil {
-		return "", err
+		return err
 	}
-	out, err := base.
+	_, err = base.
 		WithServiceBinding(pgHost, db).
 		WithEnvVariable(databaseEnv, databaseURL()).
 		WithExec([]string{"go", "test", "-race", "-tags=integration", "./..."}).
-		Stdout(ctx)
+		Sync(ctx)
 	if err != nil {
-		return "", fmt.Errorf("go test -tags=integration: %w", err)
+		return fmt.Errorf("go test -tags=integration: %w", err)
 	}
-	return check + out, nil
+	return nil
+}
+
+// ImageCheck builds the container image, so that an image that no longer builds
+// fails here rather than at a release.
+//
+// +check
+func (h *Hearsay) ImageCheck(ctx context.Context) error {
+	img, err := h.Image(ctx, "", "")
+	if err != nil {
+		return err
+	}
+	if _, err := img.Sync(ctx); err != nil {
+		return fmt.Errorf("building the image: %w", err)
+	}
+	return nil
 }
 
 // Test runs the whole suite: the unit tests, and the integration tests against a
-// real Postgres with pgvector.
-func (h *Hearsay) Test(ctx context.Context) (string, error) {
-	unit, err := h.UnitTest(ctx)
-	if err != nil {
-		return "", err
+// real Postgres with pgvector. Both are checks in their own right, so
+// `dagger check` runs them in parallel; this is for asking for exactly the two.
+func (h *Hearsay) Test(ctx context.Context) error {
+	if err := h.UnitTest(ctx); err != nil {
+		return err
 	}
-	integration, err := h.IntegrationTest(ctx)
-	if err != nil {
-		return "", err
-	}
-	return unit + integration, nil
+	return h.IntegrationTest(ctx)
 }
 
 // Build compiles the hearsay binary for Linux.
@@ -260,10 +277,8 @@ func (h *Hearsay) Image(ctx context.Context,
 		WithoutDefaultArgs(), nil
 }
 
-// Postgres starts a throwaway Postgres with pgvector, the database the
-// integration tests and the dev stack run against.
-//
-//	dagger call postgres up --ports 5432:5432
+// Postgres is the throwaway Postgres with pgvector that the integration test and
+// the dev stack run against.
 func (h *Hearsay) Postgres() *dagger.Service {
 	return dag.Container().
 		From(postgresImage).
@@ -276,7 +291,10 @@ func (h *Hearsay) Postgres() *dagger.Service {
 
 // Migrate applies the schema migrations to a database (ADR-0006).
 //
-//	dagger call migrate --database-url=env:HEARSAY_DATABASE_URL
+//	dagger api call migrate --database-url=env:HEARSAY_DATABASE_URL
+//
+// ADR-0006 spells that `dagger call migrate`, which was the command in Dagger
+// 0.21. The function is the one the ADR names; only the CLI verb moved.
 //
 // Every action exits non-zero with "not implemented yet" until goose and the
 // embedded migrations land with the L0 store.
@@ -317,10 +335,12 @@ func (h *Hearsay) Migrate(ctx context.Context,
 // Dev runs the local stack: Postgres with pgvector, and all four services in one
 // process (ADR-0003's `hearsay all`).
 //
-//	dagger call dev up
+//	dagger up dev
 //
 // There is no file watcher. Restarting is the reload: stop the command and run
 // it again, and the rebuild is a cached one.
+//
+// +up
 func (h *Hearsay) Dev(ctx context.Context) (*dagger.Service, error) {
 	img, err := h.Image(ctx, "", "")
 	if err != nil {
@@ -340,39 +360,6 @@ func (h *Hearsay) Dev(ctx context.Context) (*dagger.Service, error) {
 			UseEntrypoint: true,
 			Args:          []string{"all", "--log-level", "debug", "--log-format", "text"},
 		}), nil
-}
-
-// Check runs everything CI runs: lint, the tidy check, the whole test suite and
-// the image build. It is the one command a pull request has to pass.
-func (h *Hearsay) Check(ctx context.Context) (string, error) {
-	var out strings.Builder
-
-	steps := []struct {
-		name string
-		run  func(context.Context) (string, error)
-	}{
-		{"lint", h.Lint},
-		{"tidy", h.TidyCheck},
-		{"test", h.Test},
-	}
-	for _, step := range steps {
-		res, err := step.run(ctx)
-		if err != nil {
-			return out.String(), fmt.Errorf("%s: %w", step.name, err)
-		}
-		fmt.Fprintf(&out, "=== %s ===\n%s\n", step.name, res)
-	}
-
-	img, err := h.Image(ctx, "", "")
-	if err != nil {
-		return out.String(), fmt.Errorf("image: %w", err)
-	}
-	if _, err := img.Sync(ctx); err != nil {
-		return out.String(), fmt.Errorf("image: %w", err)
-	}
-	fmt.Fprint(&out, "=== image ===\nbuilt\n")
-
-	return out.String(), nil
 }
 
 // goBase is the container every Go command runs in: the toolchain go.mod asks

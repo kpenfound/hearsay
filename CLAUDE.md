@@ -14,18 +14,22 @@ is superseded, never edited.
 
 ## Commands
 
-Dagger runs everything, and CI calls it and nothing else. `dagger functions`
-lists the lot; the module is `.dagger/main.go`.
+Dagger runs everything. The workspace is `dagger.toml`, the module is
+`.dagger/main.go`, and the gates are its `+check` functions — `lint`,
+`tidy-check`, `unit-test`, `integration-test`, `image-check`. There is no CI
+workflow: Dagger Cloud runs `dagger check` on every commit.
 
 ```sh
-dagger call check         # lint, tidy, the whole suite, the image: what CI runs
-dagger call test          # unit tests, then the integration tests on pgvector
-dagger call dev up        # Postgres plus all four services
+export DAGGER_X_RELEASE=v1.0.0-beta.11   # the release this workspace is on
+dagger check              # every check, in parallel; -l lists them
+dagger up dev             # Postgres plus all four services
+dagger api functions      # everything else that is callable
+dagger generate           # after editing .dagger/main.go; commit the result
 ```
 
 Dagger needs a container runtime. Where there is none — an agent sandbox that
 denies the Docker socket, for instance — everything but the integration tests
-runs directly, and CI is the gate that matters:
+runs directly, and Dagger Cloud is the gate that matters:
 
 ```sh
 go build ./...            # build everything
@@ -53,11 +57,11 @@ The four services are stubs. Each starts, logs, and exits cleanly on Ctrl-C;
 none of them does any work yet.
 
 Migrations are `go run ./cmd/hearsay migrate up|status|up-to <n>|down`, or
-`dagger call migrate --database-url=...` against a database. The command exists
-and refuses: goose, the migrations and the database connection land with the L0
-store. Until then it exits non-zero saying so, which is deliberate — see
-[ADR-0006](docs/adr/0006-schema-migrations-with-goose.md). The migration step
-`dagger call integration-test` will run before the tests is missing for the same
+`dagger api call migrate --database-url=...` against a database. The command
+exists and refuses: goose, the migrations and the database connection land with
+the L0 store. Until then it exits non-zero saying so, which is deliberate — see
+[ADR-0006](docs/adr/0006-schema-migrations-with-goose.md). The migration step the
+`integration-test` check will run before the tests is missing for the same
 reason.
 
 ## Layout

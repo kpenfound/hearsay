@@ -20,8 +20,8 @@ are being built.
 ## Quick start
 
 ```sh
-dagger call check      # lint, tests and the image: what CI runs
-dagger call dev up     # Postgres plus all four services
+dagger check           # lint, tests and the image: every gate, in parallel
+dagger up dev          # Postgres plus all four services
 ```
 
 Or without [Dagger](https://dagger.io), which needs a container runtime:
