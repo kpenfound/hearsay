@@ -335,8 +335,9 @@ model_by_size = { xs = "sonnet", s = "sonnet" }
 #timeout = "45m"
 enabled = true
 #shell = "/bin/bash"
-#[roles.developer.env]
-#EXAMPLE = "value"
+sandbox = "none"
+[roles.developer.env]
+DAGGER_X_RELEASE = "v1.0.0-beta.11"
 #[roles.developer.mcp.example]
 #command = "example-mcp"
 
