@@ -376,6 +376,32 @@ func TestOverloadedIsRetried(t *testing.T) {
 	}
 }
 
+// A request that never got an answer at all — a connection refused, a
+// connection dropped — may get one next time. It is the most common transient
+// failure there is, so it has to be classified as one.
+func TestARequestThatNeverArrived(t *testing.T) {
+	server, _ := replay(t)
+	url := server.URL
+	server.Close()
+
+	r := registry(t, url, map[llm.Tier]llm.TierConfig{
+		llm.TierDistill: {Provider: "anthropic", Model: "claude-haiku-4-5-20251001", MaxRetries: -1},
+	})
+	completer, _ := r.Completer(llm.TierDistill)
+	_, err := completer.Complete(t.Context(), llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Text: "hello"}}})
+	if err == nil {
+		t.Fatal("Complete() = nil, want the call to fail against a server that is not there")
+	}
+	if !llm.Retryable(err) {
+		t.Errorf("Complete() = %q, want a failure the retry loop will try again", err)
+	}
+	var e *llm.Error
+	if !errors.As(err, &e) || e.Status != 0 {
+		t.Errorf("Complete() = %v, want an *llm.Error with no HTTP status", err)
+	}
+}
+
 // Anthropic has no embedding model, and that is a fact about the provider
 // rather than something to find out on the first call (ADR-0005).
 func TestNoEmbeddingModel(t *testing.T) {
