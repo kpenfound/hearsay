@@ -407,7 +407,13 @@ func TestResolveGroup(t *testing.T) {
 	r := newResolver(t, mapping())
 	r.ResolveGroup("github", "MDQ6VGVhbTk5")
 	r.ResolveGroup("github", "acme/api-team")
-	r.ResolveGroup("github", "")
+	// A group with nothing but blank space for a name, or with no source,
+	// names nobody: it matches nothing and there is nothing to map.
+	for _, blank := range [][2]string{{"github", ""}, {"github", "   "}, {"", "acme/eng"}} {
+		if got := r.ResolveGroup(blank[0], blank[1]); got.Status != principal.Unknown {
+			t.Errorf("ResolveGroup(%q, %q) = %+v, want unknown", blank[0], blank[1], got)
+		}
+	}
 	if n := len(r.Unresolved()); n != 1 {
 		t.Errorf("Unresolved() = %+v, want just the unmapped group", r.Unresolved())
 	}

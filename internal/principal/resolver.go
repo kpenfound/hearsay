@@ -239,15 +239,15 @@ func (r *Resolver) ResolveGroup(source, group string) Resolution {
 // folding it would file two node ids differing only in case as one group, and a
 // node id is base64. The price is that a source spelling one slug two ways
 // leaves two entries in the queue, which is noise rather than a wrong answer.
+//
+// A group with no source, or with nothing but blank space for a name, gets no
+// keys at all, so it matches nothing and is not recorded: it names nobody, and
+// there is nothing there for a person to map.
 func groupKeys(source, group string) []identityKey {
-	if source == "" || group == "" {
+	if source == "" || FoldHandle(group) == "" {
 		return nil
 	}
-	keys := []identityKey{nativeKey(source, group)}
-	if FoldHandle(group) != "" {
-		keys = append(keys, handleKey(source, group))
-	}
-	return keys
+	return []identityKey{nativeKey(source, group), handleKey(source, group)}
 }
 
 // hintKeys is every key an identity hint is matched by. The email is a handle
