@@ -1,17 +1,12 @@
 # The Dagger workspace. `dagger check` runs every check the hearsay module
 # exposes, in parallel; `dagger up dev` starts the local stack. There is no CI
 # workflow — Dagger Cloud runs the same checks on every commit.
+#
+# The Go SDK is not installed here. It is only needed to regenerate the module's
+# bindings, and installing it (`dagger sdk install go`) resolves a Git reference
+# and pins it in dagger.lock, which has to be done by someone with a working
+# engine. The engine's Go runtime, which is what loads the module, comes from
+# `[runtime] source = "go"` in .dagger/dagger-module.toml.
 
 [modules.hearsay]
 source = ".dagger"
-
-# The Go SDK authors the module in .dagger: this is the entry `dagger sdk install
-# go` writes, and it is what `dagger generate` uses to regenerate the bindings.
-[modules.dagger-go-sdk]
-source = "github.com/dagger/go-sdk"
-
-[modules.dagger-go-sdk.as-sdk]
-name = "go"
-
-[[modules.dagger-go-sdk.as-sdk.modules]]
-path = ".dagger"

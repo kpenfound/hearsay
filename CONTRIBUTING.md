@@ -99,7 +99,8 @@ linter version is a constant in `.dagger/main.go`.
 After changing `.dagger/main.go`:
 
 ```sh
-dagger generate    # review the changeset, apply it, and commit the result
+dagger sdk install go   # once per clone-with-no-SDK-entry; writes it to dagger.toml
+dagger generate         # review the changeset, apply it, and commit the result
 ```
 
 `dagger check` runs the generators as read-only checks too, so stale committed
