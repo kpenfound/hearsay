@@ -8,9 +8,11 @@ package connectors
 
 import (
 	"context"
+	"strings"
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/service"
+	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
 // Name is the subcommand this service runs as (ADR-0003).
@@ -26,5 +28,16 @@ type Deps struct {
 
 // Run blocks until ctx is cancelled or the service fails.
 func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
-	return service.Stub(ctx)
+	return service.Stub(telemetry.With(ctx, "source", Selection(deps.Sources)))
+}
+
+// Selection renders which connectors a process is hosting for the `source` log
+// field: the names it was given, or "all" when it was given none. Every line
+// this service logs carries it, because "which connectors is this container
+// running" is the first question asked of a process hosting a subset.
+func Selection(sources []string) string {
+	if len(sources) == 0 {
+		return "all"
+	}
+	return strings.Join(sources, ",")
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -78,6 +79,21 @@ func TestRun(t *testing.T) {
 			wantErr: "not implemented yet",
 		},
 		{
+			name:    "version rejects a stray argument",
+			args:    []string{"version", "extra"},
+			wantErr: `unexpected argument "extra"`,
+		},
+		{
+			name:    "version rejects a flag it does not have",
+			args:    []string{"version", "--log-level", "bogus"},
+			wantErr: "flag provided but not defined",
+		},
+		{
+			name:    "help rejects a stray argument",
+			args:    []string{"help", "connectors"},
+			wantErr: `unexpected argument "connectors"`,
+		},
+		{
 			name:    "migrate rejects an unknown action",
 			args:    []string{"migrate", "sideways"},
 			wantErr: `unknown action "sideways"`,
@@ -138,20 +154,24 @@ func TestRun(t *testing.T) {
 }
 
 // Every long-running subcommand has to come back when the process is signalled,
-// which is what main's signal context does to it. Each one also has to say on
-// its log lines which service it is — once, not once per wrapper it passed
-// through.
+// which is what main's signal context does to it. Each one also has to carry the
+// three fields ADR-0008 says a process attaches at startup — service, version,
+// instance — on every line, once each rather than once per wrapper the line
+// passed through.
 func TestServiceSubcommandsReturnWhenTheContextIsCancelled(t *testing.T) {
+	t.Setenv("HEARSAY_INSTANCE", "replica-7")
 	tests := []struct {
 		args     []string
 		services []string // the values the service field must take
+		source   string   // the value of the source field, where there is one
 	}{
-		{args: []string{"connectors"}, services: []string{"connectors"}},
-		{args: []string{"connectors", "--source", "github"}, services: []string{"connectors"}},
+		{args: []string{"connectors"}, services: []string{"connectors"}, source: "all"},
+		{args: []string{"connectors", "--source", "github"}, services: []string{"connectors"}, source: "github"},
+		{args: []string{"connectors", "--source", "github", "--source", "slack"}, services: []string{"connectors"}, source: "github,slack"},
 		{args: []string{"distiller"}, services: []string{"distiller"}},
 		{args: []string{"assert-worker"}, services: []string{"assert-worker"}},
 		{args: []string{"api"}, services: []string{"api"}},
-		{args: []string{"all"}, services: []string{"connectors", "distiller", "assert-worker", "api"}},
+		{args: []string{"all"}, services: []string{"connectors", "distiller", "assert-worker", "api"}, source: "all"},
 	}
 	for _, tt := range tests {
 		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
@@ -173,30 +193,68 @@ func TestServiceSubcommandsReturnWhenTheContextIsCancelled(t *testing.T) {
 			}
 
 			seen := map[string]bool{}
+			sources := map[string]bool{}
 			for line := range strings.Lines(strings.TrimSpace(stderr.String())) {
 				line = strings.TrimSpace(line)
 				if line == "" {
 					continue
 				}
 				// json.Unmarshal keeps the last of a repeated key, so count the
-				// occurrences rather than the decoded value.
-				if n := strings.Count(line, `"service":`); n != 1 {
-					t.Errorf("log line has the service field %d times, want once: %s", n, line)
+				// occurrences rather than trusting the decoded value.
+				for _, field := range []string{"service", "version", "instance"} {
+					if n := strings.Count(line, `"`+field+`":`); n != 1 {
+						t.Errorf("log line has the %s field %d times, want once: %s", field, n, line)
+					}
 				}
 				var rec struct {
-					Service string `json:"service"`
+					Service  string `json:"service"`
+					Version  string `json:"version"`
+					Instance string `json:"instance"`
+					Source   string `json:"source"`
 				}
 				if err := json.Unmarshal([]byte(line), &rec); err != nil {
 					t.Fatalf("log line is not JSON: %v (%s)", err, line)
 				}
+				if rec.Version == "" {
+					t.Errorf("log line has no version: %s", line)
+				}
+				if rec.Instance != "replica-7" {
+					t.Errorf("instance = %q, want the value of HEARSAY_INSTANCE: %s", rec.Instance, line)
+				}
 				seen[rec.Service] = true
+				if rec.Service == "connectors" {
+					sources[rec.Source] = true
+				}
 			}
 			for _, want := range tt.services {
 				if !seen[want] {
 					t.Errorf("no log line from service %q; saw %v", want, slices.Sorted(maps.Keys(seen)))
 				}
 			}
+			// --source has to be visible in the log, or nothing distinguishes a
+			// process hosting one connector from one hosting all of them.
+			if tt.source != "" && !sources[tt.source] {
+				t.Errorf("connectors logged source %v, want %q", slices.Sorted(maps.Keys(sources)), tt.source)
+			}
 		})
+	}
+}
+
+func TestInstanceDefaultsToTheHostname(t *testing.T) {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		t.Skipf("no hostname available: %v", err)
+	}
+	t.Setenv("HEARSAY_INSTANCE", "")
+
+	var stdout, stderr bytes.Buffer
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := run(ctx, []string{"api", "--log-format", "json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run(api) = %v, want nil", err)
+	}
+	if want := `"instance":"` + host + `"`; !strings.Contains(stderr.String(), want) {
+		t.Errorf("stderr = %q, want it to contain %s", stderr.String(), want)
 	}
 }
 
@@ -249,5 +307,9 @@ func TestMigrateErrorIsNotImplemented(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "adr") && !strings.Contains(err.Error(), "ADR") {
 		t.Errorf("error %q does not point at the ADR", err)
+	}
+	// run already wraps with the subcommand name, so the handler must not.
+	if n := strings.Count(err.Error(), "migrate"); n != 1 {
+		t.Errorf("error names the subcommand %d times, want once: %v", n, err)
 	}
 }

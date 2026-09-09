@@ -29,6 +29,12 @@ type RunFunc func(ctx context.Context) error
 // It is what `hearsay all` is built from, and it is deliberately the only way
 // that subcommand differs from running the four services separately, so the dev
 // path cannot drift from the deployed one.
+//
+// ADR-0003 says `all` "calls all four in one errgroup". This is a WaitGroup and
+// [errors.Join] instead, which keeps the module free of dependencies, and the
+// semantics differ on purpose: an errgroup cancels on the first *error*, and a
+// service of ours returning nil is just as much a reason to stop as one
+// returning an error. Every error is reported rather than only the first.
 func RunAll(ctx context.Context, fns map[string]RunFunc) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

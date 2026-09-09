@@ -129,11 +129,25 @@ func withLogger(ctx context.Context, serviceName string, cfg *config.Config, std
 	if err != nil {
 		return ctx, err
 	}
-	log = log.With("version", version.Info().Version)
+	log = log.With("version", version.Info().Version, "instance", instanceName())
 	if serviceName != "" {
 		log = log.With("service", serviceName)
 	}
 	return telemetry.WithLogger(ctx, log), nil
+}
+
+// instanceName is what this process reports as `instance`: which replica of a
+// service a line came from, so two containers running `hearsay distiller` can be
+// told apart. The hostname is that identity in every container runtime worth
+// naming; HEARSAY_INSTANCE overrides it for anything that knows better.
+func instanceName() string {
+	if v := envOr("HEARSAY_INSTANCE", ""); v != "" {
+		return v
+	}
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return h
+	}
+	return "unknown"
 }
 
 // runService returns the handler for a subcommand that runs a long-lived
@@ -219,19 +233,42 @@ func runMigrate(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	}
 	switch action {
 	case "up", "status", "up-to", "down":
-		return fmt.Errorf("migrate %s: %w, see docs/adr/0006-schema-migrations-with-goose.md", action, errNotImplemented)
+		// No "migrate" prefix here: run wraps the error with the subcommand name.
+		return fmt.Errorf("%s: %w, see docs/adr/0006-schema-migrations-with-goose.md", action, errNotImplemented)
 	default:
 		return fmt.Errorf("unknown action %q: want up, status, up-to or down", action)
 	}
 }
 
 func runVersion(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	if err := parseNoFlags("version", args, stderr); err != nil {
+		return err
+	}
 	fmt.Fprintln(stdout, version.Info())
 	return nil
 }
 
 func runHelp(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	if err := parseNoFlags("help", args, stderr); err != nil {
+		return err
+	}
 	usage(stdout)
+	return nil
+}
+
+// parseNoFlags is the flag handling for a subcommand that takes neither flags
+// nor arguments. It exists so that `hearsay version --log-level bogus extra`
+// fails the way `hearsay api --log-level bogus extra` does, rather than printing
+// the version and exiting 0 as though the extra words meant something.
+func parseNoFlags(name string, args []string, w io.Writer) error {
+	fs := flag.NewFlagSet("hearsay "+name, flag.ContinueOnError)
+	fs.SetOutput(w)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
 	return nil
 }
 

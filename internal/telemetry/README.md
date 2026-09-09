@@ -7,8 +7,17 @@ Logging, tracing and metrics (ADR-0008).
 providers, which are no-ops unless an OTLP endpoint is configured. Nothing is
 exported by default: Hearsay must run with no observability stack at all.
 
+**Logs go to stderr, not stdout.** ADR-0008 says stdout, and this is a
+deliberate departure from it: `hearsay version` and `hearsay help` write their
+answers to stdout, and a binary whose logs share that stream cannot be piped
+into anything. Every container runtime collects both streams, so the
+`docker compose logs` story the ADR was protecting is unaffected. The ADR is
+accepted and is not edited; the deviation is recorded here, where whoever wires
+up #35's compose file will be reading.
+
 **How logging works:** the process attaches a logger with `service`, `version`
-and `instance` at startup and puts it in the context. Work that descends adds
+and `instance` at startup and puts it in the context. `instance` is the
+hostname, or `HEARSAY_INSTANCE` where that is set. Work that descends adds
 its own fields once with `telemetry.With(ctx, ...)`; everything below inherits
 them. Use the standard field names in ADR-0008 (`scope`, `source`, `job_kind`,
 `job_id`, `l0_id`, `l1_id`, `topic_id`, `principal`, `provider`, `tier`,

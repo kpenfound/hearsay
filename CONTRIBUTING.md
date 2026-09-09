@@ -50,7 +50,12 @@ go run ./cmd/hearsay connectors --source github
 
 Logging is `--log-level` (debug, info, warn, error) and `--log-format` (json,
 text, auto — auto means text when stderr is a terminal). Both also read
-`HEARSAY_LOG_LEVEL` and `HEARSAY_LOG_FORMAT`; the flag wins.
+`HEARSAY_LOG_LEVEL` and `HEARSAY_LOG_FORMAT`; the flag wins. Logs go to stderr.
+
+Every line carries the three fields ADR-0008 attaches at process start:
+`service`, `version` and `instance`. `instance` is the hostname, which is the
+replica identity in every container runtime; set `HEARSAY_INSTANCE` where
+something knows better.
 
 The four services are stubs: they start, log that they are stubs, and return
 when the process is interrupted. That shutdown behaviour is not a placeholder —
@@ -84,7 +89,9 @@ packages (`internal/connector`, `internal/llm`, `internal/queue`, `internal/db`,
 **Every top-level package has a README** saying what belongs in it and what does
 not. Read the one for the package you are changing, and update it when the
 answer changes. That is where the boundaries are written down; nothing else
-enforces them.
+enforces them. Subpackages — the four under `internal/service`, and the
+per-source and per-provider ones to come — say it in their package comment
+instead of adding a second README.
 
 ## Conventions
 
