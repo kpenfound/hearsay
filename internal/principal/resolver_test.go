@@ -368,9 +368,18 @@ func TestNewResolverRejects(t *testing.T) {
 }
 
 // The identities configuration reports as errors are skipped rather than
-// indexed, so a resolver built from a Repo that failed validation does not
-// match everyone with an empty handle to whoever was listed last.
+// indexed. Two of them would otherwise collide as one key, so a mapping with
+// one real mistake in it would also be told that two identities naming nobody
+// are the same person — and no resolver would be built at all.
 func TestNewResolverSkipsEmptyKeys(t *testing.T) {
+	blank := []principal.Identity{{Source: "", Handle: "kpenfound"}, {Source: "discord", Handle: " "}}
+	if _, err := principal.NewResolver([]principal.Principal{
+		{ID: "kyle", Kind: principal.KindHuman, Identities: blank},
+		{ID: "robin", Kind: principal.KindHuman, Identities: blank},
+	}); err != nil {
+		t.Errorf("NewResolver over two principals with the same unusable identities: %v", err)
+	}
+
 	r := newResolver(t, []principal.Principal{
 		{ID: "kyle", Kind: principal.KindHuman, Identities: []principal.Identity{
 			{Source: "github", Handle: "kpenfound"},

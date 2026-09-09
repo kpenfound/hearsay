@@ -273,18 +273,14 @@ func (l *loader) buildPrincipals(r Repo) []principal.Principal {
 		}
 
 		// The identities are checked either way: an identity two principals
-		// both claim is a mistake in the other one too. Members are dropped
-		// from anything that is not a team, so the value carries the rule the
-		// error above just stated rather than contradicting it.
+		// both claim is a mistake in the other one too.
 		built := principal.Principal{
 			ID:         p.ID,
 			Name:       p.Name,
 			Kind:       kind,
 			Class:      class,
 			Identities: l.buildIdentities(r, a, p, identities),
-		}
-		if kind == principal.KindTeam {
-			built.Members = slices.Clone(p.Members)
+			Members:    slices.Clone(p.Members),
 		}
 		if keep {
 			out = append(out, built)

@@ -32,9 +32,10 @@ type Principal struct {
 	// Identities are the source-native identities that are this principal: the
 	// mapping [Resolver] resolves an event's identity hints against.
 	Identities []Identity
-	// Members are the principal ids belonging to a team, and are empty on
-	// everything else. A team is a container, so its members are people and
-	// agents: a team may not contain a team.
+	// Members are the principal ids belonging to a team. A team is a
+	// container, so its members are people and agents: a team may not contain
+	// a team. Anything that is not a team has none — configuration rejects a
+	// person who lists members rather than quietly ignoring them.
 	Members []string
 }
 

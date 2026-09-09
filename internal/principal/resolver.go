@@ -73,10 +73,14 @@ func handleKey(source, handle string) identityKey {
 
 // NewResolver builds a resolver from the configured principals.
 //
-// It returns [ErrIdentityClaimed] if two principals claim one identity, and
-// ignores an identity with no source or no keys: configuration reports both as
-// errors of its own, and a resolver that silently preferred one principal over
-// another would decide authorship by map iteration order.
+// It returns [ErrIdentityClaimed] if two principals claim one identity, rather
+// than letting map iteration order decide authorship.
+//
+// An identity with no source, or with nothing but blank keys, is skipped and
+// never indexed. Configuration reports it where it is written, and indexing it
+// would make two of them collide — reporting a conflict between two identities
+// that name nobody, on top of the real error, and refusing to build a resolver
+// over it.
 func NewResolver(principals []Principal) (*Resolver, error) {
 	r := &Resolver{
 		byKey:      make(map[identityKey]string, 2*len(principals)),
