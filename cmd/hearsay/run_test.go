@@ -212,6 +212,14 @@ func TestRun(t *testing.T) {
 			wantErr: "testdata/does-not-exist",
 		},
 		{
+			// Looping past the words must not undo what `--` means. Port 1 is
+			// reserved and nothing listens on it, so the id being taken as an
+			// id rather than as a flag is what gets this to the connection.
+			name:    "-- ends the flags, so an argument may look like one",
+			args:    []string{"l0", "get", "--database-url", "postgres://h@127.0.0.1:1/d", "--", "-looks-like-a-flag"},
+			wantErr: "connecting to postgres",
+		},
+		{
 			name:    "a service rejects an unknown flag",
 			args:    []string{"api", "--verbose"},
 			wantErr: "flag provided but not defined",
