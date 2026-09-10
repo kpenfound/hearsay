@@ -253,14 +253,10 @@ func printStatus(ctx context.Context, migrator *db.Migrator, w io.Writer) error 
 // production. Every other command that reads the database verifies the schema
 // and refuses one that is behind.
 //
-// A process with no database configured is one somebody is looking at, so this
-// says there is nothing to migrate rather than refusing to start.
+// It is called with a database: `all` runs the distiller, which reads L0 and
+// writes L1, so the command refuses without one before it gets here.
 func migrateForDev(ctx context.Context, cfg *config.Config) error {
 	log := telemetry.Logger(ctx)
-	if cfg.Database.URL == "" {
-		log.WarnContext(ctx, "no database: nothing is stored, pass --database-url")
-		return nil
-	}
 	migrator, err := db.NewMigrator(ctx, cfg.Database.URL, log)
 	if err != nil {
 		return err

@@ -309,9 +309,13 @@ func TestRun(t *testing.T) {
 // passed through.
 func TestServiceSubcommandsReturnWhenTheContextIsCancelled(t *testing.T) {
 	t.Setenv("HEARSAY_INSTANCE", "replica-7")
-	// `all` migrates the database it is pointed at (ADR-0006). These cases are
-	// about the four services coming back, not about a schema, and the
-	// integration-test check sets this variable for the whole run.
+	// These cases are about the services coming back, not about a schema, and
+	// the integration-test check sets this variable for the whole run.
+	//
+	// `distiller` and `all` are not here: both need Postgres and a model tier
+	// registry, and both refuse without them, which is the next test. Their
+	// cancellation is covered against a real database in
+	// cmd/hearsay's integration test.
 	t.Setenv("HEARSAY_DATABASE_URL", "")
 	tests := []struct {
 		args     []string
@@ -321,10 +325,8 @@ func TestServiceSubcommandsReturnWhenTheContextIsCancelled(t *testing.T) {
 		{args: []string{"connectors"}, services: []string{"connectors"}, source: "all"},
 		{args: []string{"connectors", "--source", "github"}, services: []string{"connectors"}, source: "github"},
 		{args: []string{"connectors", "--source", "github", "--source", "slack"}, services: []string{"connectors"}, source: "github,slack"},
-		{args: []string{"distiller"}, services: []string{"distiller"}},
 		{args: []string{"assert-worker"}, services: []string{"assert-worker"}},
 		{args: []string{"api"}, services: []string{"api"}},
-		{args: []string{"all"}, services: []string{"connectors", "distiller", "assert-worker", "api"}, source: "all"},
 	}
 	for _, tt := range tests {
 		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
@@ -493,12 +495,14 @@ func TestDatabaseURLFlagBeatsTheEnvironment(t *testing.T) {
 	}
 }
 
-// Both subcommands that need Postgres say so rather than failing on a
-// connection to nowhere, and both say it before doing anything else.
+// Every subcommand that needs Postgres says so rather than failing on a
+// connection to nowhere, and says it before doing anything else.
 func TestSubcommandsThatNeedADatabaseSaySoWhenTheyHaveNone(t *testing.T) {
 	for _, args := range [][]string{
 		{"migrate", "status"},
 		{"l0", "count"},
+		{"distiller"},
+		{"all"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			// The integration-test check sets this for the whole run; these

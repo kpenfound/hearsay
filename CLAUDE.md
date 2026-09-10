@@ -77,11 +77,18 @@ go run ./cmd/hearsay config validate ./config
 go run ./cmd/hearsay l0 count --database-url=...   # what is in the event store
 ```
 
-The four services are stubs. Each starts, logs, and exits cleanly on Ctrl-C;
-none of them does any work yet. Each reads the configuration repository first
-when `--config` (or `HEARSAY_CONFIG`) names one, and refuses to start if it is
-invalid; configuration is read once, at startup, and a change to it is a
-restart (ADR-0009). The format is [docs/config.md](docs/config.md).
+Three of the four services are stubs. Each starts, logs, and exits cleanly on
+Ctrl-C; none of the three does any work yet. Every service reads the
+configuration repository first when `--config` (or `HEARSAY_CONFIG`) names one,
+and refuses to start if it is invalid; configuration is read once, at startup,
+and a change to it is a restart (ADR-0009). The format is
+[docs/config.md](docs/config.md).
+
+The distiller is not a stub. It reads the L0 change feed, enqueues a `distill`
+job per document, and turns each one into an L1 document with a model call
+(ADR-0005, ADR-0007), so it needs Postgres — `hearsay distiller` and
+`hearsay all` refuse without a database, and with no `--config` they start and
+distil nothing, because a configuration is what says there is anything to do.
 
 Migrations are `go run ./cmd/hearsay migrate up|status|up-to <n>|down`, or
 `dagger api call hearsay migrate --database-url=...` against a database. They are

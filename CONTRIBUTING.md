@@ -253,10 +253,17 @@ Every line carries the three fields ADR-0008 attaches at process start:
 replica identity in every container runtime; set `HEARSAY_INSTANCE` where
 something knows better.
 
-The four services are stubs: they start, log that they are stubs, and return
-when the process is interrupted. That shutdown behaviour is not a placeholder —
-`hearsay all` composes all four, so a service that ignores cancellation hangs
-local development, and there is a test that keeps it honest.
+Three of the four services are stubs: they start, log that they are stubs, and
+return when the process is interrupted. That shutdown behaviour is not a
+placeholder — `hearsay all` composes all four, so a service that ignores
+cancellation hangs local development, and there is a test that keeps it honest.
+
+The distiller is built. It needs Postgres, so `hearsay distiller` and
+`hearsay all` refuse without `--database-url` (or `HEARSAY_DATABASE_URL`); with
+no `--config` they start and distil nothing, because the configuration is what
+names the model tier and the sources. Running it against a real provider needs
+that provider's credential in the environment (ADR-0005); no test ever does —
+they replay recorded answers through the fake in `internal/llm`.
 
 ## Configuration
 
@@ -337,6 +344,40 @@ a deletion is a tombstone that hides an event and keeps its row.
 history is listed oldest first, and `--newest` is the order
 [the connector contract](docs/connector-contract.md) puts revisions in, with the
 current one first.
+
+## Distillation
+
+```sh
+go run ./cmd/hearsay distiller --config ./config    # L0 to L1, until you stop it
+go test ./internal/service/distiller -record        # re-record the model answers
+```
+
+The distiller is two loops over one database. The pump reads the L0 change feed
+and enqueues a `distill` job for the document each event belongs to; the worker
+claims those jobs and turns each document into an L1 row with one model call.
+Events arrive in bursts and documents do not, so the queue's dedupe on
+`(kind, target)` collapses five reviews on one change proposal into one
+distillation (ADR-0007).
+
+It is stateless and idempotent: a document is a function of the current
+revisions of its artifact and of everything that hangs off it, so running it
+again writes the row that is already there and the store notices and writes
+nothing. Where it has got to on the feed is a row in `l0_feed_cursors`, not
+state in the process — a distiller that lost its position would re-distil
+everything Hearsay has ever ingested, which is a model call per artifact.
+
+Two rules to know before changing it:
+
+- **The prompts belong to `internal/service/distiller`, the document to
+  `internal/l1`.** What may be stored in a document, how references are
+  extracted and what the scrub takes out are the layer's; how a model is asked
+  for a summary is the service's (ADR-0005).
+- **No test calls a provider.** The answers are recorded in
+  `internal/service/distiller/testdata/fixtures`, keyed by the request, and
+  replayed through the fake in `internal/llm`. Edit a prompt and the keys change:
+  `-record` rewrites the file from the answers written down in
+  `fixtures_test.go`, and without it the same test checks that what is on disk is
+  what the package would send.
 
 ## Layout
 
