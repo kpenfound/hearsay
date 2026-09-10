@@ -30,10 +30,6 @@ var container = connector.Container{Kind: connector.ContainerRepository, NativeI
 // public is what a public repository's events carry.
 var public = connector.ACL{{Kind: connector.ACLPublic}}
 
-// private is what a private repository's events carry: the collaborator set,
-// resolved at read time.
-var private = connector.ACL{{Kind: connector.ACLGroup, Source: source, NativeID: repo, Label: repo}}
-
 // who is an identity hint the way a GitHub connector emits one: the node id is
 // what the mapping keys on, the login is what a person reads.
 func who(nativeID, handle string) *connector.Identity {

@@ -164,13 +164,6 @@ func testRepo(src string) config.Repo {
 	}
 }
 
-// testConfig is what the distiller is built from.
-func testConfig(src string) *config.Config {
-	cfg := config.Default()
-	cfg.Repo = testRepo(src)
-	return &cfg
-}
-
 // answers are the model's replies, one per document, written by hand. They are
 // what a person maintains: `-record` turns them into the fixture file, keyed by
 // the request the distiller would send.

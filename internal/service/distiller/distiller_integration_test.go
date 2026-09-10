@@ -24,6 +24,16 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
+// testConfig is what the distiller is built from. It lives here rather than
+// beside testRepo in fixtures_test.go because the integration tests are its
+// only callers: declared in an untagged file it is dead code to every lint and
+// vet run that does not set the `integration` tag, which is all of them.
+func testConfig(src string) *config.Config {
+	cfg := config.Default()
+	cfg.Repo = testRepo(src)
+	return &cfg
+}
+
 func newPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	url := os.Getenv("HEARSAY_DATABASE_URL")
