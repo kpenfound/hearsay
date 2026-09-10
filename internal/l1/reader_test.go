@@ -110,9 +110,9 @@ func TestReaderForRefusesAPrincipalThatCannotRead(t *testing.T) {
 }
 
 // A group the mapping spells one way and a source spells another still matches,
-// because both spellings are taken. What is not taken is a spelling nobody
-// configured.
-func TestReaderForTakesEverySpellingOfAConfiguredIdentity(t *testing.T) {
+// because every spelling of a configured identity is taken — as long as nobody
+// else answers to it. What is not taken is a spelling nobody configured.
+func TestReaderForTakesEverySpellingNobodyElseAnswersTo(t *testing.T) {
 	res, err := principal.NewResolver([]principal.Principal{{
 		ID:   "kyle",
 		Kind: principal.KindHuman,
@@ -140,5 +140,76 @@ func TestReaderForTakesEverySpellingOfAConfiguredIdentity(t *testing.T) {
 	}
 	if !slices.Equal(reader.Audience, want) {
 		t.Errorf("audience is %v, want %v", reader.Audience, want)
+	}
+}
+
+// A handle and a native id are different namespaces and may collide
+// (internal/principal), but an access list entry carries one string with no
+// namespace on it. A spelling two principals answer to is therefore a grant to
+// neither: taking it would hand one person's documents to another, which is the
+// one direction this filter may not fail in
+// (docs/design.md#access-control).
+func TestReaderForRefusesASpellingTwoPrincipalsAnswerTo(t *testing.T) {
+	res, err := principal.NewResolver([]principal.Principal{{
+		ID:   "alice",
+		Kind: principal.KindHuman,
+		Identities: []principal.Identity{
+			{Source: source, NativeID: "u1", Handle: "alice"},
+			// The source's id for her happens to be the slug of a team.
+			{Source: source, NativeID: "acme/owners"},
+		},
+	}, {
+		// The mapping accepts this: nothing else claims the native id `u2`,
+		// and nothing else claims the handle `U1` — alice's `u1` is a native
+		// id, which is a different namespace.
+		ID:         "mallory",
+		Kind:       principal.KindHuman,
+		Identities: []principal.Identity{{Source: source, NativeID: "u2", Handle: "U1"}},
+	}, {
+		ID:         "api-team",
+		Kind:       principal.KindTeam,
+		Members:    []string{"mallory"},
+		Identities: []principal.Identity{{Source: source, NativeID: "t1", Handle: "acme/owners"}},
+	}})
+	if err != nil {
+		t.Fatalf("NewResolver() = %v", err)
+	}
+
+	mallory, err := l1.ReaderFor(res, principal.Effective{Human: "mallory"})
+	if err != nil {
+		t.Fatalf("ReaderFor(mallory) = %v, want no error", err)
+	}
+	// `U1` folds to `u1`, which is alice's native id: neither spelling of the
+	// handle is a grant. Nor is the team's own name, which is a native id of
+	// alice's — otherwise every member of the team would read her documents.
+	// What is left is what nobody else answers to.
+	want := []connector.ACLEntry{
+		{Kind: connector.ACLGroup, Source: source, NativeID: "t1"},
+		{Kind: connector.ACLIdentity, Source: source, NativeID: "U1"},
+		{Kind: connector.ACLIdentity, Source: source, NativeID: "u2"},
+	}
+	if !slices.Equal(mallory.Audience, want) {
+		t.Errorf("mallory holds %v, want %v", mallory.Audience, want)
+	}
+	for _, held := range mallory.Audience {
+		if held.NativeID == "u1" {
+			t.Errorf("mallory holds %v, which is alice's grant", held)
+		}
+	}
+
+	// The positive control: the collision costs alice nothing. Her native id is
+	// hers whatever anybody's handle folds to, and her own handle is hers
+	// because nothing else answers to it.
+	alice, err := l1.ReaderFor(res, principal.Effective{Human: "alice"})
+	if err != nil {
+		t.Fatalf("ReaderFor(alice) = %v, want no error", err)
+	}
+	wantAlice := []connector.ACLEntry{
+		{Kind: connector.ACLIdentity, Source: source, NativeID: "acme/owners"},
+		{Kind: connector.ACLIdentity, Source: source, NativeID: "alice"},
+		{Kind: connector.ACLIdentity, Source: source, NativeID: "u1"},
+	}
+	if !slices.Equal(alice.Audience, wantAlice) {
+		t.Errorf("alice holds %v, want %v", alice.Audience, wantAlice)
 	}
 }

@@ -539,6 +539,66 @@ func TestPrincipalLookup(t *testing.T) {
 	}
 }
 
+// Claims answers the question a caller holding one string from a source has:
+// who does this name belong to? The two namespaces are taken together, because
+// an access list entry does not say which of them the source meant.
+func TestClaims(t *testing.T) {
+	r := newResolver(t, []principal.Principal{{
+		ID:   "kyle",
+		Kind: principal.KindHuman,
+		Identities: []principal.Identity{
+			{Source: "github", NativeID: "u1", Handle: "kpenfound"},
+			{Source: "discord", NativeID: "kpenfound"},
+		},
+	}, {
+		// `U1` is a handle, and handles fold: it is the same string as kyle's
+		// native id, in the other namespace. The mapping accepts that, and
+		// this is how a caller that cannot tell them apart finds out.
+		ID:         "robin",
+		Kind:       principal.KindHuman,
+		Identities: []principal.Identity{{Source: "github", NativeID: "u2", Handle: "U1"}},
+	}, {
+		ID:         "api-team",
+		Kind:       principal.KindTeam,
+		Members:    []string{"kyle"},
+		Identities: []principal.Identity{{Source: "github", NativeID: "t1", Handle: "acme/api-team"}},
+	}})
+
+	tests := []struct {
+		name     string
+		source   string
+		spelling string
+		want     string // "" for a spelling that names nobody, or more than one
+	}{
+		{"a native id", "github", "u2", "robin"},
+		{"a handle", "github", "kpenfound", "kyle"},
+		{"a handle in any case", "github", "KPenfound", "kyle"},
+		{"a group by its name", "github", "acme/api-team", "api-team"},
+		{"a group by its id", "github", "t1", "api-team"},
+		{"a spelling only one namespace holds", "github", "U1", "robin"},
+		{"one principal's native id is another's handle, folded", "github", "u1", ""},
+		{"both namespaces, one principal", "discord", "kpenfound", "kyle"},
+		{"a spelling nobody configured", "github", "nobody", ""},
+		{"the right spelling in the wrong source", "discord", "u1", ""},
+		{"no source", "", "u1", ""},
+		{"no spelling", "github", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := r.Claims(tt.source, tt.spelling)
+			if tt.want == "" {
+				if ok {
+					t.Errorf("Claims(%q, %q) = %q, true, want nobody", tt.source, tt.spelling, got)
+				}
+				return
+			}
+			if !ok || got != tt.want {
+				t.Errorf("Claims(%q, %q) = %q, %v, want %q", tt.source, tt.spelling, got, ok, tt.want)
+			}
+		})
+	}
+}
+
 // Teams is the reverse of Members, and it is what a read asks: a document's
 // access list names groups, and whether the caller is in one of them is a
 // question about the teams they belong to.

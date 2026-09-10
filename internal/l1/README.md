@@ -61,6 +61,21 @@ read path asks a model to generate anything.
   pipeline reads.
 - **The column is `refs`, not `references`,** because `references` is reserved in
   SQL — the same reason L0's `time` is `occurred_at`.
+- **Two grants are the same grant when the kind, the source and the native id
+  agree.** The label is what the source calls a grant so that a person reading
+  an access list knows what it is, and a document is not less readable for
+  having been labelled differently — so the label is never compared, here or in
+  [Build]'s fold. It is why the ACL filter is a jsonb containment and why the
+  index for it is `jsonb_path_ops`: containment ignores an entry's extra keys.
+- **An access-list entry's `native_id` carries no namespace, and the mapping has
+  two.** A principal's native id in a source and their handle are separate keys
+  that may legitimately hold the same string for different people
+  (`internal/principal`), while an entry is one string the source wrote down. So
+  a configured native id is a grant as it stands, and a handle is a grant only
+  where nobody else answers to that spelling in either namespace
+  ([principal.Resolver.Claims]). A spelling two principals answer to grants
+  neither of them anything: refusing it costs somebody a document they may read,
+  and taking it would hand them one they may not.
 - **Search filters before it ranks.** Both halves — similarity over the
   embedding, Postgres full text over `raw_text` — rank the documents the caller
   may read, and the two rankings are fused by reciprocal rank. Filtering

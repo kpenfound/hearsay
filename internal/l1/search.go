@@ -137,9 +137,12 @@ LIMIT %[6]s`
 // through the same door a document goes through ([EmbedText]). That is the only
 // model call any read here makes, and the search runs without it.
 //
-// A reader who may see nothing gets nothing — no query, no error. Fail-closed
-// is the whole of what this filter is for: a caller with no scopes, no audience
-// or no principal reads no documents rather than all of them.
+// A reader who may see nothing gets nothing — no query, no error. That is a
+// caller with no principal behind the read, or with no scopes, or asking for a
+// scope they were not granted. It is *not* a caller with an empty audience:
+// public is public, so somebody who satisfies no access-list entry of their own
+// still reads every public document in the scopes they hold, which is what an
+// access list saying `public` means (docs/design.md#access-control).
 func (s *Store) Search(ctx context.Context, reader Reader, opts SearchOptions) ([]Hit, error) {
 	if strings.TrimSpace(opts.Query) == "" {
 		return nil, fmt.Errorf("%w: there is nothing to search for", ErrInvalidSearch)
