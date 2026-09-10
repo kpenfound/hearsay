@@ -28,6 +28,22 @@ type.
 The interface is the third-party extension point, so a change to it is a
 breaking change for anyone shipping a connector.
 
+Three things to know about the runtime before changing it:
+
+- **A connector's `Poll` has exactly one caller**, the goroutine the runtime
+  gives it, which is what lets a poller keep its position in memory without
+  locking. Anything that would call `Poll` from somewhere else breaks the
+  contract rather than the runtime.
+- **The backfill cursor is stored before the next call is made**, so an
+  interrupted backfill resumes rather than starting again. The store is a
+  `CursorStore`, which is `internal/l0`'s `BackfillCursors` in a process and
+  `MemoryCursors` in a test; with no store the runtime polls and does not
+  backfill, because walking a source's whole history on every restart is worse
+  than not walking it.
+- **Nothing reaches the sink except through a `Gate`.** The runtime builds one
+  per source from the same config the allowlist is built from, so a container
+  nobody configured is dropped and counted rather than written.
+
 See [docs/design.md](../../docs/design.md#architecture-and-deployment) and
 [ADR-0003](../../docs/adr/0003-one-binary-four-service-subcommands.md) for how
 `--source` selects which connectors a process hosts.

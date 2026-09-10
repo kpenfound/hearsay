@@ -53,6 +53,15 @@ re-distil everything ever ingested. A save never moves a cursor backwards, so tw
 replicas of one consumer cannot make the feed be read again; resetting one is
 deleting its row.
 
+`BackfillCursors` is the other cursor, and it is not the same thing. A feed
+cursor is a *reader's* position in the change feed and only moves forward; a
+backfill cursor is a *connector's* position in one source's history, and it is
+opaque — only the connector that produced one can compare two of them, so there
+is no direction to enforce. It is here for the same reason the feed cursor is:
+the process holding it is restarted, and history is the expensive half of
+ingest. It implements `connector.CursorStore` the way `Store` implements
+`connector.Sink`.
+
 **Does not belong here:** anything that interprets an event. Distillation is
 `internal/l1`, and no code in this package calls a model. Connectors — the code
 that produces events — live in `internal/connector`, and so does the event type

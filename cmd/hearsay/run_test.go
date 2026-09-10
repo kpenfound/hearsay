@@ -268,6 +268,11 @@ func TestRun(t *testing.T) {
 			wantErr: "source name is empty",
 		},
 		{
+			name:    "an empty --listen is rejected",
+			args:    []string{"connectors", "--listen", ""},
+			wantErr: "--listen is empty",
+		},
+		{
 			name:       "a subcommand's --help is not an error",
 			args:       []string{"connectors", "--help"},
 			wantStderr: "-source",
@@ -312,19 +317,14 @@ func TestServiceSubcommandsReturnWhenTheContextIsCancelled(t *testing.T) {
 	// These cases are about the services coming back, not about a schema, and
 	// the integration-test check sets this variable for the whole run.
 	//
-	// `distiller` and `all` are not here: both need Postgres and a model tier
-	// registry, and both refuse without them, which is the next test. Their
-	// cancellation is covered against a real database in
-	// cmd/hearsay's integration test.
+	// `connectors`, `distiller` and `all` are not here: all three need Postgres
+	// and refuse without it, which is the next test. Their cancellation is
+	// covered against a real database in cmd/hearsay's integration test.
 	t.Setenv("HEARSAY_DATABASE_URL", "")
 	tests := []struct {
 		args     []string
 		services []string // the values the service field must take
-		source   string   // the value of the source field, where there is one
 	}{
-		{args: []string{"connectors"}, services: []string{"connectors"}, source: "all"},
-		{args: []string{"connectors", "--source", "github"}, services: []string{"connectors"}, source: "github"},
-		{args: []string{"connectors", "--source", "github", "--source", "slack"}, services: []string{"connectors"}, source: "github,slack"},
 		{args: []string{"assert-worker"}, services: []string{"assert-worker"}},
 		{args: []string{"api"}, services: []string{"api"}},
 	}
@@ -348,7 +348,6 @@ func TestServiceSubcommandsReturnWhenTheContextIsCancelled(t *testing.T) {
 			}
 
 			seen := map[string]bool{}
-			sources := map[string]bool{}
 			for line := range strings.Lines(strings.TrimSpace(stderr.String())) {
 				line = strings.TrimSpace(line)
 				if line == "" {
@@ -365,7 +364,6 @@ func TestServiceSubcommandsReturnWhenTheContextIsCancelled(t *testing.T) {
 					Service  string `json:"service"`
 					Version  string `json:"version"`
 					Instance string `json:"instance"`
-					Source   string `json:"source"`
 				}
 				if err := json.Unmarshal([]byte(line), &rec); err != nil {
 					t.Fatalf("log line is not JSON: %v (%s)", err, line)
@@ -377,19 +375,11 @@ func TestServiceSubcommandsReturnWhenTheContextIsCancelled(t *testing.T) {
 					t.Errorf("instance = %q, want the value of HEARSAY_INSTANCE: %s", rec.Instance, line)
 				}
 				seen[rec.Service] = true
-				if rec.Service == "connectors" {
-					sources[rec.Source] = true
-				}
 			}
 			for _, want := range tt.services {
 				if !seen[want] {
 					t.Errorf("no log line from service %q; saw %v", want, slices.Sorted(maps.Keys(seen)))
 				}
-			}
-			// --source has to be visible in the log, or nothing distinguishes a
-			// process hosting one connector from one hosting all of them.
-			if tt.source != "" && !sources[tt.source] {
-				t.Errorf("connectors logged source %v, want %q", slices.Sorted(maps.Keys(sources)), tt.source)
 			}
 		})
 	}
@@ -464,6 +454,7 @@ func TestHelpDoesNotPrintTheDatabasePassword(t *testing.T) {
 		{"l0", "--help"},
 		{"migrate", "--help"},
 		{"all", "--help"},
+		{"connectors", "--help"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
@@ -502,6 +493,7 @@ func TestSubcommandsThatNeedADatabaseSaySoWhenTheyHaveNone(t *testing.T) {
 		{"migrate", "status"},
 		{"l0", "count"},
 		{"distiller"},
+		{"connectors"},
 		{"all"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {

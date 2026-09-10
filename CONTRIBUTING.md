@@ -253,10 +253,18 @@ Every line carries the three fields ADR-0008 attaches at process start:
 replica identity in every container runtime; set `HEARSAY_INSTANCE` where
 something knows better.
 
-Three of the four services are stubs: they start, log that they are stubs, and
-return when the process is interrupted. That shutdown behaviour is not a
-placeholder — `hearsay all` composes all four, so a service that ignores
-cancellation hangs local development, and there is a test that keeps it honest.
+Fields are added as work descends, and `slog` appends rather than replaces, so
+two writers reaching for one key put it on the line twice — `encoding/json`
+keeps the last, and the field then answers two questions with one name. Two
+facts are two fields: the connectors service says which connectors it hosts in
+`hosting`, and the runtime says which source a line is about in `source`, which
+is ADR-0008's own name for that.
+
+Two of the four services are stubs — the assertion worker and the API: they
+start, log that they are stubs, and return when the process is interrupted. That
+shutdown behaviour is not a placeholder — `hearsay all` composes all four, so a
+service that ignores cancellation hangs local development, and there is a test
+that keeps it honest.
 
 The distiller is built. It needs Postgres, so `hearsay distiller` and
 `hearsay all` refuse without `--database-url` (or `HEARSAY_DATABASE_URL`); with
@@ -264,6 +272,29 @@ no `--config` they start and distil nothing, because the configuration is what
 names the model tier and the sources. Running it against a real provider needs
 that provider's credential in the environment (ADR-0005); no test ever does —
 they replay recorded answers through the fake in `internal/llm`.
+
+The connectors service is built too, and needs Postgres for the same reason: it
+writes L0, and it keeps each source's backfill position there so that a restart
+resumes rather than walking a source's history again. It serves the push
+connectors' handlers under `/hooks/<source>` and its own `/healthz` and
+`/readyz` on `--listen` (`HEARSAY_LISTEN`, default `:8081`; `hearsay all` takes
+the flag too, because it runs this service). `/healthz` is the process being up;
+`/readyz` is the database, its schema and every hosted source's own health, and
+is 503 when any of them says no.
+
+```sh
+go run ./cmd/hearsay connectors --config ./config           # every configured source
+go run ./cmd/hearsay connectors --source github             # one of them
+curl -s localhost:8081/readyz                               # what each source says about itself
+```
+
+What it can ingest is the registry `cmd/hearsay` builds, which is empty until
+the first connector lands: there is no global registry and no init-time
+registration, so a binary's sources are readable from its wiring
+([the connector contract](docs/connector-contract.md)). Until then a configured
+source is a startup failure — a source that cannot start is a startup failure
+and not a health status — so `--config` with a `sources/` entry does not start
+yet.
 
 ## Configuration
 

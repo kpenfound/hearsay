@@ -62,8 +62,8 @@ func (a Allowlist) Allows(source, container string) bool {
 // container. Everything else is a bug in the connector and is returned.
 //
 // The supervision around this — poll loops, webhook mounting, cursor storage,
-// restarts — is the connector runtime (#8). This is the part of it that decides
-// what may be written, which the contract fixes.
+// restarts — is [Runtime], which builds one of these per source it hosts. This
+// is the part of it that decides what may be written, which the contract fixes.
 type Gate struct {
 	sink    Sink
 	source  string
@@ -112,7 +112,7 @@ func (g *Gate) Emit(ctx context.Context, ev Event) error {
 }
 
 // Dropped is how many events the gate has refused because their container is
-// not allowlisted. The connector runtime turns this into a metric (#8); until
-// there is one, an operator asking "why is this source quiet" needs the number
-// to exist somewhere.
+// not allowlisted. It is what [Runtime.Health] reports per source, which is
+// where an operator asking "why is this source quiet" reads it; a metric of it
+// is for whenever ADR-0008's meter provider is wired up.
 func (g *Gate) Dropped() int64 { return g.dropped.Load() }

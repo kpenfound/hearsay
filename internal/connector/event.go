@@ -21,6 +21,11 @@ const (
 	// `evt:`, the source, `:`, and a native id of nothing but bytes that
 	// percent-encode to three each.
 	MaxEventIDLen = len("evt:") + MaxSourceIDLen + len(":") + 3*MaxNativeIDLen
+	// MaxCursorLen is the longest backfill [Cursor] a connector may hand back.
+	// A cursor is opaque, but it is stored, and a page token or a timestamp is
+	// nowhere near this: a connector that needs more is keeping state in the
+	// cursor that belongs in the source.
+	MaxCursorLen = 4096
 )
 
 // ErrInvalidEvent is returned by [Event.Validate] and wrapped by every

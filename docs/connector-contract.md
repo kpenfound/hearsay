@@ -325,10 +325,10 @@ Two consequences worth stating plainly, because they are the cost of that
 choice:
 
 - **It is a bulk operation.** A container that changes visibility means
-  re-emitting every artifact in it. That is what a re-sync is; the runtime (#8)
-  schedules it like a backfill, and re-emitting an artifact whose permissions
-  have not changed is deduplicated away, so an interrupted re-sync can be run
-  again.
+  re-emitting every artifact in it. That is what a re-sync is; a connector runs
+  one the way it runs a backfill — bounded work per call, resumable from a
+  cursor — and re-emitting an artifact whose permissions have not changed is
+  deduplicated away, so an interrupted re-sync can be run again.
 - **Until the re-emission lands, L0 holds the old ACL.** Ingest is eventually
   consistent with the source's permissions, and it is more permissive than the
   source in the window between the change and the re-sync. A source whose
@@ -426,15 +426,18 @@ source that pushes still needs `Backfiller` to get its history.
 - **`Poll`** is never called concurrently with itself, so a poller may keep its
   position in memory without locking. It returns when it has emitted what one
   pass found. An error is retried on the next tick with backoff.
-- **`Handler`** is mounted by the runtime under a path it owns. The handler
-  verifies the source's own signature over the request — the runtime cannot, the
-  scheme is the source's — and a delivery it cannot verify is rejected with
-  nothing emitted.
+- **`Handler`** is mounted by the runtime under a path it owns — `/hooks/<source
+  id>` in Hearsay's own runtime, which is the URL the source is configured to
+  deliver to. The handler verifies the source's own signature over the request —
+  the runtime cannot, the scheme is the source's — and a delivery it cannot
+  verify is rejected with nothing emitted.
 - **`Backfill`** does a bounded amount of work per call — a page, a day, whatever
   the source's API pages by — and returns `{Next, Done, Events}`. The runtime
   stores `Next` and hands it back, so a backfill interrupted by a restart
   resumes. The first call gets the zero cursor. A `Cursor` is an opaque string
-  that must survive a restart, so it may not refer to anything held in memory.
+  that must survive a restart, so it may not refer to anything held in memory,
+  and it is *stored* as text: valid UTF-8, no NUL byte, at most 4096 bytes.
+  Arbitrary bytes go in as base64 rather than as themselves.
 - **`Health`** returns `ok`, `degraded` or `failed` with a detail line and the
   time of the last event. It must not make a network call, and its detail carries
   no credentials, no event text and no personal data: health is served more

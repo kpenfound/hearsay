@@ -11,6 +11,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/llm/providers"
@@ -273,24 +274,77 @@ func modelRegistry(ctx context.Context, cfg *config.Config) (llm.Registry, error
 	return llm.NewRegistry(cfg.Repo.LLM, providers.All())
 }
 
+// runConnectors runs the source connectors. Like the distiller it has
+// dependencies the process owns: Postgres, because a connector writes L0 and
+// keeps its backfill position there, and the registry of connector types, which
+// is where what this binary can ingest is decided.
 func runConnectors(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, cfg, configPath := newFlagSet(connectors.Name, stderr)
 	var sources sourceList
 	fs.Var(&sources, "source", "run only this configured connector; repeat the flag for several. The default is all of them.")
+	listen := listenFlag(fs)
+	resolveDatabase := databaseFlag(fs, cfg)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	resolveDatabase()
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	if err := checkListen(*listen); err != nil {
+		return err
 	}
 	ctx, err := withLogger(ctx, connectors.Name, cfg, stderr)
 	if err != nil {
 		return err
 	}
+	if cfg.Database.URL == "" {
+		return db.ErrNoDatabaseURL
+	}
 	if err := loadConfig(ctx, cfg, *configPath); err != nil {
 		return err
 	}
-	return connectors.Run(ctx, cfg, connectors.Deps{Sources: sources})
+	pool, err := db.Connect(ctx, cfg.Database.URL)
+	if err != nil {
+		return stoppingEarly(ctx, err)
+	}
+	defer pool.Close()
+	return connectors.Run(ctx, cfg, connectors.Deps{
+		Sources:  sources,
+		Pool:     pool,
+		Registry: connectorRegistry(),
+		Listen:   *listen,
+	})
+}
+
+// listenFlag registers the address the connectors service serves on. It is on
+// `connectors` and on `all`, which runs it: a port that something else already
+// holds must be movable, or the dev stack is unusable on that machine.
+func listenFlag(fs *flag.FlagSet) *string {
+	return fs.String("listen", envOr("HEARSAY_LISTEN", connectors.DefaultListen),
+		"address the connectors service serves push connectors' webhooks and its health on")
+}
+
+// checkListen refuses an empty address rather than quietly using the default: a
+// flag a command accepts and ignores is worse than one it does not have.
+func checkListen(addr string) error {
+	if addr == "" {
+		return errors.New("--listen is empty: it is the address webhooks and health are served on")
+	}
+	return nil
+}
+
+// connectorRegistry is what this binary can ingest. Connector factories are
+// registered here and nowhere else: there is no global registry and no
+// init-time registration, so what a process can ingest is readable from its
+// wiring rather than from whatever happened to be linked in
+// (docs/connector-contract.md).
+//
+// It is empty today, so a configured source is a startup failure until its
+// connector is built, GitHub first. A source that cannot start is a startup
+// failure and not a health status, so that is what an unknown type is here too.
+func connectorRegistry() *connector.Registry {
+	return connector.NewRegistry()
 }
 
 // runAll runs the four services in one process. It exists so that evaluating
@@ -299,12 +353,16 @@ func runConnectors(ctx context.Context, args []string, stdout, stderr io.Writer)
 func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, cfg, configPath := newFlagSet("all", stderr)
 	resolveDatabase := databaseFlag(fs, cfg)
+	listen := listenFlag(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	resolveDatabase()
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	if err := checkListen(*listen); err != nil {
+		return err
 	}
 	// No service name on the process logger: RunAll names each of the four.
 	ctx, err := withLogger(ctx, "", cfg, stderr)
@@ -341,7 +399,7 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 
 	return service.RunAll(ctx, map[string]service.RunFunc{
 		connectors.Name: func(ctx context.Context) error {
-			return connectors.Run(ctx, cfg, connectors.Deps{})
+			return connectors.Run(ctx, cfg, connectors.Deps{Pool: pool, Registry: connectorRegistry(), Listen: *listen})
 		},
 		distiller.Name: func(ctx context.Context) error {
 			return distiller.Run(ctx, cfg, distiller.Deps{Pool: pool, LLM: registry})
