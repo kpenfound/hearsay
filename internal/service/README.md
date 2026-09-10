@@ -4,7 +4,7 @@ The four processes, one subpackage each (ADR-0003):
 
 | Package | Subcommand | Does |
 |---|---|---|
-| `connectors` | `hearsay connectors` | Hosts source connectors. Writes L0 only. |
+| `connectors` | `hearsay connectors` | Hosts source connectors. Writes L0 only. Serves their webhooks and its health. |
 | `distiller` | `hearsay distiller` | L0 to L1. Stateless, parallel, retryable. |
 | `assertworker` | `hearsay assert-worker` | L1 to L2. Serialized per scope. |
 | `api` | `hearsay api` | Bundle assembly, MCP and HTTP, audit. |
@@ -27,6 +27,11 @@ dependencies, the job handlers it owns, its prompts, and its HTTP surface.
 `internal/l1`, `internal/l2`, `internal/bundle` and `internal/queue`; it does
 not reimplement them. A service package should stay thin enough that the
 interesting code is testable without starting a process.
+
+`connectors` is the only one of the four with an HTTP surface so far: a push
+connector's handler has to be reachable, and ADR-0008 gives every service
+`/healthz` and `/readyz`. The paths under `/hooks/` are the connector runtime's
+and are mounted from it; the two health endpoints are the service's own.
 
 The four subcommand names are a contract with the Dagger module and the
 deployment manifests. `hearsay all` is a development convenience and is never a

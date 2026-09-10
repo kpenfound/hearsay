@@ -4,7 +4,7 @@ The one binary Hearsay ships. Each process is a subcommand of it (ADR-0003).
 
 | Subcommand | What it runs |
 |---|---|
-| `hearsay connectors [--source name]...` | Source connectors. Writes L0 only. |
+| `hearsay connectors [--source name]...` | Source connectors. Writes L0 only. Serves webhooks and health on `--listen`. |
 | `hearsay distiller` | The distiller. L0 to L1. |
 | `hearsay assert-worker` | The assertion worker. L1 to L2. |
 | `hearsay api` | The read and assert API. |
@@ -30,9 +30,16 @@ and no arguments, and say so rather than ignoring what they were given. The
 
 `--database-url` points at Postgres, and also reads `HEARSAY_DATABASE_URL`,
 which is the one to prefer: a URL on a command line puts its password in the
-process list. It is on the subcommands that use a database — `migrate`,
-`l0`, `all` and `distiller` — and not on the three service subcommands that do
-not connect to one yet. `distiller` and `all` refuse to start without it.
+process list. It is on the subcommands that use a database — `migrate`, `l0`,
+`all`, `distiller` and `connectors` — and not on the two service subcommands
+that do not connect to one yet. All three of `distiller`, `connectors` and
+`all` refuse to start without it.
+
+`--listen` is `connectors` only, and also reads `HEARSAY_LISTEN`. It is where
+the push connectors' handlers are mounted, under `/hooks/<source>`, and where
+this service answers `/healthz` and `/readyz`
+([ADR-0008](../../docs/adr/0008-observability-slog-and-opentelemetry.md)). The
+default is `:8081`, the port after the API's 8080.
 
 `--config` points at the configuration repository, and also reads
 `HEARSAY_CONFIG`. A service loads it before it starts and refuses to start if it

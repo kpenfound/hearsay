@@ -313,6 +313,9 @@ type Hearsay {
       # tunnel rather than for a server. Drop the health check exemption when
       # the API grows a listener.
       .withExposedPort(8080, description: "hearsay API (HTTP and MCP)", experimentalSkipHealthcheck: true)
+      # The connectors service does listen: webhooks under /hooks/<source>, and
+      # /healthz and /readyz (ADR-0008).
+      .withExposedPort(8081, description: "hearsay connectors (webhooks and health)")
       .asService(useEntrypoint: true, args: ["all", "--log-level", "debug", "--log-format", "text"])
   }
 }

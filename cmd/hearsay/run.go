@@ -324,9 +324,8 @@ func runConnectors(ctx context.Context, args []string, stdout, stderr io.Writer)
 // (docs/connector-contract.md).
 //
 // It is empty today, so a configured source is a startup failure until its
-// connector is built — the first is GitHub, the other half of #8. A source that
-// cannot start is a startup failure and not a health status, so that is what an
-// unknown type is here too.
+// connector is built, GitHub first. A source that cannot start is a startup
+// failure and not a health status, so that is what an unknown type is here too.
 func connectorRegistry() *connector.Registry {
 	return connector.NewRegistry()
 }
