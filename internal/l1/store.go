@@ -74,6 +74,10 @@ const docColumns = `id, kind, source, source_native_id, source_url, l0_refs,
 //
 // The comparison is Postgres's own, so the jsonb columns compare by value
 // rather than by the bytes Go happened to marshal.
+//
+// The embedding is not one of the columns compared, because it is not part of
+// the document: it is derived from `text`, and it is cleared here exactly when
+// `text` changes.
 const putSQL = `
 INSERT INTO l1_docs (` + docColumns + `)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, now())
@@ -94,6 +98,12 @@ ON CONFLICT (id) DO UPDATE SET
     raw_text = excluded.raw_text,
     body = excluded.body,
     outcome_kind = excluded.outcome_kind,
+    -- A vector is a function of the text it was made from, so text that
+    -- changes takes its embedding with it rather than leaving a stale one
+    -- standing: search's vector half would otherwise rank this document by
+    -- words it no longer holds. NULL is "not embedded yet", which is what
+    -- l1.Store.Embed looks for and what the full-text half is unaffected by.
+    embedding = CASE WHEN l1_docs.text IS DISTINCT FROM excluded.text THEN NULL ELSE l1_docs.embedding END,
     distilled_at = now()
 WHERE (l1_docs.kind, l1_docs.source, l1_docs.source_native_id, l1_docs.source_url,
        l1_docs.l0_refs, l1_docs.created_at, l1_docs.updated_at, l1_docs.last_activity_at,
@@ -295,50 +305,69 @@ type scanner interface {
 }
 
 // scanDoc reads one row back into a document.
+func scanDoc(s scanner) (Stored, error) {
+	var d docScan
+	if err := s.Scan(d.dests()...); err != nil {
+		return Stored{}, err
+	}
+	return d.done()
+}
+
+// docScan is one row of [docColumns] as Postgres hands it over: the columns
+// that map straight onto a field, and the ones that have to be decoded.
+//
+// It is split from [scanDoc] because a read that selects more than a document —
+// search, which returns the ranks a document was found at — has to scan the
+// document's columns and its own in one call.
+type docScan struct {
+	doc          Stored
+	kind         string
+	outcome      string
+	participants []byte
+	references   []byte
+	acl          []byte
+	body         []byte
+}
+
+// dests is where each of [docColumns] is read into, in that order.
+func (d *docScan) dests() []any {
+	return []any{&d.doc.ID, &d.kind, &d.doc.Source.System, &d.doc.Source.NativeID, &d.doc.Source.URL,
+		&d.doc.L0Refs, &d.doc.Time.Created, &d.doc.Time.Updated, &d.doc.Time.LastActivity,
+		&d.participants, &d.doc.Scope, &d.references, &d.acl,
+		&d.doc.Text, &d.doc.RawText, &d.body, &d.outcome, &d.doc.DistilledAt}
+}
+
+// done turns a scanned row into a document.
 //
 // The times come back in UTC. Postgres hands a timestamptz back in the
 // session's time zone, which is the server's and has nothing to do with the
 // artifact; the instant is the same either way, and reading it in one zone is
 // what keeps a document that was written once from looking different when it is
 // read somewhere else.
-func scanDoc(s scanner) (Stored, error) {
-	var (
-		doc          Stored
-		kind         string
-		outcome      string
-		participants []byte
-		references   []byte
-		acl          []byte
-		body         []byte
-	)
-	if err := s.Scan(&doc.ID, &kind, &doc.Source.System, &doc.Source.NativeID, &doc.Source.URL,
-		&doc.L0Refs, &doc.Time.Created, &doc.Time.Updated, &doc.Time.LastActivity,
-		&participants, &doc.Scope, &references, &acl,
-		&doc.Text, &doc.RawText, &body, &outcome, &doc.DistilledAt); err != nil {
-		return Stored{}, err
-	}
-	doc.Kind = Kind(kind)
+func (d *docScan) done() (Stored, error) {
+	doc := d.doc
+	doc.Kind = Kind(d.kind)
 	doc.Time.Created = doc.Time.Created.UTC()
 	doc.Time.Updated = doc.Time.Updated.UTC()
 	doc.Time.LastActivity = doc.Time.LastActivity.UTC()
 	doc.DistilledAt = doc.DistilledAt.UTC()
-	if err := json.Unmarshal(participants, &doc.Participants); err != nil {
+	if err := json.Unmarshal(d.participants, &doc.Participants); err != nil {
 		return Stored{}, fmt.Errorf("decoding the participants of %s: %w", doc.ID, err)
 	}
-	if err := json.Unmarshal(references, &doc.References); err != nil {
+	if err := json.Unmarshal(d.references, &doc.References); err != nil {
 		return Stored{}, fmt.Errorf("decoding the references of %s: %w", doc.ID, err)
 	}
-	if err := json.Unmarshal(acl, &doc.ACL); err != nil {
+	if err := json.Unmarshal(d.acl, &doc.ACL); err != nil {
 		return Stored{}, fmt.Errorf("decoding the acl of %s: %w", doc.ID, err)
 	}
-	if err := json.Unmarshal(body, &doc.Body); err != nil {
+	if err := json.Unmarshal(d.body, &doc.Body); err != nil {
 		return Stored{}, fmt.Errorf("decoding the body of %s: %w", doc.ID, err)
 	}
-	if outcome != string(doc.Body.OutcomeKind) {
+	if d.outcome != string(doc.Body.OutcomeKind) {
 		// The column is a copy of a field of the body, held to it by the write
 		// path. A row where they disagree was written by something else, and
 		// the L2 trigger reads the column while everything else reads the body.
-		return Stored{}, fmt.Errorf("document %s: outcome_kind is %q and body.outcome_kind is %q", doc.ID, outcome, doc.Body.OutcomeKind)
+		return Stored{}, fmt.Errorf("document %s: outcome_kind is %q and body.outcome_kind is %q", doc.ID, d.outcome, doc.Body.OutcomeKind)
 	}
 	if doc.Participants == nil {
 		doc.Participants = []Participant{}

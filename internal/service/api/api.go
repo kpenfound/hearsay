@@ -1,6 +1,8 @@
 // Package api serves the read and assert API over MCP and HTTP: bundle
 // assembly, the handles a consumer follows, and the audit trail. Reads are
-// structured lookups — there is no model in the read path.
+// structured lookups, and nothing here asks a model to generate anything: the
+// one model call a read makes is `search` embedding the query it was given, on
+// the `embed` tier (internal/l1).
 package api
 
 import (
