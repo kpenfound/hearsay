@@ -389,22 +389,98 @@ func TestABackfillThatMakesNoProgressIsNotProgress(t *testing.T) {
 	cursors := connector.NewMemoryCursors()
 	s := &stuck{Fake: connector.NewFake(src)}
 
-	_, stop := start(t, connector.RuntimeOptions{
+	runtime, stop := start(t, connector.RuntimeOptions{
 		Sources:  []connector.SourceConfig{src},
 		Registry: registryOf(t, map[string]connector.Connector{src.ID: s}),
 		Sink:     &connector.Recorder{},
 		Cursors:  cursors,
 	})
 	waitFor(t, "the backfill to be tried", func() bool { return s.calls.Load() >= 2 })
-	time.Sleep(50 * time.Millisecond)
+	health := runtime.Health(t.Context())
 	if err := stop(); err != nil {
 		t.Fatalf("Run() = %v, want nil", err)
 	}
 	if got := cursors.Saves(src.ID); len(got) != 0 {
 		t.Errorf("a backfill that emitted nothing and did not move stored %d positions: %+v", len(got), got)
 	}
+	if got := health.Sources[0]; got.BackfillFailures < 1 || got.BackfillDone {
+		t.Errorf("a stuck backfill reports failures=%d done=%v, want it counted and not done", got.BackfillFailures, got.BackfillDone)
+	}
 	if got, err := cursors.Load(t.Context(), src.ID); err != nil || got.Done {
 		t.Errorf("Load() = %+v, %v, want a source whose history is not recorded as walked", got, err)
+	}
+}
+
+// flaky is a backfiller that fails the first few calls and then works, which is
+// what a source that was briefly unreachable looks like.
+type flaky struct {
+	*connector.Fake
+	failures int64
+	calls    atomic.Int64
+}
+
+func (f *flaky) Backfill(ctx context.Context, sink connector.Sink, from connector.Cursor) (connector.BackfillResult, error) {
+	if f.calls.Add(1) <= f.failures {
+		return connector.BackfillResult{}, errors.New("the source is unreachable")
+	}
+	return f.Fake.Backfill(ctx, sink, from)
+}
+
+// A backfill that fails is retried and counted, and the count clears when one
+// works: a source whose history is stuck must not look like one that has no
+// history left to walk.
+func TestABackfillThatFailsIsRetriedAndCounted(t *testing.T) {
+	src := runtimeSource("fake-eng")
+	cursors := connector.NewMemoryCursors()
+	f := &flaky{Fake: pages(src), failures: 2}
+	rec := &connector.Recorder{}
+
+	runtime, stop := start(t, connector.RuntimeOptions{
+		Sources:  []connector.SourceConfig{src},
+		Registry: registryOf(t, map[string]connector.Connector{src.ID: f}),
+		Sink:     rec,
+		Cursors:  cursors,
+	})
+	waitFor(t, "the failures to be reported", func() bool {
+		return runtime.Health(t.Context()).Sources[0].BackfillFailures >= 2
+	})
+	waitFor(t, "the history that follows them", func() bool {
+		return runtime.Health(t.Context()).Sources[0].BackfillDone
+	})
+	if err := stop(); err != nil {
+		t.Fatalf("Run() = %v, want nil", err)
+	}
+	if got := runtime.Health(t.Context()).Sources[0]; got.BackfillFailures != 0 {
+		t.Errorf("BackfillFailures = %d after the backfill finished, want it cleared", got.BackfillFailures)
+	}
+	if got, want := artifacts(rec), []string{"h1", "h2", "h3"}; !slices.Equal(got, want) {
+		t.Errorf("the backfill emitted %v, want %v", got, want)
+	}
+}
+
+// A store that will not take the position is counted too: a backfill retrying
+// forever behind a cursor nothing will store is the failure that health would
+// otherwise report as a source with nothing to walk.
+func TestAPositionThatCannotBeStoredIsCounted(t *testing.T) {
+	src := runtimeSource("fake-eng")
+	cursors := connector.NewMemoryCursors()
+	cursors.SaveErr = errors.New("the cursor is not valid UTF-8, which a text column cannot store")
+
+	runtime, stop := start(t, connector.RuntimeOptions{
+		Sources:  []connector.SourceConfig{src},
+		Registry: registryOf(t, map[string]connector.Connector{src.ID: pages(src)}),
+		Sink:     &connector.Recorder{},
+		Cursors:  cursors,
+	})
+	waitFor(t, "the failure to be reported", func() bool {
+		return runtime.Health(t.Context()).Sources[0].BackfillFailures >= 1
+	})
+	got := runtime.Health(t.Context()).Sources[0]
+	if err := stop(); err != nil {
+		t.Fatalf("Run() = %v, want nil", err)
+	}
+	if got.BackfillDone {
+		t.Error("a backfill whose position cannot be stored reports itself done")
 	}
 }
 
@@ -417,7 +493,7 @@ func TestADoneBackfillIsNotRestarted(t *testing.T) {
 	p := &pager{Fake: pages(src)}
 	rec := &connector.Recorder{}
 
-	_, stop := start(t, connector.RuntimeOptions{
+	runtime, stop := start(t, connector.RuntimeOptions{
 		Sources:  []connector.SourceConfig{src},
 		Registry: registryOf(t, map[string]connector.Connector{src.ID: p}),
 		Sink:     rec,
@@ -434,6 +510,14 @@ func TestADoneBackfillIsNotRestarted(t *testing.T) {
 	if got := cursors.Saves(src.ID); len(got) != 0 {
 		t.Errorf("the position was written %d times for a source whose history is done: %+v", len(got), got)
 	}
+	// And health says what the stored position says, not what this process
+	// happened to do: an operator reading readiness after a deploy must not
+	// conclude the backfill never ran.
+	got := runtime.Health(t.Context()).Sources[0]
+	if !got.BackfillDone || got.Backfilled != 3 {
+		t.Errorf("after resuming a finished backfill health says done=%v after %d events, want done after the 3 the stored position counts",
+			got.BackfillDone, got.Backfilled)
+	}
 }
 
 // With nowhere to keep a position, the runtime polls and does not backfill:
@@ -449,8 +533,9 @@ func TestBackfillNeedsACursorStore(t *testing.T) {
 		Registry: registryOf(t, map[string]connector.Connector{src.ID: p}),
 		Sink:     rec,
 	})
-	waitFor(t, "a poll", func() bool { return true })
-	time.Sleep(20 * time.Millisecond)
+	// Long enough for many ticks of a one-millisecond cadence: what is being
+	// asserted is that something never happens.
+	time.Sleep(50 * time.Millisecond)
 	if err := stop(); err != nil {
 		t.Fatalf("Run() = %v, want nil", err)
 	}

@@ -83,9 +83,10 @@ func TestConnectorsRunsAndStops(t *testing.T) {
 		t.Fatalf("run(connectors) = %v, want nil", err)
 	}
 	// Which connectors a process is hosting is the first question asked of one,
-	// so every line it logs says.
-	if !strings.Contains(stderr.String(), `"source":"all"`) {
-		t.Errorf("the connectors service logged no source field:\n%s", stderr.String())
+	// so every line it logs says. It is `hosting` and not `source`: ADR-0008's
+	// `source` is the source a line is about, and the runtime writes that.
+	if !strings.Contains(stderr.String(), `"hosting":"all"`) {
+		t.Errorf("the connectors service logged no hosting field:\n%s", stderr.String())
 	}
 }
 

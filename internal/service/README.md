@@ -31,7 +31,20 @@ interesting code is testable without starting a process.
 `connectors` is the only one of the four with an HTTP surface so far: a push
 connector's handler has to be reachable, and ADR-0008 gives every service
 `/healthz` and `/readyz`. The paths under `/hooks/` are the connector runtime's
-and are mounted from it; the two health endpoints are the service's own.
+and are mounted from it; the two health endpoints are the service's own. It is
+the first of the four, so it is the one the other three will be copied from —
+what the two endpoints mean is worth getting from there rather than inventing
+again:
+
+- `/healthz` is 200 while the process is up, and nothing else. It answers "is
+  this container alive", so it must not depend on anything that can be slow.
+- `/readyz` is "can this process do its job": ADR-0008 makes that the database
+  reachable, its schema acceptable per ADR-0006 — one query, not a ping, because
+  that is what turns the version check into a deployment that stops rather than
+  one that half-works — and the credentials present, which for a connector is
+  discharged at startup. It is 503 when the answer is no. Its body carries ids,
+  statuses and fixed sentences: readiness is served more widely than L0, so
+  nothing a source or Postgres said goes in it.
 
 The four subcommand names are a contract with the Dagger module and the
 deployment manifests. `hearsay all` is a development convenience and is never a

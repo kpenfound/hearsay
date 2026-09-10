@@ -186,6 +186,49 @@ func TestReadyzFailsWhenTheDatabaseIsUnreachable(t *testing.T) {
 	}
 }
 
+// A database this binary is ahead of is one this process cannot ingest into,
+// and ADR-0008 makes that a readiness failure — which is what turns ADR-0006's
+// version check into a deployment that stops rather than one that half-works.
+func TestReadyzFailsWhenTheSchemaIsBehindTheBinary(t *testing.T) {
+	newPool(t) // skips the test when there is no database
+
+	// The maintenance database every Postgres server has, which nothing
+	// migrates. db.Open rather than db.Connect: Connect is the startup check
+	// and would refuse it here, which is the other half of the same rule.
+	pool, err := db.Open(t.Context(), swapDatabaseName(os.Getenv("HEARSAY_DATABASE_URL"), "postgres"))
+	if err != nil {
+		t.Fatalf("Open() = %v, want no error", err)
+	}
+	defer pool.Close()
+
+	addr, stop := run(t, &config.Config{}, connectors.Deps{
+		Pool:    pool,
+		Sink:    &connector.Recorder{},
+		Cursors: connector.NewMemoryCursors(),
+	})
+	code, body := get(t, addr, "/readyz")
+	if code != http.StatusServiceUnavailable {
+		t.Errorf("GET /readyz against an unmigrated database = %d, want 503: %s", code, body)
+	}
+	if !strings.Contains(body, "migrate up") {
+		t.Errorf("the readiness body does not say what to run: %s", body)
+	}
+	if err := stop(); err != nil {
+		t.Fatalf("Run() = %v, want nil", err)
+	}
+}
+
+// swapDatabaseName points a connection URL at another database on the same
+// server.
+func swapDatabaseName(url, name string) string {
+	base, query, hasQuery := strings.Cut(url, "?")
+	swapped := base[:strings.LastIndex(base, "/")+1] + name
+	if hasQuery {
+		return swapped + "?" + query
+	}
+	return swapped
+}
+
 // artifactsIn is what L0 holds for one source, sorted, which is what a test
 // compares.
 func artifactsIn(t *testing.T, store *l0.Store, source string) []string {

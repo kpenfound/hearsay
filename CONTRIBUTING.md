@@ -253,6 +253,13 @@ Every line carries the three fields ADR-0008 attaches at process start:
 replica identity in every container runtime; set `HEARSAY_INSTANCE` where
 something knows better.
 
+Fields are added as work descends, and `slog` appends rather than replaces, so
+two writers reaching for one key put it on the line twice — `encoding/json`
+keeps the last, and the field then answers two questions with one name. Two
+facts are two fields: the connectors service says which connectors it hosts in
+`hosting`, and the runtime says which source a line is about in `source`, which
+is ADR-0008's own name for that.
+
 Two of the four services are stubs — the assertion worker and the API: they
 start, log that they are stubs, and return when the process is interrupted. That
 shutdown behaviour is not a placeholder — `hearsay all` composes all four, so a
@@ -270,7 +277,10 @@ The connectors service is built too, and needs Postgres for the same reason: it
 writes L0, and it keeps each source's backfill position there so that a restart
 resumes rather than walking a source's history again. It serves the push
 connectors' handlers under `/hooks/<source>` and its own `/healthz` and
-`/readyz` on `--listen` (`HEARSAY_LISTEN`, default `:8081`).
+`/readyz` on `--listen` (`HEARSAY_LISTEN`, default `:8081`; `hearsay all` takes
+the flag too, because it runs this service). `/healthz` is the process being up;
+`/readyz` is the database, its schema and every hosted source's own health, and
+is 503 when any of them says no.
 
 ```sh
 go run ./cmd/hearsay connectors --config ./config           # every configured source

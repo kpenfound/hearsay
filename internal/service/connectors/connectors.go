@@ -26,6 +26,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
@@ -79,11 +80,15 @@ type Deps struct {
 // Run hosts the configured connectors until ctx is cancelled, and returns nil
 // when it stops that way.
 //
-// The runtime and the HTTP surface stop together: a process serving webhooks
-// with no runtime behind them would accept deliveries it cannot ingest, and a
-// runtime with no listener cannot be delivered to or asked how it is.
+// The runtime and the HTTP surface stop together and in that order: a process
+// serving webhooks with no runtime behind them would accept deliveries it
+// cannot ingest, and a runtime with no listener cannot be delivered to or asked
+// how it is.
 func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
-	ctx = telemetry.With(ctx, "source", Selection(deps.Sources))
+	// `hosting`, not `source`: ADR-0008 makes `source` the source an event or a
+	// line is about, which is what the runtime puts on its own lines. This is
+	// the different fact that one process may host several of them.
+	ctx = telemetry.With(ctx, "hosting", Selection(deps.Sources))
 	log := telemetry.Logger(ctx)
 
 	sources, err := Select(cfg.Repo.Sources, deps.Sources)
@@ -128,25 +133,40 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 		// wants from it is the logger.
 		BaseContext: func(net.Listener) context.Context { return context.WithoutCancel(ctx) },
 	}
-	loops := map[string]func(context.Context) error{
-		"runtime": runtime.Run,
-		"http":    func(ctx context.Context) error { return serve(ctx, server, listener) },
-	}
-	errs := make([]error, 0, len(loops))
+	// The runtime's context is not a child of the one that stops the listener:
+	// it is cancelled by the HTTP goroutine once the server has drained, which
+	// is what puts the two shutdowns in order.
+	runtimeCtx, stopRuntime := context.WithCancel(context.WithoutCancel(ctx))
+	defer stopRuntime()
+	errs := make([]error, 0, 2)
 	var mu sync.Mutex
-	var wg sync.WaitGroup
-	for name, loop := range loops {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer stop()
-			if err := loop(ctx); err != nil {
-				mu.Lock()
-				errs = append(errs, fmt.Errorf("%s: %w", name, err))
-				mu.Unlock()
-			}
-		}()
+	fail := func(name string, err error) {
+		if err == nil {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		errs = append(errs, fmt.Errorf("%s: %w", name, err))
 	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		// The listener stops first and the connectors when it has drained: a
+		// delivery still being served is inside a connector's Handler, and
+		// Close is a connector's chance to let go of what its handlers use.
+		defer stopRuntime()
+		fail("http", serve(ctx, server, listener))
+	}()
+	go func() {
+		defer wg.Done()
+		// A runtime that returns on its own takes the listener with it: a
+		// process accepting webhooks it is no longer ingesting is a delivery
+		// the source believes it has made.
+		defer stop()
+		fail("runtime", runtime.Run(runtimeCtx))
+	}()
 	wg.Wait()
 	log.InfoContext(ctx, "connectors stopped")
 	return errors.Join(errs...)
@@ -254,10 +274,14 @@ func ids(sources []connector.SourceConfig) []string {
 	return out
 }
 
-// Selection renders which connectors a process is hosting for the `source` log
+// Selection renders which connectors a process is hosting for the `hosting` log
 // field: the names it was given, or "all" when it was given none. Every line
 // this service logs carries it, because "which connectors is this container
 // running" is the first question asked of a process hosting a subset.
+//
+// It is not the `source` field. That one is ADR-0008's, is the source a line is
+// about, and is what the runtime puts on the lines of each connector it drives;
+// one process hosts several of them, so the two facts are two fields.
 func Selection(sources []string) string {
 	if len(sources) == 0 {
 		return "all"
@@ -299,14 +323,31 @@ type Readiness struct {
 func readiness(ctx context.Context, runtime *connector.Runtime, pool *pgxpool.Pool) Readiness {
 	health := runtime.Health(ctx)
 	out := Readiness{Status: health.Status, Sources: health.Sources}
-	if pool != nil {
-		if err := pool.Ping(ctx); err != nil {
-			// The error names a host and a user and is the operator's to read
-			// in the log, not the world's to read over HTTP.
-			telemetry.Logger(ctx).ErrorContext(ctx, "readiness: the database is unreachable", "error", err)
-			out.Status = connector.HealthFailed
-			out.Detail = "the database is unreachable"
-		}
+	if pool == nil {
+		return out
+	}
+	// ADR-0008 defines readiness as the database being reachable and its schema
+	// acceptable per ADR-0006, and the credentials being present. The schema
+	// half is what turns ADR-0006's version check into a deployment that stops
+	// rather than one that half-works, so it is one query and not a ping. The
+	// credentials half has nothing to check here: a source's secrets are
+	// resolved from the environment at startup and a missing one refuses to
+	// start the process (docs/connector-contract.md).
+	//
+	// Either failure is the operator's to read in the log, where the error can
+	// name a host, a user and a version. The body says which of the two it is
+	// and nothing else.
+	log := telemetry.Logger(ctx)
+	switch err := db.CheckSchema(ctx, pool); {
+	case err == nil:
+	case errors.Is(err, db.ErrSchemaBehind):
+		log.ErrorContext(ctx, "readiness: the database schema is behind this binary", "error", err)
+		out.Status = connector.HealthFailed
+		out.Detail = "the database schema is behind this binary: run `hearsay migrate up`"
+	default:
+		log.ErrorContext(ctx, "readiness: the database cannot be reached", "error", err)
+		out.Status = connector.HealthFailed
+		out.Detail = "the database is unreachable"
 	}
 	return out
 }

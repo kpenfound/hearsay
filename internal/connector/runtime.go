@@ -205,9 +205,10 @@ type hosted struct {
 	conn Connector
 	gate *Gate
 
-	pollFails    atomic.Int64
-	backfillDone atomic.Bool
-	backfilled   atomic.Int64
+	pollFails     atomic.Int64
+	backfillFails atomic.Int64
+	backfillDone  atomic.Bool
+	backfilled    atomic.Int64
 }
 
 // Runtime hosts a set of connectors: it builds one per configured source, polls
@@ -376,11 +377,9 @@ func (r *Runtime) poll(ctx context.Context, h *hosted, poller Poller) {
 	wait := jitter(0)
 	fails := 0
 	for {
-		select {
-		case <-ctx.Done():
+		if !sleep(ctx, wait) {
 			log.InfoContext(ctx, "polling stopped")
 			return
-		case <-time.After(wait):
 		}
 
 		err := poller.Poll(ctx, h.gate)
@@ -414,11 +413,16 @@ func (r *Runtime) backfill(ctx context.Context, h *hosted, backfiller Backfiller
 	if err != nil {
 		return
 	}
+	// What health says about the backfill is what the stored position says,
+	// including on a process that did none of the walking: a source walked in an
+	// earlier process is walked, and readiness that said otherwise would have an
+	// operator conclude a deploy had lost it.
+	h.backfilled.Store(state.Events)
+	h.backfillDone.Store(state.Done)
 	if state.Done {
 		log.InfoContext(ctx, "history is already backfilled", "events", state.Events)
 		return
 	}
-	h.backfilled.Store(state.Events)
 
 	fails := 0
 	for {
@@ -438,6 +442,7 @@ func (r *Runtime) backfill(ctx context.Context, h *hosted, backfiller Backfiller
 		}
 		if err != nil {
 			fails++
+			h.backfillFails.Store(int64(fails))
 			wait := r.opts.Cadence.Backoff(interval, fails)
 			log.WarnContext(ctx, "backfill failed, retrying", "error", err, "failures", fails, "retry_in", wait.String())
 			if !sleep(ctx, wait) {
@@ -447,6 +452,7 @@ func (r *Runtime) backfill(ctx context.Context, h *hosted, backfiller Backfiller
 			continue
 		}
 		fails = 0
+		h.backfillFails.Store(0)
 
 		next := BackfillState{Cursor: res.Next, Done: res.Done, Events: state.Events + int64(res.Events)}
 		if res.Done {
@@ -497,8 +503,10 @@ func (r *Runtime) save(ctx context.Context, h *hosted, state BackfillState, inte
 	for fails := 1; ; fails++ {
 		err := r.opts.Cursors.Save(ctx, h.src.ID, state)
 		if err == nil {
+			h.backfillFails.Store(0)
 			return nil
 		}
+		h.backfillFails.Store(int64(fails))
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -556,8 +564,15 @@ type SourceHealth struct {
 	// zero once one succeeds. The failure itself is in the log; a count is what
 	// health can carry without repeating a message from a source.
 	PollFailures int64 `json:"poll_failures"`
+	// BackfillFailures is how many times in a row the source's backfill has
+	// failed — the call itself, or the store that will not take the position it
+	// returned — and zero once one works. A backfill retries forever, so
+	// without this a source whose history is stuck looks like one that has no
+	// history left to walk.
+	BackfillFailures int64 `json:"backfill_failures"`
 	// BackfillDone reports that history is exhausted, and Backfilled is how
-	// many events it has emitted.
+	// many events it has emitted. Both are what the *stored* position says, so
+	// a process that resumed a finished backfill reports it as finished.
 	BackfillDone bool  `json:"backfill_done"`
 	Backfilled   int64 `json:"backfilled"`
 }
@@ -570,15 +585,16 @@ func (r *Runtime) Health(ctx context.Context) RuntimeHealth {
 	for _, h := range r.conns {
 		health := h.conn.Health(ctx)
 		out.Sources = append(out.Sources, SourceHealth{
-			Source:       h.src.ID,
-			Type:         h.src.Type,
-			Status:       health.Status,
-			Detail:       health.Detail,
-			LastEventAt:  health.LastEventAt,
-			Dropped:      h.gate.Dropped(),
-			PollFailures: h.pollFails.Load(),
-			BackfillDone: h.backfillDone.Load(),
-			Backfilled:   h.backfilled.Load(),
+			Source:           h.src.ID,
+			Type:             h.src.Type,
+			Status:           health.Status,
+			Detail:           health.Detail,
+			LastEventAt:      health.LastEventAt,
+			Dropped:          h.gate.Dropped(),
+			PollFailures:     h.pollFails.Load(),
+			BackfillFailures: h.backfillFails.Load(),
+			BackfillDone:     h.backfillDone.Load(),
+			Backfilled:       h.backfilled.Load(),
 		})
 		out.Status = worse(out.Status, health.Status)
 	}

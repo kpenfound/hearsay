@@ -1,20 +1,25 @@
 package connectors_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/service/connectors"
+	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
 func source(id string) connector.SourceConfig {
@@ -256,6 +261,191 @@ func TestTheServiceNeedsSomewhereToWriteAndSomewhereToResumeFrom(t *testing.T) {
 	}
 }
 
+// Every line this service writes says which connectors the process is hosting
+// and, where it is about one, which source — and each of those is one field
+// with one value. `service.Stub`'s doc comment names the failure this pins:
+// `telemetry.With` appends, so two writers reaching for the same key produce a
+// line with the key twice, and `encoding/json` keeps the last.
+func TestALineNamesTheProcessAndItsSourceOnce(t *testing.T) {
+	src := source("fake-eng")
+	fake := connector.NewFake(src)
+	fake.Queue = []connector.Event{fake.NewEvent(connector.KindMessage, "m1", "polled")}
+	rec := &connector.Recorder{}
+
+	var out syncBuffer
+	ctx := telemetry.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&out, nil)))
+	ctx, cancel := context.WithCancel(ctx)
+
+	var lc net.ListenConfig
+	listener, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listening: %v", err)
+	}
+	cfg := &config.Config{Repo: config.Repo{Sources: []connector.SourceConfig{src}}}
+	done := make(chan error, 1)
+	go func() {
+		done <- connectors.Run(ctx, cfg, connectors.Deps{
+			Registry: fakeRegistry(t, map[string]connector.Connector{src.ID: fake}),
+			Sink:     rec,
+			Cursors:  connector.NewMemoryCursors(),
+			Listener: listener,
+			Cadence:  quick(),
+		})
+	}()
+	waitFor(t, "the connector to be polled", func() bool { return len(rec.Events()) >= 1 })
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() = %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run() did not return within 10s of cancellation")
+	}
+
+	lines := 0
+	sourceLines := 0
+	for line := range strings.Lines(strings.TrimSpace(out.String())) {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		lines++
+		// Count the occurrences rather than trusting the decoded value:
+		// json.Unmarshal keeps the last of a repeated key, which is the bug.
+		for _, field := range []string{"hosting", "source"} {
+			if n := strings.Count(line, `"`+field+`":`); n > 1 {
+				t.Errorf("a log line carries the %s field %d times, want at most once: %s", field, n, line)
+			}
+		}
+		if n := strings.Count(line, `"hosting":`); n != 1 {
+			t.Errorf("a log line does not say which connectors the process hosts: %s", line)
+		}
+		if strings.Contains(line, `"source":"`+src.ID+`"`) {
+			sourceLines++
+		}
+	}
+	if lines == 0 {
+		t.Fatal("the service logged nothing")
+	}
+	if sourceLines == 0 {
+		t.Errorf("no line names the source it is about:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), `"hosting":"all"`) {
+		t.Errorf("no line says the process hosts every configured connector:\n%s", out.String())
+	}
+}
+
+// blockingPusher is a push connector whose handler a test can hold open, so
+// that shutdown can be observed while a delivery is in flight.
+type blockingPusher struct {
+	fake     *connector.Fake
+	started  chan struct{}
+	release  chan struct{}
+	inFlight atomic.Bool
+	// closedInFlight records what Close saw: true means a connector was closed
+	// while one of its own deliveries was still being served.
+	closedInFlight atomic.Bool
+}
+
+func (b *blockingPusher) Describe() connector.Descriptor              { return b.fake.Describe() }
+func (b *blockingPusher) Health(ctx context.Context) connector.Health { return b.fake.Health(ctx) }
+
+func (b *blockingPusher) Close(ctx context.Context) error {
+	b.closedInFlight.Store(b.inFlight.Load())
+	return b.fake.Close(ctx)
+}
+
+func (b *blockingPusher) Handler(sink connector.Sink) http.Handler {
+	inner := b.fake.Handler(sink)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b.inFlight.Store(true)
+		defer b.inFlight.Store(false)
+		close(b.started)
+		<-b.release
+		inner.ServeHTTP(w, r)
+	})
+}
+
+// A connector is closed after the deliveries it is serving have finished. The
+// two shutdowns are ordered, so a `Close` that lets go of what a handler is
+// using cannot pull it out from under one.
+func TestAConnectorIsClosedAfterItsDeliveriesFinish(t *testing.T) {
+	src := source("fake-eng")
+	pusher := &blockingPusher{
+		fake:    connector.NewFake(src),
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	rec := &connector.Recorder{}
+	cfg := &config.Config{Repo: config.Repo{Sources: []connector.SourceConfig{src}}}
+	addr, stop := run(t, cfg, connectors.Deps{
+		Registry: fakeRegistry(t, map[string]connector.Connector{src.ID: pusher}),
+		Sink:     rec,
+		Cursors:  connector.NewMemoryCursors(),
+	})
+
+	body, err := json.Marshal(pusher.fake.NewEvent(connector.KindMessage, "p1", "delivered"))
+	if err != nil {
+		t.Fatalf("marshalling the event: %v", err)
+	}
+	delivered := make(chan int, 1)
+	go func() {
+		req, err := http.NewRequestWithContext(context.WithoutCancel(t.Context()), http.MethodPost,
+			"http://"+addr+connector.HookPath(src.ID), strings.NewReader(string(body)))
+		if err != nil {
+			delivered <- 0
+			return
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			delivered <- 0
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		delivered <- resp.StatusCode
+	}()
+	<-pusher.started
+
+	// Stop the service while the delivery is inside the handler, then let it
+	// finish: the shutdown has to wait for it.
+	stopped := make(chan error, 1)
+	go func() { stopped <- stop() }()
+	time.Sleep(50 * time.Millisecond)
+	close(pusher.release)
+
+	if code := <-delivered; code != http.StatusAccepted {
+		t.Errorf("the delivery in flight when the process stopped = %d, want 202", code)
+	}
+	if err := <-stopped; err != nil {
+		t.Fatalf("Run() = %v, want nil", err)
+	}
+	if pusher.closedInFlight.Load() {
+		t.Error("the connector was closed while it was still serving a delivery")
+	}
+	if got, want := len(rec.Events()), 1; got != want {
+		t.Errorf("the sink received %d events, want the one that was in flight", got)
+	}
+}
+
+// syncBuffer is a bytes.Buffer a test can read while a goroutine writes to it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // A `--source` selection is which of the configured connectors this process
 // hosts (ADR-0003).
 func TestSelect(t *testing.T) {
@@ -296,7 +486,7 @@ func TestSelect(t *testing.T) {
 	}
 }
 
-// The `source` log field says which connectors a process is hosting.
+// The `hosting` log field says which connectors a process is hosting.
 func TestSelection(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -35,11 +35,13 @@ process list. It is on the subcommands that use a database — `migrate`, `l0`,
 that do not connect to one yet. All three of `distiller`, `connectors` and
 `all` refuse to start without it.
 
-`--listen` is `connectors` only, and also reads `HEARSAY_LISTEN`. It is where
-the push connectors' handlers are mounted, under `/hooks/<source>`, and where
-this service answers `/healthz` and `/readyz`
+`--listen` is on `connectors` and on `all`, which runs it, and also reads
+`HEARSAY_LISTEN`. It is where the push connectors' handlers are mounted, under
+`/hooks/<source>`, and where the connectors service answers `/healthz` and
+`/readyz`
 ([ADR-0008](../../docs/adr/0008-observability-slog-and-opentelemetry.md)). The
-default is `:8081`, the port after the API's 8080.
+default is `:8081`, the port after the API's 8080; a machine where something
+else holds that port is why `all` takes the flag too.
 
 `--config` points at the configuration repository, and also reads
 `HEARSAY_CONFIG`. A service loads it before it starts and refuses to start if it

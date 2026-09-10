@@ -94,8 +94,10 @@ distil nothing, because a configuration is what says there is anything to do.
 The connectors service is not a stub either. It builds one connector per
 configured source through a registry the binary wires up, polls the pollers on
 their own cadence, drives the backfillers through a cursor it keeps in Postgres,
-mounts the pushers' handlers under `/hooks/<source>` and answers `/healthz` and
-`/readyz` on `--listen` (default `:8081`). It writes L0, so it refuses without a
+mounts the pushers' handlers under `/hooks/<source>` and answers `/healthz` (the
+process is up) and `/readyz` (the database, its schema, and what each source
+says about itself) on `--listen` (default `:8081`, and `hearsay all` takes the
+flag too). It writes L0, so it refuses without a
 database too. No connector ships yet — the registry is empty, and a configured
 source is a startup failure until its type is in it.
 
