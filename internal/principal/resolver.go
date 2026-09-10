@@ -403,6 +403,27 @@ func (r *Resolver) Members(teamID string) []Principal {
 	return out
 }
 
+// Teams returns the teams that list this principal as a member, sorted by id.
+// It is the reverse of [Resolver.Members], and it is what a read needs: a
+// document's access list names groups, and whether the caller is in one is a
+// question about which teams they belong to.
+//
+// A team may not contain a team, so this is one level and not a walk, and a
+// team asked about its own memberships has none.
+func (r *Resolver) Teams(id string) []Principal {
+	var out []Principal
+	for _, p := range r.byID {
+		if p.Kind != KindTeam || !slices.Contains(p.Members, id) {
+			continue
+		}
+		out = append(out, p)
+	}
+	// Map iteration order is not an order, and what this feeds — the set of
+	// grants a caller satisfies — is compared and cached by callers.
+	slices.SortFunc(out, func(a, b Principal) int { return strings.Compare(a.ID, b.ID) })
+	return out
+}
+
 // Expand turns a list of principal ids — a code entity's owners, an authority
 // policy's ratifiers — into the individual principals they stand for, replacing
 // each team with its members. The result is deduplicated and keeps the order

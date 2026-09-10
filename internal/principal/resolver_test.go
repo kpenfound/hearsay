@@ -539,6 +539,35 @@ func TestPrincipalLookup(t *testing.T) {
 	}
 }
 
+// Teams is the reverse of Members, and it is what a read asks: a document's
+// access list names groups, and whether the caller is in one of them is a
+// question about the teams they belong to.
+func TestTeams(t *testing.T) {
+	r := newResolver(t, append(mapping(),
+		principal.Principal{ID: "infra-team", Kind: principal.KindTeam, Members: []string{"kyle"}},
+		principal.Principal{ID: "empty-team", Kind: principal.KindTeam},
+	))
+	tests := []struct {
+		name string
+		id   string
+		want []string
+	}{
+		{"every team that lists them, sorted", "kyle", []string{"api-team", "infra-team"}},
+		{"one team", "robin", []string{"api-team"}},
+		{"an agent is a member like anybody else", "shed", []string{"api-team"}},
+		{"a team is in no team, because a team may not contain one", "api-team", nil},
+		{"nobody is in nothing", "nobody", nil},
+		{"no id at all", "", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ids(r.Teams(tt.id)); !slices.Equal(got, tt.want) {
+				t.Errorf("Teams(%q) = %v, want %v", tt.id, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMembersAndExpand(t *testing.T) {
 	r := newResolver(t, append(mapping(), principal.Principal{
 		ID: "empty-team", Kind: principal.KindTeam, Members: []string{"gone"},
