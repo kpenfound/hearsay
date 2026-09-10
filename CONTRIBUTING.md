@@ -379,6 +379,36 @@ Two rules to know before changing it:
   `fixtures_test.go`, and without it the same test checks that what is on disk is
   what the package would send.
 
+## Search
+
+`l1.Store.Search` is hybrid retrieval over the document table and the whole of
+what design.md's `search(scope, query)` does: it returns documents, not answers.
+It is a callable function with no interface in front of it yet — the API process
+exposes it (#52).
+
+Two halves, ranked separately and fused by reciprocal rank: similarity over the
+embedding of `text`, and Postgres full text over `raw_text`. Ranks rather than a
+weighted sum of the two scores, because a lexical density and a cosine distance
+are not comparable and neither is stable across queries.
+
+Three rules to know before changing it:
+
+- **The filter is inside both halves, never around the result.** A document the
+  caller may not read must not take a rank: filtering afterwards would let one
+  push a document they may read out of the candidates, which is a leak you
+  cannot see (docs/design.md#access-control). Who a caller is, and what grants
+  they hold, is `l1.ReaderFor` and nothing else.
+- **The query is every word of it.** `websearch_to_tsquery` is what reads it, so
+  a quoted phrase, `or` and a leading `-` all work and no input is a syntax
+  error — and a document holding some of the words is not a match. Recall is the
+  other half's job.
+- **A vector is a function of the text it was made from.** `Put` clears a
+  document's embedding whenever it writes different `text`, so what needs
+  embedding is what has no vector, and `Store.Embed` fills that in with a
+  compare-and-set on the text it embedded. A deployment with no `embed` tier
+  configured writes no vectors at all and searches on full text alone
+  (docs/config.md).
+
 ## Layout
 
 `cmd/hearsay` holds the subcommands and nothing else. `internal/service/*` holds
@@ -448,8 +478,9 @@ README.
 
 ### Model calls
 
-**No test calls a model provider.** Model work happens at write time, behind the
-tier registry in `internal/llm` (`distill`, `assert`, `embed`), and tests use
+**No test calls a model provider.** Model work happens at write time — apart
+from the one embedding call `search` makes to turn a query into a vector —
+behind the tier registry in `internal/llm` (`distill`, `assert`, `embed`), and tests use
 the fake with a recorded fixture checked into the repository. Recording a new
 fixture is a deliberate act with a real call, done once, reviewed like code. A
 test that would silently make a live call is a bug in the test.

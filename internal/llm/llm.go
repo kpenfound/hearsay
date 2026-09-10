@@ -190,8 +190,8 @@ func (r Request) Validate() error {
 // re-embed of every row, not a configuration edit, which is why ADR-0005 asks
 // for the two to be compared before anything is written rather than after.
 //
-// Nothing calls it yet: the column arrives with search, and the process that
-// writes vectors calls this at startup and refuses to run on a mismatch.
+// The process that writes vectors calls this at startup and refuses to run on a
+// mismatch: the distiller, against l1.EmbeddingDimensions.
 func CheckDimensions(e Embedder, column int) error {
 	if got := e.Dimensions(); got != column {
 		return fmt.Errorf("%w: the embed tier produces %d values and the column holds %d", ErrDimensions, got, column)

@@ -447,7 +447,7 @@ llm:
     embed:                      # no default: see below
       provider: <an embedding provider>
       model: <its embedding model>
-      dimensions: 1024
+      dimensions: 1536          # the width of the column, and not a free choice
 ```
 
 In the directory form this is `llm/anything.yaml` holding what is under the
@@ -459,7 +459,7 @@ In the directory form this is `llm/anything.yaml` holding what is under the
 | `model` | The provider's model id, passed through untouched. |
 | `max_tokens` | The answer budget, on `distill` and `assert`. A call site whose prompt needs a bigger one asks for it; this is the default for the rest. Setting it on `embed` is an error, because an embedding has no answer to budget. |
 | `temperature` | Between 0 and 1, on `distill` and `assert`. Left out, the provider's own default applies. |
-| `dimensions` | The width of the vectors, on `embed`, where it is required. It has to match the `vector(N)` column the embeddings are written to, so changing it is a migration and a re-embed rather than a configuration edit. The column and the startup check that compares the two arrive with search; there is nothing to disagree with yet. |
+| `dimensions` | The width of the vectors, on `embed`, where it is required. It has to match the `vector(N)` column the embeddings are written to, which holds **1536** (`l1.EmbeddingDimensions`), so a model of another width is a migration and a re-embed of every row rather than a configuration edit. The distiller compares the two at startup and refuses to run on a mismatch. |
 | `base_url` | Replaces the provider's endpoint. This is how a gateway goes in front of a provider. |
 | `api_key_env` | The **name** of the environment variable holding this tier's credential, where it is not the provider's usual one (`ANTHROPIC_API_KEY`). Like `secrets:` on a source, this never holds the credential itself. |
 | `timeout` | A duration bounding one attempt, not the call: a retried call may take it several times over. Default 60s. |
@@ -475,7 +475,10 @@ called; none of it is any caller's to configure twice.
 **The `embed` tier has no default and no shipped provider.** Anthropic has no
 embedding model, and it is the only adapter this build has, so
 `hearsay config validate` refuses `provider: anthropic` on `embed` and there is
-nothing else to name yet. Until an embedding adapter ships, nothing embeds.
+nothing else to name yet. Until an embedding adapter ships, no document is
+embedded: documents are written and searchable, and `search` runs on its
+full-text half alone — it finds a document by the words the team wrote in it and
+never by what it is about.
 
 **Credentials are never in here.** They come from the environment, per provider,
 because a configuration repository is checked into git (ADR-0005).
@@ -645,7 +648,8 @@ llm:
   tiers:
     # The distill tier keeps the shipped provider and model and gets a bigger
     # budget; assert keeps everything but the model. A tier nobody names here
-    # is the default, and there is no embed tier because nothing embeds yet.
+    # is the default, and there is no embed tier because this build ships no
+    # embedding provider to name.
     distill:
       max_tokens: 4096
     assert:

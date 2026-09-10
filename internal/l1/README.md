@@ -11,7 +11,9 @@ written, and hybrid search over the table (embeddings plus full text).
 the distiller in `internal/service/distiller`, which owns its own prompt
 (ADR-0005). Entities, topics and stances are `internal/l2`.
 
-Distillation is a write-time LLM call. Reads never call a model.
+Distillation is a write-time LLM call. The only model call a read makes is the
+one that turns a search query into a vector, on the `embed` tier; nothing on the
+read path asks a model to generate anything.
 
 ## Things to know before changing it
 
@@ -37,7 +39,10 @@ Distillation is a write-time LLM call. Reads never call a model.
 - **`text` is embedded, `raw_text` is not.** `text` is the distillation — the
   model's words, nothing else — because a vector over one document about one
   thing is what a similarity search is for. `raw_text` is the team's own words,
-  for the full-text index (#50).
+  for the full-text index. A vector is a function of the text it was made from,
+  so [Store.Put] clears the embedding whenever it writes different `text`: what
+  needs embedding is what has no vector, which is also every document in a
+  deployment that has configured no `embed` tier.
 - **The scrub runs over both, over the body, and over a `url` reference.** Those
   are the four strings a row holds that a person wrote; the other reference ids
   are structured, and a marker in one would break the join it exists for. It is
@@ -56,5 +61,22 @@ Distillation is a write-time LLM call. Reads never call a model.
   pipeline reads.
 - **The column is `refs`, not `references`,** because `references` is reserved in
   SQL — the same reason L0's `time` is `occurred_at`.
+- **Search filters before it ranks.** Both halves — similarity over the
+  embedding, Postgres full text over `raw_text` — rank the documents the caller
+  may read, and the two rankings are fused by reciprocal rank. Filtering
+  afterwards would let a document the caller may not read push one they may out
+  of the candidates, which is a leak nothing downstream can see
+  (docs/design.md#access-control). [ReaderFor] is the one place a caller's
+  grants are derived from the identity mapping, so two callers cannot disagree
+  about what somebody may read.
+- **The text search configuration is named, every time.** `english`, in the
+  index and in every query. `default_text_search_config` is a session setting
+  nothing here pins, and an index built under one and queried under another
+  matches nothing at all.
+- **There is deliberately no ANN index on the embedding.** An approximate index
+  ranks first and filters afterwards, which is the wrong way round for a read
+  that has to filter first, so search does an exact distance over what the
+  filter leaves. Adding one means deciding what happens to the filter, not just
+  writing a `CREATE INDEX`.
 
 See [docs/design.md](../../docs/design.md#l1-distilled-documents).
