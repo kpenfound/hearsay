@@ -53,6 +53,55 @@ func TestAllMigratesTheDatabaseItIsPointedAt(t *testing.T) {
 	}
 }
 
+// The connectors service against a real database: the wiring from the flags to
+// the pool, the runtime and its listener, and the `source` field every line of
+// this service carries.
+func TestConnectorsRunsAndStops(t *testing.T) {
+	if os.Getenv("HEARSAY_DATABASE_URL") == "" {
+		t.Skip("HEARSAY_DATABASE_URL is not set")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	stderr := &syncBuffer{}
+	done := make(chan error, 1)
+	go func() {
+		// Port 0: a test binds what the operating system gives it, not the
+		// port a deployment uses.
+		done <- run(ctx, []string{"connectors", "--listen", "127.0.0.1:0", "--log-format", "json"}, io.Discard, stderr)
+	}()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(stderr.String(), "connectors started") {
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("`hearsay connectors` never started:\n%s", stderr.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("run(connectors) = %v, want nil", err)
+	}
+	// Which connectors a process is hosting is the first question asked of one,
+	// so every line it logs says.
+	if !strings.Contains(stderr.String(), `"source":"all"`) {
+		t.Errorf("the connectors service logged no source field:\n%s", stderr.String())
+	}
+}
+
+// `--source` names a configured source. A name nothing is configured under is a
+// startup failure rather than a process that hosts nothing.
+func TestConnectorsRefusesASourceNobodyConfigured(t *testing.T) {
+	if os.Getenv("HEARSAY_DATABASE_URL") == "" {
+		t.Skip("HEARSAY_DATABASE_URL is not set")
+	}
+	var stdout, stderr bytes.Buffer
+	err := run(t.Context(), []string{"connectors", "--source", "githbu", "--listen", "127.0.0.1:0"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "githbu") {
+		t.Fatalf("run(connectors --source githbu) = %v, want an error naming the source", err)
+	}
+}
+
 // A database with no Hearsay schema in it is one every command but `migrate`
 // and `all` refuses, saying what to run (ADR-0006).
 func TestL0RefusesADatabaseBehindTheBinary(t *testing.T) {

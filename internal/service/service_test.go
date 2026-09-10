@@ -20,17 +20,18 @@ import (
 // composes them, so one that ignores cancellation hangs the dev process
 // (ADR-0003).
 //
-// The distiller is not here because it cannot be run without a database, which
-// is what the next test says. Its own cancellation is covered where it can be:
-// internal/service/distiller's integration test runs it against Postgres and
-// cancels it.
+// The distiller and the connectors are not here because neither can be run
+// without a database, which is what the next test says. Their own cancellation
+// is covered where it can be: internal/service/distiller's integration test
+// runs the distiller against Postgres and cancels it, and
+// internal/service/connectors' tests stop the connectors service on every case
+// they start.
 func TestServicesStopOnContextCancellation(t *testing.T) {
 	cfg := config.Default()
 	tests := []struct {
 		name string
 		run  service.RunFunc
 	}{
-		{connectors.Name, func(ctx context.Context) error { return connectors.Run(ctx, &cfg, connectors.Deps{}) }},
 		{assertworker.Name, func(ctx context.Context) error { return assertworker.Run(ctx, &cfg, assertworker.Deps{}) }},
 		{api.Name, func(ctx context.Context) error { return api.Run(ctx, &cfg, api.Deps{}) }},
 	}
@@ -54,19 +55,30 @@ func TestServicesStopOnContextCancellation(t *testing.T) {
 }
 
 // A service with dependencies says what it is missing rather than starting
-// without them and failing on the first job. The distiller is the first of the
-// four to have any: it reads L0, writes L1 and calls a model
-// (ADR-0003, ADR-0005).
-func TestDistillerRefusesToRunWithoutItsDependencies(t *testing.T) {
+// without them and failing on the first job. Two of the four have any: the
+// distiller reads L0, writes L1 and calls a model, and the connectors write L0
+// and keep their backfill positions there (ADR-0003, ADR-0004, ADR-0005).
+func TestTheServicesWithDependenciesRefuseToRunWithoutThem(t *testing.T) {
 	cfg := config.Default()
-	// Not a cancelled context: the point is that it returns before it would
-	// ever look at one.
-	err := distiller.Run(t.Context(), &cfg, distiller.Deps{})
-	if err == nil {
-		t.Fatal("Run() with no dependencies = nil, want an error")
+	tests := []struct {
+		name string
+		run  service.RunFunc
+	}{
+		{distiller.Name, func(ctx context.Context) error { return distiller.Run(ctx, &cfg, distiller.Deps{}) }},
+		{connectors.Name, func(ctx context.Context) error { return connectors.Run(ctx, &cfg, connectors.Deps{}) }},
 	}
-	if !strings.Contains(err.Error(), "database") {
-		t.Errorf("Run() with no dependencies = %v, want it to say what is missing", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Not a cancelled context: the point is that it returns before it
+			// would ever look at one.
+			err := tt.run(t.Context())
+			if err == nil {
+				t.Fatal("Run() with no dependencies = nil, want an error")
+			}
+			if !strings.Contains(err.Error(), "database") {
+				t.Errorf("Run() with no dependencies = %v, want it to say what is missing", err)
+			}
+		})
 	}
 }
 
