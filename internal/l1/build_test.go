@@ -232,6 +232,19 @@ func TestBuildTellsTwoGrantsOfOneKindApart(t *testing.T) {
 		t.Errorf("ACL = %v, want the artifact's own group", doc.ACL)
 	}
 
+	// A grant is its kind, its source and its native id together. A source
+	// where a group and a person can be named the same thing is a source where
+	// comparing native ids alone would make one readable as the other.
+	person := children[0]
+	person.ACL = connector.ACL{{Kind: connector.ACLIdentity, Source: source, NativeID: repo}}
+	doc, err = l1.Build(l1.Input{Root: root, Children: []connector.Event{person}, Resolver: resolver, Repo: testRepo})
+	if err != nil {
+		t.Fatalf("Build(one identity named like the group) = %v", err)
+	}
+	if len(doc.L0Refs) != 1 {
+		t.Errorf("L0Refs = %v, want only the artifact: a group and an identity are not one grant", doc.L0Refs)
+	}
+
 	// And a reply carrying the same grant under a different label is the same
 	// grant: a label is what a person reads.
 	same := children[0]

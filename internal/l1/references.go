@@ -72,9 +72,11 @@ func (r Reference) validate() error {
 // deliberately conservative: a pattern that fires on ordinary prose costs every
 // document a wrong join key, and a reference that is missed costs one.
 var (
-	// linkRe is a bare or markdown link. The trailing punctuation a sentence
-	// puts after a URL is trimmed off the match rather than matched.
-	linkRe = regexp.MustCompile(`https?://[^\s<>()\[\]{}"'` + "`" + `]+`)
+	// linkRe is a bare or markdown link. The scheme is matched without case,
+	// because a person typing `HTTPS://` has still written a link; the trailing
+	// punctuation a sentence puts after a URL is trimmed off the match rather
+	// than matched.
+	linkRe = regexp.MustCompile(`(?i:https?)://[^\s<>()\[\]{}"'` + "`" + `]+`)
 	// mentionRe is an @-mention: a handle, or `@org/team` for a source that
 	// names groups that way. The handle rule is the widest the sources this
 	// build reads use — letters, digits and `-`, up to 39 of them.

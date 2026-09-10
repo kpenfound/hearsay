@@ -82,6 +82,14 @@ func TestReferences(t *testing.T) {
 		text: "the runbook is at HTTPS://Wiki.Example/Ops/ and at https://wiki.example/Ops",
 		want: []l1.Reference{{Type: l1.RefURL, ID: "https://wiki.example/Ops"}},
 	}, {
+		name: "an upper-case scheme is still a link, not prose",
+		text: "the runbook is at HTTPS://Wiki.Example/Ops",
+		want: []l1.Reference{{Type: l1.RefURL, ID: "https://wiki.example/Ops"}},
+	}, {
+		name: "a fragment is a position in a page, not a different page",
+		text: "see https://wiki.example/ops#taking-the-lock and https://wiki.example/ops",
+		want: []l1.Reference{{Type: l1.RefURL, ID: "https://wiki.example/ops"}},
+	}, {
 		name: "an alias next to a letter of another script is not a match",
 		text: "the enginé is fine and théengine is fine",
 		want: nil,
