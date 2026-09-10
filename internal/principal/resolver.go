@@ -424,9 +424,8 @@ func (r *Resolver) Members(teamID string) []Principal {
 // Nothing is recorded. This is a question about the mapping, not a sighting of
 // an identity that failed to resolve.
 func (r *Resolver) Claims(source, spelling string) (string, bool) {
-	if source == "" || spelling == "" {
-		return "", false
-	}
+	// An empty source or an empty spelling needs no guard of its own: the
+	// mapping indexes neither, so the keys they build match nothing.
 	res := r.lookup([]identityKey{nativeKey(source, spelling), handleKey(source, spelling)})
 	if res.Status != Resolved {
 		return "", false
