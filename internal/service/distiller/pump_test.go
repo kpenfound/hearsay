@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
@@ -92,6 +93,28 @@ func TestTargetOf(t *testing.T) {
 				t.Errorf("TargetOf() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// The batch size is held to what one read of the feed returns. The drain loop
+// reads a full batch as "there is more", so a batch above the store's cap could
+// never be reached and a backfill would wait an interval between batches.
+func TestThePumpBatchIsHeldToWhatOneReadReturns(t *testing.T) {
+	tests := []struct {
+		asked int
+		want  int
+	}{
+		{asked: 0, want: distiller.DefaultPumpBatch},
+		{asked: -1, want: distiller.DefaultPumpBatch},
+		{asked: 10, want: 10},
+		{asked: l0.MaxLimit, want: l0.MaxLimit},
+		{asked: l0.MaxLimit + 1, want: l0.MaxLimit},
+		{asked: 1_000_000, want: l0.MaxLimit},
+	}
+	for _, tt := range tests {
+		if got := distiller.NewPump(nil, distiller.PumpOptions{Batch: tt.asked}).Batch(); got != tt.want {
+			t.Errorf("a pump asked for a batch of %d uses %d, want %d", tt.asked, got, tt.want)
+		}
 	}
 }
 

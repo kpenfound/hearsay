@@ -35,7 +35,11 @@ const (
 type PumpOptions struct {
 	// Interval is how long the pump waits after a read that found nothing.
 	Interval time.Duration
-	// Batch is how many events one read takes, capped by [l0.MaxLimit].
+	// Batch is how many events one read takes. It is held to what one read of
+	// the feed actually returns, because the drain loop reads a full batch as
+	// "there is more": a batch above the store's own cap could never be
+	// reached, and the pump would wait an interval between batches for the
+	// whole of a backfill.
 	Batch int
 }
 
@@ -46,6 +50,7 @@ func (o PumpOptions) withDefaults() PumpOptions {
 	if o.Batch <= 0 {
 		o.Batch = DefaultPumpBatch
 	}
+	o.Batch = l0.Limit(o.Batch)
 	return o
 }
 
@@ -73,6 +78,12 @@ func NewPump(pool *pgxpool.Pool, opts PumpOptions) *Pump {
 		opts:    opts.withDefaults(),
 	}
 }
+
+// Batch is how many events one read of the feed takes, after the defaults and
+// the store's own cap have been applied. It is exported because it is what the
+// drain loop compares a read against, and a caller that asked for more than one
+// read returns should be able to see what it got.
+func (p *Pump) Batch() int { return p.opts.Batch }
 
 // Run reads the feed until ctx is cancelled, and returns nil when it stops that
 // way. A read that fails is logged and retried at the next tick: the feed is a

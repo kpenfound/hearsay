@@ -105,11 +105,19 @@ func TestFilterByThread(t *testing.T) {
 	review.Payload.Parent = "acme/api#31"
 	review.Time = pr.Time.Add(2 * time.Hour)
 
+	// A source with three levels — a reply to a reply — hangs off its thread
+	// and not off what it answers. The thread is what a document is assembled
+	// from, which is why the predicate reads it first.
+	nested := fake.NewEvent(connector.KindMessage, "acme/api#31:comment:2", "and another thing")
+	nested.Payload.Parent = "acme/api#31:comment:1"
+	nested.Payload.Thread = "acme/api#31"
+	nested.Time = pr.Time.Add(3 * time.Hour)
+
 	elsewhere := fake.NewEvent(connector.KindMessage, "acme/api#40:comment:1", "different conversation")
 	elsewhere.Payload.Parent = "acme/api#40"
 	elsewhere.Payload.Thread = "acme/api#40"
 
-	for _, ev := range []connector.Event{pr, comment, review, elsewhere} {
+	for _, ev := range []connector.Event{pr, comment, review, nested, elsewhere} {
 		if _, err := store.Append(t.Context(), ev); err != nil {
 			t.Fatalf("Append(%s) = %v", ev.NativeID, err)
 		}
@@ -131,7 +139,7 @@ func TestFilterByThread(t *testing.T) {
 			for _, ev := range got {
 				ids = append(ids, ev.Payload.Artifact)
 			}
-			want := []string{comment.Payload.Artifact, review.Payload.Artifact}
+			want := []string{comment.Payload.Artifact, review.Payload.Artifact, nested.Payload.Artifact}
 			if !slices.Equal(ids, want) {
 				t.Errorf("%s() = %v, want %v", read.name, ids, want)
 			}

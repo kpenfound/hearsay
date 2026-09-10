@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
@@ -142,6 +143,25 @@ func TestBuild(t *testing.T) {
 	}
 }
 
+// Where the source gives no time for an edit, the revision still exists and the
+// document says the artifact was last edited when it happened: there is nothing
+// else to say, and a zero time would be a time before the artifact.
+func TestBuildWithARevisionThatCarriesNoEditTime(t *testing.T) {
+	root, _ := pullRequest()
+	root.Payload.Revision.EditedAt = time.Time{}
+
+	doc, err := l1.Build(l1.Input{Root: root, Repo: testRepo})
+	if err != nil {
+		t.Fatalf("Build() = %v", err)
+	}
+	if !doc.Time.Updated.Equal(doc.Time.Created) {
+		t.Errorf("Time.Updated = %s, want the artifact's own time %s", doc.Time.Updated, doc.Time.Created)
+	}
+	if !doc.Time.LastActivity.Equal(doc.Time.Created) {
+		t.Errorf("Time.LastActivity = %s, want the artifact's own time %s", doc.Time.LastActivity, doc.Time.Created)
+	}
+}
+
 // The order children are handed over in is the caller's business and not the
 // document's: a store returns them in one order, a test in another, and the
 // document has to be the same either way or re-distilling would rewrite the row.
@@ -188,6 +208,40 @@ func TestBuildFoldsTheAccessListOfEveryEventItQuotes(t *testing.T) {
 	// grant and the artifact's own label survives.
 	if doc.ACL[0].Label != "collaborators" {
 		t.Errorf("ACL[0].Label = %q, want the artifact's own", doc.ACL[0].Label)
+	}
+}
+
+// Two grants of one kind that name different things are two grants. Comparing
+// only the kind would make a reply readable by another repository's
+// collaborators look like a reply readable by this one's.
+func TestBuildTellsTwoGrantsOfOneKindApart(t *testing.T) {
+	resolver := testPrincipals(t)
+	root, children := pullRequest()
+	root.ACL = connector.ACL{{Kind: connector.ACLGroup, Source: source, NativeID: repo}}
+	elsewhere := children[0]
+	elsewhere.ACL = connector.ACL{{Kind: connector.ACLGroup, Source: source, NativeID: "acme/other"}}
+
+	doc, err := l1.Build(l1.Input{Root: root, Children: []connector.Event{elsewhere}, Resolver: resolver, Repo: testRepo})
+	if err != nil {
+		t.Fatalf("Build() = %v", err)
+	}
+	if len(doc.L0Refs) != 1 {
+		t.Errorf("L0Refs = %v, want only the artifact: the reply is readable by a different group", doc.L0Refs)
+	}
+	if len(doc.ACL) != 1 || doc.ACL[0].NativeID != repo {
+		t.Errorf("ACL = %v, want the artifact's own group", doc.ACL)
+	}
+
+	// And a reply carrying the same grant under a different label is the same
+	// grant: a label is what a person reads.
+	same := children[0]
+	same.ACL = connector.ACL{{Kind: connector.ACLGroup, Source: source, NativeID: repo, Label: "the api team"}}
+	doc, err = l1.Build(l1.Input{Root: root, Children: []connector.Event{same}, Resolver: resolver, Repo: testRepo})
+	if err != nil {
+		t.Fatalf("Build(same grant) = %v", err)
+	}
+	if len(doc.L0Refs) != 2 {
+		t.Errorf("L0Refs = %v, want the reply as well: it carries the same grant", doc.L0Refs)
 	}
 }
 

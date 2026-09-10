@@ -7,6 +7,7 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -289,14 +290,22 @@ func TestThePumpEnqueuesOneJobPerDocument(t *testing.T) {
 
 	ingest(t, pool, fixtureEvents(src))
 	// The feed serves rows only once the transaction that wrote them has
-	// finished, so read until it has caught up rather than once.
+	// finished, so read until it has caught up rather than once. The last read
+	// that actually returned events is the one whose position has to have been
+	// saved; the feed is shared, so another package's test may add to it while
+	// this runs, and only this source's jobs are this test's.
 	deadline := time.Now().Add(30 * time.Second)
 	var targets []string
+	var lastRead distiller.Progress
 	for {
-		if _, err := pump.Once(t.Context()); err != nil {
+		progress, err := pump.Once(t.Context())
+		if err != nil {
 			t.Fatalf("Once() = %v", err)
 		}
-		targets = newTargets(pendingTargets(t, client), before)
+		if progress.Events > 0 {
+			lastRead = progress
+		}
+		targets = fromSource(newTargets(pendingTargets(t, client), before), src)
 		if len(targets) >= 3 || time.Now().After(deadline) {
 			break
 		}
@@ -310,11 +319,16 @@ func TestThePumpEnqueuesOneJobPerDocument(t *testing.T) {
 		t.Fatalf("the pump enqueued %v, want one job per document: %v", targets, want)
 	}
 
-	// Reading the feed again enqueues nothing: the cursor moved with the jobs.
-	if progress, err := pump.Once(t.Context()); err != nil {
-		t.Fatalf("Once(again) = %v", err)
-	} else if progress.Jobs != 0 {
-		t.Errorf("Once(again) enqueued %d jobs, want none", progress.Jobs)
+	// The cursor was saved with the jobs. Counting jobs would not say this — a
+	// re-enqueue collapses onto the job that is already pending, so a cursor
+	// that never moved would look exactly like one that did, and every restart
+	// would re-read the whole feed.
+	saved, err := l0.NewCursors(pool).Load(t.Context(), distiller.Consumer)
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	if saved != lastRead.Cursor {
+		t.Errorf("the saved cursor is %s and the pump read up to %s", saved, lastRead.Cursor)
 	}
 }
 
@@ -426,6 +440,18 @@ func pendingTargets(t *testing.T, client *queue.Client) []string {
 		targets = append(targets, job.TargetID)
 	}
 	return targets
+}
+
+// fromSource keeps the targets that name one source, because the feed is shared
+// with whatever else is running against this database.
+func fromSource(targets []string, src string) []string {
+	var out []string
+	for _, target := range targets {
+		if strings.HasPrefix(target, l1.DocID(src, "")) {
+			out = append(out, target)
+		}
+	}
+	return out
 }
 
 func newTargets(now, before []string) []string {

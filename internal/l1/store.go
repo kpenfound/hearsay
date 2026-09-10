@@ -124,7 +124,7 @@ func (s *Store) Put(ctx context.Context, doc Document) (bool, error) {
 	err = s.db.QueryRow(ctx, putSQL,
 		doc.ID, string(doc.Kind), doc.Source.System, doc.Source.NativeID, doc.Source.URL,
 		doc.L0Refs, doc.Time.Created, doc.Time.Updated, doc.Time.LastActivity,
-		row.participants, doc.Scope, row.references, row.acl,
+		row.participants, orEmpty(doc.Scope), row.references, row.acl,
 		doc.Text, doc.RawText, row.body, string(doc.Body.OutcomeKind),
 	).Scan(&distilledAt)
 	switch {
@@ -280,6 +280,8 @@ func rowOf(doc Document) (row, error) {
 	return r, nil
 }
 
+// orEmpty is what keeps a nil slice out of a NOT NULL column: pgx writes one as
+// NULL, and a jsonb column here holds an array while a text[] holds a list.
 func orEmpty[T any](s []T) []T {
 	if s == nil {
 		return []T{}

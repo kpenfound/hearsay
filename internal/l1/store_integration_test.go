@@ -171,6 +171,38 @@ func TestPutAndGetRoundTrip(t *testing.T) {
 	}
 }
 
+// A document with no scope and no references is a document, not a row with
+// nulls in columns that cannot hold one.
+func TestPutADocumentWithNothingOptionalOnIt(t *testing.T) {
+	store := l1.New(newPool(t))
+	src := newSource(t)
+	doc := storedDoc(t, src, "acme/api#51", func(d *l1.Document) {
+		d.Participants = nil
+		d.Scope = nil
+		d.References = nil
+		d.Body.OpenQuestions = nil
+	})
+	if _, err := store.Put(t.Context(), doc); err != nil {
+		t.Fatalf("Put() = %v", err)
+	}
+	stored, err := store.Get(t.Context(), doc.ID)
+	if err != nil {
+		t.Fatalf("Get() = %v", err)
+	}
+	if len(stored.Scope) != 0 || len(stored.References) != 0 || len(stored.Participants) != 0 {
+		t.Errorf("the empty columns came back as %v, %v, %v", stored.Scope, stored.References, stored.Participants)
+	}
+	// And writing it again still changes nothing: an absent list and an empty
+	// one are one value here, so they must not rewrite each other.
+	empty := doc
+	empty.Scope = []string{}
+	empty.References = []l1.Reference{}
+	empty.Participants = []l1.Participant{}
+	if written, err := store.Put(t.Context(), empty); err != nil || written {
+		t.Errorf("Put(the same document with empty lists) = %v, %v, want no write", written, err)
+	}
+}
+
 func TestGetAndDelete(t *testing.T) {
 	store := l1.New(newPool(t))
 	src := newSource(t)

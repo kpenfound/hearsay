@@ -78,6 +78,14 @@ func TestReferences(t *testing.T) {
 		text: "broken by https://github.com/acme/api/commit/deadbeef",
 		want: []l1.Reference{{Type: l1.RefCommit, ID: "acme/api@deadbeef"}},
 	}, {
+		name: "a link is normalised, so two spellings of one are one reference",
+		text: "the runbook is at HTTPS://Wiki.Example/Ops/ and at https://wiki.example/Ops",
+		want: []l1.Reference{{Type: l1.RefURL, ID: "https://wiki.example/Ops"}},
+	}, {
+		name: "an alias next to a letter of another script is not a match",
+		text: "the enginé is fine and théengine is fine",
+		want: nil,
+	}, {
 		name: "a link the shape does not cover is the link itself",
 		text: "the runbook is at https://wiki.example/ops/runbook?page=2",
 		want: []l1.Reference{{Type: l1.RefURL, ID: "https://wiki.example/ops/runbook?page=2"}},
