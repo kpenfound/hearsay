@@ -99,7 +99,8 @@ type poller struct {
 	inPoll   atomic.Int64
 	overlap  atomic.Bool
 	closes   atomic.Int64
-	failures int64 // fail this many polls before the first success
+	failures int64         // fail this many polls before the first success
+	release  chan struct{} // if set, the first poll that would succeed waits for it
 }
 
 func (p *poller) Poll(ctx context.Context, sink connector.Sink) error {
@@ -115,6 +116,17 @@ func (p *poller) Poll(ctx context.Context, sink connector.Sink) error {
 	}
 	if n := p.polls.Add(1); n <= p.failures {
 		return errors.New("the source is unreachable")
+	}
+	// Held here rather than after the poll: a failure count that clears on
+	// success is only observable while the call that clears it has not
+	// returned, and a test that raced the clear would pass on the timing of the
+	// machine it ran on.
+	if p.release != nil {
+		select {
+		case <-p.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	return p.Fake.Poll(ctx, sink)
 }
@@ -161,7 +173,7 @@ func TestPollIsNeverConcurrentWithItself(t *testing.T) {
 func TestAPollThatFailsIsRetried(t *testing.T) {
 	src := runtimeSource("fake-eng")
 	fake := connector.NewFake(src)
-	p := &poller{Fake: fake, failures: 2}
+	p := &poller{Fake: fake, failures: 2, release: make(chan struct{})}
 	fake.Queue = []connector.Event{fake.NewEvent(connector.KindMessage, "m1", "after two failures")}
 	rec := &connector.Recorder{}
 
@@ -170,9 +182,14 @@ func TestAPollThatFailsIsRetried(t *testing.T) {
 		Registry: registryOf(t, map[string]connector.Connector{src.ID: p}),
 		Sink:     rec,
 	})
-	waitFor(t, "the failures to be reported", func() bool {
-		return runtime.Health(t.Context()).Sources[0].PollFailures >= 2
-	})
+	// The third poll is the one that will work, and it is held: the count is
+	// what it was when the second failed, and nothing has cleared it yet.
+	waitFor(t, "the poll after the failures to start", func() bool { return p.polls.Load() > p.failures })
+	if got := runtime.Health(t.Context()).Sources[0].PollFailures; got != p.failures {
+		t.Errorf("PollFailures = %d after %d failed polls, want %d", got, p.failures, p.failures)
+	}
+	close(p.release)
+
 	waitFor(t, "the event that follows them", func() bool { return len(rec.Events()) == 1 })
 	waitFor(t, "the failure count to clear", func() bool {
 		return runtime.Health(t.Context()).Sources[0].PollFailures == 0
@@ -417,11 +434,22 @@ type flaky struct {
 	*connector.Fake
 	failures int64
 	calls    atomic.Int64
+	release  chan struct{} // if set, the first call that would succeed waits for it
 }
 
 func (f *flaky) Backfill(ctx context.Context, sink connector.Sink, from connector.Cursor) (connector.BackfillResult, error) {
 	if f.calls.Add(1) <= f.failures {
 		return connector.BackfillResult{}, errors.New("the source is unreachable")
+	}
+	// Held for the same reason [poller] is: the count clears when a call and
+	// its save both work, so it can only be read while the call that clears it
+	// is still in flight.
+	if f.release != nil {
+		select {
+		case <-f.release:
+		case <-ctx.Done():
+			return connector.BackfillResult{}, ctx.Err()
+		}
 	}
 	return f.Fake.Backfill(ctx, sink, from)
 }
@@ -432,7 +460,7 @@ func (f *flaky) Backfill(ctx context.Context, sink connector.Sink, from connecto
 func TestABackfillThatFailsIsRetriedAndCounted(t *testing.T) {
 	src := runtimeSource("fake-eng")
 	cursors := connector.NewMemoryCursors()
-	f := &flaky{Fake: pages(src), failures: 2}
+	f := &flaky{Fake: pages(src), failures: 2, release: make(chan struct{})}
 	rec := &connector.Recorder{}
 
 	runtime, stop := start(t, connector.RuntimeOptions{
@@ -441,9 +469,13 @@ func TestABackfillThatFailsIsRetriedAndCounted(t *testing.T) {
 		Sink:     rec,
 		Cursors:  cursors,
 	})
-	waitFor(t, "the failures to be reported", func() bool {
-		return runtime.Health(t.Context()).Sources[0].BackfillFailures >= 2
-	})
+	// The third call is the one that will work, and it is held.
+	waitFor(t, "the call after the failures to start", func() bool { return f.calls.Load() > f.failures })
+	if got := runtime.Health(t.Context()).Sources[0].BackfillFailures; got != f.failures {
+		t.Errorf("BackfillFailures = %d after %d failed calls, want %d", got, f.failures, f.failures)
+	}
+	close(f.release)
+
 	waitFor(t, "the history that follows them", func() bool {
 		return runtime.Health(t.Context()).Sources[0].BackfillDone
 	})
