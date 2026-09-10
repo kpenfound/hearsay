@@ -234,12 +234,25 @@ func TestNoConfigurationHostsNothing(t *testing.T) {
 	}
 }
 
-// Writing L0 is what a connector does, so a process with no database is one
-// that cannot do its job.
-func TestTheServiceNeedsSomewhereToWrite(t *testing.T) {
-	err := connectors.Run(t.Context(), &config.Config{}, connectors.Deps{})
-	if err == nil || !strings.Contains(err.Error(), "database") {
-		t.Fatalf("Run() with no database and no sink = %v, want an error about the database", err)
+// Writing L0 is what a connector does, and a backfill that cannot store its
+// position walks a source's history again on every restart. A process with
+// neither a database nor something in its place cannot do the job.
+func TestTheServiceNeedsSomewhereToWriteAndSomewhereToResumeFrom(t *testing.T) {
+	tests := []struct {
+		name string
+		deps connectors.Deps
+	}{
+		{name: "nothing at all", deps: connectors.Deps{}},
+		{name: "a sink but nowhere to keep a cursor", deps: connectors.Deps{Sink: &connector.Recorder{}}},
+		{name: "a cursor store but nowhere to write", deps: connectors.Deps{Cursors: connector.NewMemoryCursors()}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := connectors.Run(t.Context(), &config.Config{}, tt.deps)
+			if err == nil || !strings.Contains(err.Error(), "database") {
+				t.Fatalf("Run() = %v, want an error about the database", err)
+			}
+		})
 	}
 }
 

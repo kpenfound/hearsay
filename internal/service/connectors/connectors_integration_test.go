@@ -152,6 +152,40 @@ func TestTheServiceIngestsIntoL0AndKeepsItsPosition(t *testing.T) {
 	}
 }
 
+// Ready is not the same as up: a process whose database has gone away is
+// running and cannot ingest (ADR-0008).
+func TestReadyzFailsWhenTheDatabaseIsUnreachable(t *testing.T) {
+	newPool(t) // skips the test when there is no database
+
+	// A pool of its own, closed: that is a database this process cannot reach,
+	// without taking the one every other test is using away from them.
+	pool, err := db.Connect(t.Context(), os.Getenv("HEARSAY_DATABASE_URL"))
+	if err != nil {
+		t.Fatalf("Connect() = %v, want no error", err)
+	}
+	pool.Close()
+
+	addr, stop := run(t, &config.Config{}, connectors.Deps{
+		Pool:    pool,
+		Sink:    &connector.Recorder{},
+		Cursors: connector.NewMemoryCursors(),
+	})
+	code, body := get(t, addr, "/readyz")
+	if code != http.StatusServiceUnavailable {
+		t.Errorf("GET /readyz with an unreachable database = %d, want 503: %s", code, body)
+	}
+	// What went wrong is in the log. The body says that something is, and names
+	// no host, no user and no password.
+	for _, secret := range []string{"127.0.0.1", "hearsay@", "closed"} {
+		if strings.Contains(body, secret) {
+			t.Errorf("the readiness body carries %q, which is the operator's to read in the log: %s", secret, body)
+		}
+	}
+	if err := stop(); err != nil {
+		t.Fatalf("Run() = %v, want nil", err)
+	}
+}
+
 // artifactsIn is what L0 holds for one source, sorted, which is what a test
 // compares.
 func artifactsIn(t *testing.T, store *l0.Store, source string) []string {

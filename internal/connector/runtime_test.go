@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -366,6 +367,47 @@ func TestBackfillPersistsAfterEveryCall(t *testing.T) {
 	}
 }
 
+// stuck is a backfiller that hands back the cursor it was given and emits
+// nothing: the contract says one call does a bounded amount of work and reports
+// Done when there is no more, so this is a connector to fix.
+type stuck struct {
+	*connector.Fake
+	calls atomic.Int64
+}
+
+func (s *stuck) Backfill(_ context.Context, _ connector.Sink, from connector.Cursor) (connector.BackfillResult, error) {
+	s.calls.Add(1)
+	return connector.BackfillResult{Next: from}, nil
+}
+
+// A backfill that makes no progress is a failure and not the end of history:
+// recording a walk that never happened would lose the source's history for
+// good, and calling it again immediately would be a hot loop against the
+// source's API.
+func TestABackfillThatMakesNoProgressIsNotProgress(t *testing.T) {
+	src := runtimeSource("fake-eng")
+	cursors := connector.NewMemoryCursors()
+	s := &stuck{Fake: connector.NewFake(src)}
+
+	_, stop := start(t, connector.RuntimeOptions{
+		Sources:  []connector.SourceConfig{src},
+		Registry: registryOf(t, map[string]connector.Connector{src.ID: s}),
+		Sink:     &connector.Recorder{},
+		Cursors:  cursors,
+	})
+	waitFor(t, "the backfill to be tried", func() bool { return s.calls.Load() >= 2 })
+	time.Sleep(50 * time.Millisecond)
+	if err := stop(); err != nil {
+		t.Fatalf("Run() = %v, want nil", err)
+	}
+	if got := cursors.Saves(src.ID); len(got) != 0 {
+		t.Errorf("a backfill that emitted nothing and did not move stored %d positions: %+v", len(got), got)
+	}
+	if got, err := cursors.Load(t.Context(), src.ID); err != nil || got.Done {
+		t.Errorf("Load() = %+v, %v, want a source whose history is not recorded as walked", got, err)
+	}
+}
+
 // A source whose history is already walked is not walked again on the next
 // start.
 func TestADoneBackfillIsNotRestarted(t *testing.T) {
@@ -696,6 +738,18 @@ func TestCadence(t *testing.T) {
 					t.Errorf("Interval(%s) = %s, want %s", tt.src, got, tt.want)
 				}
 			})
+		}
+	})
+
+	t.Run("a tick is spread over the interval after it is due", func(t *testing.T) {
+		// Two sources, or two replicas, whose ticks start together stay in
+		// lockstep forever without this.
+		seen := map[time.Duration]bool{}
+		for range 200 {
+			seen[cadence.Backoff(time.Minute, 1)] = true
+		}
+		if len(seen) < 2 {
+			t.Errorf("200 ticks of a one-minute interval all came out at %v, want them spread", slices.Collect(maps.Keys(seen)))
 		}
 	})
 
