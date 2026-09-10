@@ -8,6 +8,7 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -211,6 +212,67 @@ func TestPutRefusesADocumentTheLayerRefuses(t *testing.T) {
 				t.Fatal("Put() = nil, want an error")
 			}
 		})
+	}
+}
+
+// The table enforces what the layer enforces, so a row written by anything else
+// — a migration, a repair script, a later package — behaves the same. Go's
+// validation refuses these before any SQL runs, so this is the only thing that
+// can tell whether the constraints are still there.
+func TestTheTableRefusesWhatTheLayerRefuses(t *testing.T) {
+	pool := newPool(t)
+	src := newSource(t)
+	insert := `INSERT INTO l1_docs (id, kind, source, source_native_id, source_url, l0_refs,
+		created_at, updated_at, last_activity_at, participants, scope, refs, acl,
+		text, raw_text, body, outcome_kind)
+		VALUES ($1, 'pr', $2, $3, '', $4, $5, $5, $5, '[]'::jsonb, '{}', '[]'::jsonb, $6::jsonb,
+		        'text', 'raw', $7::jsonb, $8)`
+
+	tests := []struct {
+		name       string
+		artifact   string
+		l0Refs     []string
+		acl        string
+		body       string
+		outcome    string
+		constraint string
+	}{
+		{name: "an outcome kind that is not one of the five", artifact: "acme/api#1",
+			l0Refs: []string{"evt:x"}, acl: `[{"kind":"public"}]`,
+			body: `{"outcome_kind":"merged"}`, outcome: "merged", constraint: "outcome_kind"},
+		{name: "no provenance", artifact: "acme/api#2",
+			l0Refs: []string{}, acl: `[{"kind":"public"}]`,
+			body: `{"outcome_kind":"none"}`, outcome: "none", constraint: "provenance"},
+		{name: "an empty access list", artifact: "acme/api#3",
+			l0Refs: []string{"evt:x"}, acl: `[]`,
+			body: `{"outcome_kind":"none"}`, outcome: "none", constraint: "acl"},
+		{name: "a body that is not an object", artifact: "acme/api#4",
+			l0Refs: []string{"evt:x"}, acl: `[{"kind":"public"}]`,
+			body: `"none"`, outcome: "none", constraint: "body"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := pool.Exec(t.Context(), insert,
+				l1.DocID(src, tt.artifact), src, tt.artifact, tt.l0Refs, day, tt.acl, tt.body, tt.outcome)
+			if err == nil {
+				t.Fatalf("the table accepted %s", tt.name)
+			}
+			if !strings.Contains(err.Error(), tt.constraint) {
+				t.Errorf("the row was refused by %v, want the constraint about %s", err, tt.constraint)
+			}
+		})
+	}
+
+	// And an id that is not derived from the source and the artifact, which is
+	// what makes a document id parseable back to what it distils.
+	_, err := pool.Exec(t.Context(), insert,
+		"l1:"+src+":something-else", src, "acme/api#5", []string{"evt:x"}, day,
+		`[{"kind":"public"}]`, `{"outcome_kind":"none"}`, "none")
+	if err == nil {
+		t.Fatal("the table accepted an id that is not the derived one")
+	}
+	if !strings.Contains(err.Error(), "id_is_derived") {
+		t.Errorf("the row was refused by %v, want the constraint about the id", err)
 	}
 }
 
