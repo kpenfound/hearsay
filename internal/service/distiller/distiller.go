@@ -111,7 +111,14 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 
 	log := telemetry.Logger(ctx)
 	log.InfoContext(ctx, "distiller started",
-		"concurrency", concurrency, "config_digest", cfg.Repo.Digest)
+		"concurrency", concurrency, "config_digest", cfg.Repo.Digest,
+		"embedding", distiller.embedder != nil)
+	if distiller.embedder == nil {
+		// Without it every document is written with no vector, so search finds
+		// documents by the words in them and never by what they are about
+		// (docs/config.md).
+		log.WarnContext(ctx, "no embed tier: documents are not embedded and search runs on full text alone")
+	}
 
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()

@@ -4,6 +4,7 @@ package distiller_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"slices"
 	"strconv"
@@ -135,6 +136,113 @@ func TestDistillingTwiceProducesIdenticalRows(t *testing.T) {
 		}
 		assertSameStoredDocument(t, stored, first[id])
 	}
+}
+
+// The document the distiller wrote is embedded, by the tier the configuration
+// names, once — and with no such tier the document is written anyway and search
+// finds it by its words alone.
+func TestDistillingEmbedsTheDocumentItWrote(t *testing.T) {
+	pool := newPool(t)
+	src := newSource(t)
+	ingest(t, pool, fixtureEvents(src))
+	docs := l1.New(pool)
+	id := l1.DocID(src, repo+"#31")
+
+	// The shipped configuration names no embed tier (ADR-0005).
+	result, err := newDistiller(t, pool, src).Distill(t.Context(), id)
+	if err != nil {
+		t.Fatalf("Distill(%s) = %v", id, err)
+	}
+	if !result.Written || result.Embedded {
+		t.Fatalf("Distill(%s) = %+v, want the document written and not embedded", id, result)
+	}
+	if embedded(t, pool, id) {
+		t.Error("a document was embedded with no embed tier configured")
+	}
+
+	// Now with one, recorded against the text the distillation produced: what
+	// is embedded is the distillation and never the team's own words.
+	stored, err := docs.Get(t.Context(), id)
+	if err != nil {
+		t.Fatalf("Get(%s) = %v", id, err)
+	}
+	d := embeddingDistiller(t, pool, src, l1.EmbedText(stored.Text))
+
+	result, err = d.Distill(t.Context(), id)
+	if err != nil {
+		t.Fatalf("Distill(%s, with an embed tier) = %v", id, err)
+	}
+	if result.Written || !result.Embedded {
+		t.Fatalf("Distill(%s, with an embed tier) = %+v, want the row untouched and a vector written", id, result)
+	}
+	if !embedded(t, pool, id) {
+		t.Fatal("the distiller reported an embedding and the row has none")
+	}
+
+	// And it does not embed again what has not changed, which is what stops a
+	// re-distillation costing an embedding call.
+	result, err = d.Distill(t.Context(), id)
+	if err != nil {
+		t.Fatalf("Distill(%s, again) = %v", id, err)
+	}
+	if result.Embedded {
+		t.Error("a document that had not changed was embedded a second time")
+	}
+}
+
+// A tier whose vectors are not the width of the column stops the process at
+// startup: the fix is a migration and a re-embed of every row, not a job that
+// fails every time it runs (ADR-0005).
+func TestADistillerRefusesAnEmbedTierOfTheWrongWidth(t *testing.T) {
+	pool := newPool(t)
+	src := newSource(t)
+	cfg := testConfig(src)
+	cfg.Repo.LLM = withEmbedTier(cfg.Repo.LLM, l1.EmbeddingDimensions/2)
+	registry, err := llm.NewFake(cfg.Repo.LLM, loadFixtures(t))
+	if err != nil {
+		t.Fatalf("building the fake registry: %v", err)
+	}
+	if _, err := distiller.New(pool, registry, cfg); !errors.Is(err, llm.ErrDimensions) {
+		t.Fatalf("distiller.New() = %v, want llm.ErrDimensions", err)
+	}
+}
+
+// embeddingDistiller is the distiller with an embed tier that answers, from a
+// recording of exactly the text the store will send it.
+func embeddingDistiller(t *testing.T, pool *pgxpool.Pool, src, text string) *distiller.Distiller {
+	t.Helper()
+	fixtures := loadFixtures(t)
+	vector := make([]float32, l1.EmbeddingDimensions)
+	vector[0] = 1
+	if err := fixtures.AddEmbedding(llm.EmbeddingFixture{Texts: []string{text}, Vectors: [][]float32{vector}}); err != nil {
+		t.Fatalf("recording the embedding: %v", err)
+	}
+	cfg := testConfig(src)
+	cfg.Repo.LLM = withEmbedTier(cfg.Repo.LLM, l1.EmbeddingDimensions)
+	registry, err := llm.NewFake(cfg.Repo.LLM, fixtures)
+	if err != nil {
+		t.Fatalf("building the fake registry: %v", err)
+	}
+	d, err := distiller.New(pool, registry, cfg)
+	if err != nil {
+		t.Fatalf("distiller.New() = %v", err)
+	}
+	return d
+}
+
+func withEmbedTier(cfg llm.Config, dimensions int) llm.Config {
+	cfg = cfg.Clone()
+	cfg.Tiers[llm.TierEmbed] = llm.TierConfig{Provider: "acme", Model: "embed-1", Dimensions: dimensions}
+	return cfg
+}
+
+func embedded(t *testing.T, pool *pgxpool.Pool, id string) bool {
+	t.Helper()
+	var has bool
+	if err := pool.QueryRow(t.Context(), `SELECT embedding IS NOT NULL FROM l1_docs WHERE id = $1`, id).Scan(&has); err != nil {
+		t.Fatalf("reading the embedding of %s: %v", id, err)
+	}
+	return has
 }
 
 // The other two acceptance criteria, on the documents the fixture repository

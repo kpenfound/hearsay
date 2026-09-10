@@ -403,6 +403,57 @@ func (r *Resolver) Members(teamID string) []Principal {
 	return out
 }
 
+// Claims reports which principal a source's own spelling of a name belongs to,
+// taking the two namespaces together: the spelling is looked up as a native id
+// and as a handle, and the answer is a principal only when both agree or only
+// one of them matches at all.
+//
+// It is what a caller needs when it holds a name a source wrote down and cannot
+// tell which namespace the source meant — an access list entry's `native_id`,
+// which the contract says is the source's id but which a source with no
+// separate id for a group fills with the group's name
+// (docs/connector-contract.md). [NewResolver] refuses two principals claiming
+// one native id, and refuses two claiming one handle, but a handle and a native
+// id are different namespaces and may legitimately collide: this is how a
+// caller that cannot honour that distinction finds out that it has one.
+//
+// False means the spelling names nobody, or names more than one principal. Both
+// are answers a caller reading on somebody's behalf has to treat the same way,
+// which is to grant nothing.
+//
+// Nothing is recorded. This is a question about the mapping, not a sighting of
+// an identity that failed to resolve.
+func (r *Resolver) Claims(source, spelling string) (string, bool) {
+	// An empty source or an empty spelling needs no guard of its own: the
+	// mapping indexes neither, so the keys they build match nothing.
+	res := r.lookup([]identityKey{nativeKey(source, spelling), handleKey(source, spelling)})
+	if res.Status != Resolved {
+		return "", false
+	}
+	return res.Principal.ID, true
+}
+
+// Teams returns the teams that list this principal as a member, sorted by id.
+// It is the reverse of [Resolver.Members], and it is what a read needs: a
+// document's access list names groups, and whether the caller is in one is a
+// question about which teams they belong to.
+//
+// A team may not contain a team, so this is one level and not a walk, and a
+// team asked about its own memberships has none.
+func (r *Resolver) Teams(id string) []Principal {
+	var out []Principal
+	for _, p := range r.byID {
+		if p.Kind != KindTeam || !slices.Contains(p.Members, id) {
+			continue
+		}
+		out = append(out, p)
+	}
+	// Map iteration order is not an order, and what this feeds — the set of
+	// grants a caller satisfies — is compared and cached by callers.
+	slices.SortFunc(out, func(a, b Principal) int { return strings.Compare(a.ID, b.ID) })
+	return out
+}
+
 // Expand turns a list of principal ids — a code entity's owners, an authority
 // policy's ratifiers — into the individual principals they stand for, replacing
 // each team with its members. The result is deduplicated and keeps the order

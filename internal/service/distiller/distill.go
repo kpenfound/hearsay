@@ -42,10 +42,16 @@ type Distiller struct {
 	events   *l0.Store
 	docs     *l1.Store
 	tier     llm.Completer
+	embedder llm.Embedder
 	resolver *principal.Resolver
 	repo     config.Repo
 	timeout  time.Duration
 }
+
+// The embed tier is used through internal/l1's own interface, so that storing a
+// vector does not depend on the provider abstraction. This is the one place
+// that says the two are the same shape.
+var _ l1.Embedder = (llm.Embedder)(nil)
 
 // New builds the distiller from what the process has: the database, the model
 // tier registry and the configuration.
@@ -69,14 +75,41 @@ func New(pool *pgxpool.Pool, registry llm.Registry, cfg *config.Config) (*Distil
 	if err != nil {
 		return nil, fmt.Errorf("building the identity resolver: %w", err)
 	}
+	embedder, err := embedTier(registry)
+	if err != nil {
+		return nil, err
+	}
 	return &Distiller{
 		events:   l0.New(pool),
 		docs:     l1.New(pool),
 		tier:     tier,
+		embedder: embedder,
 		resolver: resolver,
 		repo:     cfg.Repo,
 		timeout:  CallTimeout,
 	}, nil
+}
+
+// embedTier is the `embed` tier, or nil where the configuration names none.
+//
+// A configuration with no embed tier is the shipped one (ADR-0005 ships no
+// embedding provider), and it is not an error: documents are written without a
+// vector and search finds them by their words alone. What is an error is a tier
+// that produces vectors of the wrong width — that is a migration and a re-embed
+// of every row rather than a configuration edit, so it stops the process at
+// startup instead of writing rows the column would refuse.
+func embedTier(registry llm.Registry) (llm.Embedder, error) {
+	embedder, err := registry.Embedder()
+	if errors.Is(err, llm.ErrTierNotConfigured) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := llm.CheckDimensions(embedder, l1.EmbeddingDimensions); err != nil {
+		return nil, err
+	}
+	return embedder, nil
 }
 
 // Result is what one distillation did.
@@ -101,6 +134,11 @@ type Result struct {
 	// Redacted names the shapes the scrub took out of what the model wrote,
 	// sorted. It is the shapes and never the values (ADR-0008).
 	Redacted []string
+	// Embedded reports that the document was given the vector its text asks
+	// for. It is false where there is no embed tier configured, and where the
+	// document already had one — which is the ordinary outcome, because a
+	// re-distillation that changes nothing leaves the vector standing.
+	Embedded bool
 }
 
 // Handle is the queue handler for the `distill` kind. It is safe to run twice
@@ -120,9 +158,10 @@ func (d *Distiller) Handle(ctx context.Context, job queue.Job) error {
 		log.InfoContext(ctx, "distillation dropped: the conversation moved while the model was answering",
 			"l1_id", result.DocID)
 	case result.Written:
-		log.InfoContext(ctx, "document distilled", "l1_id", result.DocID, "redacted", result.Redacted)
+		log.InfoContext(ctx, "document distilled", "l1_id", result.DocID,
+			"redacted", result.Redacted, "embedded", result.Embedded)
 	default:
-		log.DebugContext(ctx, "document unchanged", "l1_id", result.DocID)
+		log.DebugContext(ctx, "document unchanged", "l1_id", result.DocID, "embedded", result.Embedded)
 	}
 	return nil
 }
@@ -235,7 +274,36 @@ func (d *Distiller) Distill(ctx context.Context, docID string) (Result, error) {
 	}
 	result.Written = written
 	result.Redacted = redacted
+
+	// The vector comes after the row, and asks the table what it needs rather
+	// than assuming: Put clears the embedding whenever it writes different
+	// text, so what needs embedding is what has no vector — a document this
+	// job just changed, one written before an embed tier was configured, or one
+	// whose embedding failed last time. A re-distillation that changed nothing
+	// makes no embedding call.
+	//
+	// A failure here fails the job, and the retry re-distils from scratch: a
+	// document that is in the table but not in the vector index is invisible to
+	// half of search, and the model call the retry spends is the price of that
+	// not being a silent state. The tier has already retried by then
+	// (internal/llm), so a failure that reaches here is a persistent one.
+	embedded, err := d.embed(ctx, docID)
+	if err != nil {
+		return Result{}, err
+	}
+	result.Embedded = embedded
 	return result, nil
+}
+
+// embed gives a document the vector its text asks for, where there is a tier to
+// make one.
+func (d *Distiller) embed(ctx context.Context, docID string) (bool, error) {
+	if d.embedder == nil {
+		return false, nil
+	}
+	call, done := context.WithTimeout(ctx, d.timeout)
+	defer done()
+	return d.docs.Embed(call, d.embedder, docID)
 }
 
 // provenanceNow is the L0Refs a document built from L0 right now would carry,

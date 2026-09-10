@@ -539,6 +539,110 @@ func TestPrincipalLookup(t *testing.T) {
 	}
 }
 
+// Claims answers the question a caller holding one string from a source has:
+// who does this name belong to? The two namespaces are taken together, because
+// an access list entry does not say which of them the source meant.
+func TestClaims(t *testing.T) {
+	r := newResolver(t, []principal.Principal{{
+		ID:   "kyle",
+		Kind: principal.KindHuman,
+		Identities: []principal.Identity{
+			{Source: "github", NativeID: "u1", Handle: "kpenfound"},
+			{Source: "discord", NativeID: "kpenfound"},
+		},
+	}, {
+		// `U1` is a handle, and handles fold: it is the same string as kyle's
+		// native id, in the other namespace. The mapping accepts that, and
+		// this is how a caller that cannot tell them apart finds out.
+		ID:         "robin",
+		Kind:       principal.KindHuman,
+		Identities: []principal.Identity{{Source: "github", NativeID: "u2", Handle: "U1"}},
+	}, {
+		ID:         "api-team",
+		Kind:       principal.KindTeam,
+		Members:    []string{"kyle"},
+		Identities: []principal.Identity{{Source: "github", NativeID: "t1", Handle: "acme/api-team"}},
+	}})
+
+	tests := []struct {
+		name     string
+		source   string
+		spelling string
+		want     string // "" for a spelling that names nobody, or more than one
+	}{
+		{"a native id", "github", "u2", "robin"},
+		{"a handle", "github", "kpenfound", "kyle"},
+		{"a handle in any case", "github", "KPenfound", "kyle"},
+		{"a group by its name", "github", "acme/api-team", "api-team"},
+		{"a group by its id", "github", "t1", "api-team"},
+		{"a spelling only one namespace holds", "github", "U1", "robin"},
+		{"one principal's native id is another's handle, folded", "github", "u1", ""},
+		{"both namespaces, one principal", "discord", "kpenfound", "kyle"},
+		{"a spelling nobody configured", "github", "nobody", ""},
+		{"the right spelling in the wrong source", "discord", "u1", ""},
+		{"no source", "", "u1", ""},
+		{"no spelling", "github", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := r.Claims(tt.source, tt.spelling)
+			if tt.want == "" {
+				if ok {
+					t.Errorf("Claims(%q, %q) = %q, true, want nobody", tt.source, tt.spelling, got)
+				}
+				return
+			}
+			if !ok || got != tt.want {
+				t.Errorf("Claims(%q, %q) = %q, %v, want %q", tt.source, tt.spelling, got, ok, tt.want)
+			}
+		})
+	}
+}
+
+// Teams is the reverse of Members, and it is what a read asks: a document's
+// access list names groups, and whether the caller is in one of them is a
+// question about the teams they belong to.
+func TestTeams(t *testing.T) {
+	r := newResolver(t, append(mapping(),
+		principal.Principal{ID: "infra-team", Kind: principal.KindTeam, Members: []string{"kyle"}},
+		principal.Principal{ID: "zz-team", Kind: principal.KindTeam, Members: []string{"kyle"}},
+		principal.Principal{ID: "empty-team", Kind: principal.KindTeam},
+		// Only a team is a container. Configuration refuses a person who lists
+		// members, and a mapping built by hand that has one is not a group
+		// anybody is in.
+		principal.Principal{ID: "not-a-team", Kind: principal.KindHuman, Members: []string{"kyle"}},
+	))
+	tests := []struct {
+		name string
+		id   string
+		want []string
+	}{
+		{"every team that lists them, sorted", "kyle", []string{"api-team", "infra-team", "zz-team"}},
+		{"one team", "robin", []string{"api-team"}},
+		{"an agent is a member like anybody else", "shed", []string{"api-team"}},
+		{"a team is in no team, because a team may not contain one", "api-team", nil},
+		{"nobody is in nothing", "nobody", nil},
+		{"no id at all", "", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ids(r.Teams(tt.id)); !slices.Equal(got, tt.want) {
+				t.Errorf("Teams(%q) = %v, want %v", tt.id, got, tt.want)
+			}
+		})
+	}
+
+	// The order is an order and not whatever the map felt like: what this feeds
+	// is compared and cached, and Go randomizes map iteration on every range,
+	// so asking repeatedly is what tells the two apart.
+	first := ids(r.Teams("kyle"))
+	for range 5 {
+		if got := ids(r.Teams("kyle")); !slices.Equal(got, first) {
+			t.Fatalf("Teams(kyle) = %v and then %v: the same question answered two ways", first, got)
+		}
+	}
+}
+
 func TestMembersAndExpand(t *testing.T) {
 	r := newResolver(t, append(mapping(), principal.Principal{
 		ID: "empty-team", Kind: principal.KindTeam, Members: []string{"gone"},
