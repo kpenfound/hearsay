@@ -485,6 +485,12 @@ func (r *Runtime) load(ctx context.Context, h *hosted, interval time.Duration) (
 	for fails := 1; ; fails++ {
 		state, err := r.opts.Cursors.Load(ctx, h.src.ID)
 		if err == nil {
+			// A read that worked clears the count, however many attempts it
+			// took. The loop below clears it too, after a call and its save —
+			// but a source whose history is already walked never reaches the
+			// loop, so a transient failure here would be the number health
+			// reported for the life of the process.
+			h.backfillFails.Store(0)
 			return state, nil
 		}
 		if ctx.Err() != nil {

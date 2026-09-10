@@ -546,11 +546,31 @@ func TestAPositionThatCannotBeReadIsCounted(t *testing.T) {
 	}
 }
 
+// unreliableCursors fails a fixed number of Loads and then answers: a store
+// that was briefly away, which is what a failover or a pool restart looks like
+// to a process that has just started.
+type unreliableCursors struct {
+	*connector.MemoryCursors
+	remaining atomic.Int64
+}
+
+func (u *unreliableCursors) Load(ctx context.Context, source string) (connector.BackfillState, error) {
+	if u.remaining.Add(-1) >= 0 {
+		return connector.BackfillState{}, errors.New("the connection is closed")
+	}
+	return u.MemoryCursors.Load(ctx, source)
+}
+
 // A source whose history is already walked is not walked again on the next
-// start.
+// start — and a read that failed on the way to finding that out is not still
+// being reported once it has worked.
 func TestADoneBackfillIsNotRestarted(t *testing.T) {
 	src := runtimeSource("fake-eng")
-	cursors := connector.NewMemoryCursors()
+	cursors := &unreliableCursors{MemoryCursors: connector.NewMemoryCursors()}
+	// One failed read, then the store answers. This is the path with no
+	// iteration to clear the count: the source is done, so nothing is called
+	// and nothing is saved.
+	cursors.remaining.Store(1)
 	cursors.Set(src.ID, connector.BackfillState{Cursor: "3", Done: true, Events: 3})
 	p := &pager{Fake: pages(src)}
 	rec := &connector.Recorder{}
@@ -561,24 +581,33 @@ func TestADoneBackfillIsNotRestarted(t *testing.T) {
 		Sink:     rec,
 		Cursors:  cursors,
 	})
+	waitFor(t, "the stored position to be read", func() bool {
+		return runtime.Health(t.Context()).Sources[0].BackfillDone
+	})
 	// Long enough for many ticks of a one-millisecond cadence.
 	time.Sleep(50 * time.Millisecond)
+	got := runtime.Health(t.Context()).Sources[0]
 	if err := stop(); err != nil {
 		t.Fatalf("Run() = %v, want nil", err)
 	}
-	if got := p.cursors(); len(got) != 0 {
-		t.Errorf("Backfill was called %d times for a source whose history is done: %v", len(got), got)
+	if calls := p.cursors(); len(calls) != 0 {
+		t.Errorf("Backfill was called %d times for a source whose history is done: %v", len(calls), calls)
 	}
-	if got := cursors.Saves(src.ID); len(got) != 0 {
-		t.Errorf("the position was written %d times for a source whose history is done: %+v", len(got), got)
+	if saves := cursors.Saves(src.ID); len(saves) != 0 {
+		t.Errorf("the position was written %d times for a source whose history is done: %+v", len(saves), saves)
 	}
-	// And health says what the stored position says, not what this process
-	// happened to do: an operator reading readiness after a deploy must not
-	// conclude the backfill never ran.
-	got := runtime.Health(t.Context()).Sources[0]
+	// Health says what the stored position says, not what this process happened
+	// to do: an operator reading readiness after a deploy must not conclude the
+	// backfill never ran.
 	if !got.BackfillDone || got.Backfilled != 3 {
 		t.Errorf("after resuming a finished backfill health says done=%v after %d events, want done after the 3 the stored position counts",
 			got.BackfillDone, got.Backfilled)
+	}
+	// And the read that failed on the way is over: BackfillFailures is "how
+	// many times in a row, and zero once one works", on this path as much as on
+	// the one with a loop in it.
+	if got.BackfillFailures != 0 {
+		t.Errorf("BackfillFailures = %d after a read that failed once and then worked, want it cleared", got.BackfillFailures)
 	}
 }
 
