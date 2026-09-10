@@ -451,8 +451,6 @@ func (r *Runtime) backfill(ctx context.Context, h *hosted, backfiller Backfiller
 			}
 			continue
 		}
-		fails = 0
-		h.backfillFails.Store(0)
 
 		next := BackfillState{Cursor: res.Next, Done: res.Done, Events: state.Events + int64(res.Events)}
 		if res.Done {
@@ -463,6 +461,12 @@ func (r *Runtime) backfill(ctx context.Context, h *hosted, backfiller Backfiller
 		if err := r.save(ctx, h, next, interval); err != nil {
 			return
 		}
+		// The count clears here, when a whole iteration has worked — the call
+		// and the position it produced — rather than between the two. (A save
+		// that is retrying keeps the count itself, so the two orders report the
+		// same thing; this one is the one that reads as what it means.)
+		fails = 0
+		h.backfillFails.Store(0)
 		state = next
 		h.backfilled.Store(state.Events)
 		if state.Done {
@@ -486,6 +490,11 @@ func (r *Runtime) load(ctx context.Context, h *hosted, interval time.Duration) (
 		if ctx.Err() != nil {
 			return BackfillState{}, ctx.Err()
 		}
+		// Counted like every other backfill failure: a source whose position
+		// cannot even be read is one whose history is not being walked, and
+		// health has to say so rather than showing a source with nothing left
+		// to do.
+		h.backfillFails.Store(int64(fails))
 		wait := r.opts.Cadence.Backoff(interval, fails)
 		log.WarnContext(ctx, "reading the backfill cursor failed, retrying", "error", err, "failures", fails, "retry_in", wait.String())
 		if !sleep(ctx, wait) {
@@ -503,7 +512,6 @@ func (r *Runtime) save(ctx context.Context, h *hosted, state BackfillState, inte
 	for fails := 1; ; fails++ {
 		err := r.opts.Cursors.Save(ctx, h.src.ID, state)
 		if err == nil {
-			h.backfillFails.Store(0)
 			return nil
 		}
 		h.backfillFails.Store(int64(fails))

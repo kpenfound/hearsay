@@ -31,16 +31,24 @@ func TestAllMigratesTheDatabaseItIsPointedAt(t *testing.T) {
 	stderr := &syncBuffer{}
 	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, []string{"all", "--log-format", "json"}, io.Discard, stderr)
+		// Port 0: `all` runs the connectors service, which listens, and a test
+		// binds what the operating system gives it rather than the port a
+		// deployment uses.
+		done <- run(ctx, []string{"all", "--listen", "127.0.0.1:0", "--log-format", "json"}, io.Discard, stderr)
 	}()
 
-	// Cancel once the schema line has gone out, so that the migration is never
-	// racing the shutdown.
+	// Cancel once the schema line and the four services' own lines have gone
+	// out, so that neither the migration nor a service's startup is racing the
+	// shutdown.
+	started := func() bool {
+		out := stderr.String()
+		return strings.Contains(out, "schema is current") && strings.Contains(out, "connectors started")
+	}
 	deadline := time.Now().Add(10 * time.Second)
-	for !strings.Contains(stderr.String(), "schema is current") {
+	for !started() {
 		if time.Now().After(deadline) {
 			cancel()
-			t.Fatalf("`hearsay all` never reported the schema:\n%s", stderr.String())
+			t.Fatalf("`hearsay all` never reported the schema and its services:\n%s", stderr.String())
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -50,6 +58,11 @@ func TestAllMigratesTheDatabaseItIsPointedAt(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), `"schema_version":`) {
 		t.Errorf("the schema line carries no version:\n%s", stderr.String())
+	}
+	// `all` honours --listen rather than binding the default under it: a
+	// machine where something else holds 8081 must still be able to run it.
+	if !strings.Contains(stderr.String(), `"listen":"127.0.0.1:`) {
+		t.Errorf("`hearsay all` did not serve the connectors on the address --listen names:\n%s", stderr.String())
 	}
 }
 

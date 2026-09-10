@@ -484,6 +484,36 @@ func TestAPositionThatCannotBeStoredIsCounted(t *testing.T) {
 	}
 }
 
+// A position that cannot even be read is counted too, and the backfill does not
+// start: walking history from the beginning because the store was briefly
+// unreachable is exactly what the stored position exists to prevent.
+func TestAPositionThatCannotBeReadIsCounted(t *testing.T) {
+	src := runtimeSource("fake-eng")
+	cursors := connector.NewMemoryCursors()
+	cursors.LoadErr = errors.New("the connection is closed")
+	p := &pager{Fake: pages(src)}
+
+	runtime, stop := start(t, connector.RuntimeOptions{
+		Sources:  []connector.SourceConfig{src},
+		Registry: registryOf(t, map[string]connector.Connector{src.ID: p}),
+		Sink:     &connector.Recorder{},
+		Cursors:  cursors,
+	})
+	waitFor(t, "the failure to be reported", func() bool {
+		return runtime.Health(t.Context()).Sources[0].BackfillFailures >= 1
+	})
+	got := runtime.Health(t.Context()).Sources[0]
+	if err := stop(); err != nil {
+		t.Fatalf("Run() = %v, want nil", err)
+	}
+	if got.BackfillDone {
+		t.Error("a backfill whose position cannot be read reports itself done")
+	}
+	if calls := p.cursors(); len(calls) != 0 {
+		t.Errorf("Backfill was called %v with no position read: it would walk history from the beginning", calls)
+	}
+}
+
 // A source whose history is already walked is not walked again on the next
 // start.
 func TestADoneBackfillIsNotRestarted(t *testing.T) {
