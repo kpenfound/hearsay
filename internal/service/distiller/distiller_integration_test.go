@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -513,5 +514,145 @@ func assertSameStoredDocument(t *testing.T, got, want l1.Stored) {
 		got.Body.Outcome != want.Body.Outcome || got.Body.OutcomeKind != want.Body.OutcomeKind ||
 		got.Body.Change != want.Body.Change || !slices.Equal(got.Body.OpenQuestions, want.Body.OpenQuestions) {
 		t.Errorf("%s: body = %+v, want %+v", want.ID, got.Body, want.Body)
+	}
+}
+
+// interleaving wraps a registry so that something happens while the model is
+// answering. It is how a test gets at the window the provenance check exists
+// for: the model call is the only slow part of a distillation, so it is where a
+// concurrent job's events land.
+type interleaving struct {
+	llm.Registry
+	during func()
+}
+
+func (r interleaving) Completer(t llm.Tier) (llm.Completer, error) {
+	c, err := r.Registry.Completer(t)
+	if err != nil {
+		return nil, err
+	}
+	return interleavingCompleter{Completer: c, during: r.during}, nil
+}
+
+type interleavingCompleter struct {
+	llm.Completer
+	during func()
+}
+
+func (c interleavingCompleter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	c.during()
+	return c.Completer.Complete(ctx, req)
+}
+
+// A distillation built from a read of L0 that is no longer current is dropped
+// rather than written.
+//
+// The queue dedupes distill jobs on (kind, target) only while a job is still
+// pending, so an event that arrives while a job is running gets a job of its
+// own and the two run at once. Both end in an upsert, so without this check the
+// slower one wins — and if the slower one is the one that read L0 first, the
+// document loses the newer events with nothing left pending to put them back.
+func TestADistillationBuiltFromAStaleReadIsNotWritten(t *testing.T) {
+	pool := newPool(t)
+	src := newSource(t)
+	ingest(t, pool, fixtureEvents(src))
+	docs := l1.New(pool)
+	docID := "l1:" + src + ":" + repo + "#31"
+
+	// The document as it stands, distilled the ordinary way.
+	if _, err := newDistiller(t, pool, src).Distill(t.Context(), docID); err != nil {
+		t.Fatalf("the first Distill() = %v", err)
+	}
+	before, err := docs.Get(t.Context(), docID)
+	if err != nil {
+		t.Fatalf("Get() = %v", err)
+	}
+
+	// Now distil it again, with a whole second job happening while the model is
+	// answering: a reply lands and the job that reply enqueued distils the
+	// conversation including it, writing a document with newer provenance. What
+	// this call has in hand describes the conversation before that reply.
+	late := reply(event(src, connector.KindMessage, repo+"#31:comment:99", at(9), who(src, "u2", "samr"),
+		"", "One more thing before this merges."), repo+"#31")
+	registry, err := llm.NewFake(testRepo(src).LLM, loadFixtures(t))
+	if err != nil {
+		t.Fatalf("building the fake registry: %v", err)
+	}
+	var once sync.Once
+	d, err := distiller.New(pool, interleaving{Registry: registry, during: func() {
+		once.Do(func() {
+			ingest(t, pool, []connector.Event{late})
+			writeNewerDocument(t, pool, src, docID)
+		})
+	}}, testConfig(src))
+	if err != nil {
+		t.Fatalf("distiller.New() = %v", err)
+	}
+
+	result, err := d.Distill(t.Context(), docID)
+	if err != nil {
+		t.Fatalf("Distill() over a moving conversation = %v", err)
+	}
+	if !result.Superseded {
+		t.Errorf("Result = %+v, want the distillation to be reported superseded", result)
+	}
+	if result.Written {
+		t.Error("Result.Written is true: a distillation of a conversation that has moved was stored")
+	}
+
+	// The row is the one the concurrent job wrote, still naming the late reply.
+	// Overwriting it with this call's older reading would lose that reply from
+	// the document with nothing pending to put it back.
+	after, err := docs.Get(t.Context(), docID)
+	if err != nil {
+		t.Fatalf("Get() = %v", err)
+	}
+	lateID := connector.EventID(late.Source, late.NativeID)
+	if !slices.Contains(after.Document.L0Refs, lateID) {
+		t.Errorf("l0_refs = %v, want it to still name the reply that landed (%s)",
+			after.Document.L0Refs, lateID)
+	}
+	if slices.Equal(after.Document.L0Refs, before.Document.L0Refs) {
+		t.Error("the row went back to the provenance it had before the reply landed")
+	}
+}
+
+// writeNewerDocument stands in for the job the late reply enqueued: it builds
+// the document from L0 as it now stands and stores it, with a body written by
+// hand rather than by a model, because what this test needs from it is newer
+// provenance and not a distillation.
+func writeNewerDocument(t *testing.T, pool *pgxpool.Pool, src, docID string) {
+	t.Helper()
+	source, artifact, err := l1.ParseDocID(docID)
+	if err != nil {
+		t.Fatalf("ParseDocID(%s) = %v", docID, err)
+	}
+	events := l0.New(pool)
+	roots, err := events.Current(t.Context(), l0.ListOptions{
+		Filter: l0.Filter{Source: source, Artifact: artifact}, Limit: 1,
+	})
+	if err != nil || len(roots) == 0 {
+		t.Fatalf("reading the artifact = %v (%d rows)", err, len(roots))
+	}
+	children, err := events.Current(t.Context(), l0.ListOptions{
+		Filter: l0.Filter{Source: source, Thread: artifact}, Limit: l0.MaxLimit,
+	})
+	if err != nil {
+		t.Fatalf("reading the conversation = %v", err)
+	}
+	doc, err := l1.Build(l1.Input{Root: roots[0], Children: children, Repo: testRepo(src)})
+	if err != nil {
+		t.Fatalf("Build() = %v", err)
+	}
+	doc, _, err = doc.WithBody(l1.Body{
+		Summary:     "A newer distillation, written by the job the late reply enqueued.",
+		Outcome:     "Approved.",
+		OutcomeKind: l1.OutcomeResolved,
+	})
+	if err != nil {
+		t.Fatalf("WithBody() = %v", err)
+	}
+	if _, err := l1.New(pool).Put(t.Context(), doc); err != nil {
+		t.Fatalf("Put() = %v", err)
 	}
 }

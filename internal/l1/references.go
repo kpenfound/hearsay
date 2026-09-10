@@ -127,20 +127,34 @@ func References(events []connector.Event, resolver *principal.Resolver, code []c
 			if text == "" {
 				continue
 			}
-			for _, link := range linkRe.FindAllString(text, -1) {
-				t, id := classifyLink(trimLink(link))
+			// Links are read from the text as written; everything else is read
+			// from the text with the links blanked out. A URL is a string that
+			// contains every other shape this function looks for — `#31` in a
+			// path, `@host` in a userinfo, an entity name in a directory — and
+			// a reference read out of the inside of a link is a join key the
+			// conversation never meant (see maskSpans).
+			spans := linkRe.FindAllStringIndex(text, -1)
+			for _, span := range spans {
+				t, id := classifyLink(trimLink(text[span[0]:span[1]]))
 				add(t, id)
 			}
-			for _, m := range mentionRe.FindAllStringSubmatch(text, -1) {
-				add(RefPerson, resolveMention(resolver, ev.Source, m[1], m[2]))
+			prose := maskSpans(text, spans)
+			for _, m := range mentionRe.FindAllStringSubmatchIndex(prose, -1) {
+				// An @-mention starts a word. Without that, the pattern fires
+				// on the domain of an email address, and a document keeps a
+				// participant the scrub took the address of out of.
+				if !isEdge(prose, m[0], -1) {
+					continue
+				}
+				add(RefPerson, resolveMention(resolver, ev.Source, group(prose, m, 1), group(prose, m, 2)))
 			}
-			for _, m := range itemRe.FindAllStringSubmatch(text, -1) {
+			for _, m := range itemRe.FindAllStringSubmatch(prose, -1) {
 				repo := cmp.Or(m[1], container)
 				if repo != "" {
 					add(RefTrackerItem, repo+"#"+m[2])
 				}
 			}
-			for _, id := range systemsIn(text, aliases) {
+			for _, id := range systemsIn(prose, aliases) {
 				add(RefSystem, id)
 			}
 		}
@@ -200,19 +214,56 @@ func classifyLink(link string) (RefType, string) {
 			return RefCommit, repo + "@" + m[4]
 		}
 	}
-	// The fragment is a position in a page, not a different page, and the
-	// scheme and host are compared without case because they are not
-	// case-sensitive. Everything else is left exactly as the source wrote it:
-	// a query string can be the whole of what a link points at.
+	// The fragment is a position in a page, not a different page; the userinfo
+	// is who is asking, not what is being pointed at, and two links to one page
+	// with different credentials are one reference. The scheme and host are
+	// compared without case because they are not case-sensitive. Everything
+	// else is left exactly as the source wrote it: a query string can be the
+	// whole of what a link points at.
 	u.Fragment = ""
+	u.User = nil
 	u.Scheme = strings.ToLower(u.Scheme)
 	u.Host = strings.ToLower(u.Host)
-	return RefURL, strings.TrimSuffix(u.String(), "/")
+	// A url reference is the one reference id that is free text from the
+	// source, so it is the one that can carry a secret — a token in a query
+	// string outlives the userinfo rule above. It is scrubbed for the same
+	// reason text and raw_text are: refs is a column the store hands back.
+	// The structured ids are not scrubbed, because they are assembled from
+	// constrained captures and configuration, and a marker in one would break
+	// the join it exists for.
+	id, _ := Scrub(strings.TrimSuffix(u.String(), "/"))
+	return RefURL, id
 }
 
 // trimLink drops the punctuation a sentence puts after a URL, and the closing
 // bracket of a markdown link the pattern stopped at.
 func trimLink(link string) string { return strings.TrimRight(link, ".,;:!?") }
+
+// maskSpans blanks out the given byte ranges, keeping every other byte where it
+// was. Offsets are preserved rather than the spans removed, so that a word-edge
+// test either side of what is left reads the neighbour the source actually
+// wrote, and a space is not a word byte, so a masked link is an edge.
+func maskSpans(text string, spans [][]int) string {
+	if len(spans) == 0 {
+		return text
+	}
+	b := []byte(text)
+	for _, span := range spans {
+		for i := span[0]; i < span[1]; i++ {
+			b[i] = ' '
+		}
+	}
+	return string(b)
+}
+
+// group is one submatch of a FindAllStringSubmatchIndex result, and the empty
+// string for a group that did not participate.
+func group(s string, m []int, n int) string {
+	if 2*n+1 >= len(m) || m[2*n] < 0 {
+		return ""
+	}
+	return s[m[2*n]:m[2*n+1]]
+}
 
 // resolvePerson is the principal an identity hint names, and the empty string
 // for one that does not resolve.

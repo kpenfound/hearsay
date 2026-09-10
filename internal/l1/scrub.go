@@ -6,11 +6,13 @@ import (
 	"strings"
 )
 
-// The scrub runs over every string a document stores before it is written:
-// Text, RawText, and the body a model produced. L0 keeps what the source
-// actually said — it is append-only and it is the record — but L1 is what
-// search returns and what a bundle quotes, so a credential pasted into a pull
-// request comment stops here.
+// The scrub runs over every string a document stores that came from a person
+// writing prose: Text, RawText, the body a model produced, and the id of a
+// `url` reference, which is the one reference id that is source text rather
+// than a structured id assembled from constrained captures and configuration.
+// L0 keeps what the source actually said — it is append-only and it is the
+// record — but L1 is what search returns and what a bundle quotes, so a
+// credential pasted into a pull request comment stops here.
 //
 // Two things about it are worth knowing before adding a pattern:
 //

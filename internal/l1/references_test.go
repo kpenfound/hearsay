@@ -90,6 +90,44 @@ func TestReferences(t *testing.T) {
 		text: "see https://wiki.example/ops#taking-the-lock and https://wiki.example/ops",
 		want: []l1.Reference{{Type: l1.RefURL, ID: "https://wiki.example/ops"}},
 	}, {
+		name: "credentials are not part of what a link points at",
+		text: "status is at https://deploy:hunter2@internal.example.com/status",
+		want: []l1.Reference{{Type: l1.RefURL, ID: "https://internal.example.com/status"}},
+	}, {
+		name: "a secret a link carries is scrubbed like any other stored string",
+		text: "callback https://example.test/cb?token=abcd1234efgh",
+		want: []l1.Reference{{Type: l1.RefURL, ID: "https://example.test/cb?token=[redacted:secret]"}},
+	}, {
+		name: "an @-mention starts a word, so an email address is not one",
+		text: "ping sam@samr.dev about it",
+		want: nil,
+	}, {
+		name: "an @-mention still resolves next to punctuation",
+		text: "(@kpenfound) and @samr, please look",
+		want: []l1.Reference{
+			{Type: l1.RefPerson, ID: "kyle"},
+			{Type: l1.RefPerson, ID: "sam"},
+		},
+	}, {
+		name: "a number inside a link is a position in it, not a tracker item",
+		text: "see https://example.test/page#31",
+		want: []l1.Reference{{Type: l1.RefURL, ID: "https://example.test/page"}},
+	}, {
+		name: "a handle inside a link is not a mention",
+		text: "the avatar is https://example.test/u/@kpenfound/pic",
+		want: []l1.Reference{{Type: l1.RefURL, ID: "https://example.test/u/@kpenfound/pic"}},
+	}, {
+		name: "an entity name inside a link path is not a system reference",
+		text: "the page is https://example.test/engine/docs",
+		want: []l1.Reference{{Type: l1.RefURL, ID: "https://example.test/engine/docs"}},
+	}, {
+		name: "a bare number beside a link is still read as a tracker item",
+		text: "same as #31, see https://example.test/page",
+		want: []l1.Reference{
+			{Type: l1.RefTrackerItem, ID: "acme/api#31"},
+			{Type: l1.RefURL, ID: "https://example.test/page"},
+		},
+	}, {
 		name: "an alias next to a letter of another script is not a match",
 		text: "the enginé is fine and théengine is fine",
 		want: nil,

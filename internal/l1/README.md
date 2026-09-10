@@ -38,11 +38,18 @@ Distillation is a write-time LLM call. Reads never call a model.
   model's words, nothing else — because a vector over one document about one
   thing is what a similarity search is for. `raw_text` is the team's own words,
   for the full-text index (#50).
-- **The scrub runs over both, and over the body.** It is idempotent by
-  construction: every replacement is a marker no pattern matches the inside of,
-  and there is a test that says so. It is a net rather than a proof, and it is
-  the last of the four access-control control points, not the first
-  (docs/design.md#access-control).
+- **The scrub runs over both, over the body, and over a `url` reference.** Those
+  are the four strings a row holds that a person wrote; the other reference ids
+  are structured, and a marker in one would break the join it exists for. It is
+  idempotent by construction: every replacement is a marker no pattern matches
+  the inside of, and there is a test that says so. It is a net rather than a
+  proof, and it is the last of the four access-control control points, not the
+  first (docs/design.md#access-control).
+- **A reference is never read out of the inside of a link.** A URL contains
+  every shape extraction looks for — `#31` in a path, `@name` in a userinfo or a
+  path, an entity name in a directory — so links are matched first and the rest
+  of the text is read with them blanked out. An `@`-mention also has to start a
+  word, or it fires on the domain of an email address.
 - **`outcome_kind` is the L2 trigger and is on every document.** The five values
   are the design's, the column carries a CHECK over exactly them, and
   `OutcomeKind.Asserts` is the one place that says which of them the assertion

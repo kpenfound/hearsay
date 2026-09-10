@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -92,6 +93,11 @@ type Result struct {
 	// Skipped reports an artifact that makes no document of its own — a comment
 	// whose parent the source did not name, a kind this build does not distil.
 	Skipped bool
+	// Superseded reports that L0 gained events for this artifact while the
+	// model was answering, so what came back describes a conversation that has
+	// moved on and was not written. The events that moved it have a job of
+	// their own, so the document is not left behind.
+	Superseded bool
 	// Redacted names the shapes the scrub took out of what the model wrote,
 	// sorted. It is the shapes and never the values (ADR-0008).
 	Redacted []string
@@ -110,6 +116,9 @@ func (d *Distiller) Handle(ctx context.Context, job queue.Job) error {
 		log.DebugContext(ctx, "nothing to distil", "l1_id", result.DocID)
 	case result.Deleted:
 		log.InfoContext(ctx, "document removed: its artifact was retracted at the source", "l1_id", result.DocID)
+	case result.Superseded:
+		log.InfoContext(ctx, "distillation dropped: the conversation moved while the model was answering",
+			"l1_id", result.DocID)
 	case result.Written:
 		log.InfoContext(ctx, "document distilled", "l1_id", result.DocID, "redacted", result.Redacted)
 	default:
@@ -197,6 +206,29 @@ func (d *Distiller) Distill(ctx context.Context, docID string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+
+	// The model call is the slow part, and the queue's dedupe on (kind, target)
+	// only covers jobs that are still pending: an event arriving while this one
+	// runs gets a job of its own, and both can be in flight at once. The write
+	// is an upsert, so the one that finishes last wins — and if that is this
+	// one, built from the older read, the document loses the newer events and
+	// nothing is left pending to put them back.
+	//
+	// So the provenance is checked against L0 again before the row is written,
+	// and a distillation whose conversation has moved is dropped rather than
+	// stored. Rebuilding is how the check is made, because it is the same code
+	// that produced L0Refs in the first place and cannot drift from it; it
+	// costs two reads and no model call. The job that carried those newer
+	// events writes the document that includes them.
+	current, err := d.provenanceNow(ctx, source, artifact)
+	if err != nil {
+		return Result{}, fmt.Errorf("re-reading %s: %w", docID, err)
+	}
+	if !slices.Equal(current, doc.L0Refs) {
+		result.Superseded = true
+		return result, nil
+	}
+
 	written, err := d.docs.Put(ctx, doc)
 	if err != nil {
 		return Result{}, err
@@ -204,6 +236,39 @@ func (d *Distiller) Distill(ctx context.Context, docID string) (Result, error) {
 	result.Written = written
 	result.Redacted = redacted
 	return result, nil
+}
+
+// provenanceNow is the L0Refs a document built from L0 right now would carry,
+// and nil for an artifact that would no longer make a document at all. It is
+// the second half of the check described in Distill: same reads, same builder,
+// so what it returns is comparable to what Build already produced.
+func (d *Distiller) provenanceNow(ctx context.Context, source, artifact string) ([]string, error) {
+	roots, err := d.events.Current(ctx, l0.ListOptions{
+		Filter: l0.Filter{Source: source, Artifact: artifact},
+		Limit:  1,
+	})
+	if err != nil || len(roots) == 0 {
+		return nil, err
+	}
+	children, err := d.events.Current(ctx, l0.ListOptions{
+		Filter: l0.Filter{Source: source, Thread: artifact},
+		Limit:  l0.MaxLimit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	doc, err := l1.Build(l1.Input{
+		Root:     roots[0],
+		Children: children,
+		Resolver: d.resolver,
+		Repo:     d.repo,
+	})
+	if err != nil {
+		// Including ErrNotDistilled: an artifact that no longer makes a
+		// document is not one this distillation should write.
+		return nil, nil //nolint:nilerr // a build that no longer succeeds is a changed provenance, not a failure
+	}
+	return doc.L0Refs, nil
 }
 
 // distil is the one model call: the document's own words in, the body out.

@@ -334,6 +334,32 @@ func TestBuildScrubsTheConversation(t *testing.T) {
 		}
 	}
 
+	// Every string the row holds, not just the one this test used to read.
+	// references is the fourth, it is what L2 joins on, and Store.Get hands it
+	// straight back — a secret in it is as stored as one in raw_text.
+	credentialed, _ := pullRequest()
+	credentialed.Payload.Text = "status is at https://deploy:hunter2@internal.example.com/status?token=abcd1234"
+	leaky, err := l1.Build(l1.Input{Root: credentialed, Repo: testRepo})
+	if err != nil {
+		t.Fatalf("Build(a link with credentials) = %v", err)
+	}
+	for _, secret := range []string{"hunter2", "abcd1234"} {
+		for _, ref := range leaky.References {
+			if strings.Contains(ref.ID, secret) {
+				t.Errorf("the %s reference %q holds %q", ref.Type, ref.ID, secret)
+			}
+		}
+		if strings.Contains(leaky.RawText, secret) {
+			t.Errorf("RawText holds %q:\n%s", secret, leaky.RawText)
+		}
+	}
+	// The link is still a reference — the credentials are dropped from it, not
+	// the link with them.
+	want := l1.Reference{Type: l1.RefURL, ID: "https://internal.example.com/status?token=[redacted:secret]"}
+	if !slices.Contains(leaky.References, want) {
+		t.Errorf("References = %v, want it to carry %v", leaky.References, want)
+	}
+
 	body := l1.Body{Summary: "the key is AKIAIOSFODNN7EXAMPLE", OutcomeKind: l1.OutcomeNone}
 	withBody, redacted, err := doc.WithBody(body)
 	if err != nil {
