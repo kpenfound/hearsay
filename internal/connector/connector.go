@@ -105,6 +105,10 @@ type Backfiller interface {
 // which only stores it and hands it back, so a connector may put a page token,
 // a timestamp or a JSON object in it. It must survive a restart, so it may not
 // refer to anything the connector holds in memory.
+//
+// It is stored as text, which is the one thing an opaque value has to respect:
+// a cursor is valid UTF-8 with no NUL byte and at most [MaxCursorLen] bytes, so
+// arbitrary bytes go in as base64 rather than as themselves.
 type Cursor string
 
 // BackfillResult is what one Backfill call achieved.
@@ -183,6 +187,11 @@ type SourceConfig struct {
 	// Secrets are the credentials the source needs, resolved by the runtime
 	// from the environment. They never live in the config repository, which is
 	// checked in: config names a secret, and the runtime supplies its value.
+	//
+	// So the map holds the *names* of environment variables as `internal/config`
+	// parses it, and their values by the time a [Factory] sees it —
+	// [ResolveSecrets] is where the two meet. What reaches a connector is
+	// therefore a credential, and is never logged.
 	Secrets map[string]string
 }
 
