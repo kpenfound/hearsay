@@ -3,6 +3,7 @@ package l1_test
 import (
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/connector"
@@ -85,12 +86,13 @@ func TestReaderForRefusesAPrincipalThatCannotRead(t *testing.T) {
 		name string
 		res  *principal.Resolver
 		eff  principal.Effective
+		says string // what the error has to name, so it says which of these it was
 	}{
-		{name: "no identity mapping", res: nil, eff: principal.Effective{Human: "kyle"}},
-		{name: "nobody", res: res, eff: principal.Effective{}},
-		{name: "a principal that is not configured", res: res, eff: principal.Effective{Human: "nobody"}},
-		{name: "a team", res: res, eff: principal.Effective{Human: "api-team"}},
-		{name: "an agent as the human", res: res, eff: principal.Effective{Human: "shed"}},
+		{name: "no identity mapping", res: nil, eff: principal.Effective{Human: "kyle"}, says: "no identity mapping"},
+		{name: "nobody", res: res, eff: principal.Effective{}, says: "not a configured principal"},
+		{name: "a principal that is not configured", res: res, eff: principal.Effective{Human: "nobody"}, says: "not a configured principal"},
+		{name: "a team", res: res, eff: principal.Effective{Human: "api-team"}, says: `is of kind "team"`},
+		{name: "an agent as the human", res: res, eff: principal.Effective{Human: "shed"}, says: `is of kind "agent"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			reader, err := l1.ReaderFor(tc.res, tc.eff)
@@ -99,6 +101,9 @@ func TestReaderForRefusesAPrincipalThatCannotRead(t *testing.T) {
 			}
 			if len(reader.Audience) != 0 {
 				t.Errorf("a refused reader holds %d grants, want none", len(reader.Audience))
+			}
+			if !strings.Contains(err.Error(), tc.says) {
+				t.Errorf("ReaderFor() = %v, want it to say %q", err, tc.says)
 			}
 		})
 	}
@@ -114,7 +119,10 @@ func TestReaderForTakesEverySpellingOfAConfiguredIdentity(t *testing.T) {
 		Identities: []principal.Identity{
 			{Source: source, NativeID: "u1", Handle: "KPenfound"},
 			{Source: "discord-acme", Handle: "kyle"},
-			{Source: ""}, // an identity in no source is not a grant anywhere
+			// An identity in no source is not a grant anywhere: the mapping
+			// never indexes it, and a grant with no source to scope it to
+			// would match an entry from any source at all.
+			{Source: "", NativeID: "u9", Handle: "ghost"},
 		},
 	}})
 	if err != nil {

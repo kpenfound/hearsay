@@ -545,14 +545,19 @@ func TestPrincipalLookup(t *testing.T) {
 func TestTeams(t *testing.T) {
 	r := newResolver(t, append(mapping(),
 		principal.Principal{ID: "infra-team", Kind: principal.KindTeam, Members: []string{"kyle"}},
+		principal.Principal{ID: "zz-team", Kind: principal.KindTeam, Members: []string{"kyle"}},
 		principal.Principal{ID: "empty-team", Kind: principal.KindTeam},
+		// Only a team is a container. Configuration refuses a person who lists
+		// members, and a mapping built by hand that has one is not a group
+		// anybody is in.
+		principal.Principal{ID: "not-a-team", Kind: principal.KindHuman, Members: []string{"kyle"}},
 	))
 	tests := []struct {
 		name string
 		id   string
 		want []string
 	}{
-		{"every team that lists them, sorted", "kyle", []string{"api-team", "infra-team"}},
+		{"every team that lists them, sorted", "kyle", []string{"api-team", "infra-team", "zz-team"}},
 		{"one team", "robin", []string{"api-team"}},
 		{"an agent is a member like anybody else", "shed", []string{"api-team"}},
 		{"a team is in no team, because a team may not contain one", "api-team", nil},
@@ -565,6 +570,16 @@ func TestTeams(t *testing.T) {
 				t.Errorf("Teams(%q) = %v, want %v", tt.id, got, tt.want)
 			}
 		})
+	}
+
+	// The order is an order and not whatever the map felt like: what this feeds
+	// is compared and cached, and Go randomizes map iteration on every range,
+	// so asking repeatedly is what tells the two apart.
+	first := ids(r.Teams("kyle"))
+	for range 5 {
+		if got := ids(r.Teams("kyle")); !slices.Equal(got, first) {
+			t.Fatalf("Teams(kyle) = %v and then %v: the same question answered two ways", first, got)
+		}
 	}
 }
 

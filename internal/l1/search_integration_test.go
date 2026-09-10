@@ -217,7 +217,10 @@ func TestSearchNeverReturnsADocumentTheReaderMayNotRead(t *testing.T) {
 		t.Errorf("the readable document came back as %+v, want rank 1 in both halves", h)
 	}
 
-	// The positive control: the same query, by somebody who is in that group.
+	// The positive control: the same query, by somebody who is in that group —
+	// and the source's own label for it is decoration, so a caller holding the
+	// same grant under another name holds the same grant.
+	group.Label = "what somebody else calls the api team"
 	hits, err = store.Search(t.Context(), reader(testScope(src), group), opts)
 	if err != nil {
 		t.Fatalf("Search(a member) = %v, want no error", err)
