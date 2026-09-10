@@ -508,6 +508,71 @@ func TestPushHandlersAreMounted(t *testing.T) {
 	}
 }
 
+// pushOnly is a connector that only receives: no Poll, no Backfill, so the
+// runtime has no loop of its own for it. GitHub with webhooks and no history to
+// walk is this shape.
+type pushOnly struct {
+	fake *connector.Fake
+}
+
+func (p *pushOnly) Describe() connector.Descriptor              { return p.fake.Describe() }
+func (p *pushOnly) Health(ctx context.Context) connector.Health { return p.fake.Health(ctx) }
+func (p *pushOnly) Close(ctx context.Context) error             { return p.fake.Close(ctx) }
+func (p *pushOnly) Handler(sink connector.Sink) http.Handler    { return p.fake.Handler(sink) }
+
+// A runtime whose connectors have no loops still runs: a push connector is
+// waiting to be delivered to, and health is served while it waits. Run returns
+// when it is asked to, and not when it happens to run out of work.
+func TestRunKeepsRunningWithNothingToLoopOver(t *testing.T) {
+	src := runtimeSource("fake-eng")
+	fake := connector.NewFake(src)
+	rec := &connector.Recorder{}
+	runtime, err := connector.NewRuntime(t.Context(), connector.RuntimeOptions{
+		Sources:  []connector.SourceConfig{src},
+		Registry: registryOf(t, map[string]connector.Connector{src.ID: &pushOnly{fake: fake}}),
+		Sink:     rec,
+		Cursors:  connector.NewMemoryCursors(),
+		Cadence:  quick(),
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime() = %v, want no error", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- runtime.Run(ctx) }()
+
+	// Long enough for a hundred ticks of the cadence these tests run on.
+	select {
+	case err := <-done:
+		t.Fatalf("Run() returned %v while it was still supposed to be hosting a push connector", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	// And it is still serving: the delivery lands in the sink.
+	body, err := json.Marshal(fake.NewEvent(connector.KindMessage, "p1", "delivered"))
+	if err != nil {
+		t.Fatalf("marshalling the event: %v", err)
+	}
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, connector.HookPath(src.ID), strings.NewReader(string(body)))
+	w := httptest.NewRecorder()
+	runtime.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("POST %s = %d, want 202", connector.HookPath(src.ID), w.Code)
+	}
+	if got, want := artifacts(rec), []string{"p1"}; !slices.Equal(got, want) {
+		t.Errorf("the delivery emitted %v, want %v", got, want)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() = %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run() did not return within 10s of cancellation")
+	}
+}
+
 // Health is each connector's own account of itself, and the worst of them is
 // the runtime's.
 func TestHealthAggregatesEveryConnector(t *testing.T) {
