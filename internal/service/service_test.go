@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,6 +19,11 @@ import (
 // Every service must return when its context is cancelled: `hearsay all`
 // composes them, so one that ignores cancellation hangs the dev process
 // (ADR-0003).
+//
+// The distiller is not here because it cannot be run without a database, which
+// is what the next test says. Its own cancellation is covered where it can be:
+// internal/service/distiller's integration test runs it against Postgres and
+// cancels it.
 func TestServicesStopOnContextCancellation(t *testing.T) {
 	cfg := config.Default()
 	tests := []struct {
@@ -25,7 +31,6 @@ func TestServicesStopOnContextCancellation(t *testing.T) {
 		run  service.RunFunc
 	}{
 		{connectors.Name, func(ctx context.Context) error { return connectors.Run(ctx, &cfg, connectors.Deps{}) }},
-		{distiller.Name, func(ctx context.Context) error { return distiller.Run(ctx, &cfg, distiller.Deps{}) }},
 		{assertworker.Name, func(ctx context.Context) error { return assertworker.Run(ctx, &cfg, assertworker.Deps{}) }},
 		{api.Name, func(ctx context.Context) error { return api.Run(ctx, &cfg, api.Deps{}) }},
 	}
@@ -45,6 +50,23 @@ func TestServicesStopOnContextCancellation(t *testing.T) {
 				t.Fatal("Run() did not return within 5s of cancellation")
 			}
 		})
+	}
+}
+
+// A service with dependencies says what it is missing rather than starting
+// without them and failing on the first job. The distiller is the first of the
+// four to have any: it reads L0, writes L1 and calls a model
+// (ADR-0003, ADR-0005).
+func TestDistillerRefusesToRunWithoutItsDependencies(t *testing.T) {
+	cfg := config.Default()
+	// Not a cancelled context: the point is that it returns before it would
+	// ever look at one.
+	err := distiller.Run(t.Context(), &cfg, distiller.Deps{})
+	if err == nil {
+		t.Fatal("Run() with no dependencies = nil, want an error")
+	}
+	if !strings.Contains(err.Error(), "database") {
+		t.Errorf("Run() with no dependencies = %v, want it to say what is missing", err)
 	}
 }
 

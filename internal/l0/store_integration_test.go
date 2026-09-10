@@ -46,8 +46,14 @@ var sources atomic.Int64
 // that source's id.
 func newFake(t *testing.T) (*connector.Fake, string) {
 	t.Helper()
-	id := "t" + strconv.FormatInt(time.Now().UnixNano(), 36) + "x" + strconv.FormatInt(sources.Add(1), 36)
+	id := newSourceID(t)
 	return connector.NewFake(connector.SourceConfig{ID: id, Type: connector.FakeType}), id
+}
+
+// newSourceID is a name nothing else in the suite uses.
+func newSourceID(t *testing.T) string {
+	t.Helper()
+	return "t" + strconv.FormatInt(time.Now().UnixNano(), 36) + "x" + strconv.FormatInt(sources.Add(1), 36)
 }
 
 func newStore(t *testing.T) (*l0.Store, *connector.Fake, string) {

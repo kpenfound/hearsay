@@ -30,9 +30,9 @@ and no arguments, and say so rather than ignoring what they were given. The
 
 `--database-url` points at Postgres, and also reads `HEARSAY_DATABASE_URL`,
 which is the one to prefer: a URL on a command line puts its password in the
-process list. It is on the subcommands that use a database — `migrate`, `l0`
-and `all` — and not on the four service subcommands, which do not connect to
-one yet.
+process list. It is on the subcommands that use a database — `migrate`,
+`l0`, `all` and `distiller` — and not on the three service subcommands that do
+not connect to one yet. `distiller` and `all` refuse to start without it.
 
 `--config` points at the configuration repository, and also reads
 `HEARSAY_CONFIG`. A service loads it before it starts and refuses to start if it

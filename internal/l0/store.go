@@ -231,6 +231,16 @@ type Filter struct {
 	// revision of it — and requires Source, because an artifact id means
 	// nothing outside the source that minted it.
 	Artifact string
+	// Thread reads one conversation: every event that hangs off this artifact,
+	// which is what an L1 document is assembled from. It matches
+	// docs/connector-contract.md's own rule — an event's `thread` is "the root
+	// of the conversation", and its `parent` is that root on a source with no
+	// threads, where the two are the same value. Like Artifact, it requires
+	// Source.
+	//
+	// The artifact itself is not in the result: it hangs off nothing, and
+	// whoever wants it asks for Artifact.
+	Thread string
 }
 
 // Validate reports a filter that cannot mean what it says. Both reads call it,
@@ -238,6 +248,9 @@ type Filter struct {
 func (f Filter) Validate() error {
 	if f.Artifact != "" && f.Source == "" {
 		return errors.New("reading by artifact needs a source: an artifact id is only unique within one")
+	}
+	if f.Thread != "" && f.Source == "" {
+		return errors.New("reading by thread needs a source: an artifact id is only unique within one")
 	}
 	return nil
 }
@@ -253,7 +266,17 @@ func (f Filter) where(q *query) {
 	if f.Artifact != "" {
 		q.and("e.artifact", f.Artifact)
 	}
+	if f.Thread != "" {
+		// The expression is what migration 6 indexes, so it has to be spelled
+		// the same way here: an index on coalesce(a, b) serves a predicate on
+		// coalesce(a, b) and not one on a or b.
+		q.and(conversationSQL, f.Thread)
+	}
 }
+
+// conversationSQL is the artifact an event hangs off: its thread, or the thing
+// it is a reply to on a source that has no threads.
+const conversationSQL = `coalesce(e.payload->>'thread', e.payload->>'parent')`
 
 // ListOptions narrows and orders a listing. The zero value is the whole store,
 // oldest first, up to [DefaultLimit] events.
@@ -315,6 +338,70 @@ func (s *Store) List(ctx context.Context, opts ListOptions) ([]connector.Event, 
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("listing events: %w", err)
+	}
+	return events, nil
+}
+
+// Current returns the current revision of every artifact an option set selects,
+// oldest artifact first — the order the artifacts happened, not the order their
+// revisions arrived.
+//
+// It is what a consumer above L0 reads. A listing hands back an artifact's
+// whole history, which is what provenance needs and what distillation does not:
+// a document is what the artifact says now, and an ACL re-sync is a revision,
+// so taking anything but the current one would distil an access list that has
+// been replaced. Doing it in one statement rather than by folding a listing in
+// Go is also what keeps the limit meaningful — the limit is artifacts here,
+// where in a listing it is revisions.
+//
+// ListOptions.Newest reverses the order artifacts come back in; it never
+// changes which revision of one is returned.
+func (s *Store) Current(ctx context.Context, opts ListOptions) ([]connector.Event, error) {
+	if err := opts.Validate(); err != nil {
+		return nil, err
+	}
+	// DISTINCT ON takes the first row per artifact in its own ORDER BY, which
+	// is docs/connector-contract.md's revision order: the newest edit first,
+	// then arrival, with the first appearance — which has no edit time — last.
+	q := &query{sql: `
+SELECT ` + eventColumns + `
+  FROM (SELECT DISTINCT ON (e.artifact) ` + eventColumns + `, e.artifact, e.seq
+          FROM l0_events e
+         WHERE ` + notRetractedSQL}
+	opts.where(q)
+	q.sql += `
+         ORDER BY e.artifact, e.revision_edited_at DESC NULLS LAST, e.seq DESC) AS e`
+	if opts.Newest {
+		q.sql += ` ORDER BY e.occurred_at DESC, e.seq DESC`
+	} else {
+		q.sql += ` ORDER BY e.occurred_at ASC, e.seq ASC`
+	}
+	q.sql += " LIMIT " + q.placeholder(int64(Limit(opts.Limit)))
+
+	rows, err := s.db.Query(ctx, q.sql, q.args...)
+	if err != nil {
+		return nil, fmt.Errorf("reading current revisions: %w", err)
+	}
+	defer rows.Close()
+
+	events := []connector.Event{}
+	for rows.Next() {
+		var (
+			ev      connector.Event
+			kind    string
+			payload []byte
+			acl     []byte
+		)
+		if err := rows.Scan(&ev.ID, &ev.Source, &ev.NativeID, &kind, &ev.Time, &payload, &acl); err != nil {
+			return nil, fmt.Errorf("reading current revisions: %w", err)
+		}
+		if err := decodeInto(&ev, kind, payload, acl); err != nil {
+			return nil, fmt.Errorf("reading current revisions: %w", err)
+		}
+		events = append(events, ev)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading current revisions: %w", err)
 	}
 	return events, nil
 }
@@ -504,6 +591,10 @@ func decodeInto(ev *connector.Event, kind string, payload, acl []byte) error {
 	}
 	return nil
 }
+
+// isNoRows reports the empty result both of pgx's row readers signal, kept in
+// one place because two files here turn it into something other than an error.
+func isNoRows(err error) bool { return errors.Is(err, pgx.ErrNoRows) }
 
 func cursorOf(xact string, seq int64) (Cursor, error) {
 	x, err := strconv.ParseUint(xact, 10, 64)

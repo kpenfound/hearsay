@@ -11,6 +11,9 @@ import (
 	"text/tabwriter"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/llm"
+	"github.com/kpenfound/hearsay/internal/llm/providers"
 	"github.com/kpenfound/hearsay/internal/service"
 	"github.com/kpenfound/hearsay/internal/service/api"
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
@@ -34,9 +37,7 @@ type command struct {
 func commands() []command {
 	return []command{
 		{connectors.Name, "[--source name]...", "Run the source connectors. Writes L0 only.", runConnectors},
-		{distiller.Name, "", "Run the distiller. L0 to L1.", runService(distiller.Name, func(ctx context.Context, cfg *config.Config) error {
-			return distiller.Run(ctx, cfg, distiller.Deps{})
-		})},
+		{distiller.Name, "", "Run the distiller. L0 to L1.", runDistiller},
 		{assertworker.Name, "", "Run the assertion worker. L1 to L2.", runService(assertworker.Name, func(ctx context.Context, cfg *config.Config) error {
 			return assertworker.Run(ctx, cfg, assertworker.Deps{})
 		})},
@@ -204,6 +205,74 @@ func runService(name string, start func(ctx context.Context, cfg *config.Config)
 	}
 }
 
+// runDistiller runs the distiller, which unlike the other three services has
+// dependencies: Postgres, and a model tier registry built from the
+// configuration. Both are the process's to build and to own (ADR-0003), and
+// both are refused up front rather than at the first job — configuration is
+// read once, so a process that cannot make a model call should not start
+// (ADR-0005, ADR-0009).
+func runDistiller(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	fs, cfg, configPath := newFlagSet(distiller.Name, stderr)
+	resolveDatabase := databaseFlag(fs, cfg)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	resolveDatabase()
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	ctx, err := withLogger(ctx, distiller.Name, cfg, stderr)
+	if err != nil {
+		return err
+	}
+	if cfg.Database.URL == "" {
+		return db.ErrNoDatabaseURL
+	}
+	if err := loadConfig(ctx, cfg, *configPath); err != nil {
+		return err
+	}
+	pool, err := db.Connect(ctx, cfg.Database.URL)
+	if err != nil {
+		return stoppingEarly(ctx, err)
+	}
+	defer pool.Close()
+	registry, err := modelRegistry(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	return distiller.Run(ctx, cfg, distiller.Deps{Pool: pool, LLM: registry})
+}
+
+// stoppingEarly turns a startup failure that happened because the process was
+// asked to stop into a clean stop. A service is a thing somebody runs in a
+// terminal and ends with Ctrl-C, and one interrupted while it is still opening
+// a connection has not failed.
+func stoppingEarly(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return nil
+	}
+	return err
+}
+
+// modelRegistry builds the model tiers the configuration names (ADR-0005).
+//
+// A process with no configuration repository gets no registry at all, and the
+// service it is handed to starts and does nothing — the same as every other
+// service without one (ADR-0009). It is not an error here because it is not a
+// mistake: a configuration is what says there is anything to do.
+//
+// A configuration that names a tier the process cannot build — an unknown
+// provider, a credential that is not in the environment — is a startup failure,
+// which is what ADR-0005 asks for: configuration is read once, so a process
+// that cannot make a model call should not be serving.
+func modelRegistry(ctx context.Context, cfg *config.Config) (llm.Registry, error) {
+	if cfg.Repo.Path == "" {
+		telemetry.Logger(ctx).WarnContext(ctx, "no configuration: nothing is distilled, pass --config")
+		return nil, nil
+	}
+	return llm.NewRegistry(cfg.Repo.LLM, providers.All())
+}
+
 func runConnectors(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, cfg, configPath := newFlagSet(connectors.Name, stderr)
 	var sources sourceList
@@ -250,7 +319,23 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	if err := loadConfig(setup, cfg, *configPath); err != nil {
 		return err
 	}
+	if cfg.Database.URL == "" {
+		// `all` runs the distiller, which reads L0 and writes L1. It used to be
+		// four stubs and could be looked at with nothing behind it; it is not
+		// any more, and a process that cannot store what it distils is not
+		// worth starting.
+		return db.ErrNoDatabaseURL
+	}
 	if err := migrateForDev(setup, cfg); err != nil {
+		return err
+	}
+	pool, err := db.Connect(setup, cfg.Database.URL)
+	if err != nil {
+		return stoppingEarly(ctx, err)
+	}
+	defer pool.Close()
+	registry, err := modelRegistry(setup, cfg)
+	if err != nil {
 		return err
 	}
 
@@ -259,7 +344,7 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 			return connectors.Run(ctx, cfg, connectors.Deps{})
 		},
 		distiller.Name: func(ctx context.Context) error {
-			return distiller.Run(ctx, cfg, distiller.Deps{})
+			return distiller.Run(ctx, cfg, distiller.Deps{Pool: pool, LLM: registry})
 		},
 		assertworker.Name: func(ctx context.Context) error {
 			return assertworker.Run(ctx, cfg, assertworker.Deps{})

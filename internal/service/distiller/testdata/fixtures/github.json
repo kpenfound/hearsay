@@ -1,0 +1,313 @@
+{
+  "completions": [
+    {
+      "tier": "distill",
+      "request": {
+        "system": "You are Hearsay's distiller. You turn one artifact from a team's tools into one short document that a coding agent will read later, when the artifact itself is long gone from anybody's memory.\n\nWrite for someone who has to make a decision and has not read any of this. Say what the team worked out and why, not what the software does. Keep every claim to what the document in front of you says: if something is not there, leave the field empty rather than filling it in from what usually happens.\n\nNever quote a credential, a token, a key or a personal email address, even if the document contains one.\n\nThis is a tracker issue and the conversation on it.\n\n- summary: what is being asked for or reported, and where the conversation got to.\n- question: the question the issue is really asking, in one sentence. Empty if it reports rather than asks.\n- outcome: what was concluded, if anything was.\n- open_questions: what the thread leaves unanswered, one per entry, each a question.\n\noutcome_kind classifies the outcome, and it is always one of five:\n\n- resolved: a question was answered or the work was finished. A merged change, a bug someone fixed.\n- decided: the team took a decision that binds later work, whether or not it has been carried out.\n- proposed: something was put forward and nobody has agreed to it yet.\n- open: it is still being worked out, and the artifact says so.\n- none: nothing was concluded. A note, a report nobody answered, a routine change.\n\nUse none rather than guessing. An outcome you had to infer is not an outcome.",
+        "messages": [
+          {
+            "role": "user",
+            "text": "# engine: writes race with the job queue\n\nissue by kyle at 2026-09-09T12:00:00Z\n\nThe engine writes before it takes the lock. @samr have you seen this?\n\n## message by sam at 2026-09-09T13:00:00Z\n\nSeen it twice this week. We should take the lock first.\n\n## message by kyle at 2026-09-09T14:00:00Z\n\nAgreed. I will send a change."
+          }
+        ],
+        "max_tokens": 2048,
+        "schema": {
+          "name": "l1_issue",
+          "description": "The distillation of one issue.",
+          "definition": {
+            "type": "object",
+            "description": "One distilled document.",
+            "properties": {
+              "open_questions": {
+                "type": "array",
+                "description": "What the artifact leaves unanswered, one question per entry.",
+                "maxItems": 8,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 400
+                }
+              },
+              "outcome": {
+                "type": "string",
+                "description": "What was concluded. Empty when nothing was.",
+                "maxLength": 1000
+              },
+              "outcome_kind": {
+                "type": "string",
+                "description": "How to classify the outcome.",
+                "enum": [
+                  "resolved",
+                  "decided",
+                  "proposed",
+                  "open",
+                  "none"
+                ]
+              },
+              "question": {
+                "type": "string",
+                "description": "The question the issue is asking, in one sentence. Empty when it reports rather than asks.",
+                "maxLength": 500
+              },
+              "summary": {
+                "type": "string",
+                "description": "What happened, in a few sentences, for someone who has not read the artifact.",
+                "minLength": 1,
+                "maxLength": 2000
+              }
+            },
+            "required": [
+              "summary",
+              "outcome_kind"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "response": {
+        "json": {
+          "open_questions": [
+            "Does the job queue have the same problem?"
+          ],
+          "outcome": "The team agreed the lock has to be taken before the write.",
+          "outcome_kind": "decided",
+          "question": "Should the engine take the lock before writing?",
+          "summary": "The engine writes before taking the lock, which races with the job queue. Two people confirmed it, and the author said they would send a change."
+        },
+        "stop_reason": "end",
+        "model": "recorded"
+      }
+    },
+    {
+      "tier": "distill",
+      "request": {
+        "system": "You are Hearsay's distiller. You turn one artifact from a team's tools into one short document that a coding agent will read later, when the artifact itself is long gone from anybody's memory.\n\nWrite for someone who has to make a decision and has not read any of this. Say what the team worked out and why, not what the software does. Keep every claim to what the document in front of you says: if something is not there, leave the field empty rather than filling it in from what usually happens.\n\nNever quote a credential, a token, a key or a personal email address, even if the document contains one.\n\nThis is a change proposal with its reviews and its comments.\n\n- summary: what is being proposed and what the review said about it.\n- change: what the change does, in one or two sentences. Behaviour, not files.\n- outcome: what was decided about it — merged, rejected, reworked, still open.\n- open_questions: what the review raised and nobody answered, one per entry.\n\noutcome_kind classifies the outcome, and it is always one of five:\n\n- resolved: a question was answered or the work was finished. A merged change, a bug someone fixed.\n- decided: the team took a decision that binds later work, whether or not it has been carried out.\n- proposed: something was put forward and nobody has agreed to it yet.\n- open: it is still being worked out, and the artifact says so.\n- none: nothing was concluded. A note, a report nobody answered, a routine change.\n\nUse none rather than guessing. An outcome you had to infer is not an outcome.",
+        "messages": [
+          {
+            "role": "user",
+            "text": "# engine: take the lock before writing\n\npull_request by kyle at 2026-09-09T15:00:00Z\n\nFixes #12 by moving the lock above the write. See https://github.com/acme/api/issues/12.\n\n## review by sam at 2026-09-09T16:00:00Z\n\nApproved. Worth checking whether the job queue needs the same treatment.\n\n## review_comment by sam at 2026-09-09T17:00:00Z\n\nengine/server/write.go\n\nThis comment above the lock is now wrong."
+          }
+        ],
+        "max_tokens": 2048,
+        "schema": {
+          "name": "l1_pr",
+          "description": "The distillation of one pr.",
+          "definition": {
+            "type": "object",
+            "description": "One distilled document.",
+            "properties": {
+              "change": {
+                "type": "string",
+                "description": "What the change does, in behaviour rather than in files.",
+                "maxLength": 1000
+              },
+              "open_questions": {
+                "type": "array",
+                "description": "What the artifact leaves unanswered, one question per entry.",
+                "maxItems": 8,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 400
+                }
+              },
+              "outcome": {
+                "type": "string",
+                "description": "What was concluded. Empty when nothing was.",
+                "maxLength": 1000
+              },
+              "outcome_kind": {
+                "type": "string",
+                "description": "How to classify the outcome.",
+                "enum": [
+                  "resolved",
+                  "decided",
+                  "proposed",
+                  "open",
+                  "none"
+                ]
+              },
+              "summary": {
+                "type": "string",
+                "description": "What happened, in a few sentences, for someone who has not read the artifact.",
+                "minLength": 1,
+                "maxLength": 2000
+              }
+            },
+            "required": [
+              "summary",
+              "outcome_kind"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "response": {
+        "json": {
+          "change": "Takes the engine's lock before writing rather than after.",
+          "open_questions": [
+            "Does the job queue need the same treatment?"
+          ],
+          "outcome": "Approved.",
+          "outcome_kind": "resolved",
+          "summary": "Moves the lock above the write in the engine, closing the race the issue described. Approved on review."
+        },
+        "stop_reason": "end",
+        "model": "recorded"
+      }
+    },
+    {
+      "tier": "distill",
+      "request": {
+        "system": "You are Hearsay's distiller. You turn one artifact from a team's tools into one short document that a coding agent will read later, when the artifact itself is long gone from anybody's memory.\n\nWrite for someone who has to make a decision and has not read any of this. Say what the team worked out and why, not what the software does. Keep every claim to what the document in front of you says: if something is not there, leave the field empty rather than filling it in from what usually happens.\n\nNever quote a credential, a token, a key or a personal email address, even if the document contains one.\n\nThis is one commit on a watched branch.\n\n- summary: what changed and why, from the message. Say \"no reason given\" rather than inventing one.\n- change: what the commit does, in one sentence.\n- outcome: what it settles, if the message says it settles anything.\n- open_questions: usually empty. A commit message rarely leaves a question.\n\noutcome_kind classifies the outcome, and it is always one of five:\n\n- resolved: a question was answered or the work was finished. A merged change, a bug someone fixed.\n- decided: the team took a decision that binds later work, whether or not it has been carried out.\n- proposed: something was put forward and nobody has agreed to it yet.\n- open: it is still being worked out, and the artifact says so.\n- none: nothing was concluded. A note, a report nobody answered, a routine change.\n\nUse none rather than guessing. An outcome you had to infer is not an outcome.",
+        "messages": [
+          {
+            "role": "user",
+            "text": "# engine: take the lock before writing\n\ncommit by kyle at 2026-09-09T19:00:00Z\n\nengine: take the lock before writing\n\nThe write raced with the job queue. Fixes #12."
+          }
+        ],
+        "max_tokens": 2048,
+        "schema": {
+          "name": "l1_commit",
+          "description": "The distillation of one commit.",
+          "definition": {
+            "type": "object",
+            "description": "One distilled document.",
+            "properties": {
+              "change": {
+                "type": "string",
+                "description": "What the change does, in behaviour rather than in files.",
+                "maxLength": 1000
+              },
+              "open_questions": {
+                "type": "array",
+                "description": "What the artifact leaves unanswered, one question per entry.",
+                "maxItems": 8,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 400
+                }
+              },
+              "outcome": {
+                "type": "string",
+                "description": "What was concluded. Empty when nothing was.",
+                "maxLength": 1000
+              },
+              "outcome_kind": {
+                "type": "string",
+                "description": "How to classify the outcome.",
+                "enum": [
+                  "resolved",
+                  "decided",
+                  "proposed",
+                  "open",
+                  "none"
+                ]
+              },
+              "summary": {
+                "type": "string",
+                "description": "What happened, in a few sentences, for someone who has not read the artifact.",
+                "minLength": 1,
+                "maxLength": 2000
+              }
+            },
+            "required": [
+              "summary",
+              "outcome_kind"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "response": {
+        "json": {
+          "change": "Moves the lock acquisition above the write.",
+          "outcome": "The race described in the issue is closed.",
+          "outcome_kind": "resolved",
+          "summary": "Takes the engine's lock before writing, closing the race with the job queue."
+        },
+        "stop_reason": "end",
+        "model": "recorded"
+      }
+    },
+    {
+      "tier": "distill",
+      "request": {
+        "system": "You are Hearsay's distiller. You turn one artifact from a team's tools into one short document that a coding agent will read later, when the artifact itself is long gone from anybody's memory.\n\nWrite for someone who has to make a decision and has not read any of this. Say what the team worked out and why, not what the software does. Keep every claim to what the document in front of you says: if something is not there, leave the field empty rather than filling it in from what usually happens.\n\nNever quote a credential, a token, a key or a personal email address, even if the document contains one.\n\nThis is a change proposal with its reviews and its comments.\n\n- summary: what is being proposed and what the review said about it.\n- change: what the change does, in one or two sentences. Behaviour, not files.\n- outcome: what was decided about it — merged, rejected, reworked, still open.\n- open_questions: what the review raised and nobody answered, one per entry.\n\noutcome_kind classifies the outcome, and it is always one of five:\n\n- resolved: a question was answered or the work was finished. A merged change, a bug someone fixed.\n- decided: the team took a decision that binds later work, whether or not it has been carried out.\n- proposed: something was put forward and nobody has agreed to it yet.\n- open: it is still being worked out, and the artifact says so.\n- none: nothing was concluded. A note, a report nobody answered, a routine change.\n\nUse none rather than guessing. An outcome you had to infer is not an outcome.",
+        "messages": [
+          {
+            "role": "user",
+            "text": "# engine: take the lock before writing\n\npull_request by kyle at 2026-09-09T15:00:00Z\n\nFixes #12 by moving the lock above the write. See https://github.com/acme/api/issues/12.\n\n## review by sam at 2026-09-09T16:00:00Z\n\nApproved. Worth checking whether the job queue needs the same treatment.\n\n## review_comment by sam at 2026-09-09T17:00:00Z\n\nengine/server/write.go\n\nThis comment above the lock is now wrong.\n\n## message by kyle at 2026-09-09T20:00:00Z\n\nMerged. The job queue is #40."
+          }
+        ],
+        "max_tokens": 2048,
+        "schema": {
+          "name": "l1_pr",
+          "description": "The distillation of one pr.",
+          "definition": {
+            "type": "object",
+            "description": "One distilled document.",
+            "properties": {
+              "change": {
+                "type": "string",
+                "description": "What the change does, in behaviour rather than in files.",
+                "maxLength": 1000
+              },
+              "open_questions": {
+                "type": "array",
+                "description": "What the artifact leaves unanswered, one question per entry.",
+                "maxItems": 8,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 400
+                }
+              },
+              "outcome": {
+                "type": "string",
+                "description": "What was concluded. Empty when nothing was.",
+                "maxLength": 1000
+              },
+              "outcome_kind": {
+                "type": "string",
+                "description": "How to classify the outcome.",
+                "enum": [
+                  "resolved",
+                  "decided",
+                  "proposed",
+                  "open",
+                  "none"
+                ]
+              },
+              "summary": {
+                "type": "string",
+                "description": "What happened, in a few sentences, for someone who has not read the artifact.",
+                "minLength": 1,
+                "maxLength": 2000
+              }
+            },
+            "required": [
+              "summary",
+              "outcome_kind"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "response": {
+        "json": {
+          "change": "Takes the engine's lock before writing rather than after.",
+          "open_questions": [
+            "Does the job queue need the same treatment?"
+          ],
+          "outcome": "Approved.",
+          "outcome_kind": "resolved",
+          "summary": "Moves the lock above the write in the engine, closing the race the issue described. Approved on review."
+        },
+        "stop_reason": "end",
+        "model": "recorded"
+      }
+    }
+  ]
+}

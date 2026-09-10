@@ -34,6 +34,25 @@ that is the one to ask for when you want the *current* revision: an ACL re-sync
 is a new revision, so the first result of the default order carries the access
 list the re-sync replaced.
 
+`Current` is the read everything above L0 actually wants: one row per artifact,
+and the row is the revision that is current by the contract's order. A listing
+hands back a history, which is what provenance needs and what distillation does
+not — and doing the fold in one statement is also what keeps a limit meaningful,
+because the limit counts artifacts there and revisions in a listing.
+
+`Filter.Thread` reads one conversation: every event that hangs off an artifact,
+which is what an L1 document is assembled from. It matches the contract's own
+rule — an event's `thread` is the root of the conversation, and its `parent` is
+that root on a source with no threads — so it is one predicate either sort of
+source answers, and it is indexed as the same expression.
+
+`Cursors` is where a consumer of the change feed keeps its position, one row per
+consumer rather than per replica. It lives in the database because a consumer is
+a stateless process that gets restarted: a distiller that lost its position would
+re-distil everything ever ingested. A save never moves a cursor backwards, so two
+replicas of one consumer cannot make the feed be read again; resetting one is
+deleting its row.
+
 **Does not belong here:** anything that interprets an event. Distillation is
 `internal/l1`, and no code in this package calls a model. Connectors — the code
 that produces events — live in `internal/connector`, and so does the event type
