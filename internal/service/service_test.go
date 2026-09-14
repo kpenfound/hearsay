@@ -20,19 +20,18 @@ import (
 // composes them, so one that ignores cancellation hangs the dev process
 // (ADR-0003).
 //
-// The distiller and the connectors are not here because neither can be run
-// without a database, which is what the next test says. Their own cancellation
-// is covered where it can be: internal/service/distiller's integration test
-// runs the distiller against Postgres and cancels it, and
-// internal/service/connectors' tests stop the connectors service on every case
-// they start.
+// The distiller, the assertion worker and the connectors are not here because
+// none of them can be run without a database, which is what the next test says.
+// Their own cancellation is covered where it can be: the distiller's and the
+// assertion worker's integration tests run them against Postgres and cancel
+// them, and internal/service/connectors' tests stop the connectors service on
+// every case they start.
 func TestServicesStopOnContextCancellation(t *testing.T) {
 	cfg := config.Default()
 	tests := []struct {
 		name string
 		run  service.RunFunc
 	}{
-		{assertworker.Name, func(ctx context.Context) error { return assertworker.Run(ctx, &cfg, assertworker.Deps{}) }},
 		{api.Name, func(ctx context.Context) error { return api.Run(ctx, &cfg, api.Deps{}) }},
 	}
 	for _, tt := range tests {
@@ -55,9 +54,10 @@ func TestServicesStopOnContextCancellation(t *testing.T) {
 }
 
 // A service with dependencies says what it is missing rather than starting
-// without them and failing on the first job. Two of the four have any: the
-// distiller reads L0, writes L1 and calls a model, and the connectors write L0
-// and keep their backfill positions there (ADR-0003, ADR-0004, ADR-0005).
+// without them and failing on the first job. Three of the four have any: the
+// distiller reads L0, writes L1 and calls a model, the assertion worker reads L1,
+// writes L2 and calls a model, and the connectors write L0 and keep their
+// backfill positions there (ADR-0003, ADR-0004, ADR-0005).
 func TestTheServicesWithDependenciesRefuseToRunWithoutThem(t *testing.T) {
 	cfg := config.Default()
 	tests := []struct {
@@ -65,6 +65,7 @@ func TestTheServicesWithDependenciesRefuseToRunWithoutThem(t *testing.T) {
 		run  service.RunFunc
 	}{
 		{distiller.Name, func(ctx context.Context) error { return distiller.Run(ctx, &cfg, distiller.Deps{}) }},
+		{assertworker.Name, func(ctx context.Context) error { return assertworker.Run(ctx, &cfg, assertworker.Deps{}) }},
 		{connectors.Name, func(ctx context.Context) error { return connectors.Run(ctx, &cfg, connectors.Deps{}) }},
 	}
 	for _, tt := range tests {

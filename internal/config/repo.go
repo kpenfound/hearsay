@@ -212,8 +212,7 @@ type CodeEntity struct {
 	// Repo is the repository the patterns resolve against.
 	Repo SourceRef
 	// CodeOwners is the path of a CODEOWNERS file within Repo to seed owners
-	// from. Config records the intent; the import itself belongs to the code
-	// entity work.
+	// from. Config records the intent; the import is internal/l2's Seed.
 	CodeOwners string
 }
 

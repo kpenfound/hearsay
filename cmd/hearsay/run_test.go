@@ -317,15 +317,15 @@ func TestServiceSubcommandsReturnWhenTheContextIsCancelled(t *testing.T) {
 	// These cases are about the services coming back, not about a schema, and
 	// the integration-test check sets this variable for the whole run.
 	//
-	// `connectors`, `distiller` and `all` are not here: all three need Postgres
-	// and refuse without it, which is the next test. Their cancellation is
-	// covered against a real database in cmd/hearsay's integration test.
+	// `connectors`, `distiller`, `assert-worker` and `all` are not here: all four
+	// need Postgres and refuse without it, which is the next test. Their
+	// cancellation is covered against a real database in cmd/hearsay's
+	// integration test.
 	t.Setenv("HEARSAY_DATABASE_URL", "")
 	tests := []struct {
 		args     []string
 		services []string // the values the service field must take
 	}{
-		{args: []string{"assert-worker"}, services: []string{"assert-worker"}},
 		{args: []string{"api"}, services: []string{"api"}},
 	}
 	for _, tt := range tests {
@@ -493,6 +493,7 @@ func TestSubcommandsThatNeedADatabaseSaySoWhenTheyHaveNone(t *testing.T) {
 		{"migrate", "status"},
 		{"l0", "count"},
 		{"distiller"},
+		{"assert-worker"},
 		{"connectors"},
 		{"all"},
 	} {

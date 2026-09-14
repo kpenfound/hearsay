@@ -297,8 +297,13 @@ walk up this hierarchy, and a cycle makes it a walk with no end. An alias may
 only mean one thing — an alias that resolves to two entities resolves to
 neither.
 
-`codeowners` records where to import ownership from. The import itself lands
-with the code entity work; config is where the intent is written down.
+`codeowners` records where to import ownership from. The assertion worker
+imports it when it seeds entities at startup: the last rule covering each path
+pattern's directory names the owners, for the entity and its descendants, and an
+owner the identity mapping does not resolve is left out. Owners configured here
+win. Reading the file needs a repository reader, which the GitHub connector will
+provide; until then the worker seeds from this directory alone and logs a
+warning for every entry that names a file.
 
 ## `authority/`
 
