@@ -39,9 +39,7 @@ func commands() []command {
 	return []command{
 		{connectors.Name, "[--source name]...", "Run the source connectors. Writes L0 only.", runConnectors},
 		{distiller.Name, "", "Run the distiller. L0 to L1.", runDistiller},
-		{assertworker.Name, "", "Run the assertion worker. L1 to L2.", runService(assertworker.Name, func(ctx context.Context, cfg *config.Config) error {
-			return assertworker.Run(ctx, cfg, assertworker.Deps{})
-		})},
+		{assertworker.Name, "", "Run the assertion worker. L1 to L2.", runAssertWorker},
 		{api.Name, "", "Run the read and assert API over MCP and HTTP.", runService(api.Name, func(ctx context.Context, cfg *config.Config) error {
 			return api.Run(ctx, cfg, api.Deps{})
 		})},
@@ -244,6 +242,45 @@ func runDistiller(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	return distiller.Run(ctx, cfg, distiller.Deps{Pool: pool, LLM: registry})
 }
 
+// runAssertWorker runs the assertion worker. It has the distiller's
+// dependencies — Postgres, and the model tiers the configuration names — and
+// refuses without them for the same reasons.
+//
+// It is given no repository reader, so entities are seeded from `code/`
+// configuration alone: nothing in this binary reads a CODEOWNERS file or a
+// repository's layout from a live source until the GitHub connector does.
+func runAssertWorker(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	fs, cfg, configPath := newFlagSet(assertworker.Name, stderr)
+	resolveDatabase := databaseFlag(fs, cfg)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	resolveDatabase()
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	ctx, err := withLogger(ctx, assertworker.Name, cfg, stderr)
+	if err != nil {
+		return err
+	}
+	if cfg.Database.URL == "" {
+		return db.ErrNoDatabaseURL
+	}
+	if err := loadConfig(ctx, cfg, *configPath); err != nil {
+		return err
+	}
+	pool, err := db.Connect(ctx, cfg.Database.URL)
+	if err != nil {
+		return stoppingEarly(ctx, err)
+	}
+	defer pool.Close()
+	registry, err := modelRegistry(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry})
+}
+
 // stoppingEarly turns a startup failure that happened because the process was
 // asked to stop into a clean stop. A service is a thing somebody runs in a
 // terminal and ends with Ctrl-C, and one interrupted while it is still opening
@@ -405,7 +442,7 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 			return distiller.Run(ctx, cfg, distiller.Deps{Pool: pool, LLM: registry})
 		},
 		assertworker.Name: func(ctx context.Context) error {
-			return assertworker.Run(ctx, cfg, assertworker.Deps{})
+			return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry})
 		},
 		api.Name: func(ctx context.Context) error {
 			return api.Run(ctx, cfg, api.Deps{})
