@@ -20,8 +20,15 @@ L2 it is not an L3 view — it is an L2 fact and belongs in `internal/l2`.
   chain. When the reader may not read it, the topic is left out and counted —
   the older stance they may read is not current, and offering it as current
   would be wrong in a way they could not see.
-- **Inherited means about an ancestor only.** The walk up `part_of` is a
-  recursive `UNION`, so a cycle ends it.
+- **A stance is an entity's own only when its topic's `about` names that entity
+  itself.** Every other topic reached — through a related entity (for a tracker
+  item, the code entities its own document is about) or through an ancestor of
+  either — is inherited, and comes after the entity's own. The line is there
+  because a document's scope is broad: every document in a repository is about
+  the repository's code entity, and so is every topic one opened, so "about any
+  entity the item's document is about" would make every topic in the repository
+  a stance of every item. The walk up `part_of` is a recursive `UNION`, so a
+  cycle ends it.
 - **Ownership and "who knows X" are not built yet.**
 
 See [docs/design.md](../../docs/design.md#l3-derived-views).

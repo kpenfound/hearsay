@@ -32,8 +32,14 @@ func current(topic string, tier l2.Tier, hour int) l3.CurrentStance {
 	}
 }
 
+func inherited(c l3.CurrentStance) l3.CurrentStance {
+	c.Inherited = true
+	return c
+}
+
 // inputs is a scope with something in every section: two ratified stances and
-// two inferred ones, five recent documents and three open questions.
+// two inferred ones of its own and a ratified one it inherits, five recent
+// documents and three open questions.
 func inputs() bundle.Inputs {
 	subject := doc("l1:gh:acme/api#12", l1.KindIssue, 9, "Move the lock out of the request path.\nMore detail.")
 	in := bundle.Inputs{
@@ -48,6 +54,7 @@ func inputs() bundle.Inputs {
 			current("i1", l2.TierInferred, 7),
 			current("r2", l2.TierRatified, 6),
 			current("i2", l2.TierInferred, 5),
+			inherited(current("x1", l2.TierRatified, 9)),
 		},
 		Recent: l3.Activity{LastActivity: day.Add(9 * time.Hour)},
 		Questions: []l3.Question{
@@ -86,6 +93,8 @@ func TestBuildDropsFromTheBottom(t *testing.T) {
 	withoutQuestions.OpenQuestions = []bundle.Question{}
 	withoutRecent := withoutQuestions
 	withoutRecent.Recent.Items = []bundle.Item{}
+	withoutInherited := withoutRecent
+	withoutInherited.Stances = withoutRecent.Stances[:4]
 
 	tests := []struct {
 		name   string
@@ -95,15 +104,17 @@ func TestBuildDropsFromTheBottom(t *testing.T) {
 		stances []string
 	}{
 		{name: "a budget the bundle fits keeps everything", budget: size,
-			stances: []string{"r1", "i1", "r2", "i2"}},
+			stances: []string{"r1", "i1", "r2", "i2", "x1"}},
 		{name: "one token over drops the last open question first", budget: size - 1,
-			want: bundle.Trimmed{OpenQuestions: 1}, stances: []string{"r1", "i1", "r2", "i2"}},
+			want: bundle.Trimmed{OpenQuestions: 1}, stances: []string{"r1", "i1", "r2", "i2", "x1"}},
 		{name: "recent shrinks before stances", budget: tokens(t, withoutQuestions) - 1,
-			want: bundle.Trimmed{OpenQuestions: 3, Recent: 1}, stances: []string{"r1", "i1", "r2", "i2"}},
-		{name: "stances drop last first, the inferred ones only", budget: tokens(t, withoutRecent) - 1,
-			want: bundle.Trimmed{OpenQuestions: 3, Recent: 5, Stances: 1}, stances: []string{"r1", "i1", "r2"}},
-		{name: "ratified stances never drop, even over budget", budget: 1,
-			want: bundle.Trimmed{OpenQuestions: 3, Recent: 5, Stances: 2}, stances: []string{"r1", "r2"}},
+			want: bundle.Trimmed{OpenQuestions: 3, Recent: 1}, stances: []string{"r1", "i1", "r2", "i2", "x1"}},
+		{name: "an inherited stance drops first, though it is ratified", budget: tokens(t, withoutRecent) - 1,
+			want: bundle.Trimmed{OpenQuestions: 3, Recent: 5, Stances: 1}, stances: []string{"r1", "i1", "r2", "i2"}},
+		{name: "then the scope's own stances drop last first, the inferred ones only", budget: tokens(t, withoutInherited) - 1,
+			want: bundle.Trimmed{OpenQuestions: 3, Recent: 5, Stances: 2}, stances: []string{"r1", "i1", "r2"}},
+		{name: "the scope's own ratified stances never drop, even over budget", budget: 1,
+			want: bundle.Trimmed{OpenQuestions: 3, Recent: 5, Stances: 3}, stances: []string{"r1", "r2"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

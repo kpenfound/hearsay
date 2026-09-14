@@ -319,8 +319,10 @@ func (c *Calls) audit(ctx context.Context, caller Caller, scope string, body []b
 			Native:       record,
 		},
 		// Who was served what is itself something to keep from the people who
-		// were not: the record is readable by the person it was served for, as
-		// Hearsay names them, and by nobody a source's grants reach.
+		// were not. The entry names the principal in Hearsay's own source, which
+		// no configured identity is in and so no reader's audience holds: the
+		// record is readable by nobody through the API yet, the person it was
+		// served for included. Failing closed until audit reads are built.
 		ACL: connector.ACL{{Kind: connector.ACLIdentity, Source: AuditSource, NativeID: caller.Principal}},
 	}
 	appended, err := c.events.Append(ctx, ev)

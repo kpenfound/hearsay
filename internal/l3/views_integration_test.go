@@ -196,7 +196,12 @@ func TestCurrentStancesAreTheHeadsTheReaderMayRead(t *testing.T) {
 	secretNow := topic("a private present", child)
 	stance(secretNow, "l1:f", "public once", 1, public)
 	stance(secretNow, "l1:g", "private now", 3, private)
-	stance(topic("inherited", parent), "l1:h", "from the parent", 1, public)
+	// Newer than every stance of the child's own, so only the sort puts them
+	// last; the related entity's topic is inherited though no ancestor walk
+	// reached it.
+	sibling := "code:" + src + ":sibling"
+	stance(topic("inherited", parent), "l1:h", "from the parent", 9, public)
+	stance(topic("via a related entity", sibling), "l1:j", "from the sibling", 8, public)
 	// A topic sam may not read with a stance sam may: the store allows it, and
 	// the topic's name is what must not reach sam.
 	privateTopic := l2.Topic{ID: l2.TopicID(src, "l1:x", 0, "a private topic"), Scope: src, Name: "a private topic",
@@ -212,7 +217,7 @@ func TestCurrentStancesAreTheHeadsTheReaderMayRead(t *testing.T) {
 	}
 	read := func(reader l1.Reader) ([]row, int) {
 		t.Helper()
-		got, withheld, err := l3.New(pool).CurrentStances(ctx, reader, []string{child})
+		got, withheld, err := l3.New(pool).CurrentStances(ctx, reader, child, []string{sibling})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -228,6 +233,7 @@ func TestCurrentStancesAreTheHeadsTheReaderMayRead(t *testing.T) {
 		{"forked", "newest", "first", false},
 		{"a private past", "what everyone sees", "", false},
 		{"inherited", "from the parent", "", true},
+		{"via a related entity", "from the sibling", "", true},
 	}
 	if fmt.Sprint(sams) != fmt.Sprint(wantSam) || withheld != 2 {
 		t.Errorf("sam's stances = %v with %d withheld, want %v with 2", sams, withheld, wantSam)
@@ -239,6 +245,7 @@ func TestCurrentStancesAreTheHeadsTheReaderMayRead(t *testing.T) {
 		{"a private present", "private now", "public once", false},
 		{"a private past", "what everyone sees", "what kyle alone saw", false},
 		{"inherited", "from the parent", "", true},
+		{"via a related entity", "from the sibling", "", true},
 	}
 	if fmt.Sprint(kyles) != fmt.Sprint(wantKyle) || withheld != 0 {
 		t.Errorf("kyle's stances = %v with %d withheld, want %v with 0", kyles, withheld, wantKyle)

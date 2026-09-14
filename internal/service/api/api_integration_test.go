@@ -63,6 +63,9 @@ type world struct {
 	server              *httptest.Server
 	calls               *api.Calls
 	pool                *pgxpool.Pool
+	// putIn writes an event and its document, about an entity of the caller's
+	// choosing and the project's code entity, as l1.Build would.
+	putIn func(scope, artifact string, kind l1.Kind, hour int, summary string, acl connector.ACL, questions ...string) string
 }
 
 const kyleNode = "MDQ6VXNlcjE="
@@ -91,7 +94,7 @@ func newWorld(t *testing.T) *world {
 	public := connector.ACL{{Kind: connector.ACLPublic}}
 	private := connector.ACL{{Kind: connector.ACLIdentity, Source: w.src, NativeID: kyleNode, Label: "kpenfound"}}
 
-	put := func(artifact string, kind l1.Kind, hour int, summary string, acl connector.ACL, questions ...string) string {
+	w.putIn = func(scope, artifact string, kind l1.Kind, hour int, summary string, acl connector.ACL, questions ...string) string {
 		t.Helper()
 		ev := connector.Event{
 			Source: w.src, NativeID: artifact, Kind: connector.KindIssue, Time: day.Add(time.Duration(hour) * time.Hour),
@@ -114,7 +117,7 @@ func newWorld(t *testing.T) *world {
 			Source: l1.Source{System: w.src, NativeID: artifact},
 			L0Refs: []string{connector.EventID(w.src, artifact)},
 			Time:   l1.Times{Created: at, Updated: at, LastActivity: at},
-			Scope:  []string{w.scope, "code:" + w.project},
+			Scope:  []string{scope, "code:" + w.project},
 			ACL:    acl, Text: summary, RawText: summary,
 			Body: l1.Body{Summary: summary, OutcomeKind: l1.OutcomeDecided, OpenQuestions: questions},
 		}
@@ -122,6 +125,10 @@ func newWorld(t *testing.T) *world {
 			t.Fatalf("Put(%s) = %v", doc.ID, err)
 		}
 		return doc.ID
+	}
+	put := func(artifact string, kind l1.Kind, hour int, summary string, acl connector.ACL, questions ...string) string {
+		t.Helper()
+		return w.putIn(w.scope, artifact, kind, hour, summary, acl, questions...)
 	}
 	w.issue = put(w.project+"#12", l1.KindIssue, 1, "Move the lock out of the request path.", public, "who runs the migration in staging?")
 	w.pr = put(w.project+"#13", l1.KindPR, 2, "Moves the lock into the worker; merged.", public)
@@ -485,6 +492,12 @@ func TestEveryBundleServedIsAnAuditEvent(t *testing.T) {
 			if len(ev.ACL) != 1 || ev.ACL[0].NativeID != rec.Principal {
 				t.Errorf("the audit event's acl = %+v, want the principal it was served for alone", ev.ACL)
 			}
+			// Readable by nobody through the API yet — not even the principal
+			// it was served for, who holds no identity in the `hearsay` source.
+			body, _ := json.Marshal(map[string]string{"id": ev.ID})
+			if status, got := w.post(t, "/v1/get_l0", api.Caller{Principal: rec.Principal}, string(body)); status != http.StatusNotFound {
+				t.Errorf("get_l0 of %s's own audit event = %d %s, want 404", rec.Principal, status, got)
+			}
 		}
 	}
 	if len(records) != 2 {
@@ -499,6 +512,60 @@ func TestEveryBundleServedIsAnAuditEvent(t *testing.T) {
 	}
 	if sams.Principal != "sam" || sams.Report.Withheld != (bundle.Withheld{Documents: 1, Stances: 1}) {
 		t.Errorf("sam's record = %+v, want one document and one stance withheld", sams)
+	}
+}
+
+// Review round 1: every topic any document in a repository opened is about the
+// repository's code entity, because a document's scope is. Another item's
+// topics are inherited by this one, never its own, and however many ratified
+// stances they carry the bundle stays within its budget — while the item whose
+// topics they are still holds them as its own.
+func TestAnotherItemsTopicsAreInheritedAndDropFirst(t *testing.T) {
+	w := newWorld(t)
+	public := connector.ACL{{Kind: connector.ACLPublic}}
+	other := "tracker:" + w.src + ":" + w.project + "#40"
+	doc := w.putIn(other, w.project+"#40", l1.KindPR, 4, "Adds retries; merged.", public)
+	graph := l2.New(w.pool)
+	const many = 40
+	for i := range many {
+		name := "retry policy " + strconv.Itoa(i)
+		tp := l2.Topic{ID: l2.TopicID(w.src, doc, i, name), Scope: w.src, Name: name,
+			About: []string{"code:" + w.project, other}, ACL: public, OpenedBy: doc}
+		if _, err := graph.OpenTopic(t.Context(), tp); err != nil {
+			t.Fatal(err)
+		}
+		position := strings.Repeat("retry with a jittered backoff, ", 6) + strconv.Itoa(i)
+		if _, _, err := graph.AppendStance(t.Context(), l2.Stance{
+			ID: l2.StanceID(tp.ID, doc, position), TopicID: tp.ID, Position: position, Author: "kyle",
+			StatedAt: day.Add(4 * time.Hour), Evidence: []string{doc}, Tier: l2.TierRatified, ACL: public,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	body := w.http(t, kyle, "get_bundle", map[string]any{"scope": w.scope})
+	if n := bundle.Tokens(body); n > bundle.DefaultBudget {
+		t.Errorf("the bundle for %s is %d tokens, over the budget of %d", w.scope, n, bundle.DefaultBudget)
+	}
+	var own bool
+	for _, s := range decodeBundle(t, body).Stances {
+		if strings.HasPrefix(s.Topic, "retry policy") && !s.Inherited {
+			t.Errorf("%s's bundle presents %q, a topic of %s, as its own", w.scope, s.Topic, other)
+		}
+		own = own || s.Topic == "where the lock lives" && !s.Inherited
+	}
+	if !own {
+		t.Errorf("the item's own ratified stance dropped to make room: %s", body)
+	}
+
+	mine := 0
+	for _, s := range decodeBundle(t, w.http(t, kyle, "get_bundle", map[string]any{"scope": other})).Stances {
+		if strings.HasPrefix(s.Topic, "retry policy") && !s.Inherited {
+			mine++
+		}
+	}
+	if mine != many {
+		t.Errorf("%s's bundle holds %d of its own %d ratified stances", other, mine, many)
 	}
 }
 

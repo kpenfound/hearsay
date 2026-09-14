@@ -26,8 +26,14 @@ subject to the `recent` cap; no code content, ever.
   which breaks "cacheable". A consumer computes the age.
 - **The budget is estimated from bytes** ([BytesPerToken]), not a tokenizer: the
   bundle must not depend on which model a deployment names. It drops from the
-  bottom — open questions, then `recent`, then stances that are not ratified,
-  last first — and can end over budget, because ratified stances never drop.
+  bottom — open questions, then `recent`, then inherited stances whatever their
+  tier, then the scope's own stances that are not ratified, each last first —
+  and can end over budget, because the scope's own ratified stances never drop.
+  "Ratified stances never drop" is read as the scope's own: a tracker item
+  inherits every topic in its repository, and holding every merged pull
+  request's stance would make the budget no limit at all. A code entity asked
+  for as the scope owns every topic in it, so that bundle is the one that can
+  still grow past the budget.
 - **[Encode] is the one encoding.** Every interface serves its bytes verbatim;
   that is what "identical output regardless of which interface asked" rests on.
 - **Only a line with an id.** An entity has a `line` only when it is a document

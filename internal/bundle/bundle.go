@@ -212,7 +212,7 @@ func (a *Assembler) gather(ctx context.Context, reader l1.Reader, scope string) 
 		return in, withheld, err
 	}
 	in.Direct = direct
-	if in.Stances, withheld.Stances, err = a.views.CurrentStances(ctx, reader, direct); err != nil {
+	if in.Stances, withheld.Stances, err = a.views.CurrentStances(ctx, reader, scope, direct[1:]); err != nil {
 		return in, withheld, err
 	}
 	if in.Recent, err = a.views.Recent(ctx, reader, scope, RecentCap); err != nil {
@@ -243,9 +243,15 @@ type Inputs struct {
 }
 
 // Build lays inputs out as a bundle and holds it to a budget, dropping from the
-// bottom: open questions first, then `recent`, then stances that are not
-// ratified, last first. Ratified stances never drop, so a bundle can end up
+// bottom: open questions first, then `recent`, then inherited stances whatever
+// their tier, then the scope's own stances that are not ratified, each last
+// first. The scope's own ratified stances never drop, so a bundle can end up
 // over budget, and the scope and the handles are what the rest points into.
+//
+// Inherited stances drop whatever their tier because they are not the scope's:
+// a tracker item inherits every topic in its repository, and a repository with
+// many merged pull requests holds many ratified ones. Holding those would make
+// the budget a limit only on a quiet repository.
 // It is a pure function of its inputs, which is what makes a bundle cacheable.
 func Build(in Inputs, budget int) (Bundle, Trimmed, int, error) {
 	b := Bundle{
@@ -313,12 +319,12 @@ func Build(in Inputs, budget int) (Bundle, Trimmed, int, error) {
 			b.Recent.Items = b.Recent.Items[:len(b.Recent.Items)-1]
 			trimmed.Recent++
 		default:
-			last := -1
-			for i, s := range slices.Backward(b.Stances) {
-				if s.Tier != string(l2.TierRatified) {
-					last = i
-					break
-				}
+			last := slices.IndexFunc(backward(b.Stances), func(s Stance) bool { return s.Inherited })
+			if last < 0 {
+				last = slices.IndexFunc(backward(b.Stances), func(s Stance) bool { return s.Tier != string(l2.TierRatified) })
+			}
+			if last >= 0 {
+				last = len(b.Stances) - 1 - last
 			}
 			if last < 0 {
 				return b, trimmed, tokens, nil
@@ -350,3 +356,10 @@ func Line(text string) string {
 }
 
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }
+
+// backward is a reversed copy, so that an index search finds the last match.
+func backward(s []Stance) []Stance {
+	out := slices.Clone(s)
+	slices.Reverse(out)
+	return out
+}

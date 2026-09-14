@@ -49,8 +49,9 @@ type CurrentStance struct {
 	// Supersedes is the position the stance replaced, empty for the first
 	// stance on a topic and for one the reader may not read.
 	Supersedes string
-	// Inherited reports a topic about none of the entities asked for, only
-	// about an ancestor of one of them (docs/design.md#l3-derived-views).
+	// Inherited reports a topic that is not about the entity asked for itself:
+	// it is about a related entity or an ancestor of one
+	// (docs/design.md#l3-derived-views).
 	Inherited bool
 }
 
@@ -77,17 +78,28 @@ LEFT JOIN l2_stances p ON p.id = s.supersedes
 WHERE t.about && ARRAY(SELECT id FROM up)
 ORDER BY s.stated_at DESC, t.id`
 
-// CurrentStances is the stance every topic about these entities stands at, and
-// the ones inherited from their ancestors, tagged as inherited — newest first.
+// CurrentStances is the stance every topic about one entity stands at, then the
+// ones it inherits: topics about the related entities — for a tracker item, the
+// code entities its own document is about — and about the ancestors of either.
+// Only a topic whose `about` names the entity itself is its own; every other is
+// tagged inherited, however it was reached. Own stances come first and inherited
+// ones after, each newest first, so a caller cutting from the bottom cuts what
+// is inherited before what is the entity's.
+//
+// The line is drawn at the entity itself because a document's scope is broad:
+// every document in a repository is about that repository's code entity, and
+// so is every topic one of them opened. Counting those as the item's own would
+// make every topic in the repository a stance of every item in it.
 //
 // A topic the reader may not read, or whose current stance they may not read,
 // is left out and counted in the second result. The older stance they may read
 // is not offered in its place: it is not current, and a bundle that said it was
 // would be wrong in a way the reader could not see.
-func (v *Views) CurrentStances(ctx context.Context, reader l1.Reader, entities []string) ([]CurrentStance, int, error) {
-	if len(entities) == 0 {
+func (v *Views) CurrentStances(ctx context.Context, reader l1.Reader, own string, related []string) ([]CurrentStance, int, error) {
+	if own == "" {
 		return []CurrentStance{}, 0, nil
 	}
+	entities := append([]string{own}, related...)
 	rows, err := v.db.Query(ctx, currentSQL, entities)
 	if err != nil {
 		return nil, 0, fmt.Errorf("reading current stances: %w", err)
@@ -124,12 +136,23 @@ func (v *Views) CurrentStances(ctx context.Context, reader l1.Reader, entities [
 		if !reader.Allows(priorACL) {
 			c.Supersedes = ""
 		}
-		c.Inherited = !slices.ContainsFunc(c.Topic.About, func(id string) bool { return slices.Contains(entities, id) })
+		c.Inherited = !slices.Contains(c.Topic.About, own)
 		out = append(out, c)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, 0, fmt.Errorf("reading current stances: %w", err)
 	}
+	// Stable, so each half keeps the statement's newest-first order.
+	slices.SortStableFunc(out, func(a, b CurrentStance) int {
+		switch {
+		case a.Inherited == b.Inherited:
+			return 0
+		case b.Inherited:
+			return -1
+		default:
+			return 1
+		}
+	})
 	return out, withheld, nil
 }
 
