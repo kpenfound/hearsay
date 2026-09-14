@@ -15,7 +15,7 @@
 # Format version of this file. bees refuses files newer than it understands and
 # upgrades older ones in memory. Leave it alone; bees releases that change the
 # format say what to do.
-version = 1
+version = 2
 
 #===============================================================================
 # Project
@@ -393,7 +393,15 @@ auto_merge = true
 # implementation, completeness, cleanliness, style, product-fit. product-fit
 # judges the change against the work item's parent feature and is off by
 # default.
-stages = ["implementation", "completeness"]
+# The review angles a pull request of each size is reviewed from, one or more
+# of quick_general, general, docs, test_coverage, acceptance_criteria,
+# side_effects. A size not named here gets its default:
+angles = { xs = ["quick_general"], s = ["quick_general"], m = ["quick_general", "docs", "test_coverage"], l = ["general", "docs", "test_coverage"], xl = ["general", "docs", "test_coverage", "acceptance_criteria"] }
+# The model for the session that writes the review brief, for the judge, and
+# per angle. Unset: model.
+brief_model = "sonnet"
+judge_model = "sonnet"
+angle_models = { quick_general = "sonnet", docs = "sonnet", test_coverage = "sonnet" }
 #shell = "/bin/bash"
 #[roles.reviewer.env]
 #EXAMPLE = "value"
