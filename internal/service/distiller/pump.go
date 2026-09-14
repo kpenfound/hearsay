@@ -230,9 +230,8 @@ func TargetOf(ctx context.Context, ev connector.Event, hidden Hidden) (string, b
 	if root := conversationOf(ev); root != "" {
 		return l1.DocID(ev.Source, root), true, nil
 	}
-	if ev.Payload.Target == "" {
-		return "", false, nil
-	}
+	// The target is there: Event.Validate refuses a tombstone without one before
+	// it reaches L0.
 	retracted, err := hidden.Retracted(ctx, ev.Source, ev.Payload.Target)
 	if errors.Is(err, l0.ErrNotFound) {
 		return "", false, nil
