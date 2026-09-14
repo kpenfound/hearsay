@@ -25,14 +25,6 @@ without the reasons.
 - [Dagger](https://dagger.io) and a container runtime. Dagger is how everything
   runs: lint, tests, the binary, the image, migrations and the local stack.
 
-  The workspace is on **`v1.0.0-beta.11`**, which Homebrew and winget do not
-  carry. Whatever CLI you have will run that release on demand if you tell it
-  to, building and caching it the first time:
-
-  ```sh
-  export DAGGER_X_RELEASE=v1.0.0-beta.11   # or --x-release=v1.0.0-beta.11 per command
-  ```
-
   `dagger.toml` is the workspace: which modules are installed and how they are
   configured. Each module under `.dagger/modules/` pins the same engine version
   in its `dagger-module.toml`.

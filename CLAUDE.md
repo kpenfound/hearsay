@@ -26,7 +26,6 @@ it is the adapter that hands the Go module a container with Postgres attached.
 There is no CI workflow: Dagger Cloud runs `dagger check` on every commit.
 
 ```sh
-export DAGGER_X_RELEASE=v1.0.0-beta.11   # the release this workspace is on
 dagger check              # every check, in parallel; -l lists them
 dagger up                 # Postgres plus all four services
 dagger api functions      # the modules; `dagger api call hearsay <fn>` runs one
