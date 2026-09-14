@@ -34,6 +34,13 @@
 //     carry identically, normalised where they differ (a review's state is
 //     upper case in REST and lower case in a webhook). The dedup test holds the
 //     two to each other.
+//   - No backfill step pages by offset into an ordering that can change while
+//     it walks, because that skips the item at a page boundary whenever an item
+//     already read moves: issues and comments are walked by updated_at, pull
+//     requests in creation order, commits from a pinned head. [Connector.page]
+//     says how, and the tests change the fake API's data between calls.
+//   - A re-sync ignores `since`, and a push reads its commits in one REST call
+//     inside GitHub's ten-second delivery timeout.
 //   - Revision tokens compose as the contract says: the content token
 //     (`updated_at`) alone for a public repository, `<updated_at>+perm:private`
 //     for a private one, and `perm:private` alone for reviews and commits, which

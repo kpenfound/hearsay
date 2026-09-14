@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,10 +40,22 @@ type delivery struct {
 	PullRequest *pull       `json:"pull_request"`
 	Review      *review     `json:"review"`
 	// push
-	Ref     string `json:"ref"`
-	Commits []struct {
-		ID string `json:"id"`
-	} `json:"commits"`
+	Ref    string `json:"ref"`
+	Before string `json:"before"`
+	After  string `json:"after"`
+}
+
+// pushReadTimeout bounds the one REST read a push delivery makes. GitHub gives
+// up on a delivery that is not answered in ten seconds, closes the connection
+// and does not redeliver, so a read that cannot finish inside that is answered
+// as a failure while GitHub is still listening. A variable so that a test can
+// shorten it.
+var pushReadTimeout = 8 * time.Second
+
+// comparison is GitHub's compare response, as far as a push reads it.
+type comparison struct {
+	TotalCommits int      `json:"total_commits"`
+	Commits      []commit `json:"commits"`
 }
 
 // errMalformed is a delivery that verified but that the connector cannot read:
@@ -214,23 +228,58 @@ func (c *Connector) events(ctx context.Context, event string, v view, d delivery
 }
 
 // pushed is the commits a push added to the default branch. A push payload
-// names its author by git name and email and not by account, so each commit is
-// read from the REST API: that is the same object a backfill reads, and so the
-// same event. A push that deletes the branch names no commits, and so is
-// nothing.
+// names its authors by git name and email and not by account, so the commits
+// are read from the REST API — the same objects a backfill reads, and so the
+// same events — in one call, inside [pushReadTimeout]:
+//
+//   - a push that moved the branch compares where it was with where it is,
+//     which returns up to 250 commits;
+//   - the push that created the branch reads the first page of its history.
+//
+// A push that deletes the branch is nothing. Commits beyond what the one call
+// returns are logged, by count, and not emitted.
 func (c *Connector) pushed(ctx context.Context, v view, d delivery) ([]connector.Event, error) {
 	if d.Repository.DefaultBranch == "" || d.Ref != "refs/heads/"+d.Repository.DefaultBranch {
 		return nil, nil
 	}
-	events := make([]connector.Event, 0, len(d.Commits))
-	for _, pc := range d.Commits {
-		if pc.ID == "" {
-			return nil, fmt.Errorf("%w: push names a commit with no id", errMalformed)
+	if !isCommitID(d.Before) || !isCommitID(d.After) {
+		return nil, fmt.Errorf("%w: push has no before and after commit ids", errMalformed)
+	}
+	if isNullCommit(d.After) {
+		return nil, nil
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, pushReadTimeout)
+	defer cancel()
+	var (
+		commits []commit
+		total   int
+	)
+	if isNullCommit(d.Before) {
+		q := url.Values{"sha": {d.After}, "per_page": {strconv.Itoa(perPage)}}
+		more, err := c.api.get(ctx, repoPath(v.repo)+"/commits?"+q.Encode(), &commits)
+		if err != nil {
+			return nil, fmt.Errorf("reading the history of a pushed branch: %w", err)
 		}
-		var cm commit
-		if _, err := c.api.get(ctx, repoPath(v.repo)+"/commits/"+pc.ID, &cm); err != nil {
-			return nil, fmt.Errorf("reading pushed commit: %w", err)
+		total = len(commits)
+		if more {
+			total++
 		}
+	} else {
+		var cmp comparison
+		if _, err := c.api.get(ctx, repoPath(v.repo)+"/compare/"+d.Before+"..."+d.After, &cmp); err != nil {
+			return nil, fmt.Errorf("reading pushed commits: %w", err)
+		}
+		commits, total = cmp.Commits, cmp.TotalCommits
+	}
+	if total > len(commits) {
+		log := telemetry.Logger(ctx)
+		log.WarnContext(ctx, "push has more commits than one read returns: the rest are not ingested",
+			"repository", v.repo, "read", len(commits), "total", total)
+	}
+
+	events := make([]connector.Event, 0, len(commits))
+	for _, cm := range commits {
 		ev, err := v.commitEvent(cm)
 		if err != nil {
 			return nil, err
@@ -239,6 +288,24 @@ func (c *Connector) pushed(ctx context.Context, v view, d delivery) ([]connector
 	}
 	return events, nil
 }
+
+// isCommitID reports whether s is a commit id: 40 hex digits, or 64 in a
+// SHA-256 repository.
+func isCommitID(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for i := range len(s) {
+		if !strings.ContainsRune("0123456789abcdef", rune(s[i])) {
+			return false
+		}
+	}
+	return true
+}
+
+// isNullCommit reports whether a commit id is all zeros: GitHub's `before` of a
+// push that created a branch, and `after` of one that deleted it.
+func isNullCommit(s string) bool { return strings.Trim(s, "0") == "" }
 
 // startResync re-emits every artifact in a repository that has just gone
 // private, under the composed `perm:private` token and the new ACL, in the
@@ -274,7 +341,9 @@ func (c *Connector) startResync(ctx context.Context, sink connector.Sink, repo s
 }
 
 // resync walks one repository the way a backfill does, retrying a page that
-// fails until it works or the connector is closed.
+// fails until it works or the connector is closed. It ignores the configured
+// start date: a push webhook emits a commit whatever its date, and anything a
+// webhook may have emitted with the public ACL has to be re-emitted.
 func (c *Connector) resync(ctx context.Context, sink connector.Sink, repo string) {
 	log := telemetry.Logger(ctx)
 	failing := false
@@ -305,7 +374,7 @@ func (c *Connector) resync(ctx context.Context, sink connector.Sink, repo string
 	wait := resyncRetry
 	emitted := 0
 	for pos != nil && pos.Repo == repo {
-		n, next, err := c.page(ctx, sink, *pos)
+		n, next, err := c.page(ctx, sink, *pos, time.Time{})
 		emitted += n
 		if err != nil {
 			if ctx.Err() != nil {

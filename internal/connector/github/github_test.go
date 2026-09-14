@@ -14,6 +14,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,15 +33,19 @@ const (
 	hookSecret = "hook-secret"
 	sha1       = "c0ffee0000000000000000000000000000000001"
 	sha2       = "decaf00000000000000000000000000000000002"
+	// baseSHA is where testdata/hooks/push.json says the branch was.
+	baseSHA = "a100000000000000000000000000000000000000"
+	nullSHA = "0000000000000000000000000000000000000000"
 )
 
 // wantBackfill is every native id a backfill of acme/api emits, in the order it
-// emits them: issues, pull requests with their reviews, issue comments, review
-// comments, commits. The pull request listed among the issues and the pending
-// review are not in it.
+// emits them: issues by updated_at, pull requests in creation order with their
+// reviews, issue comments and review comments by updated_at, commits newest
+// first. The pull request listed among the issues and the pending review are
+// not in it.
 var wantBackfill = []string{
-	"acme/api#1@2026-09-02T11:00:00Z",
 	"acme/api#3@2026-08-20T09:30:00Z",
+	"acme/api#1@2026-09-02T11:00:00Z",
 	"acme/api#2@2026-09-04T12:00:00Z",
 	"acme/api#2:review:77",
 	"acme/api#3:comment:997@2026-08-15T10:00:00Z",
@@ -60,52 +66,59 @@ var liveHooks = []struct{ event, file string }{
 	{"push", "push"},
 }
 
-// route is one canned REST answer: a fixture file, and the next page's link.
-type route struct {
-	file string
-	next string
+// fixtureLists are the lists acme/api starts with, by REST path.
+var fixtureLists = map[string]string{
+	"/repos/acme/api/issues":          "issues.json",
+	"/repos/acme/api/pulls":           "pulls.json",
+	"/repos/acme/api/pulls/2/reviews": "reviews-2.json",
+	"/repos/acme/api/issues/comments": "issue-comments.json",
+	"/repos/acme/api/pulls/comments":  "review-comments.json",
+	"/repos/acme/api/commits":         "commits.json",
 }
 
-func defaultRoutes() map[string]route {
-	return map[string]route{
-		"/repos/acme/api/issues?direction=asc&per_page=100&sort=updated&state=all": {file: "issues-1.json", next: "/repositories/42/issues?page=2"},
-		"/repositories/42/issues?page=2":                                           {file: "issues-2.json"},
-		"/repos/acme/api/pulls?direction=asc&per_page=100&sort=updated&state=all":  {file: "pulls.json"},
-		"/repos/acme/api/pulls/2/reviews?per_page=100":                             {file: "reviews-2.json", next: "/repositories/42/pulls/2/reviews?page=2"},
-		"/repositories/42/pulls/2/reviews?page=2":                                  {file: "reviews-2-page2.json"},
-		"/repos/acme/api/issues/comments?direction=asc&per_page=100&sort=updated":  {file: "issue-comments.json"},
-		"/repos/acme/api/pulls/comments?direction=asc&per_page=100&sort=updated":   {file: "review-comments.json"},
-		"/repos/acme/api/commits?per_page=100&sha=main":                            {file: "commits.json"},
-		"/repos/acme/api/commits/" + sha1:                                          {file: "commit-c0ffee.json"},
-		"/repos/acme/api/commits/" + sha2:                                          {file: "commit-decaf.json"},
-	}
-}
-
-// fakeGitHub is GitHub's REST API as far as the fixtures go. Routes match on
-// the path and the query without `since`, which the tests that care about it
-// read from the recorded requests. Any repository resolves, with the
-// visibility the test set; lists under acme/web are empty.
+// fakeGitHub is GitHub's REST API over the fixtures, as far as the connector
+// reads it. It is a model rather than a recording: lists honour `since`, `sort`,
+// `direction`, `page` and `per_page` the way GitHub does, and a test may change
+// the data between two calls, which is what a walk that pages safely has to
+// survive. Any repository resolves, with the visibility the test set; acme/web
+// has nothing in it.
 type fakeGitHub struct {
 	t       *testing.T
 	srv     *httptest.Server
 	private atomic.Bool
 
-	mu       sync.Mutex
-	routes   map[string]route
-	status   map[string]int
+	mu    sync.Mutex
+	lists map[string][]map[string]any
+	// rewound is how many commits a force push has taken off the front of a
+	// repository's default branch.
+	rewound  map[string]int
 	requests []string
-	// once answers the next request for a key with a status, then normally.
-	once map[string]int
-	// holds make requests for a key wait until released; reached records
-	// that a request for a key has arrived.
+	// status fails every request for a path; once fails the next one.
+	status map[string]int
+	once   map[string]int
+	// holds make requests for a path wait until released; reached records that
+	// a request for a path has arrived.
 	holds   map[string]chan struct{}
 	reached map[string]bool
 }
 
 func newFakeGitHub(t *testing.T) *fakeGitHub {
 	t.Helper()
-	gh := &fakeGitHub{t: t, routes: defaultRoutes(), status: map[string]int{},
-		once: map[string]int{}, holds: map[string]chan struct{}{}, reached: map[string]bool{}}
+	gh := &fakeGitHub{
+		t: t, lists: map[string][]map[string]any{}, rewound: map[string]int{},
+		status: map[string]int{}, once: map[string]int{}, holds: map[string]chan struct{}{}, reached: map[string]bool{},
+	}
+	for path, file := range fixtureLists {
+		raw, err := os.ReadFile(filepath.Join("testdata", "api", file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var items []map[string]any
+		if err := json.Unmarshal(raw, &items); err != nil {
+			t.Fatalf("%s: %v", file, err)
+		}
+		gh.lists[path] = items
+	}
 	gh.srv = httptest.NewServer(http.HandlerFunc(gh.serve))
 	t.Cleanup(gh.srv.Close)
 	return gh
@@ -117,67 +130,201 @@ func (gh *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad credentials", http.StatusUnauthorized)
 		return
 	}
-	q := r.URL.Query()
-	q.Del("since")
-	key := r.URL.Path
-	if len(q) > 0 {
-		key += "?" + q.Encode()
-	}
-
+	path := r.URL.Path
 	gh.mu.Lock()
 	gh.requests = append(gh.requests, r.URL.RequestURI())
-	status, failing := gh.status[key]
-	rt, ok := gh.routes[key]
-	if code, once := gh.once[key]; once {
-		delete(gh.once, key)
+	status, failing := gh.status[path]
+	if code, ok := gh.once[path]; ok {
+		delete(gh.once, path)
 		status, failing = code, true
 	}
-	gh.reached[key] = true
-	hold := gh.holds[key]
+	gh.reached[path] = true
+	hold := gh.holds[path]
 	gh.mu.Unlock()
 	if hold != nil {
 		<-hold
 	}
-
-	switch repo, isRepo := strings.CutPrefix(r.URL.Path, "/repos/"); {
-	case failing:
+	if failing {
 		http.Error(w, "failing on purpose", status)
-	case isRepo && strings.Count(repo, "/") == 1:
-		_ = json.NewEncoder(w).Encode(map[string]any{"full_name": repo, "private": gh.private.Load(), "default_branch": "main"})
-	case !ok && strings.HasPrefix(r.URL.Path, "/repos/acme/web/"):
-		_, _ = w.Write([]byte("[]"))
-	case !ok:
+		return
+	}
+
+	gh.mu.Lock()
+	defer gh.mu.Unlock()
+	rest, ok := strings.CutPrefix(path, "/repos/")
+	parts := strings.SplitN(rest, "/", 3)
+	if !ok || len(parts) < 2 {
 		gh.t.Errorf("unexpected request %s", r.URL.RequestURI())
 		http.NotFound(w, r)
-	default:
-		if rt.next != "" {
-			next := rt.next
-			if !strings.HasPrefix(next, "http") {
-				next = gh.srv.URL + next
-			}
-			// rel="last" first, so the parser has to find rel="next".
-			w.Header().Set("Link", fmt.Sprintf(`<%s/repositories/42/issues?page=9>; rel="last", <%s>; rel="next"`, gh.srv.URL, next))
-		}
-		body, err := os.ReadFile(filepath.Join("testdata", "api", rt.file))
-		if err != nil {
-			gh.t.Errorf("reading fixture: %v", err)
-			http.Error(w, "no fixture", http.StatusInternalServerError)
+		return
+	}
+	repo, sub := parts[0]+"/"+parts[1], ""
+	if len(parts) == 3 {
+		sub = "/" + parts[2]
+	}
+	commits := gh.lists["/repos/"+repo+"/commits"]
+	head := min(gh.rewound[repo], len(commits))
+	q := r.URL.Query()
+
+	switch {
+	case sub == "":
+		writeJSON(w, map[string]any{"full_name": repo, "private": gh.private.Load(), "default_branch": "main"})
+	case sub == "/branches/main":
+		if head == len(commits) {
+			http.NotFound(w, r)
 			return
 		}
-		_, _ = w.Write(body)
+		writeJSON(w, map[string]any{"name": "main", "commit": map[string]any{"sha": commits[head]["sha"]}})
+	case strings.HasPrefix(sub, "/compare/"):
+		out := slices.Clone(commits[head:])
+		slices.Reverse(out)
+		writeJSON(w, map[string]any{"total_commits": len(out), "commits": out})
+	case sub == "/commits":
+		start := head
+		if sha := q.Get("sha"); sha != "main" {
+			start = slices.IndexFunc(commits, func(c map[string]any) bool { return c["sha"] == sha })
+			if start < 0 {
+				http.NotFound(w, r)
+				return
+			}
+		}
+		gh.paginate(w, r, since(commits[start:], q.Get("since"), "commit", "committer", "date"))
+	default:
+		items, known := gh.lists[path]
+		if !known && !strings.HasSuffix(sub, "/reviews") && repo != "acme/web" {
+			gh.t.Errorf("unexpected request %s", r.URL.RequestURI())
+			http.NotFound(w, r)
+			return
+		}
+		if sub != "/pulls" {
+			// The pulls list takes no since.
+			items = since(items, q.Get("since"), "updated_at")
+		}
+		if sort := q.Get("sort"); sort == "updated" || sort == "created" {
+			desc := q.Get("direction") == "desc"
+			items = slices.Clone(items)
+			slices.SortStableFunc(items, func(a, b map[string]any) int {
+				cmp := strings.Compare(field(a, sort+"_at"), field(b, sort+"_at"))
+				if desc {
+					return -cmp
+				}
+				return cmp
+			})
+		}
+		gh.paginate(w, r, items)
 	}
 }
 
-func (gh *fakeGitHub) setRoute(key string, rt route) {
-	gh.mu.Lock()
-	defer gh.mu.Unlock()
-	gh.routes[key] = rt
+// paginate writes one page of items, with a Link header naming the next page
+// where there is one.
+func (gh *fakeGitHub) paginate(w http.ResponseWriter, r *http.Request, items []map[string]any) {
+	q := r.URL.Query()
+	size, page := 30, 1
+	if n, err := strconv.Atoi(q.Get("per_page")); err == nil {
+		size = n
+	}
+	if n, err := strconv.Atoi(q.Get("page")); err == nil {
+		page = n
+	}
+	start := min((page-1)*size, len(items))
+	end := min(start+size, len(items))
+	if end < len(items) {
+		q.Set("page", strconv.Itoa(page+1))
+		next := gh.srv.URL + r.URL.Path + "?" + q.Encode()
+		// rel="last" first, so the parser has to find rel="next".
+		w.Header().Set("Link", fmt.Sprintf(`<%s>; rel="last", <%s>; rel="next"`, next, next))
+	}
+	out := append([]map[string]any{}, items[start:end]...)
+	writeJSON(w, out)
 }
 
-func (gh *fakeGitHub) fail(key string, status int) {
+func writeJSON(w http.ResponseWriter, v any) { _ = json.NewEncoder(w).Encode(v) }
+
+// field is a string at a path of keys into a decoded object.
+func field(item map[string]any, keys ...string) string {
+	var v any = item
+	for _, k := range keys {
+		m, ok := v.(map[string]any)
+		if !ok {
+			return ""
+		}
+		v = m[k]
+	}
+	s, _ := v.(string)
+	return s
+}
+
+// since is the items whose field is after s. GitHub documents `since` as
+// "after"; the fake takes it at its word, which is the stricter of the two
+// readings. RFC 3339 timestamps in UTC compare as strings.
+func since(items []map[string]any, s string, keys ...string) []map[string]any {
+	if s == "" {
+		return items
+	}
+	var out []map[string]any
+	for _, it := range items {
+		if field(it, keys...) > s {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+func (gh *fakeGitHub) setList(path string, items []map[string]any) {
 	gh.mu.Lock()
 	defer gh.mu.Unlock()
-	gh.status[key] = status
+	gh.lists[path] = items
+}
+
+// touch changes the updated_at of item number n in a list.
+func (gh *fakeGitHub) touch(path string, n int, updatedAt string) {
+	gh.mu.Lock()
+	defer gh.mu.Unlock()
+	for _, it := range gh.lists[path] {
+		if fmt.Sprint(it["number"]) == strconv.Itoa(n) {
+			it["updated_at"] = updatedAt
+			return
+		}
+	}
+	gh.t.Fatalf("no item %d in %s", n, path)
+}
+
+// rewind force-pushes a repository's default branch back one commit.
+func (gh *fakeGitHub) rewind(repo string) {
+	gh.mu.Lock()
+	defer gh.mu.Unlock()
+	gh.rewound[repo]++
+}
+
+func (gh *fakeGitHub) fail(path string, status int) {
+	gh.mu.Lock()
+	defer gh.mu.Unlock()
+	gh.status[path] = status
+}
+
+func (gh *fakeGitHub) failNext(path string, status int) {
+	gh.mu.Lock()
+	defer gh.mu.Unlock()
+	gh.once[path] = status
+}
+
+// hold makes requests for path wait until release is called, which the test's
+// cleanup also does, so the server is never closed with a request stuck.
+func (gh *fakeGitHub) hold(path string) (release func()) {
+	ch := make(chan struct{})
+	var once sync.Once
+	release = func() { once.Do(func() { close(ch) }) }
+	gh.mu.Lock()
+	gh.holds[path] = ch
+	gh.mu.Unlock()
+	gh.t.Cleanup(release)
+	return release
+}
+
+func (gh *fakeGitHub) wasReached(path string) bool {
+	gh.mu.Lock()
+	defer gh.mu.Unlock()
+	return gh.reached[path]
 }
 
 func (gh *fakeGitHub) seen() []string {
@@ -186,29 +333,19 @@ func (gh *fakeGitHub) seen() []string {
 	return append([]string(nil), gh.requests...)
 }
 
-func (gh *fakeGitHub) failNext(key string, status int) {
-	gh.mu.Lock()
-	defer gh.mu.Unlock()
-	gh.once[key] = status
-}
-
-// hold makes requests for key wait until release is called, which the test's
-// cleanup also does, so the server is never closed with a request stuck.
-func (gh *fakeGitHub) hold(key string) (release func()) {
-	ch := make(chan struct{})
-	var once sync.Once
-	release = func() { once.Do(func() { close(ch) }) }
-	gh.mu.Lock()
-	gh.holds[key] = ch
-	gh.mu.Unlock()
-	gh.t.Cleanup(release)
-	return release
-}
-
-func (gh *fakeGitHub) wasReached(key string) bool {
-	gh.mu.Lock()
-	defer gh.mu.Unlock()
-	return gh.reached[key]
+// genItem is an issue, or a pull request, for a list a test builds.
+func genItem(n int, created, updated string, pull bool) map[string]any {
+	it := map[string]any{
+		"number": n, "title": fmt.Sprintf("Item %d", n), "state": "open",
+		"html_url":   fmt.Sprintf("https://github.com/acme/api/issues/%d", n),
+		"user":       map[string]any{"login": "kpenfound", "node_id": "MDQ6VXNlcjE=", "type": "User"},
+		"created_at": created, "updated_at": updated,
+	}
+	if pull {
+		it["head"] = map[string]any{"ref": "topic", "sha": sha1}
+		it["base"] = map[string]any{"ref": "main", "sha": sha2}
+	}
+	return it
 }
 
 // newSource is a source served by the fake, with settings merged over its URL.
@@ -273,6 +410,42 @@ func backfillAll(t *testing.T, c connector.Backfiller, sink connector.Sink) []co
 	return nil
 }
 
+// walkStep backfills from cursor until the walk leaves the cursor's step,
+// calling between once, after the first call.
+func walkStep(t *testing.T, c connector.Backfiller, sink connector.Sink, cursor string, between func()) {
+	t.Helper()
+	step := stepOf(t, connector.Cursor(cursor))
+	cur := connector.Cursor(cursor)
+	for i := range 100 {
+		res, err := c.Backfill(t.Context(), sink, cur)
+		if err != nil {
+			t.Fatalf("Backfill(%q) = %v", cur, err)
+		}
+		if i == 0 && between != nil {
+			between()
+		}
+		if res.Done || stepOf(t, res.Next) != step {
+			return
+		}
+		if res.Next == cur {
+			t.Fatalf("Backfill(%q) made no progress", cur)
+		}
+		cur = res.Next
+	}
+	t.Fatalf("the walk did not leave step %s in 100 calls", step)
+}
+
+func stepOf(t *testing.T, cur connector.Cursor) string {
+	t.Helper()
+	var pos struct {
+		Step string `json:"step"`
+	}
+	if err := json.Unmarshal([]byte(cur), &pos); err != nil {
+		t.Fatalf("cursor %q: %v", cur, err)
+	}
+	return pos.Step
+}
+
 func hook(t *testing.T, name string) []byte {
 	t.Helper()
 	body, err := os.ReadFile(filepath.Join("testdata", "hooks", name+".json"))
@@ -291,17 +464,10 @@ func sign(secret string, body []byte) string {
 // deliver posts a delivery signed with the source's secret.
 func deliver(t *testing.T, h http.Handler, event string, body []byte) int {
 	t.Helper()
-	return deliverSigned(t, h, event, body, sign(hookSecret, body))
-}
-
-func deliverSigned(t *testing.T, h http.Handler, event string, body []byte, signature string) int {
-	t.Helper()
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/hooks/"+sourceID, bytes.NewReader(body))
 	req.Header.Set("X-GitHub-Event", event)
 	req.Header.Set("X-GitHub-Delivery", "d-1")
-	if signature != "" {
-		req.Header.Set("X-Hub-Signature-256", signature)
-	}
+	req.Header.Set("X-Hub-Signature-256", sign(hookSecret, body))
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
 	return rr.Code
@@ -313,6 +479,14 @@ func nativeIDs(events []connector.Event) []string {
 		ids = append(ids, ev.NativeID)
 	}
 	return ids
+}
+
+func artifacts(events []connector.Event) map[string]bool {
+	set := map[string]bool{}
+	for _, ev := range events {
+		set[ev.Payload.Artifact] = true
+	}
+	return set
 }
 
 func asJSON(t *testing.T, v any) string {
@@ -406,6 +580,10 @@ func TestBackfillEmitsTheContractsEvents(t *testing.T) {
 	if got := nativeIDs(events); asJSON(t, got) != asJSON(t, wantBackfill) {
 		t.Fatalf("native ids =\n%v\nwant\n%v", got, wantBackfill)
 	}
+	byNativeID := map[string]connector.Event{}
+	for _, ev := range events {
+		byNativeID[ev.NativeID] = ev
+	}
 
 	kyle := connector.Identity{Source: sourceID, Kind: connector.IdentityUser, NativeID: "MDQ6VXNlcjE=", Handle: "kpenfound"}
 	robin := connector.Identity{Source: sourceID, Kind: connector.IdentityUser, NativeID: "MDQ6VXNlcjI=", Handle: "robinok"}
@@ -427,54 +605,57 @@ func TestBackfillEmitsTheContractsEvents(t *testing.T) {
 		native   string
 	}{
 		{
-			nativeID: wantBackfill[0], kind: connector.KindIssue, artifact: "acme/api#1", author: kyle,
+			nativeID: "acme/api#1@2026-09-02T11:00:00Z", kind: connector.KindIssue, artifact: "acme/api#1", author: kyle,
 			title: "/health returns 500", text: "The API returns 500 on /health when the database is up.",
 			time: "2026-09-01T10:00:00Z", editedAt: "2026-09-02T11:00:00Z", native: `"labels":["bug"]`,
 		},
 		{
-			nativeID: wantBackfill[1], kind: connector.KindIssue, artifact: "acme/api#3", author: robin,
+			nativeID: "acme/api#3@2026-08-20T09:30:00Z", kind: connector.KindIssue, artifact: "acme/api#3", author: robin,
 			title: "Document the deploy job", time: "2026-08-01T09:00:00Z", editedAt: "2026-08-20T09:30:00Z",
 			native: `"closed_at":"2026-08-20T09:30:00Z"`,
 		},
 		{
-			nativeID: wantBackfill[2], kind: connector.KindPullRequest, artifact: "acme/api#2", author: robin,
+			nativeID: "acme/api#2@2026-09-04T12:00:00Z", kind: connector.KindPullRequest, artifact: "acme/api#2", author: robin,
 			title: "Fix /health", text: "Fixes #1", time: "2026-09-03T08:00:00Z", editedAt: "2026-09-04T12:00:00Z",
 			native: `"head":{"ref":"fix-health"`,
 		},
 		{
-			nativeID: wantBackfill[3], kind: connector.KindReview, artifact: "acme/api#2:review:77", parent: "acme/api#2",
+			nativeID: "acme/api#2:review:77", kind: connector.KindReview, artifact: "acme/api#2:review:77", parent: "acme/api#2",
 			author: kyle, text: "Looks good.", time: "2026-09-04T11:00:00Z", native: `"state":"approved"`,
 		},
 		{
-			nativeID: wantBackfill[4], kind: connector.KindMessage, artifact: "acme/api#3:comment:997", parent: "acme/api#3",
+			nativeID: "acme/api#3:comment:997@2026-08-15T10:00:00Z", kind: connector.KindMessage, artifact: "acme/api#3:comment:997", parent: "acme/api#3",
 			author: kyle, text: "Done in the runbook.", time: "2026-08-15T10:00:00Z", editedAt: "2026-08-15T10:00:00Z",
 		},
 		{
-			nativeID: wantBackfill[5], kind: connector.KindMessage, artifact: "acme/api#1:comment:998", parent: "acme/api#1",
+			nativeID: "acme/api#1:comment:998@2026-09-01T12:30:00Z", kind: connector.KindMessage, artifact: "acme/api#1:comment:998", parent: "acme/api#1",
 			author: robin, text: "Seeing this too.", time: "2026-09-01T12:00:00Z", editedAt: "2026-09-01T12:30:00Z",
 		},
 		{
-			nativeID: wantBackfill[6], kind: connector.KindMessage, artifact: "acme/api#2:comment:999", parent: "acme/api#2",
+			nativeID: "acme/api#2:comment:999@2026-09-03T09:00:00Z", kind: connector.KindMessage, artifact: "acme/api#2:comment:999", parent: "acme/api#2",
 			author: shed, text: "CI passed.", time: "2026-09-03T09:00:00Z", editedAt: "2026-09-03T09:00:00Z",
 		},
 		{
-			nativeID: wantBackfill[7], kind: connector.KindReviewComment, artifact: "acme/api#2:comment:88", parent: "acme/api#2",
+			nativeID: "acme/api#2:comment:88@2026-09-04T10:05:00Z", kind: connector.KindReviewComment, artifact: "acme/api#2:comment:88", parent: "acme/api#2",
 			author: kyle, text: "Nit: name this handler.", time: "2026-09-04T10:00:00Z", editedAt: "2026-09-04T10:05:00Z",
 			native: `"path":"api/health.go"`,
 		},
 		{
-			nativeID: wantBackfill[8], kind: connector.KindCommit, artifact: "acme/api@" + sha1, author: committer,
+			nativeID: "acme/api@" + sha1, kind: connector.KindCommit, artifact: "acme/api@" + sha1, author: committer,
 			title: "Fix /health (#2)", text: "Fix /health (#2)\n\nReturn 200 when the database is up.",
 			time: "2026-09-04T13:05:00Z", native: `"parents":["` + sha2 + `"]`,
 		},
 		{
-			nativeID: wantBackfill[9], kind: connector.KindCommit, artifact: "acme/api@" + sha2, author: ghost,
+			nativeID: "acme/api@" + sha2, kind: connector.KindCommit, artifact: "acme/api@" + sha2, author: ghost,
 			title: "Initial commit", text: "Initial commit", time: "2026-08-01T08:00:00Z",
 		},
 	}
-	for i, tt := range tests {
+	for _, tt := range tests {
 		t.Run(tt.nativeID, func(t *testing.T) {
-			ev := events[i]
+			ev, ok := byNativeID[tt.nativeID]
+			if !ok {
+				t.Fatalf("no event %s", tt.nativeID)
+			}
 			p := ev.Payload
 			if ev.ID != connector.EventID(sourceID, tt.nativeID) {
 				t.Errorf("id = %q", ev.ID)
@@ -521,6 +702,100 @@ func TestBackfillEmitsTheContractsEvents(t *testing.T) {
 	}
 }
 
+// At a page size of one, every list is walked across pages — keyset ties,
+// review pages, the pinned commit history — and nothing is lost. Pages
+// overlap, so some events come twice, which is free.
+func TestBackfillAtASmallPageSizeEmitsEverything(t *testing.T) {
+	t.Cleanup(github.SetPageSize(1))
+	gh := newFakeGitHub(t)
+	src := newSource(t, gh, sourceID, nil)
+	c := newConnector(t, src)
+	rec := &connector.Recorder{}
+	backfillAll(t, c, gateFor(src, c, rec))
+
+	got := slices.Compact(slices.Sorted(slices.Values(nativeIDs(rec.Events()))))
+	want := slices.Sorted(slices.Values(wantBackfill))
+	if !slices.Equal(got, want) {
+		t.Errorf("native ids =\n%v\nwant\n%v", got, want)
+	}
+}
+
+// The reviewer's case: an item already read changes while the walk is between
+// two pages, and the item at the page boundary — which did not change, so no
+// webhook brings it — is still emitted.
+func TestBackfillEmitsWhatDidNotChangeWhileSomethingElseDid(t *testing.T) {
+	t.Cleanup(github.SetPageSize(2))
+	tests := []struct {
+		name, step, path string
+		pull             bool
+	}{
+		{name: "issues, walked by updated_at", step: "issues", path: "/repos/acme/api/issues"},
+		{name: "pull requests, walked in creation order", step: "pulls", path: "/repos/acme/api/pulls", pull: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gh := newFakeGitHub(t)
+			var items []map[string]any
+			for i := range 5 {
+				at := time.Date(2026, time.September, 1, i, 0, 0, 0, time.UTC).Format(time.RFC3339)
+				items = append(items, genItem(10+i, at, at, tt.pull))
+			}
+			gh.setList(tt.path, items)
+			src := newSource(t, gh, sourceID, nil)
+			c := newConnector(t, src)
+			rec := &connector.Recorder{}
+
+			walkStep(t, c, gateFor(src, c, rec), `{"repo":"acme/api","step":"`+tt.step+`"}`, func() {
+				// The first item, already read, is edited and moves to the end.
+				gh.touch(tt.path, 10, "2026-09-10T00:00:00Z")
+			})
+			seen := artifacts(rec.Events())
+			for n := 10; n < 15; n++ {
+				if a := "acme/api#" + strconv.Itoa(n); !seen[a] {
+					t.Errorf("%s was never emitted; emitted %v", a, nativeIDs(rec.Events()))
+				}
+			}
+		})
+	}
+}
+
+// More items than a page share one updated_at: the walk moves on by page
+// number rather than asking for the same page forever.
+func TestBackfillPagesThroughTiesWiderThanAPage(t *testing.T) {
+	t.Cleanup(github.SetPageSize(2))
+	gh := newFakeGitHub(t)
+	at := "2026-09-01T00:00:00Z"
+	gh.setList("/repos/acme/api/issues", []map[string]any{genItem(10, at, at, false), genItem(11, at, at, false), genItem(12, at, at, false)})
+	src := newSource(t, gh, sourceID, nil)
+	c := newConnector(t, src)
+	rec := &connector.Recorder{}
+
+	walkStep(t, c, gateFor(src, c, rec), `{"repo":"acme/api","step":"issues"}`, nil)
+	seen := artifacts(rec.Events())
+	for _, a := range []string{"acme/api#10", "acme/api#11", "acme/api#12"} {
+		if !seen[a] {
+			t.Errorf("%s was never emitted; emitted %v", a, nativeIDs(rec.Events()))
+		}
+	}
+}
+
+// A force push while the commits are walked does not move a commit past the
+// walk: it stays on the history it started from.
+func TestBackfillOfCommitsStaysOnTheHistoryItStarted(t *testing.T) {
+	t.Cleanup(github.SetPageSize(1))
+	gh := newFakeGitHub(t)
+	src := newSource(t, gh, sourceID, nil)
+	c := newConnector(t, src)
+	rec := &connector.Recorder{}
+
+	walkStep(t, c, gateFor(src, c, rec), `{"repo":"acme/api","step":"commits"}`, func() {
+		gh.rewind("acme/api")
+	})
+	if got := nativeIDs(rec.Events()); !slices.Equal(got, []string{"acme/api@" + sha1, "acme/api@" + sha2}) {
+		t.Errorf("native ids = %v, want both commits", got)
+	}
+}
+
 // Backfilling the same repository twice emits the same events, so a second
 // backfill writes nothing new.
 func TestBackfillTwiceEmitsTheSameEvents(t *testing.T) {
@@ -540,6 +815,7 @@ func TestBackfillTwiceEmitsTheSameEvents(t *testing.T) {
 // A cursor is all a restarted process has: a connector built fresh for every
 // call walks the same history.
 func TestBackfillResumesFromItsCursorInANewConnector(t *testing.T) {
+	t.Cleanup(github.SetPageSize(1))
 	gh := newFakeGitHub(t)
 	src := newSource(t, gh, sourceID, nil)
 	whole := &connector.Recorder{}
@@ -566,7 +842,7 @@ func TestBackfillResumesFromItsCursorInANewConnector(t *testing.T) {
 		if len(cur) > connector.MaxCursorLen || !utf8.ValidString(string(cur)) || strings.ContainsRune(string(cur), 0) {
 			t.Errorf("cursor %q is not one the runtime can store", cur)
 		}
-		if strings.Contains(string(cur), gh.srv.URL) {
+		if strings.Contains(string(cur), gh.srv.URL) || strings.Contains(string(cur), "127.0.0.1") {
 			t.Errorf("cursor %q carries the API host", cur)
 		}
 	}
@@ -584,8 +860,8 @@ func TestBackfillFromCursor(t *testing.T) {
 		{
 			name:       "a removed repository before the configured one resumes at it",
 			cursor:     `{"repo":"acme/aaa","step":"commits"}`,
-			wantEvents: 1, // issue #1; the pull request on the page is not an issue
-			wantNext:   `{"repo":"acme/api","step":"issues","next":"/repositories/42/issues?page=2"}`,
+			wantEvents: 2, // issues #3 and #1; the pull request in the list is not an issue
+			wantNext:   `{"repo":"acme/api","step":"pulls"}`,
 		},
 		{
 			name:     "a removed repository after the last one is the end",
@@ -604,8 +880,22 @@ func TestBackfillFromCursor(t *testing.T) {
 			wantEvents: 1,
 			wantNext:   `{"repo":"acme/api","step":"commits"}`,
 		},
+		{
+			name:       "a keyset position reads from its updated_at",
+			cursor:     `{"repo":"acme/api","step":"issues","since":"2026-09-02T10:59:59Z"}`,
+			wantEvents: 1,
+			wantNext:   `{"repo":"acme/api","step":"pulls"}`,
+		},
+		{
+			name:       "a pinned commit position reads that commit's history",
+			cursor:     `{"repo":"acme/api","step":"commits","head":"` + sha2 + `"}`,
+			wantDone:   true,
+			wantEvents: 1,
+		},
 		{name: "a cursor that is not JSON", cursor: "3", wantErr: "not one the github connector wrote"},
 		{name: "a step it does not have", cursor: `{"repo":"acme/api","step":"labels"}`, wantErr: `step "labels"`},
+		{name: "a since that is not a timestamp", cursor: `{"repo":"acme/api","step":"issues","since":"yesterday"}`, wantErr: `since "yesterday"`},
+		{name: "a negative page", cursor: `{"repo":"acme/api","step":"pulls","page":-1}`, wantErr: "page -1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -644,8 +934,8 @@ func TestBackfillWalksEveryRepository(t *testing.T) {
 		t.Errorf("native ids = %v, want %v", got, wantBackfill)
 	}
 	seen := gh.seen()
-	if last := seen[len(seen)-1]; last != "/repos/acme/web/commits?per_page=100&sha=main" {
-		t.Errorf("last request = %s, want acme/web's commits after acme/api's walk", last)
+	if last := seen[len(seen)-1]; last != "/repos/acme/web/branches/main" {
+		t.Errorf("last request = %s, want acme/web's branch after acme/api's walk", last)
 	}
 }
 
@@ -658,7 +948,7 @@ func TestBackfillSince(t *testing.T) {
 
 	var want []string
 	for _, id := range wantBackfill {
-		if !strings.HasPrefix(id, "acme/api#3") {
+		if !strings.HasPrefix(id, "acme/api#3") && id != "acme/api@"+sha2 {
 			want = append(want, id)
 		}
 	}
@@ -673,17 +963,36 @@ func TestBackfillSince(t *testing.T) {
 		}
 		since := u.Query().Get("since")
 		switch {
-		case strings.HasPrefix(u.Path, "/repositories/"):
-			// A next-page link is GitHub's, query and all.
 		case strings.HasSuffix(u.Path, "/issues"), strings.HasSuffix(u.Path, "/comments"), strings.HasSuffix(u.Path, "/commits"):
-			if since != "2026-09-01T00:00:00Z" {
-				t.Errorf("%s: since = %q, want the configured start date", uri, since)
+			if since != "2026-08-31T23:59:59Z" {
+				t.Errorf("%s: since = %q, want a second before the configured start date", uri, since)
 			}
 		case strings.HasSuffix(u.Path, "/pulls"):
 			// The pulls list takes no since; the connector filters the page.
 			if since != "" {
 				t.Errorf("%s: since = %q, want none", uri, since)
 			}
+		}
+	}
+}
+
+// The start date is on or after: what was updated at that second is in, and
+// what was updated the second before is out — on the lists GitHub bounds and
+// on the pulls list the connector bounds itself.
+func TestBackfillSinceIncludesTheStartDate(t *testing.T) {
+	gh := newFakeGitHub(t)
+	before, at := "2026-08-31T23:59:59Z", "2026-09-01T00:00:00Z"
+	gh.setList("/repos/acme/api/issues", []map[string]any{genItem(10, before, before, false), genItem(11, at, at, false)})
+	gh.setList("/repos/acme/api/pulls", []map[string]any{genItem(20, before, before, true), genItem(21, at, at, true)})
+	src := newSource(t, gh, sourceID, map[string]any{"since": "2026-09-01"})
+	c := newConnector(t, src)
+	rec := &connector.Recorder{}
+	backfillAll(t, c, gateFor(src, c, rec))
+
+	seen := artifacts(rec.Events())
+	for artifact, want := range map[string]bool{"acme/api#10": false, "acme/api#11": true, "acme/api#20": false, "acme/api#21": true} {
+		if seen[artifact] != want {
+			t.Errorf("%s emitted = %v, want %v; emitted %v", artifact, seen[artifact], want, nativeIDs(rec.Events()))
 		}
 	}
 }
@@ -701,26 +1010,20 @@ func TestBackfillFailures(t *testing.T) {
 			wantErr: "404",
 		},
 		{
-			name: "a list page fails",
-			setup: func(gh *fakeGitHub) {
-				gh.fail("/repos/acme/api/issues?direction=asc&per_page=100&sort=updated&state=all", http.StatusBadGateway)
-			},
+			name:    "a list page fails",
+			setup:   func(gh *fakeGitHub) { gh.fail("/repos/acme/api/issues", http.StatusBadGateway) },
 			wantErr: "502",
 		},
 		{
-			name: "a next-page link to another host",
-			setup: func(gh *fakeGitHub) {
-				gh.setRoute("/repos/acme/api/issues?direction=asc&per_page=100&sort=updated&state=all",
-					route{file: "issues-1.json", next: "http://elsewhere.example/repositories/42/issues?page=2"})
-			},
-			wantErr: "outside the configured API",
+			name:    "a review page fails after its pull request was emitted",
+			cursor:  `{"repo":"acme/api","step":"pulls"}`,
+			setup:   func(gh *fakeGitHub) { gh.fail("/repos/acme/api/pulls/2/reviews", http.StatusInternalServerError) },
+			wantErr: "500",
 		},
 		{
-			name:   "a review page fails after its pull request was emitted",
-			cursor: `{"repo":"acme/api","step":"pulls"}`,
-			setup: func(gh *fakeGitHub) {
-				gh.fail("/repos/acme/api/pulls/2/reviews?per_page=100", http.StatusInternalServerError)
-			},
+			name:    "the default branch cannot be read",
+			cursor:  `{"repo":"acme/api","step":"commits"}`,
+			setup:   func(gh *fakeGitHub) { gh.fail("/repos/acme/api/branches/main", http.StatusInternalServerError) },
 			wantErr: "500",
 		},
 	}
@@ -738,10 +1041,10 @@ func TestBackfillFailures(t *testing.T) {
 	}
 }
 
-// GitHub answers 409 for the commits of a repository with nothing in it.
+// GitHub has no default branch to read in a repository with no commits.
 func TestBackfillOfAnEmptyRepositoryFinishes(t *testing.T) {
 	gh := newFakeGitHub(t)
-	gh.fail("/repos/acme/api/commits?per_page=100&sha=main", http.StatusConflict)
+	gh.fail("/repos/acme/api/branches/main", http.StatusNotFound)
 	src := newSource(t, gh, sourceID, nil)
 	c := newConnector(t, src)
 	res, err := c.Backfill(t.Context(), gateFor(src, c, &connector.Recorder{}), `{"repo":"acme/api","step":"commits"}`)
@@ -899,6 +1202,75 @@ func TestWebhookEventsEqualBackfilledEvents(t *testing.T) {
 	}
 }
 
+// A push reads its commits in one REST call, whatever it did to the branch,
+// and emits the events a backfill of them emits.
+func TestPushReadsItsCommitsInOneCall(t *testing.T) {
+	tests := []struct {
+		name, before, wantPath string
+	}{
+		{name: "a push that moved the branch compares it", before: baseSHA, wantPath: "/repos/acme/api/compare/" + baseSHA + "..." + sha1},
+		{name: "the push that created the branch reads its history", before: nullSHA, wantPath: "/repos/acme/api/commits"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gh := newFakeGitHub(t)
+			src := newSource(t, gh, sourceID, nil)
+			c := newConnector(t, src)
+			backfilled := &connector.Recorder{}
+			backfillAll(t, c, gateFor(src, c, backfilled))
+			byID := map[string]connector.Event{}
+			for _, ev := range backfilled.Events() {
+				byID[ev.ID] = ev
+			}
+
+			earlier := len(gh.seen())
+			body := bytes.Replace(hook(t, "push"), []byte(`"before": "`+baseSHA+`"`), []byte(`"before": "`+tt.before+`"`), 1)
+			live := &connector.Recorder{}
+			if code := deliver(t, c.Handler(gateFor(src, c, live)), "push", body); code != http.StatusAccepted {
+				t.Fatalf("status = %d, want 202", code)
+			}
+			requests := gh.seen()[earlier:]
+			if len(requests) != 1 || !strings.HasPrefix(requests[0], tt.wantPath) {
+				t.Errorf("requests = %v, want one to %s", requests, tt.wantPath)
+			}
+			events := live.Events()
+			if len(events) != 2 {
+				t.Fatalf("push emitted %v, want both commits", nativeIDs(events))
+			}
+			for _, ev := range events {
+				if a, b := asJSON(t, ev), asJSON(t, byID[ev.ID]); a != b {
+					t.Errorf("pushed commit differs from the backfilled one:\n%s\nwant\n%s", a, b)
+				}
+			}
+		})
+	}
+}
+
+// A push whose read does not finish inside the delivery timeout is answered as
+// a failure while GitHub is still listening.
+func TestPushThatCannotReadInTimeFails(t *testing.T) {
+	t.Cleanup(github.SetPushReadTimeout(50 * time.Millisecond))
+	gh := newFakeGitHub(t)
+	release := gh.hold("/repos/acme/api/compare/" + baseSHA + "..." + sha1)
+	src := newSource(t, gh, sourceID, nil)
+	c := newConnector(t, src)
+	rec := &connector.Recorder{}
+
+	start := time.Now()
+	code := deliver(t, c.Handler(gateFor(src, c, rec)), "push", hook(t, "push"))
+	elapsed := time.Since(start)
+	release()
+	if code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", code)
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("the delivery took %v, want it bounded by the read timeout", elapsed)
+	}
+	if n := len(rec.Events()); n != 0 {
+		t.Errorf("%d events emitted, want none", n)
+	}
+}
+
 func TestWebhookTombstones(t *testing.T) {
 	tests := []struct {
 		event, file string
@@ -949,9 +1321,9 @@ func TestWebhookIgnoresWhatItDoesNotIngest(t *testing.T) {
 		name, event, body string
 	}{
 		{"a ping", "ping", `{"zen":"Keep it logically awesome.","hook_id":1}`},
-		{"a push to another branch", "push", `{"ref":"refs/heads/feature","commits":[{"id":"` + sha1 + `"}],` + repo + `}`},
-		{"a push that deletes the default branch", "push", `{"ref":"refs/heads/main","deleted":true,"commits":[],` + repo + `}`},
-		{"a tag push", "push", `{"ref":"refs/tags/main","commits":[{"id":"` + sha1 + `"}],` + repo + `}`},
+		{"a push to another branch", "push", `{"ref":"refs/heads/feature","before":"` + baseSHA + `","after":"` + sha1 + `",` + repo + `}`},
+		{"a push that deletes the default branch", "push", `{"ref":"refs/heads/main","before":"` + sha1 + `","after":"` + nullSHA + `",` + repo + `}`},
+		{"a tag push", "push", `{"ref":"refs/tags/main","before":"` + baseSHA + `","after":"` + sha1 + `",` + repo + `}`},
 		{"a dismissed review", "pull_request_review", review},
 		{"a pending review", "pull_request_review", pending},
 		{"an event it does not read", "star", `{"action":"created",` + repo + `}`},
@@ -991,7 +1363,10 @@ func TestWebhookRefusesWhatItCannotRead(t *testing.T) {
 		{"a comment with no issue url", "issue_comment", `{"action":"created","comment":{"id":1,"body":"x","issue_url":"https://api.github.com/repos/acme/api/issues/"},` + repo + `}`},
 		{"a deleted review comment with no pull request url", "pull_request_review_comment", `{"action":"deleted","comment":{"id":1},` + repo + `}`},
 		{"a review with no pull request", "pull_request_review", `{"action":"submitted","review":{"id":1,"state":"approved","submitted_at":"2026-09-01T00:00:00Z"},` + repo + `}`},
-		{"a push naming a commit with no id", "push", `{"ref":"refs/heads/main","commits":[{}],` + repo + `}`},
+		{"a push whose after is not a commit id", "push", `{"ref":"refs/heads/main","before":"` + baseSHA + `","after":"../../../user",` + repo + `}`},
+		{"a push whose after is too short to be a commit id", "push", `{"ref":"refs/heads/main","before":"` + baseSHA + `","after":"c0ffee",` + repo + `}`},
+		{"a push with no before", "push", `{"ref":"refs/heads/main","after":"` + sha1 + `",` + repo + `}`},
+		{"a push with an upper-case commit id", "push", `{"ref":"refs/heads/main","before":"` + strings.ToUpper(sha2) + `","after":"` + sha1 + `",` + repo + `}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1023,7 +1398,7 @@ func TestWebhookFailuresAreServerErrors(t *testing.T) {
 		{
 			name: "a pushed commit cannot be read", event: "push", file: "push",
 			setup: func(gh *fakeGitHub, _ *connector.Recorder) {
-				gh.fail("/repos/acme/api/commits/"+sha2, http.StatusInternalServerError)
+				gh.fail("/repos/acme/api/compare/"+baseSHA+"..."+sha1, http.StatusInternalServerError)
 			},
 		},
 	}
@@ -1056,9 +1431,10 @@ func TestWebhookUsesTheConfiguredSpellingOfTheRepository(t *testing.T) {
 	if code := deliver(t, c.Handler(gateFor(src, c, rec)), "issues", body); code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202", code)
 	}
+	want := "acme/api#1@2026-09-02T11:00:00Z"
 	events := rec.Events()
-	if len(events) != 1 || events[0].NativeID != wantBackfill[0] || events[0].Payload.Container.NativeID != "acme/api" {
-		t.Errorf("events = %s, want %s in acme/api", asJSON(t, events), wantBackfill[0])
+	if len(events) != 1 || events[0].NativeID != want || events[0].Payload.Container.NativeID != "acme/api" {
+		t.Errorf("events = %s, want %s in acme/api", asJSON(t, events), want)
 	}
 }
 
@@ -1084,6 +1460,35 @@ func TestRepositoryGoingPrivateResyncsEveryArtifact(t *testing.T) {
 		t.Fatalf("Close = %v", err)
 	}
 	assertPrivateOf(t, public.Events(), resynced.Events())
+}
+
+// The reviewer's second case: a push emits a commit dated before the start
+// date, and the re-sync after the repository goes private re-emits it, because
+// a re-sync reaches whatever a webhook may have emitted.
+func TestResyncReachesACommitAPushEmittedBeforeTheStartDate(t *testing.T) {
+	gh := newFakeGitHub(t)
+	src := newSource(t, gh, sourceID, map[string]any{"since": "2026-09-01"})
+	c := newConnector(t, src)
+	rec := &connector.Recorder{}
+	h := c.Handler(gateFor(src, c, rec))
+
+	if code := deliver(t, h, "push", hook(t, "push")); code != http.StatusAccepted {
+		t.Fatalf("push: status = %d, want 202", code)
+	}
+	old := "acme/api@" + sha2
+	if !slices.Contains(nativeIDs(rec.Events()), old) {
+		t.Fatalf("the push emitted %v, want %s", nativeIDs(rec.Events()), old)
+	}
+
+	gh.private.Store(true)
+	if code := deliver(t, h, "repository", hook(t, "repository.privatized")); code != http.StatusAccepted {
+		t.Fatalf("privatized: status = %d, want 202", code)
+	}
+	want := old + "@perm:private"
+	waitFor(t, "the re-sync to re-emit "+want, func() bool { return slices.Contains(nativeIDs(rec.Events()), want) })
+	if err := c.Close(t.Context()); err != nil {
+		t.Fatalf("Close = %v", err)
+	}
 }
 
 // A re-sync that cannot read the repository reports degraded and retries; Close
@@ -1117,7 +1522,7 @@ func TestResyncRecoversFromAFailure(t *testing.T) {
 	c := newConnector(t, src)
 	rec := &connector.Recorder{}
 	gh.failNext("/repos/acme/api", http.StatusBadGateway)
-	commits := "/repos/acme/api/commits?per_page=100&sha=main"
+	commits := "/repos/acme/api/commits"
 	release := gh.hold(commits)
 
 	if code := deliver(t, c.Handler(gateFor(src, c, rec)), "repository", hook(t, "repository.privatized")); code != http.StatusAccepted {
@@ -1145,7 +1550,7 @@ func TestResyncRunsOncePerRepositoryAndStaysInIt(t *testing.T) {
 	c := newConnector(t, src)
 	rec := &connector.Recorder{}
 	h := c.Handler(gateFor(src, c, rec))
-	issues := "/repos/acme/api/issues?direction=asc&per_page=100&sort=updated&state=all"
+	issues := "/repos/acme/api/issues"
 	release := gh.hold(issues)
 
 	if code := deliver(t, h, "repository", hook(t, "repository.privatized")); code != http.StatusAccepted {
