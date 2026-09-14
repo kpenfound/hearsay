@@ -343,7 +343,7 @@ sandbox = "none"
 # The Dagger release this workspace is on. A CLI from a package manager is
 # older, and reads the workspace without being able to run it; see
 # CONTRIBUTING.md.
-DAGGER_X_RELEASE = "v1.0.0-beta.11"
+DAGGER_X_RELEASE = "v1.0.0-beta.13"
 #[roles.developer.mcp.example]
 #command = "example-mcp"
 

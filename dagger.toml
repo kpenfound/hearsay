@@ -12,7 +12,7 @@ base = "test-services:go-test-base"
 lint = ["!**"]
 
 [modules.dagger-dang-sdk]
-source = "github.com/dagger/dang-sdk@5da26366fca40ccbb66ac2f97f57ed95a8f3c17a"
+source = "github.com/dagger/dang-sdk@v1.0.1"
 
 [modules.test-services]
 source = ".dagger/modules/test-services"
@@ -20,11 +20,12 @@ source = ".dagger/modules/test-services"
 [modules.hearsay]
 source = ".dagger/modules/hearsay"
 
-[modules.dagger-dang-sdk.as-sdk]
-name = "dang"
+[sdks.dang]
+module = "dagger-dang-sdk"
 
-[[modules.dagger-dang-sdk.as-sdk.modules]]
-path = ".dagger/modules/test-services"
+[sdks.dang.scopes.".dagger/modules/hearsay"]
+is-module = true
 
-[[modules.dagger-dang-sdk.as-sdk.modules]]
-path = ".dagger/modules/hearsay"
+[sdks.dang.scopes.".dagger/modules/test-services"]
+is-module = true
+clients = ["./.dagger/modules/hearsay"]
