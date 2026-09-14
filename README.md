@@ -19,6 +19,53 @@ are being built.
   source connector emits, and the interface it implements.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — how to build, test and run it.
 
+## Architecture
+
+A rough view of the design: sources feed four services that write and read four
+layers in one Postgres. Model calls happen only on the write path; every read is
+a structured lookup. [docs/design.md](docs/design.md) has the full picture.
+
+```mermaid
+flowchart LR
+    subgraph sources["Sources"]
+        GH["GitHub"]
+        Slack["Slack"]
+        Drive["Drive"]
+    end
+
+    subgraph services["Four services, one binary"]
+        C["Connectors<br/>push or poll, write L0 only"]
+        D["Distiller<br/>L0 to L1, cheap model"]
+        A["Assertion worker<br/>L1 to L2, better model, serialized per scope"]
+        API["API<br/>bundle assembly, MCP and HTTP, audit"]
+    end
+
+    subgraph pg["Postgres, with pgvector and full-text search"]
+        L0[("L0 events<br/>what happened")]
+        L1[("L1 documents<br/>what was said")]
+        L2[("L2 graph<br/>what it means")]
+        L3[("L3 views<br/>what is true right now")]
+    end
+
+    subgraph consumers["Consumers"]
+        Agent["Coding agents"]
+        Human["Humans, via chat apps and CLIs"]
+    end
+
+    GH & Slack & Drive --> C
+    C --> L0
+    L0 --> D --> L1
+    L1 --> A --> L2
+    L2 -. "rebuilt on demand" .-> L3
+    L3 --> API
+    L1 --> API
+    API -- "audit and assert events" --> L0
+    API <-- "get_bundle, resolve, search, assert" --> Agent & Human
+```
+
+Only the GitHub connector ships today; Slack and Drive are where the design
+points next.
+
 ## Quick start
 
 ```sh
