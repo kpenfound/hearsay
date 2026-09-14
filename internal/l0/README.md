@@ -18,7 +18,10 @@ things about it are worth knowing before you use it:
   retracts, and from then on every read excludes every event of that artifact —
   `Get` says `ErrRetracted`, `List` and `Changes` leave it out, `Counts` shows
   the row still there. The tombstone itself stays on the feed, which is how a
-  consumer learns to walk provenance forward.
+  consumer learns to walk provenance forward. The one read past a tombstone is
+  `Retracted`, which returns the hidden artifact's current revision so the
+  distiller can tell which conversation it was part of; nothing serves what it
+  returns.
 - **The change feed never skips.** `Changes` hands out an event only once the
   transaction that wrote it has finished, and cursors move forward through
   finished transactions only, so a reader that stops and resumes misses nothing.

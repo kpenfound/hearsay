@@ -128,6 +128,21 @@ func laterComment(src string) connector.Event {
 		"", "Merged. The job queue is #40."), repo+"#31")
 }
 
+// retractedComment is the issue comment a test deletes at the source.
+const retractedComment = repo + "#12:comment:1"
+
+// without is a state of the repository with every event of one artifact gone,
+// which is what L0 reads as once a tombstone covers it.
+func without(events []connector.Event, artifact string) []connector.Event {
+	var kept []connector.Event
+	for _, ev := range events {
+		if ev.Payload.Artifact != artifact {
+			kept = append(kept, ev)
+		}
+	}
+	return kept
+}
+
 // testRepo is the configuration the fixture repository is distilled against.
 func testRepo(src string) config.Repo {
 	return config.Repo{
@@ -190,6 +205,18 @@ var answers = map[string]map[string]any{
 	},
 }
 
+// answersAfterRetraction are the replies once samr's comment on the issue has
+// been deleted at the source: the model sees one person, and says so.
+var answersAfterRetraction = map[string]map[string]any{
+	issueID: {
+		"summary":        "The engine writes before taking the lock, which races with the job queue. The author said they would send a change.",
+		"question":       "Should the engine take the lock before writing?",
+		"outcome":        "The author proposed taking the lock before the write.",
+		"outcome_kind":   "proposed",
+		"open_questions": []string{"Does the job queue have the same problem?"},
+	},
+}
+
 // fixturePath is the recorded file, checked in.
 func fixturePath() string { return filepath.Join("testdata", "fixtures", "github.json") }
 
@@ -230,8 +257,11 @@ func TestRecordFixtures(t *testing.T) {
 	// with the same request in it twice is one the fake refuses to load.
 	seen := map[string]bool{}
 	for _, state := range fixtureStates() {
-		for _, doc := range documentsIn(t, state) {
-			answer, ok := answers[doc.ID]
+		for _, doc := range documentsIn(t, state.events) {
+			answer, ok := state.answers[doc.ID]
+			if !ok {
+				answer, ok = answers[doc.ID]
+			}
 			if !ok {
 				t.Fatalf("no answer is written down for %s", doc.ID)
 			}
@@ -303,11 +333,23 @@ func distillBudget() int {
 	return tier.MaxTokens
 }
 
+// fixtureState is one state of the fixture repository, and the answers that
+// differ from [answers] in it.
+type fixtureState struct {
+	events  []connector.Event
+	answers map[string]map[string]any
+}
+
 // fixtureStates are the states of the fixture repository a test distils: as it
-// first arrives, and after a later comment lands on the change proposal.
-func fixtureStates() [][]connector.Event {
+// first arrives, after a later comment lands on the change proposal, and after
+// a comment on the issue is deleted at the source.
+func fixtureStates() []fixtureState {
 	base := fixtureEvents(source)
-	return [][]connector.Event{base, append(append([]connector.Event{}, base...), laterComment(source))}
+	return []fixtureState{
+		{events: base},
+		{events: append(append([]connector.Event{}, base...), laterComment(source))},
+		{events: without(base, retractedComment), answers: answersAfterRetraction},
+	}
 }
 
 // documentsIn builds the documents one state of the repository makes, the same

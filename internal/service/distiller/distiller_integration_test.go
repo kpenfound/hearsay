@@ -389,6 +389,77 @@ func TestATombstonedArtifactLosesItsDocument(t *testing.T) {
 	}
 }
 
+// A comment deleted at the source leaves the document that quoted it. The
+// tombstone is shaped the way docs/connector-contract.md's GitHub row specifies
+// — a target and no thread or parent — so nothing in it names the issue: the
+// distiller has to work that out, and then the issue has to be re-distilled
+// without the comment in its text, its raw text or its provenance.
+func TestATombstoneForACommentRedistillsTheDocumentThatQuotedIt(t *testing.T) {
+	pool := newPool(t)
+	src := newSource(t)
+	ingest(t, pool, fixtureEvents(src))
+	commentEvent := connector.EventID(src, retractedComment)
+
+	registry, err := llm.NewFake(testRepo(src).LLM, loadFixtures(t))
+	if err != nil {
+		t.Fatalf("building the fake registry: %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		done <- distiller.Run(ctx, testConfig(src), distiller.Deps{
+			Pool: pool,
+			LLM:  registry,
+			Pump: distiller.PumpOptions{Interval: 100 * time.Millisecond, Batch: l0.MaxLimit},
+		})
+	}()
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			t.Error("Run() did not return within 30s of cancellation")
+		}
+	}()
+
+	docs := l1.New(pool)
+	id := l1.DocID(src, repo+"#12")
+	waitForIssue := func(what string, ok func(l1.Stored) bool) l1.Stored {
+		t.Helper()
+		deadline := time.Now().Add(60 * time.Second)
+		for {
+			doc, err := docs.Get(t.Context(), id)
+			if err == nil && ok(doc) {
+				return doc
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the issue's document never %s (last read: %v)", what, err)
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+
+	before := waitForIssue("was distilled", func(doc l1.Stored) bool { return slices.Contains(doc.L0Refs, commentEvent) })
+	if !strings.Contains(before.RawText, "Seen it twice this week") {
+		t.Fatalf("the issue's raw text does not quote the comment before it is deleted:\n%s", before.RawText)
+	}
+
+	tombstone := event(src, connector.KindTombstone, retractedComment+":tombstone", at(9), nil, "", "")
+	tombstone.Payload.Target = retractedComment
+	ingest(t, pool, []connector.Event{tombstone})
+
+	after := waitForIssue("lost the deleted comment", func(doc l1.Stored) bool { return !slices.Contains(doc.L0Refs, commentEvent) })
+	if strings.Contains(after.RawText, "Seen it twice this week") {
+		t.Errorf("the issue's raw text still quotes the deleted comment:\n%s", after.RawText)
+	}
+	if after.Text == before.Text || strings.Contains(after.Text, "Two people confirmed") {
+		t.Errorf("the issue's text is still the distillation of the deleted comment:\n%s", after.Text)
+	}
+	if len(after.L0Refs) != len(before.L0Refs)-1 {
+		t.Errorf("L0Refs = %v, want %v less the deleted comment", after.L0Refs, before.L0Refs)
+	}
+}
+
 // The pump turns the change feed into jobs: one per document, whatever a burst
 // of events on one document looks like.
 func TestThePumpEnqueuesOneJobPerDocument(t *testing.T) {

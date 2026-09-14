@@ -2,6 +2,7 @@ package distiller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -163,8 +164,12 @@ func (p *Pump) Once(ctx context.Context) (Progress, error) {
 	// what is already pending; this collapses them against this batch, which is
 	// where a burst of reviews on one pull request actually arrives.
 	seen := map[string]bool{}
+	events := l0.New(tx)
 	for _, change := range changes {
-		target, ok := TargetOf(change.Event)
+		target, ok, err := TargetOf(ctx, change.Event, events)
+		if err != nil {
+			return Progress{}, err
+		}
 		if !ok || seen[target] {
 			continue
 		}
@@ -189,6 +194,13 @@ func (p *Pump) Once(ctx context.Context) (Progress, error) {
 	return progress, nil
 }
 
+// Hidden is the read [TargetOf] makes past a tombstone: the current revision of
+// an artifact a tombstone covers, and [l0.ErrNotFound] where there is none.
+// [*l0.Store] implements it.
+type Hidden interface {
+	Retracted(ctx context.Context, source, artifact string) (connector.Event, error)
+}
+
 // TargetOf is the document an event belongs to, and false for an event that
 // belongs to none.
 //
@@ -197,21 +209,42 @@ func (p *Pump) Once(ctx context.Context) (Progress, error) {
 // off, which is what makes a pull request with its reviews one document rather
 // than five.
 //
-// A tombstone re-derives the conversation the retracted artifact was part of,
-// and the artifact's own document where the source did not say which
-// conversation that was. That is deletion's first step and not the whole of it:
-// walking provenance forward from an L1 document to the L2 objects built on it
-// is issue #23.
-func TargetOf(ev connector.Event) (string, bool) {
-	if ev.Kind == connector.KindTombstone || ev.Payload.BaseKind == connector.KindTombstone {
-		if root := conversationOf(ev); root != "" {
-			return l1.DocID(ev.Source, root), true
-		}
-		if ev.Payload.Target == "" {
-			return "", false
-		}
-		return l1.DocID(ev.Source, ev.Payload.Target), true
+// A tombstone re-derives the document the retracted artifact belonged to: the
+// conversation it was part of, or its own document if it made one. A tombstone
+// that names the conversation (`thread`, else `parent`) is taken at its word.
+// One that names only its `target` — which is all docs/connector-contract.md
+// requires, and what the GitHub connector sends for a deleted comment — is
+// resolved by reading the retracted artifact from behind the tombstone and
+// asking the same question of it. Without that read, a deleted comment's job
+// would go to the comment's own document, which never existed, and the issue
+// that quotes the comment would keep it. A tombstone for an artifact L0 holds
+// nothing of belongs to no document.
+//
+// That is deletion's first step and not the whole of it: walking provenance
+// forward from an L1 document to the L2 objects built on it is issue #23.
+func TargetOf(ctx context.Context, ev connector.Event, hidden Hidden) (string, bool, error) {
+	if ev.Kind != connector.KindTombstone && ev.Payload.BaseKind != connector.KindTombstone {
+		target, ok := targetOf(ev)
+		return target, ok, nil
 	}
+	if root := conversationOf(ev); root != "" {
+		return l1.DocID(ev.Source, root), true, nil
+	}
+	// The target is there: Event.Validate refuses a tombstone without one before
+	// it reaches L0.
+	retracted, err := hidden.Retracted(ctx, ev.Source, ev.Payload.Target)
+	if errors.Is(err, l0.ErrNotFound) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("reading what %s retracts: %w", ev.NativeID, err)
+	}
+	target, ok := targetOf(retracted)
+	return target, ok, nil
+}
+
+// targetOf is the document an event that is not a tombstone belongs to.
+func targetOf(ev connector.Event) (string, bool) {
 	if _, ok := l1.KindFor(ev); ok {
 		return l1.DocID(ev.Source, ev.Payload.Artifact), true
 	}
