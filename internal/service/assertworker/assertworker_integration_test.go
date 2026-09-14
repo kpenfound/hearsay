@@ -1,0 +1,420 @@
+//go:build integration
+
+package assertworker_test
+
+import (
+	"context"
+	"errors"
+	"os"
+	"slices"
+	"strconv"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/l0"
+	"github.com/kpenfound/hearsay/internal/l1"
+	"github.com/kpenfound/hearsay/internal/l2"
+	"github.com/kpenfound/hearsay/internal/llm"
+	"github.com/kpenfound/hearsay/internal/service/assertworker"
+)
+
+func newPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	url := os.Getenv("HEARSAY_DATABASE_URL")
+	if url == "" {
+		t.Skip("HEARSAY_DATABASE_URL is not set")
+	}
+	pool, err := db.Connect(context.Background(), url)
+	if err != nil {
+		t.Fatalf("connecting to postgres: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
+// scratchPool is a migrated database of this test's own.
+func scratchPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	admin := newPool(t)
+	name := "hearsay_assert_" + newSource(t)
+	if _, err := admin.Exec(t.Context(), `CREATE DATABASE `+name); err != nil {
+		t.Fatalf("creating the scratch database: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := admin.Exec(context.Background(), `DROP DATABASE `+name+` WITH (FORCE)`); err != nil {
+			t.Errorf("dropping the scratch database: %v", err)
+		}
+	})
+	url := os.Getenv("HEARSAY_DATABASE_URL")
+	base, query, hasQuery := strings.Cut(url, "?")
+	url = base[:strings.LastIndex(base, "/")+1] + name
+	if hasQuery {
+		url += "?" + query
+	}
+	migrator, err := db.NewMigrator(t.Context(), url, nil)
+	if err != nil {
+		t.Fatalf("NewMigrator() = %v", err)
+	}
+	if _, err := migrator.Up(t.Context()); err != nil {
+		t.Fatalf("migrating the scratch database: %v", err)
+	}
+	_ = migrator.Close()
+	pool, err := db.Connect(context.Background(), url)
+	if err != nil {
+		t.Fatalf("connecting to the scratch database: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
+var sources atomic.Int64
+
+// newSource is a source id, and so a scope id, nothing else in the shared
+// database uses.
+func newSource(t *testing.T) string {
+	t.Helper()
+	return "t" + strconv.FormatInt(time.Now().UnixNano(), 36) + "x" + strconv.FormatInt(sources.Add(1), 36)
+}
+
+func testConfig(src string) *config.Config {
+	cfg := config.Default()
+	cfg.Repo = testRepo(src)
+	return &cfg
+}
+
+// store writes the fixture into L0 and its two documents into L1, the way the
+// connectors and the distiller would have.
+func store(t *testing.T, pool *pgxpool.Pool, src string) fixture {
+	t.Helper()
+	f := newFixture(src)
+	events := l0.New(pool)
+	for _, ev := range append([]connector.Event{f.issue, f.pr}, f.prChildren...) {
+		if _, err := events.Append(t.Context(), ev); err != nil {
+			t.Fatalf("Append(%s) = %v", ev.NativeID, err)
+		}
+	}
+	issue, pr := documents(t, src)
+	for _, doc := range []l1.Document{issue, pr} {
+		if _, err := l1.New(pool).Put(t.Context(), doc); err != nil {
+			t.Fatalf("Put(%s) = %v", doc.ID, err)
+		}
+	}
+	return f
+}
+
+func newAsserter(t *testing.T, pool *pgxpool.Pool, src string, fx *llm.Fixtures) *assertworker.Asserter {
+	t.Helper()
+	registry, err := llm.NewFake(llm.Default(), fx)
+	if err != nil {
+		t.Fatalf("building the fake registry: %v", err)
+	}
+	a, err := assertworker.New(pool, registry, testConfig(src))
+	if err != nil {
+		t.Fatalf("assertworker.New() = %v", err)
+	}
+	return a
+}
+
+func assertDoc(t *testing.T, a *assertworker.Asserter, docID, scope string) assertworker.Result {
+	t.Helper()
+	result, err := a.Assert(t.Context(), docID, scope)
+	if err != nil {
+		t.Fatalf("Assert(%s) = %v", docID, err)
+	}
+	return result
+}
+
+// The acceptance criterion: an issue that proposes X and a later merged pull
+// request that does Y yield one topic and two stances, the second superseding
+// the first, with evidence pointing at both documents.
+func TestAnIssueThenAMergedPullRequestIsOneTopicWithTwoStances(t *testing.T) {
+	pool := newPool(t)
+	src := newSource(t)
+	f := store(t, pool, src)
+	scope := l2.ScopeKey(testRepo(src), src, repo)
+	if scope != src {
+		t.Fatalf("ScopeKey() = %q, want the fixture's own scope %q", scope, src)
+	}
+	a := newAsserter(t, pool, src, loadFixtures(t))
+
+	if r := assertDoc(t, a, f.issueID, scope); r.TopicsOpened != 1 || r.StancesWritten != 1 {
+		t.Fatalf("Assert(issue) = %+v, want one topic opened and one stance", r)
+	}
+	if r := assertDoc(t, a, f.prID, scope); r.TopicsOpened != 0 || r.StancesWritten != 1 {
+		t.Fatalf("Assert(pull request) = %+v, want the topic continued with one stance", r)
+	}
+
+	graph := l2.New(pool)
+	topics, err := graph.Topics(t.Context(), scope)
+	if err != nil {
+		t.Fatalf("Topics() = %v", err)
+	}
+	if len(topics) != 1 {
+		t.Fatalf("Topics() = %d topics, want 1: %+v", len(topics), topics)
+	}
+	topic := topics[0]
+	if topic.Name != topicName || topic.OpenedBy != f.issueID {
+		t.Errorf("topic = %+v, want %q opened by the issue", topic, topicName)
+	}
+	for _, want := range []string{f.issueTrackerID, f.prTrackerItemID} {
+		if !slices.Contains(topic.About, want) {
+			t.Errorf("topic.About = %q, want it to hold %s", topic.About, want)
+		}
+	}
+	for _, want := range []string{"item:" + repo + "#12", "item:" + repo + "#31"} {
+		if !slices.Contains(topic.JoinKeys, want) {
+			t.Errorf("topic.JoinKeys = %q, want it to hold %s", topic.JoinKeys, want)
+		}
+	}
+
+	history, err := graph.StanceHistory(t.Context(), topic.ID)
+	if err != nil {
+		t.Fatalf("StanceHistory() = %v", err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("StanceHistory() = %d stances, want 2: %+v", len(history), history)
+	}
+	first, second := history[0], history[1]
+	if first.Position != issuePosition || !slices.Equal(first.Evidence, []string{f.issueID}) ||
+		first.Supersedes != "" || first.Tier != l2.TierInferred || first.Author != "kyle" {
+		t.Errorf("first stance = %+v, want the issue's proposal, inferred, superseding nothing, by kyle", first)
+	}
+	if second.Position != prPosition || !slices.Equal(second.Evidence, []string{f.prID}) ||
+		second.Supersedes != first.ID || second.Tier != l2.TierRatified || second.Author != "kyle" {
+		t.Errorf("second stance = %+v, want the merged pull request's change, ratified, superseding %s", second, first.ID)
+	}
+
+	// The tracker items the two documents name exist as entities now.
+	for _, id := range []string{f.issueTrackerID, f.prTrackerItemID} {
+		e, err := graph.Entity(t.Context(), id)
+		if err != nil || e.Type != l2.TypeTrackerItem || e.Origin != l2.OriginReference {
+			t.Errorf("Entity(%s) = %+v, %v, want a tracker item created on reference", id, e, err)
+		}
+	}
+}
+
+// The other acceptance criterion: re-running over the same documents — a
+// restart, a job run twice — does not duplicate stances, and does not ask the
+// model again.
+func TestTheWorkerIsIdempotentAcrossRestarts(t *testing.T) {
+	pool := newPool(t)
+	src := newSource(t)
+	f := store(t, pool, src)
+	scope := l2.ScopeKey(testRepo(src), src, repo)
+	first := newAsserter(t, pool, src, loadFixtures(t))
+	assertDoc(t, first, f.issueID, scope)
+	assertDoc(t, first, f.prID, scope)
+
+	// A new process, with a registry that has nothing recorded: any model call
+	// fails, so passing here means none was made.
+	restarted := newAsserter(t, pool, src, llm.NewFixtures())
+	for _, id := range []string{f.issueID, f.prID} {
+		if r := assertDoc(t, restarted, id, scope); !r.Unchanged || r.StancesWritten != 0 || r.TopicsOpened != 0 {
+			t.Errorf("Assert(%s) after a restart = %+v, want it unchanged and nothing written", id, r)
+		}
+	}
+	assertOneTopicTwoStances(t, pool, scope)
+
+	pending, err := l2.New(pool).Unasserted(t.Context())
+	if err != nil {
+		t.Fatalf("Unasserted() = %v", err)
+	}
+	for _, p := range pending {
+		if p.ID == f.issueID || p.ID == f.prID {
+			t.Errorf("Unasserted() lists %s, which has been read", p.ID)
+		}
+	}
+}
+
+// A document read again in a new version — a crash that lost the record of the
+// read, a re-distillation — asks the model again, and an answer that takes the
+// same position writes nothing twice.
+func TestReadingADocumentAgainWritesNothingTwice(t *testing.T) {
+	pool := newPool(t)
+	src := newSource(t)
+	f := store(t, pool, src)
+	scope := l2.ScopeKey(testRepo(src), src, repo)
+	a := newAsserter(t, pool, src, loadFixtures(t))
+	assertDoc(t, a, f.issueID, scope)
+
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE l2_asserted SET distilled_at = distilled_at - interval '1 second' WHERE doc_id = $1`, f.issueID); err != nil {
+		t.Fatalf("moving the recorded version: %v", err)
+	}
+
+	// The sweep finds it again, and with nothing recorded the read must fail:
+	// the version moved, so it is read again rather than skipped.
+	pending, err := l2.New(pool).Unasserted(t.Context())
+	if err != nil {
+		t.Fatalf("Unasserted() = %v", err)
+	}
+	if !slices.ContainsFunc(pending, func(p l2.Pending) bool { return p.ID == f.issueID }) {
+		t.Errorf("Unasserted() does not list %s, whose version moved", f.issueID)
+	}
+	if _, err := newAsserter(t, pool, src, llm.NewFixtures()).Assert(t.Context(), f.issueID, scope); !errors.Is(err, llm.ErrNoFixture) {
+		t.Fatalf("Assert(a new version) with no recordings = %v, want it to have asked the model", err)
+	}
+
+	r := assertDoc(t, a, f.issueID, scope)
+	if r.Unchanged || r.Positions != 1 || r.StancesWritten != 0 || r.TopicsOpened != 0 {
+		t.Errorf("Assert(again) = %+v, want one position read and nothing new written", r)
+	}
+	topics, err := l2.New(pool).Topics(t.Context(), scope)
+	if err != nil || len(topics) != 1 {
+		t.Fatalf("Topics() = %+v, %v, want the one topic", topics, err)
+	}
+	history, err := l2.New(pool).StanceHistory(t.Context(), topics[0].ID)
+	if err != nil || len(history) != 1 {
+		t.Errorf("StanceHistory() = %+v, %v, want the one stance", history, err)
+	}
+	if again, ok, err := l2.New(pool).Asserted(t.Context(), f.issueID); err != nil || !ok {
+		t.Errorf("Asserted() = %v, %v, %v, want the new version recorded", again, ok, err)
+	} else if r := assertDoc(t, a, f.issueID, scope); !r.Unchanged {
+		t.Errorf("Assert(a third time) = %+v, want it unchanged", r)
+	}
+}
+
+// What a model writes is held to what L1 holds a person's words to: an email
+// address is scrubbed out of a position, and an assertion with nothing left in
+// its position, or a new topic with nothing left in its name, is dropped rather
+// than failing the document.
+func TestWhatTheModelWroteIsCleanedBeforeItIsStored(t *testing.T) {
+	pool := newPool(t)
+	src := newSource(t)
+	doc := commitDocument(t, src)
+	if _, err := l1.New(pool).Put(t.Context(), doc); err != nil {
+		t.Fatalf("Put() = %v", err)
+	}
+	r := assertDoc(t, newAsserter(t, pool, src, loadFixtures(t)), doc.ID, src)
+	if r.Positions != 1 || r.TopicsOpened != 1 || r.StancesWritten != 1 {
+		t.Fatalf("Assert(commit) = %+v, want one position kept of three", r)
+	}
+	stances, err := l2.New(pool).StancesFrom(t.Context(), doc.ID)
+	if err != nil || len(stances) != 1 {
+		t.Fatalf("StancesFrom() = %+v, %v, want one", stances, err)
+	}
+	if strings.Contains(stances[0].Position, commitEmail) || !strings.Contains(stances[0].Position, "lock order") {
+		t.Errorf("stored position = %q, want the rest of it without %s", stances[0].Position, commitEmail)
+	}
+	if stances[0].Tier != l2.TierInferred {
+		t.Errorf("a resolved commit is %s, want inferred: only a merged pull request is ratified", stances[0].Tier)
+	}
+}
+
+// A document whose outcome does not enter the pipeline, and one that is gone,
+// are skipped without a model call.
+func TestDocumentsOutsideThePipelineAreSkipped(t *testing.T) {
+	pool := newPool(t)
+	src := newSource(t)
+	store(t, pool, src)
+	issue, _ := documents(t, src)
+	open, _, err := issue.WithBody(l1.Body{Summary: "Still being worked out.", OutcomeKind: l1.OutcomeOpen})
+	if err != nil {
+		t.Fatalf("WithBody() = %v", err)
+	}
+	if _, err := l1.New(pool).Put(t.Context(), open); err != nil {
+		t.Fatalf("Put() = %v", err)
+	}
+	a := newAsserter(t, pool, src, llm.NewFixtures())
+	for _, id := range []string{open.ID, l1.DocID(src, repo+"#999")} {
+		if r := assertDoc(t, a, id, src); !r.Skipped {
+			t.Errorf("Assert(%s) = %+v, want it skipped", id, r)
+		}
+	}
+}
+
+// The service end to end: jobs the distiller would have enqueued, and documents
+// it wrote before the worker existed, are all read by Run, which stops cleanly.
+//
+// It runs on a database of its own: Run's sweep enqueues every unread document
+// it can see, and on the shared database that is every other test's, which its
+// worker would then read while those tests are reading them too.
+func TestRunReadsWhatIsEnqueuedAndWhatWasMissed(t *testing.T) {
+	pool := scratchPool(t)
+	src := newSource(t)
+	store(t, pool, src)
+	issue, _ := documents(t, src)
+
+	// The issue's job, as the distiller enqueues it; the pull request has none,
+	// and is only found by the sweep at startup.
+	if ok, err := l2.EnqueueAssertion(t.Context(), pool, testRepo(src), issue, repo); err != nil || !ok {
+		t.Fatalf("EnqueueAssertion() = %v, %v", ok, err)
+	}
+
+	registry, err := llm.NewFake(llm.Default(), loadFixtures(t))
+	if err != nil {
+		t.Fatalf("building the fake registry: %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- assertworker.Run(ctx, testConfig(src), assertworker.Deps{Pool: pool, LLM: registry}) }()
+
+	waitFor(t, "both documents to be read", func() bool {
+		topics, err := l2.New(pool).Topics(t.Context(), src)
+		if err != nil || len(topics) != 1 {
+			return false
+		}
+		history, err := l2.New(pool).StanceHistory(t.Context(), topics[0].ID)
+		return err == nil && len(history) == 2
+	})
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Run() after cancellation = %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run() did not return within 10s of cancellation")
+	}
+	assertOneTopicTwoStances(t, pool, src)
+}
+
+// The distiller writes a document and its assert job together, and only for an
+// outcome that enters the pipeline.
+func TestEnqueueAssertionOnlyForOutcomesThatAssert(t *testing.T) {
+	pool := newPool(t)
+	src := newSource(t)
+	issue, _ := documents(t, src)
+	open, _, err := issue.WithBody(l1.Body{Summary: "Open.", OutcomeKind: l1.OutcomeOpen})
+	if err != nil {
+		t.Fatalf("WithBody() = %v", err)
+	}
+	if ok, err := l2.EnqueueAssertion(t.Context(), pool, testRepo(src), open, repo); err != nil || ok {
+		t.Errorf("EnqueueAssertion(open) = %v, %v, want no job", ok, err)
+	}
+}
+
+func assertOneTopicTwoStances(t *testing.T, pool *pgxpool.Pool, scope string) {
+	t.Helper()
+	graph := l2.New(pool)
+	topics, err := graph.Topics(t.Context(), scope)
+	if err != nil || len(topics) != 1 {
+		t.Fatalf("Topics() = %+v, %v, want exactly one", topics, err)
+	}
+	history, err := graph.StanceHistory(t.Context(), topics[0].ID)
+	if err != nil || len(history) != 2 {
+		t.Fatalf("StanceHistory() = %+v, %v, want exactly two", history, err)
+	}
+	if history[1].Supersedes != history[0].ID {
+		t.Errorf("the second stance supersedes %q, want %q", history[1].Supersedes, history[0].ID)
+	}
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}

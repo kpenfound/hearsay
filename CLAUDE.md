@@ -77,8 +77,8 @@ go run ./cmd/hearsay l0 count --database-url=...   # what is in the event store
 go run ./cmd/hearsay connectors --source github --listen :8081
 ```
 
-Two of the four services are stubs — the assertion worker and the API. Each
-starts, logs, and exits cleanly on Ctrl-C; neither does any work yet. Every
+One of the four services is a stub — the API. It starts, logs, and exits
+cleanly on Ctrl-C; it does no work yet. Every
 service reads the configuration repository first when `--config` (or `HEARSAY_CONFIG`) names one,
 and refuses to start if it is invalid; configuration is read once, at startup,
 and a change to it is a restart (ADR-0009). The format is
@@ -100,6 +100,13 @@ flag too). It writes L0, so it refuses without a
 database too. One connector ships, GitHub (`internal/connector/github`, whose
 package comment documents its settings and secrets); a configured source of any
 other type is a startup failure until its type is in the registry.
+
+The assertion worker is not a stub. The distiller enqueues a serialized `assert`
+job, keyed by scope, in the transaction that writes a document whose outcome is
+decided, proposed or resolved; the worker reads it with the `assert` tier,
+matches topics by reference overlap and then embedding similarity, and appends
+stances in `internal/l2`. At startup it seeds entities from `code/` and enqueues
+every such document it has not read. It needs Postgres and refuses without it.
 
 Migrations are `go run ./cmd/hearsay migrate up|status|up-to <n>|down`, or
 `dagger api call hearsay migrate --database-url=...` against a database. They are

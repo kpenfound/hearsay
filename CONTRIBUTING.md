@@ -252,8 +252,8 @@ facts are two fields: the connectors service says which connectors it hosts in
 `hosting`, and the runtime says which source a line is about in `source`, which
 is ADR-0008's own name for that.
 
-Two of the four services are stubs — the assertion worker and the API: they
-start, log that they are stubs, and return when the process is interrupted. That
+One of the four services is a stub — the API: it starts, logs that it is a
+stub, and returns when the process is interrupted. That
 shutdown behaviour is not a placeholder — `hearsay all` composes all four, so a
 service that ignores cancellation hangs local development, and there is a test
 that keeps it honest.
@@ -401,6 +401,37 @@ Two rules to know before changing it:
   `-record` rewrites the file from the answers written down in
   `fixtures_test.go`, and without it the same test checks that what is on disk is
   what the package would send.
+
+## Assertion
+
+```sh
+go run ./cmd/hearsay assert-worker --config ./config   # L1 to L2, until you stop it
+go test ./internal/service/assertworker -record        # re-record the model answers
+```
+
+The distiller enqueues an `assert` job in the transaction that writes a document
+whose outcome is decided, proposed or resolved. The job is serialized: its serial
+key is the first configured scope, by id, that covers the artifact's container
+(`source:<id>` where none does), and topics are only matched within that key, so
+two jobs that run at once never touch the same topic (ADR-0007). The worker
+shows the `assert` tier the topics the document may be continuing — reference
+overlap first, embedding similarity second, and only topics everyone who may
+read the document may read — and appends a stance to one or opens a new one. At
+startup it seeds `l2_entities` from `code/` and enqueues every such document it
+has not read, which is what picks up documents written before it was deployed.
+
+Three rules to know before changing it:
+
+- **A stance is never overwritten.** A new one supersedes the newest stance on
+  its topic stated no later than it; a document read late forks the chain rather
+  than rewriting a later stance.
+- **Re-reading a document is idempotent twice over.** `l2_asserted` records
+  which version (`distilled_at`) was read, so a restart makes no model call; and
+  topic and stance ids are derived from what produced them — a stance's from its
+  topic, document and position — so a re-read that answers the same way writes
+  nothing.
+- **No test calls a provider**, as for the distiller: the answers are written
+  down in `fixtures_test.go` and `-record` writes them to `testdata/fixtures`.
 
 ## Search
 
