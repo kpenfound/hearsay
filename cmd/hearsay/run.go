@@ -12,6 +12,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/connector/github"
 	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/llm/providers"
@@ -377,11 +378,15 @@ func checkListen(addr string) error {
 // wiring rather than from whatever happened to be linked in
 // (docs/connector-contract.md).
 //
-// It is empty today, so a configured source is a startup failure until its
-// connector is built, GitHub first. A source that cannot start is a startup
+// It holds the GitHub connector. A source of any other type is a startup
+// failure until its connector is built: a source that cannot start is a startup
 // failure and not a health status, so that is what an unknown type is here too.
 func connectorRegistry() *connector.Registry {
-	return connector.NewRegistry()
+	registry := connector.NewRegistry()
+	// Register fails only for an empty type, a nil factory or a type claimed
+	// twice, which a fixed list cannot be; TestConnectorRegistry pins the list.
+	_ = registry.Register(github.Type, github.Factory)
+	return registry
 }
 
 // runAll runs the four services in one process. It exists so that evaluating
