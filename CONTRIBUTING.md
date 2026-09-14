@@ -252,11 +252,21 @@ facts are two fields: the connectors service says which connectors it hosts in
 `hosting`, and the runtime says which source a line is about in `source`, which
 is ADR-0008's own name for that.
 
-One of the four services is a stub — the API: it starts, logs that it is a
-stub, and returns when the process is interrupted. That
-shutdown behaviour is not a placeholder — `hearsay all` composes all four, so a
-service that ignores cancellation hangs local development, and there is a test
-that keeps it honest.
+Every service returns when the process is interrupted. That is not a
+nicety — `hearsay all` composes all four, so a service that ignores cancellation
+hangs local development, and each one's tests keep it honest.
+
+The API is built. It needs Postgres — it reads every layer and writes an L0
+`audit` event per bundle served — so `hearsay api` refuses without
+`--database-url`. It serves `POST /v1/<call>`, MCP at `/mcp`, `/healthz` and
+`/readyz` on `--listen` (`HEARSAY_API_LISTEN`, default `:8080`; `hearsay all`
+takes `--api-listen`). The caller is the `Hearsay-Principal` header and the agent
+acting for them `Hearsay-Agent`; nothing authenticates them yet. To try it:
+
+```sh
+curl -s -X POST localhost:8080/v1/get_bundle -H 'Hearsay-Principal: kyle' \
+  -d '{"scope":"tracker:github:acme/api#12"}'
+```
 
 The distiller is built. It needs Postgres, so `hearsay distiller` and
 `hearsay all` refuse without `--database-url` (or `HEARSAY_DATABASE_URL`); with

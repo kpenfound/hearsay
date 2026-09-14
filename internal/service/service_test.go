@@ -16,48 +16,19 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
-// Every service must return when its context is cancelled: `hearsay all`
-// composes them, so one that ignores cancellation hangs the dev process
-// (ADR-0003).
-//
-// The distiller, the assertion worker and the connectors are not here because
-// none of them can be run without a database, which is what the next test says.
-// Their own cancellation is covered where it can be: the distiller's and the
-// assertion worker's integration tests run them against Postgres and cancel
-// them, and internal/service/connectors' tests stop the connectors service on
-// every case they start.
-func TestServicesStopOnContextCancellation(t *testing.T) {
-	cfg := config.Default()
-	tests := []struct {
-		name string
-		run  service.RunFunc
-	}{
-		{api.Name, func(ctx context.Context) error { return api.Run(ctx, &cfg, api.Deps{}) }},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(t.Context())
-			done := make(chan error, 1)
-			go func() { done <- tt.run(ctx) }()
-			cancel()
-
-			select {
-			case err := <-done:
-				if err != nil {
-					t.Errorf("Run() after cancellation = %v, want nil", err)
-				}
-			case <-time.After(5 * time.Second):
-				t.Fatal("Run() did not return within 5s of cancellation")
-			}
-		})
-	}
-}
-
 // A service with dependencies says what it is missing rather than starting
-// without them and failing on the first job. Three of the four have any: the
-// distiller reads L0, writes L1 and calls a model, the assertion worker reads L1,
-// writes L2 and calls a model, and the connectors write L0 and keep their
-// backfill positions there (ADR-0003, ADR-0004, ADR-0005).
+// without them and failing on the first job. All four have them: the distiller
+// reads L0, writes L1 and calls a model, the assertion worker reads L1, writes
+// L2 and calls a model, the connectors write L0 and keep their backfill
+// positions there, and the API reads every layer and writes an audit event to
+// L0 per bundle (ADR-0003, ADR-0004, ADR-0005).
+//
+// Every service must also return when its context is cancelled — `hearsay all`
+// composes them, so one that ignores cancellation hangs the dev process — and
+// since none runs without a database that is covered against Postgres: the
+// distiller's, the assertion worker's and the API's integration tests run them
+// and cancel them, and internal/service/connectors' tests stop the connectors
+// service on every case they start.
 func TestTheServicesWithDependenciesRefuseToRunWithoutThem(t *testing.T) {
 	cfg := config.Default()
 	tests := []struct {
@@ -67,6 +38,7 @@ func TestTheServicesWithDependenciesRefuseToRunWithoutThem(t *testing.T) {
 		{distiller.Name, func(ctx context.Context) error { return distiller.Run(ctx, &cfg, distiller.Deps{}) }},
 		{assertworker.Name, func(ctx context.Context) error { return assertworker.Run(ctx, &cfg, assertworker.Deps{}) }},
 		{connectors.Name, func(ctx context.Context) error { return connectors.Run(ctx, &cfg, connectors.Deps{}) }},
+		{api.Name, func(ctx context.Context) error { return api.Run(ctx, &cfg, api.Deps{}) }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

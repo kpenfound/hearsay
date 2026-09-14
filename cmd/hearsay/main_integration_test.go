@@ -34,15 +34,16 @@ func TestAllMigratesTheDatabaseItIsPointedAt(t *testing.T) {
 		// Port 0: `all` runs the connectors service, which listens, and a test
 		// binds what the operating system gives it rather than the port a
 		// deployment uses.
-		done <- run(ctx, []string{"all", "--listen", "127.0.0.1:0", "--log-format", "json"}, io.Discard, stderr)
+		done <- run(ctx, []string{"all", "--listen", "127.0.0.1:0", "--api-listen", "127.0.0.1:0", "--log-format", "json"}, io.Discard, stderr)
 	}()
 
-	// Cancel once the schema line and the four services' own lines have gone
-	// out, so that neither the migration nor a service's startup is racing the
-	// shutdown.
+	// Cancel once the schema line and the listening services' own lines have
+	// gone out, so that neither the migration nor a service's startup is racing
+	// the shutdown.
 	started := func() bool {
 		out := stderr.String()
-		return strings.Contains(out, "schema is current") && strings.Contains(out, "connectors started")
+		return strings.Contains(out, "schema is current") && strings.Contains(out, "connectors started") &&
+			strings.Contains(out, "api started")
 	}
 	deadline := time.Now().Add(10 * time.Second)
 	for !started() {
@@ -63,6 +64,12 @@ func TestAllMigratesTheDatabaseItIsPointedAt(t *testing.T) {
 	// machine where something else holds 8081 must still be able to run it.
 	if !strings.Contains(stderr.String(), `"listen":"127.0.0.1:`) {
 		t.Errorf("`hearsay all` did not serve the connectors on the address --listen names:\n%s", stderr.String())
+	}
+	// The same for the API and --api-listen, which would otherwise take 8080.
+	for line := range strings.Lines(stderr.String()) {
+		if strings.Contains(line, `"msg":"api started"`) && !strings.Contains(line, `"listen":"127.0.0.1:`) {
+			t.Errorf("`hearsay all` did not serve the API on the address --api-listen names: %s", line)
+		}
 	}
 }
 

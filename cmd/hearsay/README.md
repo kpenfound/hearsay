@@ -30,10 +30,9 @@ and no arguments, and say so rather than ignoring what they were given. The
 
 `--database-url` points at Postgres, and also reads `HEARSAY_DATABASE_URL`,
 which is the one to prefer: a URL on a command line puts its password in the
-process list. It is on the subcommands that use a database — `migrate`, `l0`,
-`all`, `distiller` and `connectors` — and not on the two service subcommands
-that do not connect to one yet. All three of `distiller`, `connectors` and
-`all` refuse to start without it.
+process list. It is on every subcommand that uses a database — `migrate`, `l0`,
+`all` and the four services — and every one of them refuses to start without
+it.
 
 `--listen` is on `connectors` and on `all`, which runs it, and also reads
 `HEARSAY_LISTEN`. It is where the push connectors' handlers are mounted, under
@@ -42,6 +41,12 @@ that do not connect to one yet. All three of `distiller`, `connectors` and
 ([ADR-0008](../../docs/adr/0008-observability-slog-and-opentelemetry.md)). The
 default is `:8081`, the port after the API's 8080; a machine where something
 else holds that port is why `all` takes the flag too.
+
+`hearsay api` takes `--listen` as well, for its own address, and reads
+`HEARSAY_API_LISTEN` rather than `HEARSAY_LISTEN`, because `all` runs both
+services and one variable cannot name two ports. `all` spells it `--api-listen`.
+The default is `:8080`. The API serves its calls as `POST /v1/<call>`, the same
+calls as MCP tools at `/mcp`, and `/healthz` and `/readyz`.
 
 `--config` points at the configuration repository, and also reads
 `HEARSAY_CONFIG`. A service loads it before it starts and refuses to start if it

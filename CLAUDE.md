@@ -77,8 +77,7 @@ go run ./cmd/hearsay l0 count --database-url=...   # what is in the event store
 go run ./cmd/hearsay connectors --source github --listen :8081
 ```
 
-One of the four services is a stub — the API. It starts, logs, and exits
-cleanly on Ctrl-C; it does no work yet. Every
+None of the four services is a stub any more. Every
 service reads the configuration repository first when `--config` (or `HEARSAY_CONFIG`) names one,
 and refuses to start if it is invalid; configuration is read once, at startup,
 and a change to it is a restart (ADR-0009). The format is
@@ -121,6 +120,16 @@ the database verifies the schema and refuses one that is behind.
 The database is `--database-url`, or `HEARSAY_DATABASE_URL`. Prefer the
 environment variable: a URL on a command line puts its password in the process
 list.
+
+The API is not a stub. It serves `get_bundle`, `resolve`, `stance_history`,
+`get_l1`, `get_l0` and `search` as `POST /v1/<call>` and as MCP tools at `/mcp`,
+from one call layer whose bytes both interfaces serve verbatim, on `--listen`
+(default `:8080`; `hearsay all` takes `--api-listen`). The caller is the
+`Hearsay-Principal` header, and the agent acting for them `Hearsay-Agent`;
+nothing authenticates them yet. Every read is filtered by that principal's
+access lists, and every bundle served is an L0 `audit` event under source
+`hearsay`. The bundle is `internal/bundle`, over the views in `internal/l3`. It
+needs Postgres and refuses without it.
 
 `hearsay l0 list|get <id>|count|tail` inspects the event store — what a source
 has ingested, an artifact's history, and the change feed the distiller

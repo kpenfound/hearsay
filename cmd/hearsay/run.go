@@ -41,9 +41,7 @@ func commands() []command {
 		{connectors.Name, "[--source name]...", "Run the source connectors. Writes L0 only.", runConnectors},
 		{distiller.Name, "", "Run the distiller. L0 to L1.", runDistiller},
 		{assertworker.Name, "", "Run the assertion worker. L1 to L2.", runAssertWorker},
-		{api.Name, "", "Run the read and assert API over MCP and HTTP.", runService(api.Name, func(ctx context.Context, cfg *config.Config) error {
-			return api.Run(ctx, cfg, api.Deps{})
-		})},
+		{api.Name, "", "Run the read and assert API over MCP and HTTP.", runAPI},
 		{"all", "", "Run all four services in one process. Local development only.", runAll},
 		{"config", "validate [path]", "Check a configuration repository and say what is wrong with it.", runConfig},
 		{"migrate", "up|status|up-to <n>|down", "Apply schema migrations and exit.", runMigrate},
@@ -183,28 +181,6 @@ func instanceName() string {
 	return "unknown"
 }
 
-// runService returns the handler for a subcommand that runs a long-lived
-// service: parse the common flags, build the logger, hand over to start.
-func runService(name string, start func(ctx context.Context, cfg *config.Config) error) func(context.Context, []string, io.Writer, io.Writer) error {
-	return func(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-		fs, cfg, configPath := newFlagSet(name, stderr)
-		if err := fs.Parse(args); err != nil {
-			return err
-		}
-		if fs.NArg() > 0 {
-			return fmt.Errorf("unexpected argument %q", fs.Arg(0))
-		}
-		ctx, err := withLogger(ctx, name, cfg, stderr)
-		if err != nil {
-			return err
-		}
-		if err := loadConfig(ctx, cfg, *configPath); err != nil {
-			return err
-		}
-		return start(ctx, cfg)
-	}
-}
-
 // runDistiller runs the distiller, which unlike the other three services has
 // dependencies: Postgres, and a model tier registry built from the
 // configuration. Both are the process's to build and to own (ADR-0003), and
@@ -280,6 +256,47 @@ func runAssertWorker(ctx context.Context, args []string, stdout, stderr io.Write
 		return err
 	}
 	return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry})
+}
+
+// runAPI runs the read API. It reads L0, L1 and L2 and writes an audit event per
+// bundle, so it needs Postgres and refuses without it; the model tiers are
+// built only for search's `embed` tier, and search runs on full text without
+// one.
+func runAPI(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	fs, cfg, configPath := newFlagSet(api.Name, stderr)
+	listen := fs.String("listen", envOr("HEARSAY_API_LISTEN", api.DefaultListen),
+		"address the API serves HTTP (/v1/<call>), MCP (/mcp) and its health on")
+	resolveDatabase := databaseFlag(fs, cfg)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	resolveDatabase()
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	if *listen == "" {
+		return errors.New("--listen is empty: it is the address the API is served on")
+	}
+	ctx, err := withLogger(ctx, api.Name, cfg, stderr)
+	if err != nil {
+		return err
+	}
+	if cfg.Database.URL == "" {
+		return db.ErrNoDatabaseURL
+	}
+	if err := loadConfig(ctx, cfg, *configPath); err != nil {
+		return err
+	}
+	pool, err := db.Connect(ctx, cfg.Database.URL)
+	if err != nil {
+		return stoppingEarly(ctx, err)
+	}
+	defer pool.Close()
+	registry, err := modelRegistry(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	return api.Run(ctx, cfg, api.Deps{Pool: pool, LLM: registry, Listen: *listen})
 }
 
 // stoppingEarly turns a startup failure that happened because the process was
@@ -396,6 +413,8 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	fs, cfg, configPath := newFlagSet("all", stderr)
 	resolveDatabase := databaseFlag(fs, cfg)
 	listen := listenFlag(fs)
+	apiListen := fs.String("api-listen", envOr("HEARSAY_API_LISTEN", api.DefaultListen),
+		"address the API service serves HTTP, MCP and its health on")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -405,6 +424,9 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	}
 	if err := checkListen(*listen); err != nil {
 		return err
+	}
+	if *apiListen == "" {
+		return errors.New("--api-listen is empty: it is the address the API is served on")
 	}
 	// No service name on the process logger: RunAll names each of the four.
 	ctx, err := withLogger(ctx, "", cfg, stderr)
@@ -450,7 +472,7 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 			return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry})
 		},
 		api.Name: func(ctx context.Context) error {
-			return api.Run(ctx, cfg, api.Deps{})
+			return api.Run(ctx, cfg, api.Deps{Pool: pool, LLM: registry, Listen: *apiListen})
 		},
 	})
 }

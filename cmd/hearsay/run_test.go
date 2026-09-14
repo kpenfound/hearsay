@@ -314,14 +314,15 @@ func TestRun(t *testing.T) {
 // passed through.
 func TestServiceSubcommandsReturnWhenTheContextIsCancelled(t *testing.T) {
 	t.Setenv("HEARSAY_INSTANCE", "replica-7")
-	// These cases are about the services coming back, not about a schema, and
-	// the integration-test check sets this variable for the whole run.
+	// Every service needs Postgres now, and refuses without a URL (the test
+	// below). These cases are about the service coming back and about its log
+	// fields, so they name a database nothing listens on: a service asked to
+	// stop while it is still connecting has not failed.
 	//
-	// `connectors`, `distiller`, `assert-worker` and `all` are not here: all four
-	// need Postgres and refuse without it, which is the next test. Their
+	// `connectors`, `distiller`, `assert-worker` and `all` are not here; their
 	// cancellation is covered against a real database in cmd/hearsay's
 	// integration test.
-	t.Setenv("HEARSAY_DATABASE_URL", "")
+	noDatabase(t)
 	tests := []struct {
 		args     []string
 		services []string // the values the service field must take
@@ -334,9 +335,11 @@ func TestServiceSubcommandsReturnWhenTheContextIsCancelled(t *testing.T) {
 			args := append(slices.Clone(tt.args), "--log-format", "json")
 			ctx, cancel := context.WithCancel(t.Context())
 
+			// Cancelled before the service starts, so that a connection refused
+			// before the cancellation lands cannot race it.
+			cancel()
 			done := make(chan error, 1)
 			go func() { done <- run(ctx, args, &stdout, &stderr) }()
-			cancel()
 
 			select {
 			case err := <-done:
@@ -391,6 +394,7 @@ func TestInstanceDefaultsToTheHostname(t *testing.T) {
 		t.Skipf("no hostname available: %v", err)
 	}
 	t.Setenv("HEARSAY_INSTANCE", "")
+	noDatabase(t)
 
 	var stdout, stderr bytes.Buffer
 	ctx, cancel := context.WithCancel(t.Context())
@@ -403,7 +407,16 @@ func TestInstanceDefaultsToTheHostname(t *testing.T) {
 	}
 }
 
+// noDatabase points the process at a database nothing listens on. The cases
+// that use it run a service with its context already cancelled, so it gets as
+// far as configuration and logging, stops at the connection, and returns nil.
+func noDatabase(t *testing.T) {
+	t.Helper()
+	t.Setenv("HEARSAY_DATABASE_URL", "postgres://hearsay@127.0.0.1:1/unreachable")
+}
+
 func TestLogFlagsAndEnvironment(t *testing.T) {
+	noDatabase(t)
 	t.Run("HEARSAY_LOG_FORMAT is honoured", func(t *testing.T) {
 		t.Setenv("HEARSAY_LOG_FORMAT", "text")
 		var stdout, stderr bytes.Buffer
@@ -455,6 +468,7 @@ func TestHelpDoesNotPrintTheDatabasePassword(t *testing.T) {
 		{"migrate", "--help"},
 		{"all", "--help"},
 		{"connectors", "--help"},
+		{"api", "--help"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
@@ -495,6 +509,7 @@ func TestSubcommandsThatNeedADatabaseSaySoWhenTheyHaveNone(t *testing.T) {
 		{"distiller"},
 		{"assert-worker"},
 		{"connectors"},
+		{"api"},
 		{"all"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
@@ -628,6 +643,7 @@ func TestConfigValidate(t *testing.T) {
 // A service reads its configuration before it starts, so a mistake in it stops
 // the process rather than showing up on the first request (ADR-0009).
 func TestServicesLoadTheirConfiguration(t *testing.T) {
+	noDatabase(t)
 	valid := writeConfig(t, validConfig)
 
 	t.Run("a bad configuration stops the service starting", func(t *testing.T) {
