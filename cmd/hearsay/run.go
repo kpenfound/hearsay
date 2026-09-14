@@ -305,7 +305,7 @@ func stoppingEarly(ctx context.Context, err error) error {
 // that cannot make a model call should not be serving.
 func modelRegistry(ctx context.Context, cfg *config.Config) (llm.Registry, error) {
 	if cfg.Repo.Path == "" {
-		telemetry.Logger(ctx).WarnContext(ctx, "no configuration: nothing is distilled, pass --config")
+		telemetry.Logger(ctx).WarnContext(ctx, "no configuration: no model tiers are built, pass --config")
 		return nil, nil
 	}
 	return llm.NewRegistry(cfg.Repo.LLM, providers.All())
