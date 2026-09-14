@@ -8,11 +8,13 @@ import (
 	"slices"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
+	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/principal"
 	"github.com/kpenfound/hearsay/internal/queue"
@@ -39,6 +41,7 @@ const CallTimeout = 2 * time.Minute
 // happened to writes the document that is already there, which the store
 // notices and does not write at all.
 type Distiller struct {
+	pool     *pgxpool.Pool
 	events   *l0.Store
 	docs     *l1.Store
 	tier     llm.Completer
@@ -80,6 +83,7 @@ func New(pool *pgxpool.Pool, registry llm.Registry, cfg *config.Config) (*Distil
 		return nil, err
 	}
 	return &Distiller{
+		pool:     pool,
 		events:   l0.New(pool),
 		docs:     l1.New(pool),
 		tier:     tier,
@@ -134,6 +138,9 @@ type Result struct {
 	// Redacted names the shapes the scrub took out of what the model wrote,
 	// sorted. It is the shapes and never the values (ADR-0008).
 	Redacted []string
+	// Asserting reports that the write enqueued an `assert` job: the document
+	// changed and its outcome enters the assertion pipeline.
+	Asserting bool
 	// Embedded reports that the document was given the vector its text asks
 	// for. It is false where there is no embed tier configured, and where the
 	// document already had one — which is the ordinary outcome, because a
@@ -159,7 +166,7 @@ func (d *Distiller) Handle(ctx context.Context, job queue.Job) error {
 			"l1_id", result.DocID)
 	case result.Written:
 		log.InfoContext(ctx, "document distilled", "l1_id", result.DocID,
-			"redacted", result.Redacted, "embedded", result.Embedded)
+			"redacted", result.Redacted, "embedded", result.Embedded, "asserting", result.Asserting)
 	default:
 		log.DebugContext(ctx, "document unchanged", "l1_id", result.DocID, "embedded", result.Embedded)
 	}
@@ -268,11 +275,23 @@ func (d *Distiller) Distill(ctx context.Context, docID string) (Result, error) {
 		return result, nil
 	}
 
-	written, err := d.docs.Put(ctx, doc)
+	// The document and the assert job it causes are one transaction (ADR-0007):
+	// either a document whose outcome enters the assertion pipeline is stored
+	// with its job, or neither is and the retry writes both. Only a write that
+	// changed the row asks for one — a re-distillation that changed nothing has
+	// nothing new for L2 to read.
+	err = pgx.BeginFunc(ctx, d.pool, func(tx pgx.Tx) error {
+		written, err := l1.New(tx).Put(ctx, doc)
+		if err != nil || !written {
+			return err
+		}
+		result.Written = true
+		result.Asserting, err = l2.EnqueueAssertion(ctx, tx, d.repo, doc, root.Payload.Container.NativeID)
+		return err
+	})
 	if err != nil {
 		return Result{}, err
 	}
-	result.Written = written
 	result.Redacted = redacted
 
 	// The vector comes after the row, and asks the table what it needs rather
