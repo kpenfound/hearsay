@@ -348,7 +348,9 @@ type EntityMatch struct {
 	Paths   []string `json:"paths_matched,omitempty"`
 }
 
-func resolve(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json.RawMessage) (any, error) {
+// resolve reads the entity map, which carries no access list: it is
+// configuration and the tracker item ids documents point at.
+func resolve(ctx context.Context, c *Calls, _ Caller, _ l1.Reader, raw json.RawMessage) (any, error) {
 	var args struct {
 		Text string `json:"text"`
 	}
@@ -366,11 +368,6 @@ func resolve(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json
 		Entities []EntityMatch `json:"entities"`
 	}{Entities: []EntityMatch{}}
 	for _, m := range matches {
-		// Entities carry no access list; the scopes a reader was granted are
-		// what narrows them, as they narrow a bundle.
-		if !reader.Effective.Grant.Scopes.Has(m.Entity.ID) {
-			continue
-		}
 		out.Entities = append(out.Entities, EntityMatch{
 			ID: m.Entity.ID, Type: string(m.Entity.Type), Name: m.Entity.Name, Owners: m.Entity.Owners,
 			Aliases: m.Aliases, Paths: m.Paths,
@@ -478,17 +475,9 @@ func getL0(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json.R
 	case !reader.Allows(ev.ACL):
 		return nil, notFound
 	}
-	if !reader.Effective.Grant.Scopes.All {
-		// An event carries no scope; a scoped reader reaches one through a
-		// document they may read that was built from it.
-		cited, err := c.docs.Cites(ctx, reader, ev.ID)
-		if err != nil {
-			return nil, err
-		}
-		if !cited {
-			return nil, notFound
-		}
-	}
+	// An event carries no scope, so its access list is the whole filter. That
+	// is enough while every caller is granted every scope (readerFor); a
+	// scoped grant would reach an event through a document it may read.
 	return ev, nil
 }
 

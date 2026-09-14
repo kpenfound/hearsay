@@ -117,23 +117,3 @@ func (s *Store) Withheld(ctx context.Context, reader Reader, scope string) (int,
 	}
 	return n, nil
 }
-
-// Cites reports whether a document this reader may read was built from an
-// event. It is how a pointer into L0 is followed without L0 knowing anything
-// about scopes: an event is reachable by a scoped reader exactly when a
-// document they may read names it in its provenance.
-func (s *Store) Cites(ctx context.Context, reader Reader, eventID string) (bool, error) {
-	q := &query{}
-	filter, ok := reader.predicate(q, "")
-	if !ok {
-		return false, nil
-	}
-	var cited bool
-	err := s.db.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM l1_docs WHERE `+filter+` AND l0_refs @> ARRAY[`+q.placeholder(eventID)+`]::text[])`,
-		q.args...).Scan(&cited)
-	if err != nil {
-		return false, fmt.Errorf("finding a document that cites %s: %w", eventID, err)
-	}
-	return cited, nil
-}
