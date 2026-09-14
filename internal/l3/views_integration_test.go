@@ -4,6 +4,7 @@ package l3_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -130,7 +131,8 @@ func TestOpenQuestionsReadOnlyDocumentsThatLeaveSomethingOpen(t *testing.T) {
 	pool := newPool(t)
 	src := newSource()
 	scope := "tracker:" + src + ":acme/api#1"
-	first := putDoc(t, pool, src, "q1", l1.KindIssue, 1, scope, public, "who runs it?", "when?")
+	// The same question twice in one document is one piece of evidence.
+	first := putDoc(t, pool, src, "q1", l1.KindIssue, 1, scope, public, "who runs it?", "when?", " who runs it? ")
 	second := putDoc(t, pool, src, "q2", l1.KindIssue, 2, scope, public, "who runs it?")
 	putDoc(t, pool, src, "q0", l1.KindIssue, 0, scope, public, "an older question")
 	for i := range 3 {
@@ -143,6 +145,11 @@ func TestOpenQuestionsReadOnlyDocumentsThatLeaveSomethingOpen(t *testing.T) {
 	want := []l3.Question{{Text: "who runs it?", Evidence: []string{second, first}}, {Text: "when?", Evidence: []string{first}}}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("open questions = %v, want %v", got, want)
+	}
+	// A listing with no reader does not filter on open questions, and says so
+	// rather than returning documents that have none.
+	if _, err := l1.New(pool).List(t.Context(), l1.ListOptions{Scope: scope, OpenQuestions: true}); !errors.Is(err, l1.ErrInvalidDocument) {
+		t.Errorf("List(OpenQuestions) = %v, want ErrInvalidDocument", err)
 	}
 }
 
@@ -190,6 +197,14 @@ func TestCurrentStancesAreTheHeadsTheReaderMayRead(t *testing.T) {
 	stance(secretNow, "l1:f", "public once", 1, public)
 	stance(secretNow, "l1:g", "private now", 3, private)
 	stance(topic("inherited", parent), "l1:h", "from the parent", 1, public)
+	// A topic sam may not read with a stance sam may: the store allows it, and
+	// the topic's name is what must not reach sam.
+	privateTopic := l2.Topic{ID: l2.TopicID(src, "l1:x", 0, "a private topic"), Scope: src, Name: "a private topic",
+		About: []string{child}, ACL: private, OpenedBy: "l1:x"}
+	if _, err := graph.OpenTopic(ctx, privateTopic); err != nil {
+		t.Fatal(err)
+	}
+	stance(privateTopic, "l1:i", "a public position", 4, public)
 
 	type row struct {
 		Topic, Current, Supersedes string
@@ -214,12 +229,13 @@ func TestCurrentStancesAreTheHeadsTheReaderMayRead(t *testing.T) {
 		{"a private past", "what everyone sees", "", false},
 		{"inherited", "from the parent", "", true},
 	}
-	if fmt.Sprint(sams) != fmt.Sprint(wantSam) || withheld != 1 {
-		t.Errorf("sam's stances = %v with %d withheld, want %v with 1", sams, withheld, wantSam)
+	if fmt.Sprint(sams) != fmt.Sprint(wantSam) || withheld != 2 {
+		t.Errorf("sam's stances = %v with %d withheld, want %v with 2", sams, withheld, wantSam)
 	}
 	kyles, withheld := read(kyle)
 	wantKyle := []row{
 		{"forked", "newest", "first", false},
+		{"a private topic", "a public position", "", false},
 		{"a private present", "private now", "public once", false},
 		{"a private past", "what everyone sees", "what kyle alone saw", false},
 		{"inherited", "from the parent", "", true},

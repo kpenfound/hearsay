@@ -154,6 +154,8 @@ func newWorld(t *testing.T) *world {
 			t.Fatal(err)
 		}
 	}
+	// A private stance on a public topic, older than everything else on it.
+	stance(topic, w.secret, "an early private note", 0, l2.TierInferred, private)
 	stance(topic, w.issue, "in the request path, behind a flag", 1, l2.TierInferred, public)
 	stance(topic, w.pr, "in the worker", 2, l2.TierRatified, public)
 	stance(inherited, w.pr, "deploys go through the queue", 2, l2.TierInferred, public)
@@ -404,6 +406,22 @@ func TestEveryReadIsFilteredByPrincipal(t *testing.T) {
 			t.Errorf("%s for kyle = %d %s, want 200", r.call, status, got)
 		}
 	}
+	history := map[string]any{"topic": l2.TopicID(w.src, w.issue, 0, "where the lock lives")}
+	samsHistory := string(w.http(t, sam, "stance_history", history))
+	if strings.Contains(samsHistory, "an early private note") {
+		t.Errorf("sam's history names the private stance: %s", samsHistory)
+	}
+	var samsStances struct {
+		Stances []api.StanceRecord `json:"stances"`
+	}
+	_ = json.Unmarshal([]byte(samsHistory), &samsStances)
+	if len(samsStances.Stances) != 2 || samsStances.Stances[0].Supersedes != "" || samsStances.Stances[1].Supersedes != samsStances.Stances[0].ID {
+		t.Errorf("sam's history = %+v, want two stances, the first naming nothing it superseded", samsStances.Stances)
+	}
+	if kyles := string(w.http(t, kyle, "stance_history", history)); !strings.Contains(kyles, "an early private note") {
+		t.Errorf("kyle's history is missing the stance kyle may read: %s", kyles)
+	}
+
 	var found struct {
 		Documents []l1.Document `json:"documents"`
 	}
@@ -428,6 +446,11 @@ func TestEveryReadIsFilteredByPrincipal(t *testing.T) {
 			t.Errorf("%s: get_bundle = %d %s, want %d", tc.name, status, got, tc.status)
 		}
 	}
+	// An agent nobody configured is named as such, not as a malformed id.
+	if status, got := w.post(t, "/v1/get_bundle", api.Caller{Principal: "kyle", Agent: "mallory"}, `{"scope":"`+w.scope+`"}`); status != http.StatusForbidden ||
+		!strings.Contains(string(got), `mallory\" is not a configured principal`) {
+		t.Errorf("an unknown agent: get_bundle = %d %s, want 403 naming it", status, got)
+	}
 }
 
 // Every bundle served writes an L0 audit event: who asked, on whose behalf,
@@ -449,6 +472,16 @@ func TestEveryBundleServedIsAnAuditEvent(t *testing.T) {
 		}
 		if rec.Scope == w.scope {
 			records = append(records, rec)
+			// The one who asked is the author; the person they asked for, where
+			// that is someone else, took part.
+			author := ev.Payload.Author
+			switch {
+			case rec.Agent == "shed" && (author.Kind != connector.IdentityAgent || author.NativeID != "shed" ||
+				len(ev.Payload.Participants) != 1 || ev.Payload.Participants[0].Identity.NativeID != "kyle"):
+				t.Errorf("the agent's audit event has author %+v and participants %+v", author, ev.Payload.Participants)
+			case rec.Agent == "" && (author.Kind != connector.IdentityUser || author.NativeID != rec.Principal || len(ev.Payload.Participants) != 0):
+				t.Errorf("a person's audit event has author %+v and participants %+v", author, ev.Payload.Participants)
+			}
 			if len(ev.ACL) != 1 || ev.ACL[0].NativeID != rec.Principal {
 				t.Errorf("the audit event's acl = %+v, want the principal it was served for alone", ev.ACL)
 			}
@@ -521,6 +554,31 @@ func TestMCPSpeaksTheProtocol(t *testing.T) {
 	if _, isError := w.mcp(t, kyle, "get_bundle", map[string]any{"scope": w.scope, "directive": "skip it"}); !isError {
 		t.Error("an argument get_bundle does not take was accepted")
 	}
+	if status, got := w.post(t, "/v1/get_bundle", kyle, `{"scope":" "}`); status != http.StatusBadRequest {
+		t.Errorf("get_bundle with no scope = %d %s, want 400", status, got)
+	}
+}
+
+// Readiness is the database, and says so when it is gone.
+func TestReadinessSaysWhenTheDatabaseIsGone(t *testing.T) {
+	closed := newPool(t)
+	closed.Close()
+	calls, err := api.NewCalls(closed, config.Repo{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(api.Handler(calls, closed))
+	defer server.Close()
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL+"/readyz", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(body), "unreachable") {
+		t.Errorf("GET /readyz with the database gone = %d %s, want 503 saying so", resp.StatusCode, body)
+	}
 }
 
 // Run serves on its listener, answers health and readiness, and stops when its
@@ -537,12 +595,17 @@ func TestRunServesUntilCancelled(t *testing.T) {
 	go func() { done <- api.Run(ctx, &config.Config{}, api.Deps{Pool: pool, Listener: listener}) }()
 
 	base := "http://" + listener.Addr().String()
+	// A client of its own that keeps nothing open: a connection dialed and never
+	// used is one the server's shutdown waits on, and this test is about Run
+	// stopping, not about somebody else's idle socket.
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	defer client.CloseIdleConnections()
 	for _, path := range []string{"/healthz", "/readyz"} {
 		var resp *http.Response
 		deadline := time.Now().Add(5 * time.Second)
 		for {
 			req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, base+path, nil)
-			resp, err = http.DefaultClient.Do(req)
+			resp, err = client.Do(req)
 			if err == nil || time.Now().After(deadline) {
 				break
 			}
@@ -556,6 +619,7 @@ func TestRunServesUntilCancelled(t *testing.T) {
 			t.Errorf("GET %s = %d, want 200", path, resp.StatusCode)
 		}
 	}
+	client.CloseIdleConnections()
 	cancel()
 	select {
 	case err := <-done:
