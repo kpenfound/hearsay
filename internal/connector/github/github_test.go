@@ -71,7 +71,8 @@ func defaultRoutes() map[string]route {
 		"/repos/acme/api/issues?direction=asc&per_page=100&sort=updated&state=all": {file: "issues-1.json", next: "/repositories/42/issues?page=2"},
 		"/repositories/42/issues?page=2":                                           {file: "issues-2.json"},
 		"/repos/acme/api/pulls?direction=asc&per_page=100&sort=updated&state=all":  {file: "pulls.json"},
-		"/repos/acme/api/pulls/2/reviews?per_page=100":                             {file: "reviews-2.json"},
+		"/repos/acme/api/pulls/2/reviews?per_page=100":                             {file: "reviews-2.json", next: "/repositories/42/pulls/2/reviews?page=2"},
+		"/repositories/42/pulls/2/reviews?page=2":                                  {file: "reviews-2-page2.json"},
 		"/repos/acme/api/issues/comments?direction=asc&per_page=100&sort=updated":  {file: "issue-comments.json"},
 		"/repos/acme/api/pulls/comments?direction=asc&per_page=100&sort=updated":   {file: "review-comments.json"},
 		"/repos/acme/api/commits?per_page=100&sha=main":                            {file: "commits.json"},
@@ -93,11 +94,18 @@ type fakeGitHub struct {
 	routes   map[string]route
 	status   map[string]int
 	requests []string
+	// once answers the next request for a key with a status, then normally.
+	once map[string]int
+	// holds make requests for a key wait until released; reached records
+	// that a request for a key has arrived.
+	holds   map[string]chan struct{}
+	reached map[string]bool
 }
 
 func newFakeGitHub(t *testing.T) *fakeGitHub {
 	t.Helper()
-	gh := &fakeGitHub{t: t, routes: defaultRoutes(), status: map[string]int{}}
+	gh := &fakeGitHub{t: t, routes: defaultRoutes(), status: map[string]int{},
+		once: map[string]int{}, holds: map[string]chan struct{}{}, reached: map[string]bool{}}
 	gh.srv = httptest.NewServer(http.HandlerFunc(gh.serve))
 	t.Cleanup(gh.srv.Close)
 	return gh
@@ -120,7 +128,16 @@ func (gh *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	gh.requests = append(gh.requests, r.URL.RequestURI())
 	status, failing := gh.status[key]
 	rt, ok := gh.routes[key]
+	if code, once := gh.once[key]; once {
+		delete(gh.once, key)
+		status, failing = code, true
+	}
+	gh.reached[key] = true
+	hold := gh.holds[key]
 	gh.mu.Unlock()
+	if hold != nil {
+		<-hold
+	}
 
 	switch repo, isRepo := strings.CutPrefix(r.URL.Path, "/repos/"); {
 	case failing:
@@ -167,6 +184,31 @@ func (gh *fakeGitHub) seen() []string {
 	gh.mu.Lock()
 	defer gh.mu.Unlock()
 	return append([]string(nil), gh.requests...)
+}
+
+func (gh *fakeGitHub) failNext(key string, status int) {
+	gh.mu.Lock()
+	defer gh.mu.Unlock()
+	gh.once[key] = status
+}
+
+// hold makes requests for key wait until release is called, which the test's
+// cleanup also does, so the server is never closed with a request stuck.
+func (gh *fakeGitHub) hold(key string) (release func()) {
+	ch := make(chan struct{})
+	var once sync.Once
+	release = func() { once.Do(func() { close(ch) }) }
+	gh.mu.Lock()
+	gh.holds[key] = ch
+	gh.mu.Unlock()
+	gh.t.Cleanup(release)
+	return release
+}
+
+func (gh *fakeGitHub) wasReached(key string) bool {
+	gh.mu.Lock()
+	defer gh.mu.Unlock()
+	return gh.reached[key]
 }
 
 // newSource is a source served by the fake, with settings merged over its URL.
@@ -774,6 +816,7 @@ func TestWebhookSignature(t *testing.T) {
 		{name: "the sha1 header scheme", body: body, signature: "sha1=" + strings.TrimPrefix(sign(hookSecret, body), "sha256="), wantCode: http.StatusUnauthorized},
 		{name: "a signature that is not hex", body: body, signature: "sha256=zz", wantCode: http.StatusUnauthorized},
 		{name: "an empty signature", body: body, signature: "sha256=", wantCode: http.StatusUnauthorized},
+		{name: "a valid digest with no scheme", body: body, signature: strings.TrimPrefix(sign(hookSecret, body), "sha256="), wantCode: http.StatusUnauthorized},
 		{name: "not a POST", method: http.MethodGet, body: body, signature: sign(hookSecret, body), wantCode: http.StatusMethodNotAllowed},
 	}
 	for _, tt := range tests {
@@ -1062,5 +1105,67 @@ func TestFailingResyncDegradesHealthAndCloseStopsIt(t *testing.T) {
 	}
 	if h := c.Health(t.Context()); h.Status != connector.HealthOK {
 		t.Errorf("health after the re-sync stopped = %+v, want ok", h)
+	}
+}
+
+// A re-sync that failed and then worked reports ok again while it is still
+// walking, not only once it has finished.
+func TestResyncRecoversFromAFailure(t *testing.T) {
+	t.Cleanup(github.SetResyncRetry(time.Millisecond))
+	gh := newFakeGitHub(t)
+	src := newSource(t, gh, sourceID, nil)
+	c := newConnector(t, src)
+	rec := &connector.Recorder{}
+	gh.failNext("/repos/acme/api", http.StatusBadGateway)
+	commits := "/repos/acme/api/commits?per_page=100&sha=main"
+	release := gh.hold(commits)
+
+	if code := deliver(t, c.Handler(gateFor(src, c, rec)), "repository", hook(t, "repository.privatized")); code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", code)
+	}
+	waitFor(t, "the re-sync to reach the commits", func() bool { return gh.wasReached(commits) })
+	if h := c.Health(t.Context()); h.Status != connector.HealthOK {
+		t.Errorf("health of a re-sync that recovered = %+v, want ok", h)
+	}
+	release()
+	waitFor(t, "the re-sync", func() bool { return len(rec.Events()) >= len(wantBackfill) })
+	if err := c.Close(t.Context()); err != nil {
+		t.Fatalf("Close = %v", err)
+	}
+	if n := len(rec.Events()); n != len(wantBackfill) {
+		t.Errorf("re-sync emitted %d events, want %d", n, len(wantBackfill))
+	}
+}
+
+// A second delivery of the same visibility change while its re-sync runs
+// starts no second walk, and a re-sync reads its own repository and no other.
+func TestResyncRunsOncePerRepositoryAndStaysInIt(t *testing.T) {
+	gh := newFakeGitHub(t)
+	src := newSource(t, gh, sourceID, nil, "acme/api", "acme/web")
+	c := newConnector(t, src)
+	rec := &connector.Recorder{}
+	h := c.Handler(gateFor(src, c, rec))
+	issues := "/repos/acme/api/issues?direction=asc&per_page=100&sort=updated&state=all"
+	release := gh.hold(issues)
+
+	if code := deliver(t, h, "repository", hook(t, "repository.privatized")); code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", code)
+	}
+	waitFor(t, "the re-sync to start", func() bool { return gh.wasReached(issues) })
+	if code := deliver(t, h, "repository", hook(t, "repository.privatized")); code != http.StatusAccepted {
+		t.Fatalf("redelivery: status = %d, want 202", code)
+	}
+	release()
+	waitFor(t, "the re-sync", func() bool { return len(rec.Events()) >= len(wantBackfill) })
+	if err := c.Close(t.Context()); err != nil {
+		t.Fatalf("Close = %v", err)
+	}
+	if n := len(rec.Events()); n != len(wantBackfill) {
+		t.Errorf("re-sync emitted %d events, want %d: the redelivery started a second walk", n, len(wantBackfill))
+	}
+	for _, uri := range gh.seen() {
+		if strings.HasPrefix(uri, "/repos/acme/web") {
+			t.Errorf("the re-sync of acme/api read %s", uri)
+		}
 	}
 }

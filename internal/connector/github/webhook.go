@@ -22,10 +22,11 @@ import (
 const maxDelivery = 25 << 20
 
 // The waits between attempts of a re-sync that is failing.
-const (
-	resyncRetry    = time.Minute
-	resyncMaxRetry = 15 * time.Minute
-)
+const resyncMaxRetry = 15 * time.Minute
+
+// resyncRetry is the first of them, doubling up to resyncMaxRetry. It is a
+// variable so that a test can shorten it.
+var resyncRetry = time.Minute
 
 // delivery is a webhook payload, as far as the connector reads one. Which of
 // the objects is set depends on the event.
@@ -38,7 +39,6 @@ type delivery struct {
 	Review      *review     `json:"review"`
 	// push
 	Ref     string `json:"ref"`
-	Deleted bool   `json:"deleted"`
 	Commits []struct {
 		ID string `json:"id"`
 	} `json:"commits"`
@@ -203,9 +203,10 @@ func (c *Connector) deliver(ctx context.Context, sink connector.Sink, event stri
 // pushed is the commits a push added to the default branch. A push payload
 // names its author by git name and email and not by account, so each commit is
 // read from the REST API: that is the same object a backfill reads, and so the
-// same event.
+// same event. A push that deletes the branch names no commits, and so is
+// nothing.
 func (c *Connector) pushed(ctx context.Context, v view, d delivery) ([]connector.Event, error) {
-	if d.Deleted || d.Repository.DefaultBranch == "" || d.Ref != "refs/heads/"+d.Repository.DefaultBranch {
+	if d.Repository.DefaultBranch == "" || d.Ref != "refs/heads/"+d.Repository.DefaultBranch {
 		return nil, nil
 	}
 	events := make([]connector.Event, 0, len(d.Commits))
