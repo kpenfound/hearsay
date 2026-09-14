@@ -64,6 +64,14 @@ zero; the defaults are the ones the constants document.
   or a NUL in the trace carrier, is a statement error inside the caller's
   transaction (22021, 22P05) rather than an error returned to the caller. Any
   new field written to a row belongs in that validation.
+- **A running job does not occupy the pending-target index**, so a target can
+  have a job running and another pending. Anything that moves a job back to
+  pending — `Fail`'s retry, `Reclaim` — has to decide first whether the target
+  is already pending, and supersede the job (`done`, `last_error` saying so)
+  rather than collide; `Reclaim` is one statement over the kind, and a single
+  collision would abort it for every job. A collision the statement's snapshot
+  could not see is a 23505 it runs again for. See
+  [ADR-0011](../../docs/adr/0011-a-retry-superseded-by-a-pending-job-is-done.md).
 - **The invariant is tested, not asserted.** The serialized claim's test runs
   concurrent workers over jobs sharing a key and fails if two are ever running
   at once. Keep it that way — it is the reason ADR-0007 chose code we own over

@@ -23,7 +23,9 @@ import (
 // A handler must be safe to run twice on the same job. Delivery is
 // at-least-once: a worker that dies mid-job leaves a job that is reclaimed and
 // run again, and that is the semantics ADR-0007 chose knowing both of
-// Hearsay's workers are idempotent.
+// Hearsay's workers are idempotent. The exception is a job whose target has
+// another job pending by then: that one does the work, and this one is marked
+// done as superseded rather than run again (ADR-0011).
 //
 // The context is cancelled when the worker is shutting down and when the
 // job's lease has been lost to another worker, which is the signal to stop
@@ -206,6 +208,11 @@ func (w *Worker) runOne(ctx context.Context, job Job) {
 		log.WarnContext(report, "a failed job had already been reclaimed, so its outcome was dropped", "cause", err.Error())
 	case state == StateFailed:
 		log.ErrorContext(report, "job failed for good", "error", err, "attempts", job.Attempt)
+	case state == StateDone:
+		// Not an error: the job pending for the same target does this work
+		// against a newer read (ADR-0011).
+		log.InfoContext(report, "a failed job was superseded by one already pending for its target, so it will not be retried",
+			"error", err)
 	default:
 		log.WarnContext(report, "job failed and will be retried", "error", err, "retry_in", retry.In.String())
 	}
@@ -252,7 +259,7 @@ func (w *Worker) maintain(ctx context.Context) {
 		}
 	} else if reclaimed.Total() > 0 {
 		log.WarnContext(ctx, "reclaimed jobs whose leases expired",
-			"requeued", reclaimed.Pending, "failed", reclaimed.Failed)
+			"requeued", reclaimed.Pending, "failed", reclaimed.Failed, "superseded", reclaimed.Superseded)
 	}
 	if purged, err := w.client.Purge(ctx); err != nil {
 		if ctx.Err() == nil {

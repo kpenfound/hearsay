@@ -1159,3 +1159,275 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
 		})
 	}
 }
+
+// expireLeases waits out a lease measured in milliseconds, so that the jobs
+// claimed under it are what a worker that died leaves behind.
+func expireLeases(lease time.Duration) {
+	time.Sleep(3 * lease)
+}
+
+func reclaim(t *testing.T, client *queue.Client) queue.Reclaimed {
+	t.Helper()
+	reclaimed, err := client.Reclaim(t.Context())
+	if err != nil {
+		t.Fatalf("Reclaim = %v, want no error", err)
+	}
+	return reclaimed
+}
+
+func listJobs(t *testing.T, client *queue.Client, state queue.State) []queue.Job {
+	t.Helper()
+	jobs, err := client.List(t.Context(), state, 0)
+	if err != nil {
+		t.Fatalf("List(%s) = %v, want no error", state, err)
+	}
+	return jobs
+}
+
+// Issue #65: a target can have a job running and another pending, because a
+// running job does not occupy the pending-target index. A retry of the running
+// one used to move it back to pending and violate that index; now it is
+// superseded by the pending job, unless its attempts are spent (ADR-0011).
+func TestARetryOfATargetThatIsAlreadyPending(t *testing.T) {
+	tests := []struct {
+		name        string
+		maxAttempts int
+		want        queue.State
+		wantError   string
+	}{
+		{
+			name: "is superseded by the pending job", maxAttempts: 3,
+			want: queue.StateDone, wantError: "superseded by a pending job for the same target; the model timed out",
+		},
+		{
+			name: "still fails once its attempts are spent", maxAttempts: 1,
+			want: queue.StateFailed, wantError: "the model timed out",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			kind := newKind(t, false)
+			client := newClient(t, queue.Config{Kind: kind, MaxAttempts: tt.maxAttempts})
+			enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
+			running := claim(t, client)
+			if len(running) != 1 {
+				t.Fatalf("Claim = %d jobs, want 1", len(running))
+			}
+			pending := enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
+
+			state, retry, err := client.Fail(t.Context(), running[0], errors.New("the model timed out"))
+			if err != nil {
+				t.Fatalf("Fail = %v, want no error", err)
+			}
+			if state != tt.want || retry != (queue.Retry{}) {
+				t.Errorf("Fail = %q, %+v, want %q and no retry", state, retry, tt.want)
+			}
+			finished := listJobs(t, client, tt.want)
+			if len(finished) != 1 || finished[0].ID != running[0].ID || finished[0].LastError != tt.wantError ||
+				finished[0].FinishedAt.IsZero() {
+				t.Errorf("List(%s) = %+v, want job %d finished with LastError %q", tt.want, finished, running[0].ID, tt.wantError)
+			}
+			if got := listJobs(t, client, queue.StatePending); len(got) != 1 || got[0].ID != pending.ID {
+				t.Errorf("List(pending) = %+v, want only job %d, which does the work now", got, pending.ID)
+			}
+		})
+	}
+}
+
+// Issue #65's other half: the reclaim sweep is one statement over the kind, so
+// one expired job whose target is already pending used to abort it for every
+// other expired job of the kind.
+func TestReclaimSweepsTheKindWhenOneTargetIsAlreadyPending(t *testing.T) {
+	const lease = 50 * time.Millisecond
+	kind := newKind(t, false)
+	client := newClient(t, queue.Config{Kind: kind, Lease: lease, Concurrency: 10})
+	for _, target := range []string{"evt-1", "evt-2", "evt-3"} {
+		enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: target})
+	}
+	if jobs := claim(t, client); len(jobs) != 3 {
+		t.Fatalf("Claim = %d jobs, want 3", len(jobs))
+	}
+	enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-2"})
+	expireLeases(lease)
+
+	if got := reclaim(t, client); got != (queue.Reclaimed{Pending: 2, Superseded: 1}) {
+		t.Errorf("Reclaim = %+v, want two jobs requeued and evt-2's superseded", got)
+	}
+	var targets []string
+	for _, job := range listJobs(t, client, queue.StatePending) {
+		targets = append(targets, job.TargetID)
+	}
+	slices.Sort(targets)
+	if !slices.Equal(targets, []string{"evt-1", "evt-2", "evt-3"}) {
+		t.Errorf("pending targets = %v, want one job for each of the three", targets)
+	}
+	done := listJobs(t, client, queue.StateDone)
+	if len(done) != 1 || done[0].TargetID != "evt-2" ||
+		!strings.HasPrefix(done[0].LastError, "superseded by a pending job for the same target; the lease expired") {
+		t.Errorf("List(done) = %+v, want evt-2's expired job recorded as superseded", done)
+	}
+}
+
+// Two jobs for one target can both be running — the second was enqueued while
+// the first ran — and both leases can expire. Requeueing both in one statement
+// would collide with each other rather than with anything already pending.
+func TestReclaimOfTwoExpiredJobsForOneTarget(t *testing.T) {
+	const short = 50 * time.Millisecond
+	tests := []struct {
+		name string
+		// newerLease is the lease the newer job is claimed under.
+		newerLease time.Duration
+		// failNewer spends the newer job's attempts before its lease expires.
+		failNewer bool
+		// wantPending is which job ends up pending: "older" or "newer".
+		wantPending string
+		want        queue.Reclaimed
+	}{
+		{
+			name: "requeues the newer and supersedes the older", newerLease: short,
+			wantPending: "newer", want: queue.Reclaimed{Pending: 1, Superseded: 1},
+		},
+		{
+			name: "requeues the older when the newer has no attempts left", newerLease: short, failNewer: true,
+			wantPending: "older", want: queue.Reclaimed{Pending: 1, Failed: 1},
+		},
+		{
+			name: "requeues the older when the newer is still held", newerLease: time.Minute,
+			wantPending: "older", want: queue.Reclaimed{Pending: 1},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			kind := newKind(t, false)
+			base := queue.Config{Kind: kind, MaxAttempts: 2, Backoff: time.Millisecond, MaxBackoff: time.Millisecond}
+			shortCfg, newerCfg := base, base
+			shortCfg.Lease, newerCfg.Lease = short, tt.newerLease
+			client := newClient(t, shortCfg)
+			newerClient := newClient(t, newerCfg)
+
+			enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
+			older := claim(t, client)
+			if len(older) != 1 {
+				t.Fatalf("Claim = %d jobs, want the older job", len(older))
+			}
+			enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
+			var newer []queue.Job
+			if tt.failNewer {
+				first := claim(t, newerClient)
+				if len(first) != 1 {
+					t.Fatalf("Claim = %d jobs, want the newer job", len(first))
+				}
+				if state, _, err := newerClient.Fail(t.Context(), first[0], errors.New("nope")); err != nil || state != queue.StatePending {
+					t.Fatalf("Fail = %q, %v, want the newer job back in pending", state, err)
+				}
+				waitForClaim(t, newerClient, &newer)
+			} else {
+				newer = claim(t, newerClient)
+			}
+			if len(newer) != 1 {
+				t.Fatalf("Claim = %d jobs, want the newer job", len(newer))
+			}
+			expireLeases(short)
+
+			if got := reclaim(t, client); got != tt.want {
+				t.Errorf("Reclaim = %+v, want %+v", got, tt.want)
+			}
+			wantID := newer[0].ID
+			if tt.wantPending == "older" {
+				wantID = older[0].ID
+			}
+			if got := listJobs(t, client, queue.StatePending); len(got) != 1 || got[0].ID != wantID {
+				t.Errorf("List(pending) = %+v, want the %s job %d", got, tt.wantPending, wantID)
+			}
+		})
+	}
+}
+
+func waitForClaim(t *testing.T, client *queue.Client, into *[]queue.Job) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); len(*into) == 0 && time.Now().Before(deadline); {
+		*into = claim(t, client)
+	}
+}
+
+// The pending job can also be enqueued while the fail or the reclaim is
+// running, after the statement took its snapshot: then the statement cannot
+// see the job it collides with, and waits on the index for the enqueue to
+// commit. That is a 23505 the statement is run again for, rather than an error.
+func TestAFailOrReclaimThatLosesARaceToAnEnqueueIsSuperseded(t *testing.T) {
+	const lease = 50 * time.Millisecond
+	tests := []struct {
+		name string
+		op   func(t *testing.T, client *queue.Client, job queue.Job) (queue.State, error)
+	}{
+		{
+			name: "fail",
+			op: func(t *testing.T, client *queue.Client, job queue.Job) (queue.State, error) {
+				state, _, err := client.Fail(t.Context(), job, errors.New("the model timed out"))
+				return state, err
+			},
+		},
+		{
+			name: "reclaim",
+			op: func(t *testing.T, client *queue.Client, _ queue.Job) (queue.State, error) {
+				expireLeases(lease)
+				got, err := client.Reclaim(t.Context())
+				if got != (queue.Reclaimed{Superseded: 1}) {
+					return queue.StatePending, err
+				}
+				return queue.StateDone, err
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			kind := newKind(t, false)
+			pool := newPool(t)
+			client := newClient(t, queue.Config{Kind: kind, Lease: lease})
+			enqueue(t, pool, queue.Request{Kind: kind, TargetID: "evt-1"})
+			running := claim(t, client)
+			if len(running) != 1 {
+				t.Fatalf("Claim = %d jobs, want 1", len(running))
+			}
+
+			tx, err := pool.Begin(t.Context())
+			if err != nil {
+				t.Fatalf("beginning the enqueue's transaction: %v", err)
+			}
+			defer tx.Rollback(context.WithoutCancel(t.Context())) //nolint:errcheck // a rollback after commit is a no-op
+			var enqueuer int
+			if err := tx.QueryRow(t.Context(), "SELECT pg_backend_pid()").Scan(&enqueuer); err != nil {
+				t.Fatalf("reading the enqueuer's pid: %v", err)
+			}
+			enqueue(t, tx, queue.Request{Kind: kind, TargetID: "evt-1"})
+
+			type result struct {
+				state queue.State
+				err   error
+			}
+			done := make(chan result, 1)
+			go func() {
+				state, err := tt.op(t, client, running[0])
+				done <- result{state, err}
+			}()
+			waitFor(t, "the statement to wait on the enqueue", func() bool {
+				var blocked bool
+				err := pool.QueryRow(t.Context(),
+					"SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid)))",
+					enqueuer).Scan(&blocked)
+				return err == nil && blocked
+			})
+			if err := tx.Commit(t.Context()); err != nil {
+				t.Fatalf("committing the enqueue: %v", err)
+			}
+
+			got := <-done
+			if got.err != nil || got.state != queue.StateDone {
+				t.Errorf("%s = %q, %v, want the job superseded and no error", tt.name, got.state, got.err)
+			}
+			if s := stats(t, client); s.Pending != 1 || s.Running != 0 || s.Done != 1 {
+				t.Errorf("stats = %+v, want the enqueued job pending and the old one done", s)
+			}
+		})
+	}
+}
