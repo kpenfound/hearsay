@@ -1,0 +1,24 @@
+{
+  "action": "edited",
+  "changes": {"body": {"from": "The API returns 500 on /health."}},
+  "issue": {
+    "url": "https://api.github.com/repos/acme/api/issues/1",
+    "html_url": "https://github.com/acme/api/issues/1",
+    "id": 3001,
+    "node_id": "I_kwDOAAAAAc4AAAAB",
+    "number": 1,
+    "title": "/health returns 500",
+    "user": {"login": "kpenfound", "id": 1, "node_id": "MDQ6VXNlcjE=", "type": "User", "site_admin": false},
+    "labels": [{"id": 11, "node_id": "LA_kwDOAAAAAc8AAAAL", "name": "bug", "color": "d73a4a", "default": true}],
+    "state": "open",
+    "locked": false,
+    "comments": 1,
+    "created_at": "2026-09-01T10:00:00Z",
+    "updated_at": "2026-09-02T11:00:00Z",
+    "closed_at": null,
+    "author_association": "OWNER",
+    "body": "The API returns 500 on /health when the database is up."
+  },
+  "repository": {"id": 42, "node_id": "R_kgDOAAAAKg", "name": "api", "full_name": "acme/api", "private": false, "default_branch": "main"},
+  "sender": {"login": "kpenfound", "id": 1, "node_id": "MDQ6VXNlcjE=", "type": "User"}
+}

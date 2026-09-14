@@ -1,0 +1,5 @@
+{
+  "action": "privatized",
+  "repository": {"id": 42, "node_id": "R_kgDOAAAAKg", "name": "api", "full_name": "acme/api", "private": true, "visibility": "private", "default_branch": "main"},
+  "sender": {"login": "kpenfound", "id": 1, "node_id": "MDQ6VXNlcjE=", "type": "User"}
+}

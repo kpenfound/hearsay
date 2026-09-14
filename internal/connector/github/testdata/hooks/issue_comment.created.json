@@ -1,0 +1,28 @@
+{
+  "action": "created",
+  "issue": {
+    "url": "https://api.github.com/repos/acme/api/issues/1",
+    "html_url": "https://github.com/acme/api/issues/1",
+    "number": 1,
+    "title": "/health returns 500",
+    "user": {"login": "kpenfound", "id": 1, "node_id": "MDQ6VXNlcjE=", "type": "User"},
+    "state": "open",
+    "created_at": "2026-09-01T10:00:00Z",
+    "updated_at": "2026-09-02T11:00:00Z",
+    "body": "The API returns 500 on /health when the database is up."
+  },
+  "comment": {
+    "url": "https://api.github.com/repos/acme/api/issues/comments/998",
+    "html_url": "https://github.com/acme/api/issues/1#issuecomment-998",
+    "issue_url": "https://api.github.com/repos/acme/api/issues/1",
+    "id": 998,
+    "node_id": "IC_kwDOAAAAAc4AAAPm",
+    "user": {"login": "robinok", "id": 2, "node_id": "MDQ6VXNlcjI=", "type": "User", "site_admin": false},
+    "created_at": "2026-09-01T12:00:00Z",
+    "updated_at": "2026-09-01T12:30:00Z",
+    "author_association": "MEMBER",
+    "body": "Seeing this too."
+  },
+  "repository": {"id": 42, "node_id": "R_kgDOAAAAKg", "name": "api", "full_name": "acme/api", "private": false, "default_branch": "main"},
+  "sender": {"login": "robinok", "id": 2, "node_id": "MDQ6VXNlcjI=", "type": "User"}
+}

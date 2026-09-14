@@ -1,0 +1,35 @@
+[
+  {
+    "url": "https://api.github.com/repos/acme/api/issues/comments/997",
+    "html_url": "https://github.com/acme/api/issues/3#issuecomment-997",
+    "issue_url": "https://api.github.com/repos/acme/api/issues/3",
+    "id": 997,
+    "node_id": "IC_kwDOAAAAAc4AAAPl",
+    "user": {"login": "kpenfound", "id": 1, "node_id": "MDQ6VXNlcjE=", "type": "User"},
+    "created_at": "2026-08-15T10:00:00Z",
+    "updated_at": "2026-08-15T10:00:00Z",
+    "body": "Done in the runbook."
+  },
+  {
+    "url": "https://api.github.com/repos/acme/api/issues/comments/998",
+    "html_url": "https://github.com/acme/api/issues/1#issuecomment-998",
+    "issue_url": "https://api.github.com/repos/acme/api/issues/1",
+    "id": 998,
+    "node_id": "IC_kwDOAAAAAc4AAAPm",
+    "user": {"login": "robinok", "id": 2, "node_id": "MDQ6VXNlcjI=", "type": "User"},
+    "created_at": "2026-09-01T12:00:00Z",
+    "updated_at": "2026-09-01T12:30:00Z",
+    "body": "Seeing this too."
+  },
+  {
+    "url": "https://api.github.com/repos/acme/api/issues/comments/999",
+    "html_url": "https://github.com/acme/api/pull/2#issuecomment-999",
+    "issue_url": "https://api.github.com/repos/acme/api/issues/2",
+    "id": 999,
+    "node_id": "IC_kwDOAAAAAc4AAAPn",
+    "user": {"login": "shed-agent[bot]", "id": 3, "node_id": "BOT_kgDOAAAAAw", "type": "Bot"},
+    "created_at": "2026-09-03T09:00:00Z",
+    "updated_at": "2026-09-03T09:00:00Z",
+    "body": "CI passed."
+  }
+]

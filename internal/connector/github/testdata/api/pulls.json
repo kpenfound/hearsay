@@ -1,0 +1,22 @@
+[
+  {
+    "url": "https://api.github.com/repos/acme/api/pulls/2",
+    "id": 4002,
+    "node_id": "PR_kwDOAAAAAc4AAAAC",
+    "html_url": "https://github.com/acme/api/pull/2",
+    "number": 2,
+    "state": "open",
+    "locked": false,
+    "title": "Fix /health",
+    "user": {"login": "robinok", "id": 2, "node_id": "MDQ6VXNlcjI=", "type": "User"},
+    "body": "Fixes #1",
+    "labels": [],
+    "created_at": "2026-09-03T08:00:00Z",
+    "updated_at": "2026-09-04T12:00:00Z",
+    "closed_at": null,
+    "merged_at": null,
+    "draft": false,
+    "head": {"label": "acme:fix-health", "ref": "fix-health", "sha": "b200000000000000000000000000000000000000"},
+    "base": {"label": "acme:main", "ref": "main", "sha": "a100000000000000000000000000000000000000"}
+  }
+]

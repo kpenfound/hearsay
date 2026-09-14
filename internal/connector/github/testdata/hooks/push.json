@@ -1,0 +1,30 @@
+{
+  "ref": "refs/heads/main",
+  "before": "0000000000000000000000000000000000000000",
+  "after": "c0ffee0000000000000000000000000000000001",
+  "created": false,
+  "deleted": false,
+  "forced": false,
+  "commits": [
+    {
+      "id": "decaf00000000000000000000000000000000002",
+      "distinct": true,
+      "message": "Initial commit",
+      "timestamp": "2026-08-01T08:00:00Z",
+      "url": "https://github.com/acme/api/commit/decaf00000000000000000000000000000000002",
+      "author": {"name": "Pat Example", "email": "pat@example.com"},
+      "committer": {"name": "Pat Example", "email": "pat@example.com"}
+    },
+    {
+      "id": "c0ffee0000000000000000000000000000000001",
+      "distinct": true,
+      "message": "Fix /health (#2)\n\nReturn 200 when the database is up.",
+      "timestamp": "2026-09-04T13:00:00Z",
+      "url": "https://github.com/acme/api/commit/c0ffee0000000000000000000000000000000001",
+      "author": {"name": "Kyle Penfound", "email": "kyle@example.com", "username": "kpenfound"},
+      "committer": {"name": "GitHub", "email": "noreply@github.com", "username": "web-flow"}
+    }
+  ],
+  "repository": {"id": 42, "node_id": "R_kgDOAAAAKg", "name": "api", "full_name": "acme/api", "private": false, "default_branch": "main"},
+  "sender": {"login": "kpenfound", "id": 1, "node_id": "MDQ6VXNlcjE=", "type": "User"}
+}

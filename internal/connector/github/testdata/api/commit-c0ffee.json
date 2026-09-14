@@ -1,0 +1,15 @@
+{
+  "sha": "c0ffee0000000000000000000000000000000001",
+  "node_id": "C_kwDOAAAAAdoAKGMwZmZlZQ",
+  "commit": {
+    "author": {"name": "Kyle Penfound", "email": "kyle@example.com", "date": "2026-09-04T13:00:00Z"},
+    "committer": {"name": "GitHub", "email": "noreply@github.com", "date": "2026-09-04T13:05:00Z"},
+    "message": "Fix /health (#2)\n\nReturn 200 when the database is up."
+  },
+  "html_url": "https://github.com/acme/api/commit/c0ffee0000000000000000000000000000000001",
+  "author": {"login": "kpenfound", "id": 1, "node_id": "MDQ6VXNlcjE=", "type": "User"},
+  "committer": {"login": "web-flow", "id": 19864447, "node_id": "MDQ6VXNlcjE5ODY0NDQ3", "type": "User"},
+  "parents": [{"sha": "decaf00000000000000000000000000000000002"}],
+  "stats": {"total": 4, "additions": 3, "deletions": 1},
+  "files": [{"filename": "api/health.go", "status": "modified", "additions": 3, "deletions": 1}]
+}
