@@ -71,7 +71,7 @@ func (c *Connector) Handler(sink connector.Sink) http.Handler {
 		}
 
 		event := r.Header.Get("X-GitHub-Event")
-		events, err := c.deliver(ctx, sink, event, body)
+		events, resyncing, err := c.deliver(ctx, sink, event, body)
 		switch {
 		case errors.Is(err, errMalformed):
 			log.WarnContext(ctx, "webhook delivery refused", "delivery", deliveryID, "event", event, "error", err)
@@ -80,6 +80,12 @@ func (c *Connector) Handler(sink connector.Sink) http.Handler {
 		case err != nil:
 			log.ErrorContext(ctx, "webhook delivery failed", "delivery", deliveryID, "event", event, "error", err)
 			http.Error(w, "the delivery could not be ingested", http.StatusInternalServerError)
+			return
+		}
+		if len(events) == 0 && !resyncing {
+			// Verified, and nothing to do: an event not ingested, a push to
+			// another branch, a re-sync already running.
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		for _, ev := range events {
@@ -108,22 +114,35 @@ func (c *Connector) verify(header string, body []byte) bool {
 	return hmac.Equal(sig, mac.Sum(nil))
 }
 
-// deliver turns a verified delivery into the events it means. An event the
-// connector does not ingest is nothing, not an error: GitHub sends what the
-// webhook was configured for, and a person may have ticked more.
-func (c *Connector) deliver(ctx context.Context, sink connector.Sink, event string, body []byte) ([]connector.Event, error) {
+// deliver turns a verified delivery into the events it means, and reports
+// whether it started a re-sync. An event the connector does not ingest is
+// nothing, not an error: GitHub sends what the webhook was configured for, and
+// a person may have ticked more.
+func (c *Connector) deliver(ctx context.Context, sink connector.Sink, event string, body []byte) ([]connector.Event, bool, error) {
 	if event == "ping" {
-		return nil, nil
+		return nil, false, nil
 	}
 	var d delivery
 	if err := json.Unmarshal(body, &d); err != nil {
-		return nil, fmt.Errorf("%w: %s: %w", errMalformed, event, err)
+		return nil, false, fmt.Errorf("%w: %s: %w", errMalformed, event, err)
 	}
 	if d.Repository == nil || d.Repository.FullName == "" {
 		// An organisation's event that is about no repository: nothing here is.
-		return nil, nil
+		return nil, false, nil
 	}
 	v := view{source: c.source, repo: c.canonical(d.Repository.FullName), private: d.Repository.Private}
+	if event == "repository" {
+		// Only a repository config names is re-synced: the gate would drop what
+		// a walk of any other emits, and the token has no business reading it.
+		started := d.Action == "privatized" && slices.Contains(c.repos, v.repo) && c.startResync(ctx, sink, v.repo)
+		return nil, started, nil
+	}
+	events, err := c.events(ctx, event, v, d)
+	return events, false, err
+}
+
+// events is what a delivery about one repository's objects emits.
+func (c *Connector) events(ctx context.Context, event string, v view, d delivery) ([]connector.Event, error) {
 	missing := func(what string) error {
 		return fmt.Errorf("%w: %s.%s has no %s", errMalformed, event, d.Action, what)
 	}
@@ -190,12 +209,6 @@ func (c *Connector) deliver(ctx context.Context, sink connector.Sink, event stri
 
 	case "push":
 		return c.pushed(ctx, v, d)
-
-	case "repository":
-		if d.Action == "privatized" && slices.Contains(c.repos, v.repo) {
-			c.startResync(ctx, sink, v.repo)
-		}
-		return nil, nil
 	}
 	return nil, nil
 }
@@ -231,12 +244,12 @@ func (c *Connector) pushed(ctx context.Context, v view, d delivery) ([]connector
 // private, under the composed `perm:private` token and the new ACL, in the
 // background: a delivery is answered in seconds and a repository's history is
 // not walked in seconds. One re-sync per repository runs at a time, and Close
-// stops and waits for them.
-func (c *Connector) startResync(ctx context.Context, sink connector.Sink, repo string) {
+// stops and waits for them. It reports whether it started one.
+func (c *Connector) startResync(ctx context.Context, sink connector.Sink, repo string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed || c.resyncing[repo] {
-		return
+		return false
 	}
 	c.resyncing[repo] = true
 
@@ -257,6 +270,7 @@ func (c *Connector) startResync(ctx context.Context, sink connector.Sink, repo s
 		defer cancel()
 		c.resync(telemetry.With(rctx, "repository", repo), sink, repo)
 	}()
+	return true
 }
 
 // resync walks one repository the way a backfill does, retrying a page that

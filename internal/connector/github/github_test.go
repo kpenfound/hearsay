@@ -965,8 +965,8 @@ func TestWebhookIgnoresWhatItDoesNotIngest(t *testing.T) {
 			src := newSource(t, gh, sourceID, nil)
 			c := newConnector(t, src)
 			rec := &connector.Recorder{}
-			if code := deliver(t, c.Handler(gateFor(src, c, rec)), tt.event, []byte(tt.body)); code != http.StatusAccepted {
-				t.Errorf("status = %d, want 202", code)
+			if code := deliver(t, c.Handler(gateFor(src, c, rec)), tt.event, []byte(tt.body)); code != http.StatusNoContent {
+				t.Errorf("status = %d, want 204", code)
 			}
 			if err := c.Close(t.Context()); err != nil {
 				t.Fatal(err)
@@ -1152,8 +1152,8 @@ func TestResyncRunsOncePerRepositoryAndStaysInIt(t *testing.T) {
 		t.Fatalf("status = %d, want 202", code)
 	}
 	waitFor(t, "the re-sync to start", func() bool { return gh.wasReached(issues) })
-	if code := deliver(t, h, "repository", hook(t, "repository.privatized")); code != http.StatusAccepted {
-		t.Fatalf("redelivery: status = %d, want 202", code)
+	if code := deliver(t, h, "repository", hook(t, "repository.privatized")); code != http.StatusNoContent {
+		t.Fatalf("redelivery: status = %d, want 204: a re-sync of the repository is already running", code)
 	}
 	release()
 	waitFor(t, "the re-sync", func() bool { return len(rec.Events()) >= len(wantBackfill) })
