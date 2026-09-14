@@ -22,7 +22,6 @@ are being built.
 ## Quick start
 
 ```sh
-export DAGGER_X_RELEASE=v1.0.0-beta.11   # the release this workspace is on
 dagger check           # lint, tests and the image: every gate, in parallel
 dagger up              # Postgres plus all four services
 dagger api call hearsay qa --script 'hearsay version'   # try a change in the shipped image
