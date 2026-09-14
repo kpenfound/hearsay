@@ -301,38 +301,114 @@ func Build(in Inputs, budget int) (Bundle, Trimmed, int, error) {
 		b.OpenQuestions = append(b.OpenQuestions, Question{Line: Line(q.Text), Evidence: slices.Clone(q.Evidence)})
 	}
 
+	return trim(b, budget)
+}
+
+// trim holds a laid-out bundle to its budget. The drop order is Build's, one
+// element at a time, and the size after each drop is exactly what encoding the
+// smaller bundle would give: an array element's encoding does not depend on its
+// neighbours, so removing one takes its own bytes and, when others remain, one
+// comma. That is what keeps a repository with thousands of inherited stances
+// linear — the bundle is encoded once before trimming and once after, never per
+// step.
+func trim(b Bundle, budget int) (Bundle, Trimmed, int, error) {
+	encoded, err := Encode(b)
+	if err != nil {
+		return Bundle{}, Trimmed{}, 0, err
+	}
+	size := len(encoded)
+	fits := func() bool { return (size+BytesPerToken-1)/BytesPerToken <= budget }
 	var trimmed Trimmed
-	for {
-		encoded, err := Encode(b)
-		if err != nil {
-			return Bundle{}, Trimmed{}, 0, err
+	if fits() {
+		return b, trimmed, Tokens(encoded), nil
+	}
+
+	// drop takes the last kept element of a section off, given its size and
+	// how many are kept.
+	drop := func(elem int, kept *int) {
+		size -= elem
+		if *kept > 1 {
+			size--
 		}
-		tokens := Tokens(encoded)
-		if tokens <= budget {
-			return b, trimmed, tokens, nil
+		*kept--
+	}
+	sizes := func(n int, at func(int) any) ([]int, error) {
+		out := make([]int, n)
+		for i := range n {
+			body, err := json.Marshal(at(i))
+			if err != nil {
+				return nil, fmt.Errorf("encoding the bundle for %s: %w", b.Scope.ID, err)
+			}
+			out[i] = len(body)
 		}
-		switch {
-		case len(b.OpenQuestions) > 0:
-			b.OpenQuestions = b.OpenQuestions[:len(b.OpenQuestions)-1]
-			trimmed.OpenQuestions++
-		case len(b.Recent.Items) > 0:
-			b.Recent.Items = b.Recent.Items[:len(b.Recent.Items)-1]
-			trimmed.Recent++
-		default:
-			last := slices.IndexFunc(backward(b.Stances), func(s Stance) bool { return s.Inherited })
-			if last < 0 {
-				last = slices.IndexFunc(backward(b.Stances), func(s Stance) bool { return s.Tier != string(l2.TierRatified) })
-			}
-			if last >= 0 {
-				last = len(b.Stances) - 1 - last
-			}
-			if last < 0 {
-				return b, trimmed, tokens, nil
-			}
-			b.Stances = slices.Delete(b.Stances, last, last+1)
-			trimmed.Stances++
+		return out, nil
+	}
+
+	questions, err := sizes(len(b.OpenQuestions), func(i int) any { return b.OpenQuestions[i] })
+	if err != nil {
+		return Bundle{}, Trimmed{}, 0, err
+	}
+	keptQuestions := len(b.OpenQuestions)
+	for keptQuestions > 0 && !fits() {
+		drop(questions[keptQuestions-1], &keptQuestions)
+		trimmed.OpenQuestions++
+	}
+
+	items, err := sizes(len(b.Recent.Items), func(i int) any { return b.Recent.Items[i] })
+	if err != nil {
+		return Bundle{}, Trimmed{}, 0, err
+	}
+	keptItems := len(b.Recent.Items)
+	for keptItems > 0 && !fits() {
+		drop(items[keptItems-1], &keptItems)
+		trimmed.Recent++
+	}
+
+	stances, err := sizes(len(b.Stances), func(i int) any { return b.Stances[i] })
+	if err != nil {
+		return Bundle{}, Trimmed{}, 0, err
+	}
+	// Inherited stances from the last back, then the scope's own stances that
+	// are not ratified from the last back — the order removing "the last
+	// inherited one" and then "the last non-ratified one" one at a time takes.
+	var order []int
+	for i := len(b.Stances) - 1; i >= 0; i-- {
+		if b.Stances[i].Inherited {
+			order = append(order, i)
 		}
 	}
+	for i := len(b.Stances) - 1; i >= 0; i-- {
+		if !b.Stances[i].Inherited && b.Stances[i].Tier != string(l2.TierRatified) {
+			order = append(order, i)
+		}
+	}
+	removed := make([]bool, len(b.Stances))
+	keptStances := len(b.Stances)
+	for _, i := range order {
+		if fits() {
+			break
+		}
+		drop(stances[i], &keptStances)
+		removed[i] = true
+		trimmed.Stances++
+	}
+
+	b.OpenQuestions = b.OpenQuestions[:keptQuestions]
+	b.Recent.Items = b.Recent.Items[:keptItems]
+	kept := make([]Stance, 0, keptStances)
+	for i, s := range b.Stances {
+		if !removed[i] {
+			kept = append(kept, s)
+		}
+	}
+	b.Stances = kept
+	if encoded, err = Encode(b); err != nil {
+		return Bundle{}, Trimmed{}, 0, err
+	}
+	if len(encoded) != size {
+		return Bundle{}, Trimmed{}, 0, fmt.Errorf("trimming the bundle for %s: counted %d bytes and it encodes to %d", b.Scope.ID, size, len(encoded))
+	}
+	return b, trimmed, Tokens(encoded), nil
 }
 
 // Line is one line of distillation: the first non-empty line of a text, its
@@ -356,10 +432,3 @@ func Line(text string) string {
 }
 
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }
-
-// backward is a reversed copy, so that an index search finds the last match.
-func backward(s []Stance) []Stance {
-	out := slices.Clone(s)
-	slices.Reverse(out)
-	return out
-}
