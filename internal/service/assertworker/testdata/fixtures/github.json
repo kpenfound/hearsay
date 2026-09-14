@@ -1,0 +1,316 @@
+{
+  "completions": [
+    {
+      "tier": "assert",
+      "request": {
+        "system": "You are Hearsay's assertion worker. You read one distilled document from a team's tools and write down the positions it takes: what the team proposed, decided or did, each as an answer to one question.\n\nA topic is a question the team takes positions on, phrased so that a later document about the same question would recognise it — \"where the engine takes its lock relative to the write\", not \"pull request 31\". A position is one answer to that question, in one sentence, as this document states it.\n\nYou are shown the existing topics this document may be continuing, each with a label and the position currently recorded on it. Where the document takes a position on one of them, answer with that label, even when the position is different from the recorded one: a change of position is exactly what the record is for. Answer \"new\" only for a question none of them asks. Never put two positions from this document on one topic.\n\nTake at most 4 positions, and none where the document takes none: an empty list is a correct answer. Keep every position to what the document says. Never quote a credential, a token, a key or a personal email address.",
+        "messages": [
+          {
+            "role": "user",
+            "text": "This is a issue document. What it concluded is classified as proposed.\n\nThe engine writes before taking its lock, which races with the job queue. The author proposes moving the lock into the job queue.\n\nQuestion: Where should the lock be taken?\n\nOutcome (proposed): Proposed: take the lock inside the job queue.\n\nThere are no existing topics this document could be continuing."
+          }
+        ],
+        "max_tokens": 4096,
+        "schema": {
+          "name": "l2_assertions",
+          "description": "The topics and positions one document asserts.",
+          "definition": {
+            "type": "object",
+            "description": "The positions one document takes.",
+            "properties": {
+              "assertions": {
+                "type": "array",
+                "description": "One entry per position, at most one per topic. Empty when the document takes none.",
+                "maxItems": 4,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "position": {
+                      "type": "string",
+                      "description": "The position, in one sentence, as the document states it.",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "topic": {
+                      "type": "string",
+                      "description": "The label of the existing topic this position is on, or \"new\".",
+                      "enum": [
+                        "new"
+                      ]
+                    },
+                    "topic_name": {
+                      "type": "string",
+                      "description": "The question this position answers, in a line. For an existing topic, its name.",
+                      "minLength": 1,
+                      "maxLength": 300
+                    }
+                  },
+                  "required": [
+                    "topic",
+                    "topic_name",
+                    "position"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "assertions"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "response": {
+        "json": {
+          "assertions": [
+            {
+              "position": "Move the lock into the job queue.",
+              "topic": "new",
+              "topic_name": "Where the engine takes its lock relative to the write"
+            }
+          ]
+        },
+        "stop_reason": "end",
+        "model": "recorded"
+      }
+    },
+    {
+      "tier": "assert",
+      "request": {
+        "system": "You are Hearsay's assertion worker. You read one distilled document from a team's tools and write down the positions it takes: what the team proposed, decided or did, each as an answer to one question.\n\nA topic is a question the team takes positions on, phrased so that a later document about the same question would recognise it — \"where the engine takes its lock relative to the write\", not \"pull request 31\". A position is one answer to that question, in one sentence, as this document states it.\n\nYou are shown the existing topics this document may be continuing, each with a label and the position currently recorded on it. Where the document takes a position on one of them, answer with that label, even when the position is different from the recorded one: a change of position is exactly what the record is for. Answer \"new\" only for a question none of them asks. Never put two positions from this document on one topic.\n\nTake at most 4 positions, and none where the document takes none: an empty list is a correct answer. Keep every position to what the document says. Never quote a credential, a token, a key or a personal email address.",
+        "messages": [
+          {
+            "role": "user",
+            "text": "This is a pr document. What it concluded is classified as resolved.\n\nFixes the race the issue described by having the engine take its lock before it writes, rather than moving the lock into the job queue. Approved and merged.\n\nChange: The engine takes its lock before the write.\n\nOutcome (resolved): Merged.\n\nExisting topics this document may be continuing:\n\nT1: Where the engine takes its lock relative to the write\nCurrent position: Move the lock into the job queue."
+          }
+        ],
+        "max_tokens": 4096,
+        "schema": {
+          "name": "l2_assertions",
+          "description": "The topics and positions one document asserts.",
+          "definition": {
+            "type": "object",
+            "description": "The positions one document takes.",
+            "properties": {
+              "assertions": {
+                "type": "array",
+                "description": "One entry per position, at most one per topic. Empty when the document takes none.",
+                "maxItems": 4,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "position": {
+                      "type": "string",
+                      "description": "The position, in one sentence, as the document states it.",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "topic": {
+                      "type": "string",
+                      "description": "The label of the existing topic this position is on, or \"new\".",
+                      "enum": [
+                        "new",
+                        "T1"
+                      ]
+                    },
+                    "topic_name": {
+                      "type": "string",
+                      "description": "The question this position answers, in a line. For an existing topic, its name.",
+                      "minLength": 1,
+                      "maxLength": 300
+                    }
+                  },
+                  "required": [
+                    "topic",
+                    "topic_name",
+                    "position"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "assertions"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "response": {
+        "json": {
+          "assertions": [
+            {
+              "position": "The engine takes its own lock, before it writes.",
+              "topic": "T1",
+              "topic_name": "Where the engine takes its lock relative to the write"
+            }
+          ]
+        },
+        "stop_reason": "end",
+        "model": "recorded"
+      }
+    },
+    {
+      "tier": "assert",
+      "request": {
+        "system": "You are Hearsay's assertion worker. You read one distilled document from a team's tools and write down the positions it takes: what the team proposed, decided or did, each as an answer to one question.\n\nA topic is a question the team takes positions on, phrased so that a later document about the same question would recognise it — \"where the engine takes its lock relative to the write\", not \"pull request 31\". A position is one answer to that question, in one sentence, as this document states it.\n\nYou are shown the existing topics this document may be continuing, each with a label and the position currently recorded on it. Where the document takes a position on one of them, answer with that label, even when the position is different from the recorded one: a change of position is exactly what the record is for. Answer \"new\" only for a question none of them asks. Never put two positions from this document on one topic.\n\nTake at most 4 positions, and none where the document takes none: an empty list is a correct answer. Keep every position to what the document says. Never quote a credential, a token, a key or a personal email address.",
+        "messages": [
+          {
+            "role": "user",
+            "text": "This is a issue document. What it concluded is classified as proposed.\n\nThe engine writes before taking its lock, which races with the job queue. The author proposes moving the lock into the job queue.\n\nQuestion: Where should the lock be taken?\n\nOutcome (proposed): Proposed: take the lock inside the job queue.\n\nExisting topics this document may be continuing:\n\nT1: Where the engine takes its lock relative to the write\nCurrent position: Move the lock into the job queue."
+          }
+        ],
+        "max_tokens": 4096,
+        "schema": {
+          "name": "l2_assertions",
+          "description": "The topics and positions one document asserts.",
+          "definition": {
+            "type": "object",
+            "description": "The positions one document takes.",
+            "properties": {
+              "assertions": {
+                "type": "array",
+                "description": "One entry per position, at most one per topic. Empty when the document takes none.",
+                "maxItems": 4,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "position": {
+                      "type": "string",
+                      "description": "The position, in one sentence, as the document states it.",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "topic": {
+                      "type": "string",
+                      "description": "The label of the existing topic this position is on, or \"new\".",
+                      "enum": [
+                        "new",
+                        "T1"
+                      ]
+                    },
+                    "topic_name": {
+                      "type": "string",
+                      "description": "The question this position answers, in a line. For an existing topic, its name.",
+                      "minLength": 1,
+                      "maxLength": 300
+                    }
+                  },
+                  "required": [
+                    "topic",
+                    "topic_name",
+                    "position"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "assertions"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "response": {
+        "json": {
+          "assertions": [
+            {
+              "position": "Move the lock into the job queue.",
+              "topic": "T1",
+              "topic_name": "Where the engine takes its lock relative to the write"
+            }
+          ]
+        },
+        "stop_reason": "end",
+        "model": "recorded"
+      }
+    },
+    {
+      "tier": "assert",
+      "request": {
+        "system": "You are Hearsay's assertion worker. You read one distilled document from a team's tools and write down the positions it takes: what the team proposed, decided or did, each as an answer to one question.\n\nA topic is a question the team takes positions on, phrased so that a later document about the same question would recognise it — \"where the engine takes its lock relative to the write\", not \"pull request 31\". A position is one answer to that question, in one sentence, as this document states it.\n\nYou are shown the existing topics this document may be continuing, each with a label and the position currently recorded on it. Where the document takes a position on one of them, answer with that label, even when the position is different from the recorded one: a change of position is exactly what the record is for. Answer \"new\" only for a question none of them asks. Never put two positions from this document on one topic.\n\nTake at most 4 positions, and none where the document takes none: an empty list is a correct answer. Keep every position to what the document says. Never quote a credential, a token, a key or a personal email address.",
+        "messages": [
+          {
+            "role": "user",
+            "text": "This is a commit document. What it concluded is classified as resolved.\n\nWrites down that the engine takes its lock before it writes.\n\nChange: Adds a comment on the lock order.\n\nOutcome (resolved): The lock order is documented.\n\nThere are no existing topics this document could be continuing."
+          }
+        ],
+        "max_tokens": 4096,
+        "schema": {
+          "name": "l2_assertions",
+          "description": "The topics and positions one document asserts.",
+          "definition": {
+            "type": "object",
+            "description": "The positions one document takes.",
+            "properties": {
+              "assertions": {
+                "type": "array",
+                "description": "One entry per position, at most one per topic. Empty when the document takes none.",
+                "maxItems": 4,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "position": {
+                      "type": "string",
+                      "description": "The position, in one sentence, as the document states it.",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "topic": {
+                      "type": "string",
+                      "description": "The label of the existing topic this position is on, or \"new\".",
+                      "enum": [
+                        "new"
+                      ]
+                    },
+                    "topic_name": {
+                      "type": "string",
+                      "description": "The question this position answers, in a line. For an existing topic, its name.",
+                      "minLength": 1,
+                      "maxLength": 300
+                    }
+                  },
+                  "required": [
+                    "topic",
+                    "topic_name",
+                    "position"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "assertions"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "response": {
+        "json": {
+          "assertions": [
+            {
+              "position": "Ask robin@example.com before changing the lock order.",
+              "topic": "new",
+              "topic_name": "Who to ask about the lock order"
+            },
+            {
+              "position": "A position on a topic with no name.",
+              "topic": "new",
+              "topic_name": "   "
+            },
+            {
+              "position": "   ",
+              "topic": "new",
+              "topic_name": "A topic with no position"
+            }
+          ]
+        },
+        "stop_reason": "end",
+        "model": "recorded"
+      }
+    }
+  ]
+}
