@@ -45,8 +45,9 @@ down cleanly, and do no work yet. The distiller is real, and so are the two
 layers under it: `hearsay migrate` builds the schema, `hearsay l0` reads what has
 been ingested, and `hearsay distiller` turns those events into L1 documents.
 `hearsay connectors` is real too — it hosts, polls and backfills the connectors
-configuration names — but no connector ships yet, so a configured source is
-still a startup failure.
+configuration names. One connector ships, GitHub (`type: github`: issues, pull
+requests, reviews, comments and commits, by webhook and backfill); a source of
+any other type is still a startup failure.
 
 ## License
 

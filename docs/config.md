@@ -90,9 +90,10 @@ renamed afterwards ([connector contract](connector-contract.md#source-ids)).
     - acme/infra
   refresh: 2m                # optional; how often a polling connector polls
   settings:                  # optional; the connector's own configuration
-    include_forks: false
+    since: 2026-01-01
   secrets:                   # optional; names of environment variables
     token: HEARSAY_GITHUB_TOKEN
+    webhook_secret: HEARSAY_GITHUB_WEBHOOK_SECRET
 ```
 
 | Field | Meaning |
@@ -556,6 +557,7 @@ sources:
     refresh: 2m
     secrets:
       token: HEARSAY_GITHUB_TOKEN
+      webhook_secret: HEARSAY_GITHUB_WEBHOOK_SECRET
 
 scopes:
   - id: api
@@ -696,6 +698,7 @@ containers: [acme/api, acme/infra]
 refresh: 2m
 secrets:
   token: HEARSAY_GITHUB_TOKEN
+  webhook_secret: HEARSAY_GITHUB_WEBHOOK_SECRET
 ```
 
 <!-- example: dir/scopes/api.yaml -->
