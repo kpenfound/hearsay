@@ -246,6 +246,68 @@ func TestATombstoneHidesTheEventAndKeepsTheRow(t *testing.T) {
 	assertCounts(t, store, event.Source, connector.KindTombstone, 1, 1)
 }
 
+// Retracted is the one read past a tombstone, and it reads nothing else: an
+// artifact nothing retracted, one the source never held and one another source
+// retracted are all not found, and a retracted one comes back as its current
+// revision, with the conversation it was part of.
+func TestRetractedReadsOnlyWhatATombstoneHides(t *testing.T) {
+	store, fake, source := newStore(t)
+	other, otherSource := newFake(t)
+
+	first := fake.NewEvent(connector.KindMessage, "m1", "a pasted secret")
+	first.Payload.Parent, first.Payload.Thread = "issue", "issue"
+	edited := first
+	edited.NativeID = "m1@r2"
+	edited.Payload.Text = "a pasted secret, edited"
+	edited.Payload.Revision = &connector.Revision{Token: "r2", EditedAt: first.Time.Add(time.Hour)}
+	kept := fake.NewEvent(connector.KindMessage, "m2", "still here")
+	// The same artifact id in another source, retracted there only.
+	elsewhere := other.NewEvent(connector.KindMessage, "m2", "somewhere else")
+	elsewhereTombstone := other.NewEvent(connector.KindTombstone, "m2:tombstone", "")
+	elsewhereTombstone.Payload.Target = "m2"
+	// Newest revision first on the way in, so the order is the data's.
+	for _, ev := range []connector.Event{edited, first, kept, elsewhere, elsewhereTombstone} {
+		if _, err := store.Append(t.Context(), ev); err != nil {
+			t.Fatalf("Append(%s) = %v, want no error", ev.NativeID, err)
+		}
+	}
+
+	if _, err := store.Retracted(t.Context(), source, "m1"); !errors.Is(err, l0.ErrNotFound) {
+		t.Errorf("Retracted(before the tombstone) = %v, want l0.ErrNotFound", err)
+	}
+
+	tombstone := fake.NewEvent(connector.KindTombstone, "m1:tombstone", "")
+	tombstone.Payload.Target = "m1"
+	if _, err := store.Append(t.Context(), tombstone); err != nil {
+		t.Fatalf("Append(tombstone) = %v, want no error", err)
+	}
+
+	got, err := store.Retracted(t.Context(), source, "m1")
+	if err != nil {
+		t.Fatalf("Retracted(m1) = %v, want no error", err)
+	}
+	if got.NativeID != "m1@r2" || got.Payload.Thread != "issue" {
+		t.Errorf("Retracted(m1) = %s in thread %q, want the current revision m1@r2 in thread %q", got.NativeID, got.Payload.Thread, "issue")
+	}
+
+	for _, tt := range []struct{ name, source, artifact string }{
+		{name: "an artifact nothing retracted", source: source, artifact: "m2"},
+		{name: "an artifact the source never held", source: source, artifact: "m9"},
+		{name: "an artifact another source retracted", source: source, artifact: "m2"},
+		{name: "an artifact retracted in this source, asked of another", source: otherSource, artifact: "m1"},
+	} {
+		if _, err := store.Retracted(t.Context(), tt.source, tt.artifact); !errors.Is(err, l0.ErrNotFound) {
+			t.Errorf("Retracted(%s) = %v, want l0.ErrNotFound", tt.name, err)
+		}
+	}
+	if _, err := store.Retracted(t.Context(), otherSource, "m2"); err != nil {
+		t.Errorf("Retracted(the other source's own retraction) = %v, want it found", err)
+	}
+	if _, err := store.Retracted(t.Context(), "", "m1"); err == nil || errors.Is(err, l0.ErrNotFound) {
+		t.Errorf("Retracted(no source) = %v, want a refusal", err)
+	}
+}
+
 // The change feed is what the distiller consumes, so a reader must be able to
 // stop, keep the cursor, and carry on where it was.
 func TestTheChangeFeedResumesFromACursor(t *testing.T) {

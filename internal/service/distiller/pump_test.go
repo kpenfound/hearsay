@@ -1,6 +1,9 @@
 package distiller_test
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/connector"
@@ -9,14 +12,55 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
+// hidden is L0 behind its tombstones, for TargetOf: the events a tombstone
+// covers, by artifact.
+type hidden map[string]connector.Event
+
+func (h hidden) Retracted(_ context.Context, _, artifact string) (connector.Event, error) {
+	ev, ok := h[artifact]
+	if !ok {
+		return connector.Event{}, fmt.Errorf("%w: %s", l0.ErrNotFound, artifact)
+	}
+	return ev, nil
+}
+
+// hiddenOf is every fixture event as though a tombstone covered it.
+func hiddenOf(events []connector.Event) hidden {
+	h := hidden{}
+	for _, ev := range events {
+		h[ev.Payload.Artifact] = ev
+	}
+	return h
+}
+
+// unreadable is an L0 whose read past a tombstone fails.
+type unreadable struct{}
+
+var errUnreadable = errors.New("the database went away")
+
+func (unreadable) Retracted(context.Context, string, string) (connector.Event, error) {
+	return connector.Event{}, errUnreadable
+}
+
+// tombstoneFor is a tombstone shaped the way docs/connector-contract.md's
+// GitHub row specifies a deletion: its own artifact, a target, and nothing that
+// says which conversation the target was part of.
+func tombstoneFor(target string) connector.Event {
+	ev := event(source, connector.KindTombstone, target+":tombstone", at(9), nil, "", "")
+	ev.Payload.Target = target
+	return ev
+}
+
 // Which document an event belongs to is the whole of what the pump decides, and
 // it is what makes a change proposal with its reviews one document rather than
 // five.
 func TestTargetOf(t *testing.T) {
+	fixture := hiddenOf(fixtureEvents(source))
 	tests := []struct {
-		name string
-		ev   connector.Event
-		want string
+		name   string
+		ev     connector.Event
+		hidden distiller.Hidden
+		want   string
 	}{{
 		name: "an artifact that makes a document is its own target",
 		ev:   event(source, connector.KindIssue, repo+"#12", at(0), who(source, "u1", "kpenfound"), "an issue", "text"),
@@ -46,23 +90,41 @@ func TestTargetOf(t *testing.T) {
 		ev:   event(source, connector.KindCommit, commit, at(0), who(source, "u1", "kpenfound"), "a commit", "text"),
 		want: commitID,
 	}, {
-		name: "a tombstone re-derives the conversation the retracted artifact was in",
+		name: "a tombstone that names the conversation is taken at its word, without reading L0",
 		ev: func() connector.Event {
-			ev := event(source, connector.KindTombstone, repo+"#31:comment:1:tombstone", at(2), nil, "", "")
-			ev.Payload.Target = repo + "#31:comment:1"
+			ev := tombstoneFor(repo + "#31:comment:1")
 			ev.Payload.Parent = repo + "#31"
 			ev.Payload.Thread = repo + "#31"
 			return ev
 		}(),
-		want: prID,
+		hidden: unreadable{},
+		want:   prID,
 	}, {
-		name: "a tombstone that says nothing else re-derives the artifact's own document",
-		ev: func() connector.Event {
-			ev := event(source, connector.KindTombstone, repo+"#31:tombstone", at(2), nil, "", "")
-			ev.Payload.Target = repo + "#31"
-			return ev
-		}(),
-		want: prID,
+		name:   "a tombstone whose only conversation information is its target re-derives the issue the comment was on",
+		ev:     tombstoneFor(repo + "#12:comment:1"),
+		hidden: fixture,
+		want:   issueID,
+	}, {
+		name:   "a tombstone for a review comment re-derives the change proposal",
+		ev:     tombstoneFor(repo + "#31:comment:88"),
+		hidden: fixture,
+		want:   prID,
+	}, {
+		name:   "a tombstone for an artifact that makes a document re-derives that document",
+		ev:     tombstoneFor(repo + "#31"),
+		hidden: fixture,
+		want:   prID,
+	}, {
+		name:   "a tombstone for an artifact L0 holds nothing of has no target",
+		ev:     tombstoneFor(repo + "#99:comment:1"),
+		hidden: fixture,
+		want:   "",
+	}, {
+		name: "a tombstone for an artifact that belonged to no document has no target",
+		ev:   tombstoneFor(repo + "#31:reaction:1"),
+		hidden: hidden{repo + "#31:reaction:1": event(source, connector.KindReaction, repo+"#31:reaction:1",
+			at(1), who(source, "u2", "samr"), "", "")},
+		want: "",
 	}, {
 		name: "an extension kind is read through its base kind",
 		ev: func() connector.Event {
@@ -72,6 +134,16 @@ func TestTargetOf(t *testing.T) {
 		}(),
 		want: l1.DocID(source, "ENG-7"),
 	}, {
+		name: "a tombstone of an extension kind is read through its base kind",
+		ev: func() connector.Event {
+			ev := tombstoneFor(repo + "#12:comment:2")
+			ev.Kind = "jira.deletion"
+			ev.Payload.BaseKind = connector.KindTombstone
+			return ev
+		}(),
+		hidden: fixture,
+		want:   issueID,
+	}, {
 		name: "an event that belongs to nothing has no target",
 		ev:   event(source, connector.KindReaction, repo+"#31:reaction:1", at(1), who(source, "u2", "samr"), "", ""),
 		want: "",
@@ -79,7 +151,16 @@ func TestTargetOf(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ok := distiller.TargetOf(tt.ev)
+			h := tt.hidden
+			if h == nil {
+				// Only a tombstone reads past one: anything else that reads L0
+				// here fails.
+				h = unreadable{}
+			}
+			got, ok, err := distiller.TargetOf(t.Context(), tt.ev, h)
+			if err != nil {
+				t.Fatalf("TargetOf() = %v", err)
+			}
 			if tt.want == "" {
 				if ok {
 					t.Fatalf("TargetOf() = %q, want no target", got)
@@ -93,6 +174,19 @@ func TestTargetOf(t *testing.T) {
 				t.Errorf("TargetOf() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// A read past a tombstone that fails is the pump's failure, not a tombstone that
+// belongs to nothing: the batch is read again rather than its cursor moving past
+// a deletion nothing re-derived.
+func TestTargetOfReportsAFailedReadPastATombstone(t *testing.T) {
+	_, ok, err := distiller.TargetOf(t.Context(), tombstoneFor(repo+"#12:comment:1"), unreadable{})
+	if !errors.Is(err, errUnreadable) {
+		t.Errorf("TargetOf() error = %v, want the read's own error", err)
+	}
+	if ok {
+		t.Error("TargetOf() reported a target alongside an error")
 	}
 }
 
@@ -121,10 +215,11 @@ func TestThePumpBatchIsHeldToWhatOneReadReturns(t *testing.T) {
 // A distill job's target is a document id, so the id the pump writes has to be
 // one the handler can read back.
 func TestEveryTargetParsesBackToItsArtifact(t *testing.T) {
-	for _, ev := range fixtureEvents(source) {
-		target, ok := distiller.TargetOf(ev)
-		if !ok {
-			t.Errorf("TargetOf(%s) has no target, and every fixture event belongs to a document", ev.NativeID)
+	events := fixtureEvents(source)
+	for _, ev := range events {
+		target, ok, err := distiller.TargetOf(t.Context(), ev, hiddenOf(events))
+		if err != nil || !ok {
+			t.Errorf("TargetOf(%s) = %v, no target, and every fixture event belongs to a document", ev.NativeID, err)
 			continue
 		}
 		src, artifact, err := l1.ParseDocID(target)

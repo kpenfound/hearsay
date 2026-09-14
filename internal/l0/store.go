@@ -180,7 +180,9 @@ SELECT e.xact_id::text, e.seq, false,
 
 // retractedSQL is the visibility rule, and the only one L0 has: an event is hidden
 // once a tombstone in the same source names its artifact. The row stays — L0 is
-// append-only — and every read carries the negation of this predicate.
+// append-only — and every read carries the negation of this predicate, except
+// [Store.Retracted], which reads what a tombstone hides so that a consumer can
+// re-derive what the retracted artifact was part of.
 const retractedSQL = `EXISTS (
     SELECT 1 FROM l0_events tomb
      WHERE tomb.source = e.source AND tomb.target = e.artifact
@@ -215,6 +217,45 @@ func (s *Store) Get(ctx context.Context, id string) (connector.Event, error) {
 	}
 	if err := decodeInto(&ev, kind, payload, acl); err != nil {
 		return connector.Event{}, fmt.Errorf("reading event %s: %w", id, err)
+	}
+	return ev, nil
+}
+
+// Retracted returns the current revision of an artifact a tombstone covers, by
+// the same revision order [Store.Current] uses. It returns [ErrNotFound] when
+// the source holds no event of the artifact, or holds some that nothing has
+// retracted: it is a read of what a tombstone hides and of nothing else.
+//
+// It exists for one question, which only the hidden events can answer: which
+// conversation was the retracted artifact part of? A tombstone is not required
+// to say (docs/connector-contract.md), and the document that quoted the
+// artifact has to be re-derived without it. What it returns is not for serving —
+// every read a person or an agent reaches goes through the visible reads.
+func (s *Store) Retracted(ctx context.Context, source, artifact string) (connector.Event, error) {
+	if source == "" || artifact == "" {
+		return connector.Event{}, errors.New("reading a retracted artifact needs its source and its artifact id")
+	}
+	var (
+		ev      connector.Event
+		kind    string
+		payload []byte
+		acl     []byte
+	)
+	err := s.db.QueryRow(ctx, `
+SELECT `+eventColumns+`
+  FROM l0_events e
+ WHERE e.source = $1 AND e.artifact = $2 AND `+retractedSQL+`
+ ORDER BY e.revision_edited_at DESC NULLS LAST, e.seq DESC
+ LIMIT 1`, source, artifact,
+	).Scan(&ev.ID, &ev.Source, &ev.NativeID, &kind, &ev.Time, &payload, &acl)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return connector.Event{}, fmt.Errorf("%w: no retracted artifact %s in source %s", ErrNotFound, artifact, source)
+	case err != nil:
+		return connector.Event{}, fmt.Errorf("reading retracted artifact %s: %w", artifact, err)
+	}
+	if err := decodeInto(&ev, kind, payload, acl); err != nil {
+		return connector.Event{}, fmt.Errorf("reading retracted artifact %s: %w", artifact, err)
 	}
 	return ev, nil
 }
