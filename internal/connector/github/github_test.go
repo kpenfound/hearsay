@@ -895,6 +895,8 @@ func TestBackfillFromCursor(t *testing.T) {
 		{name: "a cursor that is not JSON", cursor: "3", wantErr: "not one the github connector wrote"},
 		{name: "a step it does not have", cursor: `{"repo":"acme/api","step":"labels"}`, wantErr: `step "labels"`},
 		{name: "a since that is not a timestamp", cursor: `{"repo":"acme/api","step":"issues","since":"yesterday"}`, wantErr: `since "yesterday"`},
+		// Refused before any call, on a step that would not read it either.
+		{name: "a since that is not a timestamp on the commits step", cursor: `{"repo":"acme/api","step":"commits","since":"yesterday"}`, wantErr: `since "yesterday"`},
 		{name: "a negative page", cursor: `{"repo":"acme/api","step":"pulls","page":-1}`, wantErr: "page -1"},
 	}
 	for _, tt := range tests {
