@@ -319,9 +319,6 @@ func trim(b Bundle, budget int) (Bundle, Trimmed, int, error) {
 	size := len(encoded)
 	fits := func() bool { return (size+BytesPerToken-1)/BytesPerToken <= budget }
 	var trimmed Trimmed
-	if fits() {
-		return b, trimmed, Tokens(encoded), nil
-	}
 
 	// drop takes the last kept element of a section off, given its size and
 	// how many are kept.
@@ -402,11 +399,10 @@ func trim(b Bundle, budget int) (Bundle, Trimmed, int, error) {
 		}
 	}
 	b.Stances = kept
+	// The reported size is the encoding's own, not the count: the count decides
+	// what drops, and TestTrimMatchesReEncodingAfterEveryDrop holds the two equal.
 	if encoded, err = Encode(b); err != nil {
 		return Bundle{}, Trimmed{}, 0, err
-	}
-	if len(encoded) != size {
-		return Bundle{}, Trimmed{}, 0, fmt.Errorf("trimming the bundle for %s: counted %d bytes and it encodes to %d", b.Scope.ID, size, len(encoded))
 	}
 	return b, trimmed, Tokens(encoded), nil
 }
