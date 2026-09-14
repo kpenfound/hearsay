@@ -1,6 +1,6 @@
 # 7. Postgres-backed job queue with per-key serialization
 
-- Status: accepted
+- Status: accepted; at-least-once clause superseded by [ADR-0011](0011-a-retry-superseded-by-a-pending-job-is-done.md)
 - Date: 2026-09-08
 
 ## Context

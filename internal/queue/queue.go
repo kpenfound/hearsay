@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -263,20 +264,74 @@ func (c *Client) Complete(ctx context.Context, job Job) (bool, error) {
 	return true, nil
 }
 
-// failSQL either schedules a retry or gives up, in one statement so that the
-// decision and the write cannot disagree. $3 is whether the attempts are
-// spent: a job that has them left goes back to pending with run_after moved,
-// and one that does not moves to failed and stays there.
+// pendingTargetIndex is the partial unique index that dedupes a kind's pending
+// jobs on their target (migration 00003). Every statement that moves a job
+// back to pending can collide with it, because a running job does not occupy
+// it: a target can have one job running and another pending (ADR-0011).
+const pendingTargetIndex = "queue_job_pending_target_idx"
+
+// supersededPrefix starts the last_error of a job that was superseded rather
+// than requeued. A done job otherwise has no last_error at all, so a done row
+// that carries one is always this one.
+const supersededPrefix = "superseded by a pending job for the same target; "
+
+// failSQL either schedules a retry, gives up, or finds the retry superseded, in
+// one statement so that the decision and the write cannot disagree. $3 is
+// whether the attempts are spent: a job that has them left goes back to
+// pending with run_after moved, and one that does not moves to failed and
+// stays there.
+//
+// A retry whose target already has a pending job is not requeued, because that
+// would violate the index that dedupes it: the pending job does the same work
+// against a newer read, so this one is done (ADR-0011). A spent job still
+// fails: a failed row is the record that a target used its attempts up, and
+// failing does not touch the index.
+//
+// The EXISTS reads this statement's snapshot, so a pending job committed after
+// it began is not seen and the UPDATE raises 23505 on the index after all;
+// Fail runs it again, and the next snapshot sees that job.
 const failSQL = `
-UPDATE queue_job SET
-    state = CASE WHEN $3 THEN 'failed' ELSE 'pending' END,
-    finished_at = CASE WHEN $3 THEN now() ELSE NULL END,
-    started_at = CASE WHEN $3 THEN started_at ELSE NULL END,
-    run_after = CASE WHEN $3 THEN run_after ELSE now() + make_interval(secs => $4) END,
+WITH decided AS (
+    SELECT j.id,
+           CASE WHEN $3 THEN 'failed'
+                WHEN EXISTS (
+                    SELECT 1 FROM queue_job p
+                    WHERE p.kind = j.kind AND p.target_id = j.target_id AND p.state = 'pending')
+                THEN 'done'
+                ELSE 'pending' END AS outcome
+    FROM queue_job j
+    WHERE j.id = $1 AND j.attempt = $2 AND j.state = 'running'
+)
+UPDATE queue_job q SET
+    state = d.outcome,
+    finished_at = CASE WHEN d.outcome = 'pending' THEN NULL ELSE now() END,
+    started_at = CASE WHEN d.outcome = 'pending' THEN NULL ELSE q.started_at END,
+    run_after = CASE WHEN d.outcome = 'pending' THEN now() + make_interval(secs => $4) ELSE q.run_after END,
     lease_expires_at = NULL,
-    last_error = $5
-WHERE id = $1 AND attempt = $2 AND state = 'running'
-RETURNING state, run_after`
+    last_error = CASE WHEN d.outcome = 'done' THEN '` + supersededPrefix + `' || $5 ELSE $5 END
+FROM decided d
+WHERE q.id = d.id AND q.attempt = $2 AND q.state = 'running'
+RETURNING q.state, q.run_after`
+
+// conflictRetries is how many times a statement that lost a race to a
+// concurrent enqueue on the pending-target index is run again. Each run takes
+// a newer snapshot, which sees the job that won, so a second run is enough
+// unless yet another job was enqueued and claimed in between.
+const conflictRetries = 3
+
+// onPendingConflict runs stmt, and runs it again while it fails on the
+// pending-target index.
+func onPendingConflict(stmt func() error) error {
+	var err error
+	for range conflictRetries {
+		err = stmt()
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "23505" || pgErr.ConstraintName != pendingTargetIndex {
+			return err
+		}
+	}
+	return err
+}
 
 // Fail records why an attempt did not work and decides what happens next: a
 // retry, at a backed-off and jittered run_after, or the failed state, which a
@@ -285,7 +340,9 @@ RETURNING state, run_after`
 //
 // It returns the state the job is now in and, for a retry, when it runs again.
 // The state is empty when the job was no longer this run's to report on, in
-// which case nothing was written.
+// which case nothing was written. It is [StateDone] when the retry was
+// superseded by a job already pending for the same target (ADR-0011): the
+// work is that job's now, and this row's LastError says so.
 func (c *Client) Fail(ctx context.Context, job Job, cause error) (State, Retry, error) {
 	spent := job.Attempt >= c.cfg.MaxAttempts
 	wait := time.Duration(0)
@@ -295,15 +352,17 @@ func (c *Client) Fail(ctx context.Context, job Job, cause error) (State, Retry, 
 
 	var state State
 	var runAfter time.Time
-	err := c.pool.QueryRow(ctx, failSQL, job.ID, job.Attempt, spent, wait.Seconds(), errorText(cause)).
-		Scan(&state, &runAfter)
+	err := onPendingConflict(func() error {
+		return c.pool.QueryRow(ctx, failSQL, job.ID, job.Attempt, spent, wait.Seconds(), errorText(cause)).
+			Scan(&state, &runAfter)
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", Retry{}, nil
 	}
 	if err != nil {
 		return "", Retry{}, fmt.Errorf("failing %s: %w", job, err)
 	}
-	if spent {
+	if state != StatePending {
 		// The job is not running again, and a run_after left where the last
 		// attempt put it is not a schedule.
 		return state, Retry{}, nil
@@ -347,15 +406,44 @@ func (c *Client) Heartbeat(ctx context.Context, job Job) (bool, error) {
 // failing, so it runs as soon as something claims it. A job that has used its
 // attempts up fails here rather than being handed round a crashing worker for
 // ever.
+//
+// It is one UPDATE over the whole kind, so a single row that would violate the
+// pending-target index would abort the sweep for every other job of the kind.
+// The decision is therefore made per row before anything is written (ADR-0011):
+// an expired job that would go back to pending is done instead when its target
+// already has a pending job, or when a newer expired job for the same target
+// is going back to pending in this same statement — two running jobs for one
+// target are possible, and their expired leases would otherwise collide with
+// each other. The newer one is kept because it was enqueued after the older
+// one started, so its read is the newer one.
+//
+// Like failSQL, a pending job committed after this statement's snapshot still
+// raises 23505; Reclaim runs it again.
 const reclaimSQL = `
-UPDATE queue_job SET
-    state = CASE WHEN attempt >= $2 THEN 'failed' ELSE 'pending' END,
-    finished_at = CASE WHEN attempt >= $2 THEN now() ELSE NULL END,
-    started_at = CASE WHEN attempt >= $2 THEN started_at ELSE NULL END,
+WITH decided AS (
+    SELECT j.id,
+           CASE WHEN j.attempt >= $2 THEN 'failed'
+                WHEN EXISTS (
+                    SELECT 1 FROM queue_job p
+                    WHERE p.kind = j.kind AND p.target_id = j.target_id AND p.state = 'pending')
+                  OR EXISTS (
+                    SELECT 1 FROM queue_job n
+                    WHERE n.kind = j.kind AND n.target_id = j.target_id AND n.id > j.id
+                      AND n.state = 'running' AND n.lease_expires_at < now() AND n.attempt < $2)
+                THEN 'done'
+                ELSE 'pending' END AS outcome
+    FROM queue_job j
+    WHERE j.kind = $1 AND j.state = 'running' AND j.lease_expires_at < now()
+)
+UPDATE queue_job q SET
+    state = d.outcome,
+    finished_at = CASE WHEN d.outcome = 'pending' THEN NULL ELSE now() END,
+    started_at = CASE WHEN d.outcome = 'pending' THEN NULL ELSE q.started_at END,
     lease_expires_at = NULL,
-    last_error = $3
-WHERE kind = $1 AND state = 'running' AND lease_expires_at < now()
-RETURNING state`
+    last_error = CASE WHEN d.outcome = 'done' THEN '` + supersededPrefix + `' || $3 ELSE $3 END
+FROM decided d
+WHERE q.id = d.id AND q.state = 'running' AND q.lease_expires_at < now()
+RETURNING q.state`
 
 // Reclaimed is what one sweep of the expired leases did.
 type Reclaimed struct {
@@ -363,36 +451,47 @@ type Reclaimed struct {
 	Pending int
 	// Failed is how many had no attempts left.
 	Failed int
+	// Superseded is how many were done instead of requeued, because another
+	// job for the same target was already pending (ADR-0011).
+	Superseded int
 }
 
 // Total is how many jobs the sweep touched.
-func (r Reclaimed) Total() int { return r.Pending + r.Failed }
+func (r Reclaimed) Total() int { return r.Pending + r.Failed + r.Superseded }
 
 // Reclaim takes back every job of this kind whose lease has expired. It is
 // what makes delivery at-least-once: a worker that dies mid-job leaves a
-// running row, and this is what turns it back into work. A worker calls it on
-// its maintenance interval; nothing else has to.
+// running row, and this is what turns it back into work — or, when the target
+// already has a pending job, what records it superseded by that one
+// (ADR-0011). A worker calls it on its maintenance interval; nothing else has
+// to.
 func (c *Client) Reclaim(ctx context.Context) (Reclaimed, error) {
-	rows, err := c.pool.Query(ctx, reclaimSQL, c.cfg.Kind.Name, c.cfg.MaxAttempts,
-		fmt.Sprintf("the lease expired after %s without a heartbeat", c.cfg.Lease))
-	if err != nil {
-		return Reclaimed{}, fmt.Errorf("reclaiming expired %s jobs: %w", c.cfg.Kind.Name, err)
-	}
-	defer rows.Close()
-
 	var out Reclaimed
-	for rows.Next() {
-		var state State
-		if err := rows.Scan(&state); err != nil {
-			return Reclaimed{}, fmt.Errorf("reclaiming expired %s jobs: %w", c.cfg.Kind.Name, err)
+	err := onPendingConflict(func() error {
+		out = Reclaimed{}
+		rows, err := c.pool.Query(ctx, reclaimSQL, c.cfg.Kind.Name, c.cfg.MaxAttempts,
+			fmt.Sprintf("the lease expired after %s without a heartbeat", c.cfg.Lease))
+		if err != nil {
+			return err
 		}
-		if state == StateFailed {
-			out.Failed++
-		} else {
-			out.Pending++
+		defer rows.Close()
+		for rows.Next() {
+			var state State
+			if err := rows.Scan(&state); err != nil {
+				return err
+			}
+			switch state {
+			case StateFailed:
+				out.Failed++
+			case StateDone:
+				out.Superseded++
+			default:
+				out.Pending++
+			}
 		}
-	}
-	if err := rows.Err(); err != nil {
+		return rows.Err()
+	})
+	if err != nil {
 		return Reclaimed{}, fmt.Errorf("reclaiming expired %s jobs: %w", c.cfg.Kind.Name, err)
 	}
 	return out, nil
