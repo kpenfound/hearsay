@@ -40,8 +40,8 @@ go run ./cmd/hearsay help
 ```
 
 The four services — connectors, distiller, assertion worker and API — are
-subcommands of one binary. One of them, the API, is a stub today: it starts, logs
-and shuts down cleanly, and does no work yet. The distiller is real, and so are
+subcommands of one binary. The API serves the context bundle and the handles a
+consumer follows it with, over MCP and HTTP. The distiller is real, and so are
 the layers around it: `hearsay migrate` builds the schema, `hearsay l0` reads what
 has been ingested, `hearsay distiller` turns those events into L1 documents, and
 `hearsay assert-worker` turns the documents that decided, proposed or resolved

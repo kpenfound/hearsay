@@ -193,6 +193,10 @@ type ListOptions struct {
 	Asserting bool
 	// Scope reads only the documents about one entity.
 	Scope string
+	// OpenQuestions reads only the documents that leave something unanswered.
+	// Only [Store.ListFor] honours it; [Store.List] refuses it rather than
+	// ignoring it.
+	OpenQuestions bool
 	// Limit is how many documents to return, capped at [MaxLimit].
 	Limit int
 	// Oldest reverses the order, which is what re-deriving everything wants:
@@ -204,6 +208,9 @@ type ListOptions struct {
 func (s *Store) List(ctx context.Context, opts ListOptions) ([]Stored, error) {
 	if opts.OutcomeKind != "" && !opts.OutcomeKind.Valid() {
 		return nil, fmt.Errorf("%w: outcome kind %q", ErrInvalidDocument, opts.OutcomeKind)
+	}
+	if opts.OpenQuestions {
+		return nil, fmt.Errorf("%w: List does not filter on open questions; ListFor does", ErrInvalidDocument)
 	}
 	q := &query{sql: `SELECT ` + docColumns + ` FROM l1_docs WHERE true`}
 	if opts.Source != "" {

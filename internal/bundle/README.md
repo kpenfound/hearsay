@@ -16,4 +16,23 @@ Rules worth restating because they are easy to break: `recent` is capped by
 count and never filtered by age; ratified stances never drop; `anchors` are not
 subject to the `recent` cap; no code content, ever.
 
+## Things to know before changing it
+
+- **A scope is an entity id** — `tracker:github:acme/api#12`, `code:acme/api`. The
+  entities a bundle is about are that one and the ones its own document is
+  about; the ancestors of those are where inherited stances come from.
+- **Every time is absolute.** The design writes `when: 23d`; a relative age would
+  make the same scope and principal produce a different bundle every minute,
+  which breaks "cacheable". A consumer computes the age.
+- **The budget is estimated from bytes** ([BytesPerToken]), not a tokenizer: the
+  bundle must not depend on which model a deployment names. It drops from the
+  bottom — open questions, then `recent`, then stances that are not ratified,
+  last first — and can end over budget, because ratified stances never drop.
+- **[Encode] is the one encoding.** Every interface serves its bytes verbatim;
+  that is what "identical output regardless of which interface asked" rests on.
+- **Only a line with an id.** An entity has a `line` only when it is a document
+  the reader may read, and then it carries that document's `l1`.
+- **Not built yet:** the directive, anchors (always `[]`) and conflicts
+  (always `[]`).
+
 See [docs/design.md](../../docs/design.md#the-context-bundle).

@@ -28,13 +28,12 @@ dependencies, the job handlers it owns, its prompts, and its HTTP surface.
 not reimplement them. A service package should stay thin enough that the
 interesting code is testable without starting a process.
 
-`connectors` is the only one of the four with an HTTP surface so far: a push
-connector's handler has to be reachable, and ADR-0008 gives every service
-`/healthz` and `/readyz`. The paths under `/hooks/` are the connector runtime's
-and are mounted from it; the two health endpoints are the service's own. It is
-the first of the four, so it is the one the other three will be copied from —
-what the two endpoints mean is worth getting from there rather than inventing
-again:
+`connectors` and `api` are the two of the four with an HTTP surface: a push
+connector's handler has to be reachable, the API is one, and ADR-0008 gives
+every service `/healthz` and `/readyz`. The paths under `/hooks/` are the
+connector runtime's and are mounted from it; `/v1/` and `/mcp` are the API's
+call layer, served twice; the two health endpoints are each service's own. What
+the two endpoints mean was settled in `connectors`, and `api` copies it:
 
 - `/healthz` is 200 while the process is up, and nothing else. It answers "is
   this container alive", so it must not depend on anything that can be slow.

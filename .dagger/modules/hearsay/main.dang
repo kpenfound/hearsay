@@ -309,10 +309,8 @@ type Hearsay {
   """
   dev(ws: Workspace!): Service! @up {
     runtime(ws)
-      # The API is a stub and listens on nothing, so the port is here for the
-      # tunnel rather than for a server. Drop the health check exemption when
-      # the API grows a listener.
-      .withExposedPort(8080, description: "hearsay API (HTTP and MCP)", experimentalSkipHealthcheck: true)
+      # The API: POST /v1/<call>, MCP at /mcp, and /healthz and /readyz.
+      .withExposedPort(8080, description: "hearsay API (HTTP and MCP)")
       # The connectors service does listen: webhooks under /hooks/<source>, and
       # /healthz and /readyz (ADR-0008).
       .withExposedPort(8081, description: "hearsay connectors (webhooks and health)")

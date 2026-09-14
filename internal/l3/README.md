@@ -11,4 +11,17 @@ materialization of these views, if it becomes worth it.
 **Does not belong here:** any write path. If something cannot be recomputed from
 L2 it is not an L3 view — it is an L2 fact and belongs in `internal/l2`.
 
+## Things to know before changing it
+
+- **Every view is for a reader.** The access lists are applied before a count
+  cuts anything (`l1.Store.ListFor`), so a document somebody may not read never
+  takes one of their places in `recent`.
+- **A topic's current stance is the newest stated,** the head of its supersession
+  chain. When the reader may not read it, the topic is left out and counted —
+  the older stance they may read is not current, and offering it as current
+  would be wrong in a way they could not see.
+- **Inherited means about an ancestor only.** The walk up `part_of` is a
+  recursive `UNION`, so a cycle ends it.
+- **Ownership and "who knows X" are not built yet.**
+
 See [docs/design.md](../../docs/design.md#l3-derived-views).

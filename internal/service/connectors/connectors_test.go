@@ -263,7 +263,7 @@ func TestTheServiceNeedsSomewhereToWriteAndSomewhereToResumeFrom(t *testing.T) {
 
 // Every line this service writes says which connectors the process is hosting
 // and, where it is about one, which source — and each of those is one field
-// with one value. `service.Stub`'s doc comment names the failure this pins:
+// with one value. The failure this pins is CONTRIBUTING.md's:
 // `telemetry.With` appends, so two writers reaching for the same key produce a
 // line with the key twice, and `encoding/json` keeps the last.
 func TestALineNamesTheProcessAndItsSourceOnce(t *testing.T) {
