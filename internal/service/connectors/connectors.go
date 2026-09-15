@@ -6,7 +6,8 @@
 // `--source` selection (ADR-0003). What it hosts them with is
 // [connector.Runtime]: this package is the wiring — the configured sources, the
 // registry of factories, the L0 store to write to, the cursor store to keep
-// backfill positions in — and the HTTP surface the runtime needs, which is the
+// backfill positions in, the store ACL re-syncs are kept in and the L0 read that
+// finds a container still served as public — and the HTTP surface the runtime needs, which is the
 // push connectors' handlers and the service's health (ADR-0008).
 package connectors
 
@@ -64,6 +65,10 @@ type Deps struct {
 	// Cursors is where backfill positions are kept. Nil is the backfill cursor
 	// store over [Deps.Pool].
 	Cursors connector.CursorStore
+	// Resyncs is where ACL re-syncs are kept, and Exposure is what says which
+	// containers L0 serves as public. Nil is the store over [Deps.Pool].
+	Resyncs  connector.ResyncStore
+	Exposure connector.ExposureReader
 	// Listener is what the HTTP surface is served on. Nil is a listener on
 	// [Deps.Listen]; a test passes one bound to port 0 so that it knows the
 	// address.
@@ -108,11 +113,14 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 	if err != nil {
 		return stoppingEarly(ctx, err)
 	}
+	resyncs, exposure := resyncStores(deps)
 	runtime, err := connector.NewRuntime(ctx, connector.RuntimeOptions{
 		Sources:  sources,
 		Registry: registry,
 		Sink:     sink,
 		Cursors:  cursors,
+		Resyncs:  resyncs,
+		Exposure: exposure,
 		Cadence:  deps.Cadence,
 	})
 	if err != nil {
@@ -187,6 +195,23 @@ func stores(deps Deps) (connector.Sink, connector.CursorStore, error) {
 		cursors = l0.NewBackfillCursors(deps.Pool)
 	}
 	return sink, cursors, nil
+}
+
+// resyncStores is where re-syncs are kept and what says which containers L0
+// serves as public: the stores over the process's pool, or whatever the caller
+// supplied. A caller with no pool and nothing supplied gets neither, and the
+// runtime says so rather than running a re-sync a restart would lose.
+func resyncStores(deps Deps) (connector.ResyncStore, connector.ExposureReader) {
+	resyncs, exposure := deps.Resyncs, deps.Exposure
+	if deps.Pool != nil {
+		if resyncs == nil {
+			resyncs = l0.NewResyncs(deps.Pool)
+		}
+		if exposure == nil {
+			exposure = l0.New(deps.Pool)
+		}
+	}
+	return resyncs, exposure
 }
 
 // listen opens the service's listener.

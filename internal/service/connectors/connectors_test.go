@@ -16,8 +16,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/service/connectors"
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
@@ -503,5 +506,97 @@ func TestSelection(t *testing.T) {
 				t.Errorf("Selection(%v) = %q, want %q", tt.sources, got, tt.want)
 			}
 		})
+	}
+}
+
+// Where the runtime keeps re-syncs: the stores over the pool, unless the caller
+// supplied its own, and nothing at all with neither — which the runtime says
+// rather than refusing to start.
+func TestResyncStores(t *testing.T) {
+	// A pool is lazy: nothing here connects to this address.
+	pool, err := pgxpool.New(t.Context(), "postgres://nobody@127.0.0.1:1/nothing")
+	if err != nil {
+		t.Fatalf("pgxpool.New = %v", err)
+	}
+	t.Cleanup(pool.Close)
+	mem := connector.NewMemoryResyncs()
+	rec := &connector.Recorder{}
+
+	resyncs, exposure := connectors.ResyncStores(connectors.Deps{Pool: pool})
+	if _, ok := resyncs.(*l0.Resyncs); !ok {
+		t.Errorf("with a pool, Resyncs = %T, want *l0.Resyncs", resyncs)
+	}
+	if _, ok := exposure.(*l0.Store); !ok {
+		t.Errorf("with a pool, Exposure = %T, want *l0.Store", exposure)
+	}
+
+	resyncs, exposure = connectors.ResyncStores(connectors.Deps{Pool: pool, Resyncs: mem, Exposure: rec})
+	if resyncs != connector.ResyncStore(mem) || exposure != connector.ExposureReader(rec) {
+		t.Errorf("with a pool and overrides = %T, %T, want the overrides", resyncs, exposure)
+	}
+
+	resyncs, exposure = connectors.ResyncStores(connectors.Deps{})
+	if resyncs != nil || exposure != nil {
+		t.Errorf("with neither = %T, %T, want nil, nil", resyncs, exposure)
+	}
+}
+
+// resyncing is a fake whose re-sync of a container is one call, and whose
+// source says every container is private.
+type resyncing struct {
+	*connector.Fake
+	calls atomic.Int64
+}
+
+func (r *resyncing) Public(context.Context, string) (bool, error) { return false, nil }
+
+func (r *resyncing) Resync(context.Context, connector.Sink, string, connector.Cursor) (connector.BackfillResult, error) {
+	r.calls.Add(1)
+	return connector.BackfillResult{Done: true}, nil
+}
+
+// exposed is an exposure reader that serves every configured container as
+// public.
+type exposed struct{}
+
+func (exposed) Exposed(context.Context, string) ([]connector.Exposure, error) {
+	return []connector.Exposure{{Container: "C123", LastPublic: time.Now()}}, nil
+}
+
+// The re-sync store and exposure reader a caller supplies are the ones the
+// runtime uses: the startup check reads the one, records in the other, and the
+// re-sync it owes is walked. With neither and no pool the service still runs.
+func TestTheServiceGivesTheRuntimeItsResyncStores(t *testing.T) {
+	src := source("fake-resync")
+	conn := &resyncing{Fake: connector.NewFake(src)}
+	resyncs := connector.NewMemoryResyncs()
+	cfg := &config.Config{Repo: config.Repo{Sources: []connector.SourceConfig{src}}}
+	_, stop := run(t, cfg, connectors.Deps{
+		Registry: fakeRegistry(t, map[string]connector.Connector{src.ID: conn}),
+		Sink:     &connector.Recorder{},
+		Cursors:  connector.NewMemoryCursors(),
+		Resyncs:  resyncs,
+		Exposure: exposed{},
+	})
+	waitFor(t, "the re-sync the check owed", func() bool {
+		r := resyncs.Get(src.ID, "C123")
+		return r.Generation > 0 && !r.Owed
+	})
+	if err := stop(); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+
+	bare := &resyncing{Fake: connector.NewFake(src)}
+	_, stop = run(t, cfg, connectors.Deps{
+		Registry: fakeRegistry(t, map[string]connector.Connector{src.ID: bare}),
+		Sink:     &connector.Recorder{},
+		Cursors:  connector.NewMemoryCursors(),
+	})
+	time.Sleep(20 * time.Millisecond)
+	if err := stop(); err != nil {
+		t.Fatalf("Run() with no re-sync store = %v", err)
+	}
+	if n := bare.calls.Load(); n != 0 {
+		t.Errorf("with no re-sync store the runtime re-synced %d times, want none", n)
 	}
 }

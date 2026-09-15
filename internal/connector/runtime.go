@@ -71,6 +71,16 @@ type RuntimeOptions struct {
 	// backfill at all: rather than walk a source's history from the beginning
 	// on every restart, the runtime says so and polls only.
 	Cursors CursorStore
+	// Resyncs is where re-syncs are kept: which containers of a [Resyncer] owe
+	// one, and how far each got. A nil store runs no re-sync, and a connector
+	// asking for one is told so, rather than starting a walk a restart would
+	// lose.
+	Resyncs ResyncStore
+	// Exposure is what the runtime reads at startup to find a container L0
+	// still serves as public, so that a re-sync nobody asked for — the change
+	// was never delivered, or its delivery failed — is still owed. Nil skips
+	// that check and says so.
+	Exposure ExposureReader
 	// Lookup resolves the environment variable a secret names. Nil is
 	// [os.LookupEnv], which is what a process uses; a test passes its own
 	// rather than setting variables on the process it shares with every other
@@ -209,6 +219,7 @@ type hosted struct {
 	backfillFails atomic.Int64
 	backfillDone  atomic.Bool
 	backfilled    atomic.Int64
+	resyncFails   atomic.Int64
 }
 
 // Runtime hosts a set of connectors: it builds one per configured source, polls
@@ -264,6 +275,10 @@ func NewRuntime(ctx context.Context, opts RuntimeOptions) (*Runtime, error) {
 			return nil, r.abandon(ctx, err)
 		}
 		h := &hosted{src: src, conn: conn, gate: NewGate(opts.Sink, src.ID, conn.Describe(), allow)}
+		if _, ok := conn.(Resyncer); ok && opts.Resyncs != nil {
+			h.gate.resyncs = opts.Resyncs
+			h.gate.wake = make(chan struct{}, 1)
+		}
 		r.conns = append(r.conns, h)
 		if pusher, ok := conn.(Pusher); ok {
 			r.mux.Handle(HookPath(src.ID), pusher.Handler(h.gate))
@@ -330,6 +345,18 @@ func (r *Runtime) Run(ctx context.Context) error {
 			go func() {
 				defer wg.Done()
 				r.backfill(hctx, h, backfiller)
+			}()
+		}
+		resyncer, ok := h.conn.(Resyncer)
+		switch {
+		case !ok:
+		case r.opts.Resyncs == nil:
+			telemetry.Logger(hctx).WarnContext(hctx, "no re-sync store: a container that stops being public is not re-synced")
+		default:
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				r.resync(hctx, h, resyncer)
 			}()
 		}
 	}
@@ -589,6 +616,12 @@ type SourceHealth struct {
 	// a process that resumed a finished backfill reports it as finished.
 	BackfillDone bool  `json:"backfill_done"`
 	Backfilled   int64 `json:"backfilled"`
+	// ResyncFailures is how many times in a row the source's re-syncs have
+	// failed — a call, the startup check, or the store that keeps them — and
+	// zero once one works. A re-sync retries forever, and until it lands L0
+	// serves a container that is no longer public as public, so this is the
+	// number to alert on.
+	ResyncFailures int64 `json:"resync_failures"`
 }
 
 // Health is every hosted connector's own Health, aggregated. It makes no
@@ -609,6 +642,7 @@ func (r *Runtime) Health(ctx context.Context) RuntimeHealth {
 			BackfillFailures: h.backfillFails.Load(),
 			BackfillDone:     h.backfillDone.Load(),
 			Backfilled:       h.backfilled.Load(),
+			ResyncFailures:   h.resyncFails.Load(),
 		})
 		out.Status = worse(out.Status, health.Status)
 	}

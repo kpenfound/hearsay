@@ -3,10 +3,11 @@
 // branch, as L0 events shaped exactly as the GitHub section of
 // docs/connector-contract.md says.
 //
-// It is a [connector.Pusher], through GitHub's webhooks, and a
-// [connector.Backfiller], through the REST list endpoints. It never polls: a
-// repository's live changes arrive as webhook deliveries, and its history is the
-// backfill.
+// It is a [connector.Pusher], through GitHub's webhooks, a
+// [connector.Backfiller], through the REST list endpoints, and a
+// [connector.Resyncer], through the same walk over one repository. It never
+// polls: a repository's live changes arrive as webhook deliveries, and its
+// history is the backfill.
 //
 // # Configuration
 //
@@ -47,6 +48,11 @@
 //     token is `updated_at`, except for a review, which has none and is hashed
 //     from its state and body (ADR-0012). A repository going private is
 //     re-synced: every artifact is emitted again under the private token and ACL.
+//     `repository.privatized` records the re-sync with the runtime before the
+//     delivery is answered, and the runtime walks it through [Connector.Resync],
+//     keeping the position (ADR-0013). A delivery that never arrived, or
+//     failed, is caught by the runtime's startup check, which asks
+//     [Connector.Public] about every repository L0 still serves as public.
 package github
 
 import (
@@ -103,17 +109,13 @@ type Connector struct {
 
 	mu          sync.Mutex
 	lastEventAt time.Time
-	resyncing   map[string]bool
-	resyncFails int
-	closed      bool
-	stop        chan struct{}
-	wg          sync.WaitGroup
 }
 
 // Compile-time checks that the connector implements the modes it claims.
 var (
 	_ connector.Pusher     = (*Connector)(nil)
 	_ connector.Backfiller = (*Connector)(nil)
+	_ connector.Resyncer   = (*Connector)(nil)
 )
 
 // Factory builds the connector for a source. It is what the binary registers
@@ -157,13 +159,11 @@ func New(src connector.SourceConfig) (*Connector, error) {
 	}
 
 	return &Connector{
-		source:    src.ID,
-		repos:     repos,
-		since:     since,
-		secret:    []byte(secret),
-		api:       &client{base: base, token: token, http: &http.Client{Timeout: requestTimeout}},
-		resyncing: map[string]bool{},
-		stop:      make(chan struct{}),
+		source: src.ID,
+		repos:  repos,
+		since:  since,
+		secret: []byte(secret),
+		api:    &client{base: base, token: token, http: &http.Client{Timeout: requestTimeout}},
 	}, nil
 }
 
@@ -235,36 +235,12 @@ func (c *Connector) Describe() connector.Descriptor {
 func (c *Connector) Health(context.Context) connector.Health {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	h := connector.Health{Status: connector.HealthOK, LastEventAt: c.lastEventAt}
-	if c.resyncFails > 0 {
-		h.Status = connector.HealthDegraded
-		h.Detail = "re-syncing a repository that changed visibility is failing and retrying"
-	}
-	return h
+	return connector.Health{Status: connector.HealthOK, LastEventAt: c.lastEventAt}
 }
 
-// Close implements [connector.Connector]: it stops any re-sync in flight and
-// waits for it.
-func (c *Connector) Close(ctx context.Context) error {
-	c.mu.Lock()
-	if !c.closed {
-		c.closed = true
-		close(c.stop)
-	}
-	c.mu.Unlock()
-
-	done := make(chan struct{})
-	go func() {
-		c.wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return fmt.Errorf("closing the github connector: re-sync still running: %w", ctx.Err())
-	}
-}
+// Close implements [connector.Connector]. The connector starts no goroutine: a
+// re-sync is driven by the runtime, which reports how it is going.
+func (c *Connector) Close(context.Context) error { return nil }
 
 // emit writes one event and notes when the connector last did.
 func (c *Connector) emit(ctx context.Context, sink connector.Sink, ev connector.Event) error {

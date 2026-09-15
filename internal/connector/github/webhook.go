@@ -23,13 +23,6 @@ import (
 // maxDelivery is GitHub's own cap on a webhook payload.
 const maxDelivery = 25 << 20
 
-// The waits between attempts of a re-sync that is failing.
-const resyncMaxRetry = 15 * time.Minute
-
-// resyncRetry is the first of them, doubling up to resyncMaxRetry. It is a
-// variable so that a test can shorten it.
-var resyncRetry = time.Minute
-
 // delivery is a webhook payload, as far as the connector reads one. Which of
 // the objects is set depends on the event.
 type delivery struct {
@@ -85,7 +78,7 @@ func (c *Connector) Handler(sink connector.Sink) http.Handler {
 		}
 
 		event := r.Header.Get("X-GitHub-Event")
-		events, resyncing, err := c.deliver(ctx, sink, event, body)
+		events, owed, err := c.deliver(ctx, sink, event, body)
 		switch {
 		case errors.Is(err, errMalformed):
 			log.WarnContext(ctx, "webhook delivery refused", "delivery", deliveryID, "event", event, "error", err)
@@ -96,9 +89,9 @@ func (c *Connector) Handler(sink connector.Sink) http.Handler {
 			http.Error(w, "the delivery could not be ingested", http.StatusInternalServerError)
 			return
 		}
-		if len(events) == 0 && !resyncing {
+		if len(events) == 0 && !owed {
 			// Verified, and nothing to do: an event not ingested, a push to
-			// another branch, a re-sync already running.
+			// another branch.
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -129,7 +122,7 @@ func (c *Connector) verify(header string, body []byte) bool {
 }
 
 // deliver turns a verified delivery into the events it means, and reports
-// whether it started a re-sync. An event the connector does not ingest is
+// whether it recorded a re-sync. An event the connector does not ingest is
 // nothing, not an error: GitHub sends what the webhook was configured for, and
 // a person may have ticked more.
 func (c *Connector) deliver(ctx context.Context, sink connector.Sink, event string, body []byte) ([]connector.Event, bool, error) {
@@ -148,8 +141,21 @@ func (c *Connector) deliver(ctx context.Context, sink connector.Sink, event stri
 	if event == "repository" {
 		// Only a repository config names is re-synced: the gate would drop what
 		// a walk of any other emits, and the token has no business reading it.
-		started := d.Action == "privatized" && slices.Contains(c.repos, v.repo) && c.startResync(ctx, sink, v.repo)
-		return nil, started, nil
+		if d.Action != "privatized" || !slices.Contains(c.repos, v.repo) {
+			return nil, false, nil
+		}
+		// Recorded before the delivery is answered, and walked by the runtime:
+		// a walk held in this process would be lost to a restart. A record that
+		// cannot be written is a failed delivery, which the runtime's startup
+		// check still catches.
+		owes, ok := sink.(connector.ResyncRequester)
+		if !ok {
+			return nil, false, fmt.Errorf("repository %s went private and the sink cannot record a re-sync", v.repo)
+		}
+		if err := owes.RequestResync(ctx, v.repo); err != nil {
+			return nil, false, err
+		}
+		return nil, true, nil
 	}
 	events, err := c.events(ctx, event, v, d)
 	return events, false, err
@@ -311,97 +317,3 @@ func isCommitID(s string) bool {
 // isNullCommit reports whether a commit id is all zeros: GitHub's `before` of a
 // push that created a branch, and `after` of one that deleted it.
 func isNullCommit(s string) bool { return strings.Trim(s, "0") == "" }
-
-// startResync re-emits every artifact in a repository that has just gone
-// private, under the composed `perm:private` token and the new ACL, in the
-// background: a delivery is answered in seconds and a repository's history is
-// not walked in seconds. One re-sync per repository runs at a time, and Close
-// stops and waits for them. It reports whether it started one.
-func (c *Connector) startResync(ctx context.Context, sink connector.Sink, repo string) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed || c.resyncing[repo] {
-		return false
-	}
-	c.resyncing[repo] = true
-
-	// The delivery's context ends with its response; the re-sync keeps its
-	// values (the logger) and is cancelled by Close instead.
-	rctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	c.wg.Add(2)
-	go func() {
-		defer c.wg.Done()
-		select {
-		case <-c.stop:
-			cancel()
-		case <-rctx.Done():
-		}
-	}()
-	go func() {
-		defer c.wg.Done()
-		defer cancel()
-		c.resync(telemetry.With(rctx, "repository", repo), sink, repo)
-	}()
-	return true
-}
-
-// resync walks one repository the way a backfill does, retrying a page that
-// fails until it works or the connector is closed. It ignores the configured
-// start date: a push webhook emits a commit whatever its date, and anything a
-// webhook may have emitted with the public ACL has to be re-emitted.
-func (c *Connector) resync(ctx context.Context, sink connector.Sink, repo string) {
-	log := telemetry.Logger(ctx)
-	failing := false
-	defer func() {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		delete(c.resyncing, repo)
-		if failing {
-			c.resyncFails--
-		}
-	}()
-	setFailing := func(f bool) {
-		if f == failing {
-			return
-		}
-		failing = f
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		if f {
-			c.resyncFails++
-		} else {
-			c.resyncFails--
-		}
-	}
-
-	log.InfoContext(ctx, "repository went private: re-syncing its artifacts")
-	pos := &position{Repo: repo, Step: steps[0]}
-	wait := resyncRetry
-	emitted := 0
-	for pos != nil && pos.Repo == repo {
-		n, next, err := c.page(ctx, sink, *pos, time.Time{})
-		emitted += n
-		if err != nil {
-			if ctx.Err() != nil {
-				log.InfoContext(ctx, "re-sync stopped")
-				return
-			}
-			setFailing(true)
-			log.WarnContext(ctx, "re-sync failed, retrying", "error", err, "retry_in", wait.String())
-			timer := time.NewTimer(wait)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				log.InfoContext(ctx, "re-sync stopped")
-				return
-			case <-timer.C:
-			}
-			wait = min(wait*2, resyncMaxRetry)
-			continue
-		}
-		setFailing(false)
-		wait = resyncRetry
-		pos = next
-	}
-	log.InfoContext(ctx, "re-sync complete", "events", emitted)
-}

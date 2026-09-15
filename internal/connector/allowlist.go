@@ -70,6 +70,11 @@ type Gate struct {
 	kinds   map[Kind]bool
 	allow   Allowlist
 	dropped atomic.Int64
+
+	// resyncs and wake are set by the runtime for a [Resyncer] it has a
+	// [ResyncStore] for; a gate without them records no re-sync.
+	resyncs ResyncStore
+	wake    chan struct{}
 }
 
 // NewGate returns the gate for one connector: the source it was configured for,
@@ -109,6 +114,28 @@ func (g *Gate) Emit(ctx context.Context, ev Event) error {
 
 	ev.ID = EventID(ev.Source, ev.NativeID)
 	return g.sink.Emit(ctx, ev)
+}
+
+// RequestResync implements [ResyncRequester]: it records that a container owes
+// a re-sync and wakes the runtime to run it. A container the allowlist does not
+// cover owes nothing, because nothing of it was written.
+func (g *Gate) RequestResync(ctx context.Context, container string) error {
+	if g.resyncs == nil {
+		return ErrNoResyncStore
+	}
+	if !g.allow.Allows(g.source, container) {
+		return nil
+	}
+	if err := g.resyncs.Owe(ctx, g.source, container); err != nil {
+		return fmt.Errorf("recording that container %s of source %s owes a re-sync: %w", container, g.source, err)
+	}
+	select {
+	case g.wake <- struct{}{}:
+	default:
+		// A wake is already pending, and the runtime reads every owed re-sync
+		// when it takes it.
+	}
+	return nil
 }
 
 // Dropped is how many events the gate has refused because their container is
