@@ -177,6 +177,10 @@ type exchange struct {
 // issue is read again after a comment: the same position, other words.
 const restatedPosition = "The job queue should hold the lock."
 
+// uncommentedPosition is the issue's proposal as the model words it a third
+// time, when the comment is deleted and the issue is read again without it.
+const uncommentedPosition = "The lock belongs in the job queue."
+
 // issueComment is a comment on the issue made after the pull request merged.
 func issueComment(src string) connector.Event {
 	comment := event(src, connector.KindMessage, repo+"#12:comment:90", at(5), "samr", "u2", "",
@@ -227,6 +231,21 @@ func exchanges() []exchange {
 			doc:        commentedIssueDoc,
 			candidates: []assertworker.Candidate{{Name: topicName, Current: prPosition}},
 			answer:     map[string]any{"assertions": []map[string]any{{"topic": "T1", "topic_name": topicName, "position": restatedPosition}}},
+		},
+		{
+			name:       "the issue, its comment deleted, is read again and restates its proposal a third way",
+			doc:        issueDoc,
+			candidates: []assertworker.Candidate{{Name: topicName, Current: restatedPosition}},
+			answer:     map[string]any{"assertions": []map[string]any{{"topic": "T1", "topic_name": topicName, "position": uncommentedPosition}}},
+		},
+		{
+			// The newest stated stance is the issue's restatement, which the
+			// issue's reading without the comment retired: the topic is shown
+			// at the merged pull request's position.
+			name:       "the pull request read again is shown the topic at its own position",
+			doc:        prDoc,
+			candidates: []assertworker.Candidate{{Name: topicName, Current: prPosition}},
+			answer:     map[string]any{"assertions": []map[string]any{{"topic": "T1", "topic_name": topicName, "position": prPosition}}},
 		},
 		{
 			name: "the commit's answer carries what must not be stored",

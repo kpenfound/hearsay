@@ -342,6 +342,41 @@ func TestARedistilledDocumentReplacesItsOwnStance(t *testing.T) {
 	if live != 1 {
 		t.Errorf("the issue has %d unsuperseded stances on the topic, want 1", live)
 	}
+
+	// The comment is deleted and the issue re-distilled without it, so its
+	// last activity moves back before the merge. Read again (S4), it replaces
+	// S3 and retires it, though S3 is still the newest stated on the topic.
+	tombstone := event(src, connector.KindTombstone, comment.NativeID+":tombstone", at(9), "", "", "", "")
+	tombstone.Payload.Author, tombstone.Payload.Target = nil, comment.NativeID
+	if _, err := l0.New(pool).Append(t.Context(), tombstone); err != nil {
+		t.Fatalf("Append(tombstone) = %v", err)
+	}
+	uncommented := issueDoc(t, src)
+	if changed, err := l1.New(pool).Put(t.Context(), uncommented); err != nil || !changed {
+		t.Fatalf("Put(the issue without its comment) = %v, %v, want a new version", changed, err)
+	}
+	if r := assertDoc(t, a, f.issueID, scope); r.StancesWritten != 1 {
+		t.Fatalf("Assert(the issue without its comment) = %+v, want one new stance", r)
+	}
+	after, err := graph.StanceHistory(t.Context(), topics[0].ID)
+	if err != nil || len(after) != 4 {
+		t.Fatalf("StanceHistory() = %+v, %v, want four stances", after, err)
+	}
+	if last := after[len(after)-1]; last.ID != s3.ID {
+		t.Fatalf("the newest stated stance is %q, want the retired restatement %q", last.Position, s3.Position)
+	}
+
+	// The pull request read again is shown the topic at its current stance,
+	// the merged pull request's own, not at the newest stated. Only the
+	// recording keyed on that candidate exists, so showing the retired
+	// restatement fails the call.
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE l2_asserted SET distilled_at = distilled_at - interval '1 second' WHERE doc_id = $1`, f.prID); err != nil {
+		t.Fatalf("moving the recorded version: %v", err)
+	}
+	if r := assertDoc(t, a, f.prID, scope); r.Positions != 1 || r.StancesWritten != 0 {
+		t.Errorf("Assert(the pull request again) = %+v, want its one position, already stored", r)
+	}
 }
 
 // What a model writes is held to what L1 holds a person's words to: an email
