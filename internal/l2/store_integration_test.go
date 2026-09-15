@@ -303,15 +303,11 @@ func TestANewReadingOfADocumentRetiresItsOwnStance(t *testing.T) {
 	}
 
 	// A reading stated earlier than the document's previous one — a deletion
-	// took the comment that moved its last activity — still replaces it, and a
-	// document stated in between skips the retired stance for the live one.
+	// took the comment that moved its last activity — still replaces it, and
+	// the newer stance it retired is not the topic's current one.
 	s5 := add(stance(topic, "l1:s:thread", "the engine, for now", 2))
 	if s5.Supersedes != s4.ID {
 		t.Errorf("a reading stated before its document's last supersedes %q, want that document's %q", s5.Supersedes, s4.ID)
-	}
-	s6 := add(stance(topic, "l1:s:review", "ship it", 4))
-	if s6.Supersedes != s2.ID {
-		t.Errorf("a stance stated after a retired one supersedes %q, want the newest live one before it, %q", s6.Supersedes, s2.ID)
 	}
 	history, err := store.StanceHistory(ctx, topic.ID)
 	if err != nil {
@@ -319,6 +315,13 @@ func TestANewReadingOfADocumentRetiresItsOwnStance(t *testing.T) {
 	}
 	if current, ok := l2.Current(history); !ok || current.ID != s3.ID {
 		t.Errorf("Current() = %+v, %v, want the issue's restatement: the thread's newer stance was retired", current, ok)
+	}
+
+	// A document stated after the retired stance skips it for the newest live
+	// one.
+	s6 := add(stance(topic, "l1:s:review", "ship it", 7))
+	if s6.Supersedes != s3.ID {
+		t.Errorf("a stance stated after a retired one supersedes %q, want the newest live one before it, %q", s6.Supersedes, s3.ID)
 	}
 }
 
