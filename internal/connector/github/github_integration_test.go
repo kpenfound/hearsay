@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/l0"
 )
@@ -72,16 +73,43 @@ func TestBackfillAndWebhooksLandInL0Once(t *testing.T) {
 		t.Errorf("after the webhooks L0 holds %d events, want %d", n, len(wantBackfill))
 	}
 
+	// The repository goes private and no delivery says so. The first process
+	// finds it at startup and is stopped partway through the walk; the second
+	// has only the database and finishes it.
 	gh.private.Store(true)
-	if code := deliver(t, h, "repository", hook(t, "repository.privatized")); code != http.StatusAccepted {
-		t.Fatalf("privatized: status = %d, want 202", code)
+	resyncs := l0.NewResyncs(pool)
+	commits := "/repos/acme/api/commits"
+	release := gh.hold(commits)
+	begun := len(gh.seen())
+	_, stopFirst := runtimeFor(t, src, connector.RuntimeOptions{Sink: store, Resyncs: resyncs, Exposure: store})
+	waitFor(t, "the re-sync to reach the commits", requestedSince(gh, begun, commits))
+	stopFirst()
+	release()
+	if resynced(t, resyncs, id, "acme/api")() {
+		t.Fatal("the re-sync finished before the restart")
 	}
-	waitFor(t, "the re-sync to land", func() bool { return len(stored()) == 2*len(wantBackfill) })
-	if err := second.Close(t.Context()); err != nil {
-		t.Fatalf("Close = %v", err)
-	}
+
+	_, stop := runtimeFor(t, src, connector.RuntimeOptions{Sink: store, Resyncs: resyncs, Exposure: store})
+	waitFor(t, "the resumed re-sync", resynced(t, resyncs, id, "acme/api"))
+	stop()
 	if n := len(stored()); n != 2*len(wantBackfill) {
 		t.Errorf("after the re-sync L0 holds %d events, want %d", n, 2*len(wantBackfill))
+	}
+	current, err := store.Current(t.Context(), l0.ListOptions{Filter: l0.Filter{Source: id}, Limit: l0.MaxLimit})
+	if err != nil {
+		t.Fatalf("reading the current revisions: %v", err)
+	}
+	for _, ev := range current {
+		if !strings.HasSuffix(ev.NativeID, "perm:private") {
+			t.Errorf("current revision %s is not under perm:private", ev.NativeID)
+		}
+	}
+	if len(current) != len(wantBackfill) {
+		t.Errorf("L0 serves %d artifacts, want %d", len(current), len(wantBackfill))
+	}
+	exposed, err := store.Exposed(t.Context(), id)
+	if err != nil || len(exposed) != 0 {
+		t.Errorf("Exposed = %+v, %v, want nothing", exposed, err)
 	}
 }
 

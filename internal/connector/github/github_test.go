@@ -96,20 +96,17 @@ type fakeGitHub struct {
 	// repository's default branch.
 	rewound  map[string]int
 	requests []string
-	// status fails every request for a path; once fails the next one.
+	// status fails every request for a path.
 	status map[string]int
-	once   map[string]int
-	// holds make requests for a path wait until released; reached records that
-	// a request for a path has arrived.
-	holds   map[string]chan struct{}
-	reached map[string]bool
+	// holds make requests for a path wait until released.
+	holds map[string]chan struct{}
 }
 
 func newFakeGitHub(t *testing.T) *fakeGitHub {
 	t.Helper()
 	gh := &fakeGitHub{
 		t: t, lists: map[string][]map[string]any{}, rewound: map[string]int{},
-		status: map[string]int{}, once: map[string]int{}, holds: map[string]chan struct{}{}, reached: map[string]bool{},
+		status: map[string]int{}, holds: map[string]chan struct{}{},
 	}
 	for path, file := range fixtureLists {
 		raw, err := os.ReadFile(filepath.Join("testdata", "api", file))
@@ -137,11 +134,6 @@ func (gh *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	gh.mu.Lock()
 	gh.requests = append(gh.requests, r.URL.RequestURI())
 	status, failing := gh.status[path]
-	if code, ok := gh.once[path]; ok {
-		delete(gh.once, path)
-		status, failing = code, true
-	}
-	gh.reached[path] = true
 	hold := gh.holds[path]
 	gh.mu.Unlock()
 	if hold != nil {
@@ -318,12 +310,6 @@ func (gh *fakeGitHub) fail(path string, status int) {
 	gh.status[path] = status
 }
 
-func (gh *fakeGitHub) failNext(path string, status int) {
-	gh.mu.Lock()
-	defer gh.mu.Unlock()
-	gh.once[path] = status
-}
-
 // hold makes requests for path wait until release is called, which the test's
 // cleanup also does, so the server is never closed with a request stuck.
 func (gh *fakeGitHub) hold(path string) (release func()) {
@@ -335,12 +321,6 @@ func (gh *fakeGitHub) hold(path string) (release func()) {
 	gh.mu.Unlock()
 	gh.t.Cleanup(release)
 	return release
-}
-
-func (gh *fakeGitHub) wasReached(path string) bool {
-	gh.mu.Lock()
-	defer gh.mu.Unlock()
-	return gh.reached[path]
 }
 
 func (gh *fakeGitHub) seen() []string {
@@ -1499,6 +1479,11 @@ func TestWebhookFailuresAreServerErrors(t *testing.T) {
 			setup: func(_ *fakeGitHub, rec *connector.Recorder) { rec.Err = errors.New("store is down") },
 		},
 		{
+			// A gate outside a runtime has no store to record a re-sync in.
+			name: "a re-sync cannot be recorded", event: "repository", file: "repository.privatized",
+			setup: func(*fakeGitHub, *connector.Recorder) {},
+		},
+		{
 			name: "a pushed commit cannot be read", event: "push", file: "push",
 			setup: func(gh *fakeGitHub, _ *connector.Recorder) {
 				gh.fail("/repos/acme/api/compare/"+baseSHA+"..."+sha1, http.StatusInternalServerError)
@@ -1541,11 +1526,100 @@ func TestWebhookUsesTheConfiguredSpellingOfTheRepository(t *testing.T) {
 	}
 }
 
+// runtimeFor hosts the connector for src in a runtime, the way the connectors
+// service does, and returns it with a function that stops it. A test stops a
+// runtime and starts another over the same stores to be a restart.
+func runtimeFor(t *testing.T, src connector.SourceConfig, opts connector.RuntimeOptions) (*connector.Runtime, func()) {
+	t.Helper()
+	reg := connector.NewRegistry()
+	if err := reg.Register(github.Type, github.Factory); err != nil {
+		t.Fatal(err)
+	}
+	opts.Sources = []connector.SourceConfig{src}
+	opts.Registry = reg
+	// newSource puts the secrets' values where config puts variable names.
+	opts.Lookup = func(v string) (string, bool) { return v, true }
+	opts.Cadence = connector.Cadence{MinRefresh: time.Millisecond, Refresh: time.Millisecond, MaxBackoff: 5 * time.Millisecond, Shutdown: time.Second}
+	rt, err := connector.NewRuntime(t.Context(), opts)
+	if err != nil {
+		t.Fatalf("NewRuntime = %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- rt.Run(ctx) }()
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			cancel()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Errorf("Run = %v", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Error("the runtime did not stop within 10s")
+			}
+		})
+	}
+	t.Cleanup(stop)
+	return rt, stop
+}
+
+// requestedSince reports whether the fake has had a request for path since the
+// mark'th, so that a request from before a test's re-sync began does not count.
+func requestedSince(gh *fakeGitHub, mark int, path string) func() bool {
+	return func() bool {
+		return slices.ContainsFunc(gh.seen()[mark:], func(uri string) bool { return strings.HasPrefix(uri, path+"?") })
+	}
+}
+
+// resynced reports whether a re-sync of the container was asked for and has
+// finished.
+func resynced(t *testing.T, store connector.ResyncStore, source, container string) func() bool {
+	return func() bool {
+		records, err := store.Resyncs(t.Context(), source)
+		if err != nil {
+			t.Fatalf("reading the re-syncs: %v", err)
+		}
+		for _, r := range records {
+			if r.Container == container {
+				return r.Generation > 0 && !r.Owed
+			}
+		}
+		return false
+	}
+}
+
+// assertEveryArtifactPrivate checks what L0 would serve after a re-sync: every
+// artifact public held has a current revision under the private token, and no
+// container is exposed.
+func assertEveryArtifactPrivate(t *testing.T, public []connector.Event, l0 *connector.Recorder) {
+	t.Helper()
+	current := map[string]connector.Event{}
+	for _, ev := range l0.Events() {
+		current[ev.Payload.Artifact] = ev
+	}
+	for artifact := range artifacts(public) {
+		ev, ok := current[artifact]
+		if !ok || !strings.HasSuffix(ev.NativeID, "perm:private") {
+			t.Errorf("current revision of %s is %q, want one under perm:private", artifact, ev.NativeID)
+		}
+	}
+	exposed, err := l0.Exposed(t.Context(), sourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(exposed) != 0 {
+		t.Errorf("L0 still serves %+v as public", exposed)
+	}
+}
+
 // A repository going private re-emits every artifact with the composed token
-// and the collaborator group, and nothing else about any of them changes.
+// and the collaborator group, nothing else about any of them changes, and the
+// walk reads its own repository and no other.
 func TestRepositoryGoingPrivateResyncsEveryArtifact(t *testing.T) {
 	gh := newFakeGitHub(t)
-	src := newSource(t, gh, sourceID, nil)
+	src := newSource(t, gh, sourceID, nil, "acme/api", "acme/web")
 	c := newConnector(t, src)
 	public := &connector.Recorder{}
 	backfillAll(t, c, gateFor(src, c, public))
@@ -1554,15 +1628,21 @@ func TestRepositoryGoingPrivateResyncsEveryArtifact(t *testing.T) {
 	}
 
 	gh.private.Store(true)
-	resynced := &connector.Recorder{}
-	if code := deliver(t, c.Handler(gateFor(src, c, resynced)), "repository", hook(t, "repository.privatized")); code != http.StatusAccepted {
+	resyncs := connector.NewMemoryResyncs()
+	rec := &connector.Recorder{}
+	rt, stop := runtimeFor(t, src, connector.RuntimeOptions{Sink: rec, Resyncs: resyncs})
+	mark := len(gh.seen())
+	if code := deliver(t, rt.Handler(), "repository", hook(t, "repository.privatized")); code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202", code)
 	}
-	waitFor(t, "the re-sync", func() bool { return len(resynced.Events()) >= len(public.Events()) })
-	if err := c.Close(t.Context()); err != nil {
-		t.Fatalf("Close = %v", err)
+	waitFor(t, "the re-sync", resynced(t, resyncs, sourceID, "acme/api"))
+	stop()
+	assertPrivateOf(t, public.Events(), rec.Events())
+	for _, uri := range gh.seen()[mark:] {
+		if strings.HasPrefix(uri, "/repos/acme/web") {
+			t.Errorf("the re-sync of acme/api read %s", uri)
+		}
 	}
-	assertPrivateOf(t, public.Events(), resynced.Events())
 }
 
 // The reviewer's second case: a push emits a commit dated before the start
@@ -1571,11 +1651,11 @@ func TestRepositoryGoingPrivateResyncsEveryArtifact(t *testing.T) {
 func TestResyncReachesACommitAPushEmittedBeforeTheStartDate(t *testing.T) {
 	gh := newFakeGitHub(t)
 	src := newSource(t, gh, sourceID, map[string]any{"since": "2026-09-01"})
-	c := newConnector(t, src)
 	rec := &connector.Recorder{}
-	h := c.Handler(gateFor(src, c, rec))
+	resyncs := connector.NewMemoryResyncs()
+	rt, stop := runtimeFor(t, src, connector.RuntimeOptions{Sink: rec, Resyncs: resyncs})
 
-	if code := deliver(t, h, "push", hook(t, "push")); code != http.StatusAccepted {
+	if code := deliver(t, rt.Handler(), "push", hook(t, "push")); code != http.StatusAccepted {
 		t.Fatalf("push: status = %d, want 202", code)
 	}
 	old := "acme/api@" + sha2
@@ -1584,96 +1664,134 @@ func TestResyncReachesACommitAPushEmittedBeforeTheStartDate(t *testing.T) {
 	}
 
 	gh.private.Store(true)
-	if code := deliver(t, h, "repository", hook(t, "repository.privatized")); code != http.StatusAccepted {
+	if code := deliver(t, rt.Handler(), "repository", hook(t, "repository.privatized")); code != http.StatusAccepted {
 		t.Fatalf("privatized: status = %d, want 202", code)
 	}
-	want := old + "@perm:private"
-	waitFor(t, "the re-sync to re-emit "+want, func() bool { return slices.Contains(nativeIDs(rec.Events()), want) })
-	if err := c.Close(t.Context()); err != nil {
-		t.Fatalf("Close = %v", err)
+	waitFor(t, "the re-sync", resynced(t, resyncs, sourceID, "acme/api"))
+	stop()
+	if want := old + "@perm:private"; !slices.Contains(nativeIDs(rec.Events()), want) {
+		t.Errorf("the re-sync emitted %v, want %s", nativeIDs(rec.Events()), want)
 	}
 }
 
-// A re-sync that cannot read the repository reports degraded and retries; Close
-// stops it rather than waiting out the retry.
-func TestFailingResyncDegradesHealthAndCloseStopsIt(t *testing.T) {
-	gh := newFakeGitHub(t)
-	gh.fail("/repos/acme/api", http.StatusInternalServerError)
-	src := newSource(t, gh, sourceID, nil)
-	c := newConnector(t, src)
-	if code := deliver(t, c.Handler(gateFor(src, c, &connector.Recorder{})), "repository", hook(t, "repository.privatized")); code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202", code)
-	}
-	waitFor(t, "degraded health", func() bool { return c.Health(t.Context()).Status == connector.HealthDegraded })
-
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	if err := c.Close(ctx); err != nil {
-		t.Fatalf("Close = %v, want the re-sync stopped", err)
-	}
-	if h := c.Health(t.Context()); h.Status != connector.HealthOK {
-		t.Errorf("health after the re-sync stopped = %+v, want ok", h)
-	}
-}
-
-// A re-sync that failed and then worked reports ok again while it is still
-// walking, not only once it has finished.
-func TestResyncRecoversFromAFailure(t *testing.T) {
-	t.Cleanup(github.SetResyncRetry(time.Millisecond))
+// Issue #75, the first way a re-sync was lost: the process stops partway
+// through the walk. A new runtime, with a new connector and nothing but the
+// re-sync store and L0 from the old one, resumes where the walk had got to
+// and finishes it.
+func TestAResyncInterruptedByARestartResumes(t *testing.T) {
 	gh := newFakeGitHub(t)
 	src := newSource(t, gh, sourceID, nil)
+	l0 := &connector.Recorder{}
 	c := newConnector(t, src)
-	rec := &connector.Recorder{}
-	gh.failNext("/repos/acme/api", http.StatusBadGateway)
+	backfillAll(t, c, gateFor(src, c, l0))
+	public := l0.Events()
+
+	gh.private.Store(true)
+	resyncs := connector.NewMemoryResyncs()
 	commits := "/repos/acme/api/commits"
 	release := gh.hold(commits)
-
-	if code := deliver(t, c.Handler(gateFor(src, c, rec)), "repository", hook(t, "repository.privatized")); code != http.StatusAccepted {
+	first, stopFirst := runtimeFor(t, src, connector.RuntimeOptions{Sink: l0, Resyncs: resyncs})
+	begun := len(gh.seen())
+	if code := deliver(t, first.Handler(), "repository", hook(t, "repository.privatized")); code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202", code)
 	}
-	waitFor(t, "the re-sync to reach the commits", func() bool { return gh.wasReached(commits) })
-	if h := c.Health(t.Context()); h.Status != connector.HealthOK {
-		t.Errorf("health of a re-sync that recovered = %+v, want ok", h)
-	}
+	waitFor(t, "the re-sync to reach the commits", requestedSince(gh, begun, commits))
+	stopFirst()
 	release()
-	waitFor(t, "the re-sync", func() bool { return len(rec.Events()) >= len(wantBackfill) })
-	if err := c.Close(t.Context()); err != nil {
-		t.Fatalf("Close = %v", err)
+
+	rec := resyncs.Get(sourceID, "acme/api")
+	if !rec.Owed || rec.Cursor == "" || stepOf(t, rec.Cursor) != "commits" {
+		t.Fatalf("after the restart the store holds %+v, want an owed re-sync at the commits", rec)
 	}
-	if n := len(rec.Events()); n != len(wantBackfill) {
-		t.Errorf("re-sync emitted %d events, want %d", n, len(wantBackfill))
+
+	mark := len(gh.seen())
+	_, stop := runtimeFor(t, src, connector.RuntimeOptions{Sink: l0, Resyncs: resyncs})
+	waitFor(t, "the resumed re-sync", resynced(t, resyncs, sourceID, "acme/api"))
+	stop()
+	for _, uri := range gh.seen()[mark:] {
+		if strings.HasPrefix(uri, "/repos/acme/api/issues") || strings.HasPrefix(uri, "/repos/acme/api/pulls") {
+			t.Errorf("the restarted re-sync read %s: it started again rather than resuming", uri)
+		}
+	}
+	assertEveryArtifactPrivate(t, public, l0)
+}
+
+// Issue #75, the second way: the delivery saying the repository went private
+// is never handled — here it fails, because the process has nowhere to record
+// the re-sync; a process that was down never sees it at all. The next runtime
+// is told nothing, finds the repository L0 still serves as public, asks GitHub,
+// and re-syncs it. A runtime after that has nothing left to do.
+func TestAResyncWhoseDeliveryWasNeverHandledRunsAtStartup(t *testing.T) {
+	gh := newFakeGitHub(t)
+	src := newSource(t, gh, sourceID, nil)
+	l0 := &connector.Recorder{}
+	c := newConnector(t, src)
+	backfillAll(t, c, gateFor(src, c, l0))
+	public := l0.Events()
+
+	gh.private.Store(true)
+	down, stopDown := runtimeFor(t, src, connector.RuntimeOptions{Sink: l0})
+	if code := deliver(t, down.Handler(), "repository", hook(t, "repository.privatized")); code != http.StatusInternalServerError {
+		t.Fatalf("a delivery with nowhere to record the re-sync: status = %d, want 500", code)
+	}
+	stopDown()
+
+	resyncs := connector.NewMemoryResyncs()
+	_, stop := runtimeFor(t, src, connector.RuntimeOptions{Sink: l0, Resyncs: resyncs, Exposure: l0})
+	waitFor(t, "the re-sync nobody asked for", resynced(t, resyncs, sourceID, "acme/api"))
+	stop()
+	assertEveryArtifactPrivate(t, public, l0)
+
+	mark := len(gh.seen())
+	emitted := len(l0.Events())
+	_, stopAgain := runtimeFor(t, src, connector.RuntimeOptions{Sink: l0, Resyncs: resyncs, Exposure: l0})
+	time.Sleep(50 * time.Millisecond)
+	stopAgain()
+	if seen := gh.seen()[mark:]; len(seen) != 0 {
+		t.Errorf("a runtime started after the re-sync read %v, want nothing", seen)
+	}
+	if n := len(l0.Events()); n != emitted {
+		t.Errorf("a runtime started after the re-sync emitted %d events, want none", n-emitted)
 	}
 }
 
-// A second delivery of the same visibility change while its re-sync runs
-// starts no second walk, and a re-sync reads its own repository and no other.
-func TestResyncRunsOncePerRepositoryAndStaysInIt(t *testing.T) {
+// Public is GitHub's word on the repository now, and a repository config does
+// not name is not asked about.
+func TestPublic(t *testing.T) {
+	gh := newFakeGitHub(t)
+	src := newSource(t, gh, sourceID, nil)
+	c := newConnector(t, src)
+	for _, private := range []bool{false, true} {
+		gh.private.Store(private)
+		public, err := c.Public(t.Context(), "acme/api")
+		if err != nil || public == private {
+			t.Errorf("Public(acme/api) with private=%v = %v, %v", private, public, err)
+		}
+	}
+	if _, err := c.Public(t.Context(), "acme/other"); err == nil {
+		t.Error("Public(acme/other) = no error, want one: the source does not name it")
+	}
+}
+
+// Resync refuses a cursor it could not have written for the repository.
+func TestResyncRefusesAForeignCursor(t *testing.T) {
 	gh := newFakeGitHub(t)
 	src := newSource(t, gh, sourceID, nil, "acme/api", "acme/web")
 	c := newConnector(t, src)
-	rec := &connector.Recorder{}
-	h := c.Handler(gateFor(src, c, rec))
-	issues := "/repos/acme/api/issues"
-	release := gh.hold(issues)
-
-	if code := deliver(t, h, "repository", hook(t, "repository.privatized")); code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202", code)
+	tests := []struct {
+		name, container string
+		cursor          connector.Cursor
+	}{
+		{"a repository the source does not name", "acme/other", ""},
+		{"another repository's cursor", "acme/api", `{"repo":"acme/web","step":"issues"}`},
+		{"a step the connector does not have", "acme/api", `{"repo":"acme/api","step":"wikis"}`},
+		{"not a cursor", "acme/api", `nope`},
 	}
-	waitFor(t, "the re-sync to start", func() bool { return gh.wasReached(issues) })
-	if code := deliver(t, h, "repository", hook(t, "repository.privatized")); code != http.StatusNoContent {
-		t.Fatalf("redelivery: status = %d, want 204: a re-sync of the repository is already running", code)
-	}
-	release()
-	waitFor(t, "the re-sync", func() bool { return len(rec.Events()) >= len(wantBackfill) })
-	if err := c.Close(t.Context()); err != nil {
-		t.Fatalf("Close = %v", err)
-	}
-	if n := len(rec.Events()); n != len(wantBackfill) {
-		t.Errorf("re-sync emitted %d events, want %d: the redelivery started a second walk", n, len(wantBackfill))
-	}
-	for _, uri := range gh.seen() {
-		if strings.HasPrefix(uri, "/repos/acme/web") {
-			t.Errorf("the re-sync of acme/api read %s", uri)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := c.Resync(t.Context(), &connector.Recorder{}, tt.container, tt.cursor); err == nil {
+				t.Errorf("Resync(%s, %s) = no error, want one", tt.container, tt.cursor)
+			}
+		})
 	}
 }

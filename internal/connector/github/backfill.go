@@ -64,15 +64,63 @@ func (c *Connector) Backfill(ctx context.Context, sink connector.Sink, from conn
 	if err != nil {
 		return connector.BackfillResult{}, err
 	}
+	return result(n, next)
+}
+
+// Public implements [connector.Resyncer]: whether GitHub says a configured
+// repository is public now.
+func (c *Connector) Public(ctx context.Context, container string) (bool, error) {
+	if !slices.Contains(c.repos, container) {
+		return false, fmt.Errorf("repository %s is not one the source names", container)
+	}
+	var repo repository
+	if _, err := c.api.get(ctx, repoPath(container), &repo); err != nil {
+		return false, fmt.Errorf("reading repository %s: %w", container, err)
+	}
+	return !repo.Private, nil
+}
+
+// Resync implements [connector.Resyncer]: one page of one step of the walk a
+// backfill makes, over one repository, with no start date — a push webhook
+// emits a commit whatever its date, and anything a webhook may have emitted with
+// the public ACL has to be emitted again. The page reads the repository's
+// visibility, so every event carries the ACL it has now.
+func (c *Connector) Resync(ctx context.Context, sink connector.Sink, container string, from connector.Cursor) (connector.BackfillResult, error) {
+	if !slices.Contains(c.repos, container) {
+		return connector.BackfillResult{}, fmt.Errorf("repository %s is not one the source names", container)
+	}
+	pos := &position{Repo: container, Step: steps[0]}
+	if from != "" {
+		var err error
+		if pos, err = decode(from); err != nil {
+			return connector.BackfillResult{}, fmt.Errorf("re-sync %w", err)
+		}
+		if pos.Repo != container {
+			return connector.BackfillResult{}, fmt.Errorf("re-sync cursor names repository %s, not %s", pos.Repo, container)
+		}
+	}
+	n, next, err := c.page(ctx, sink, *pos, time.Time{})
+	if err != nil {
+		return connector.BackfillResult{}, err
+	}
+	if next != nil && next.Repo != container {
+		// The walk moved on to the next configured repository.
+		next = nil
+	}
+	return result(n, next)
+}
+
+// result is what a page means to the runtime: done, or the cursor after it.
+func result(n int, next *position) (connector.BackfillResult, error) {
 	if next == nil {
 		return connector.BackfillResult{Done: true, Events: n}, nil
 	}
 	raw, err := json.Marshal(next)
 	if err != nil {
-		return connector.BackfillResult{}, fmt.Errorf("encoding the backfill cursor: %w", err)
+		return connector.BackfillResult{}, fmt.Errorf("encoding the cursor: %w", err)
 	}
 	if len(raw) > connector.MaxCursorLen {
-		return connector.BackfillResult{}, fmt.Errorf("backfill cursor for %s is %d bytes, over the %d a cursor may be", next.Repo, len(raw), connector.MaxCursorLen)
+		return connector.BackfillResult{}, fmt.Errorf("cursor for %s is %d bytes, over the %d a cursor may be", next.Repo, len(raw), connector.MaxCursorLen)
 	}
 	return connector.BackfillResult{Next: connector.Cursor(raw), Events: n}, nil
 }
@@ -85,19 +133,11 @@ func (c *Connector) resume(from connector.Cursor) (*position, error) {
 	if from == "" {
 		return &position{Repo: c.repos[0], Step: steps[0]}, nil
 	}
-	var pos position
-	if err := json.Unmarshal([]byte(from), &pos); err != nil {
-		return nil, fmt.Errorf("backfill cursor is not one the github connector wrote: %w", err)
+	decoded, err := decode(from)
+	if err != nil {
+		return nil, fmt.Errorf("backfill %w", err)
 	}
-	if !slices.Contains(steps, pos.Step) {
-		return nil, fmt.Errorf("backfill cursor names step %q, which the github connector does not have", pos.Step)
-	}
-	if pos.Page < 0 {
-		return nil, fmt.Errorf("backfill cursor names page %d", pos.Page)
-	}
-	if _, err := parseStamp(pos.Since); err != nil {
-		return nil, fmt.Errorf("backfill cursor: %w", err)
-	}
+	pos := *decoded
 	if slices.Contains(c.repos, pos.Repo) {
 		return &pos, nil
 	}
@@ -107,6 +147,25 @@ func (c *Connector) resume(from connector.Cursor) (*position, error) {
 		}
 	}
 	return nil, nil
+}
+
+// decode reads a cursor the connector wrote, backfill or re-sync, and refuses
+// one it could not have.
+func decode(from connector.Cursor) (*position, error) {
+	var pos position
+	if err := json.Unmarshal([]byte(from), &pos); err != nil {
+		return nil, fmt.Errorf("cursor is not one the github connector wrote: %w", err)
+	}
+	if !slices.Contains(steps, pos.Step) {
+		return nil, fmt.Errorf("cursor names step %q, which the github connector does not have", pos.Step)
+	}
+	if pos.Page < 0 {
+		return nil, fmt.Errorf("cursor names page %d", pos.Page)
+	}
+	if _, err := parseStamp(pos.Since); err != nil {
+		return nil, fmt.Errorf("cursor: %w", err)
+	}
+	return &pos, nil
 }
 
 // parseStamp reads a position's Since; empty is the zero time.
