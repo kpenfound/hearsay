@@ -112,6 +112,16 @@ type exposure []connector.Exposure
 
 func (e exposure) Exposed(context.Context, string) ([]connector.Exposure, error) { return e, nil }
 
+// idleSignal is an [connector.ExposureReader] with nothing exposed that says
+// when it has been read: the runtime reads it last, so after that it is idle
+// until something wakes it.
+type idleSignal chan struct{}
+
+func (s idleSignal) Exposed(context.Context, string) ([]connector.Exposure, error) {
+	close(s)
+	return nil, nil
+}
+
 func settled(store *connector.MemoryResyncs, source, container string) func() bool {
 	return func() bool {
 		r := store.Get(source, container)
@@ -143,17 +153,24 @@ func TestAnOwedResyncResumesFromItsStoredCursor(t *testing.T) {
 }
 
 // A push connector asks for a re-sync through the sink it was handed, which
-// records it before returning and wakes the runtime to walk it. A container
+// records it before returning and wakes the runtime, idle by then, to walk it.
+// A container
 // config does not allow owes nothing, and without a store nothing is recorded
 // and the connector is told.
 func TestARequestedResyncIsRecordedAndRun(t *testing.T) {
 	src := runtimeSource("request")
 	w := newWalker(src, 2)
 	resyncs := connector.NewMemoryResyncs()
+	idle := make(idleSignal)
 	_, stop := start(t, connector.RuntimeOptions{
 		Sources: []connector.SourceConfig{src}, Registry: registryOf(t, map[string]connector.Connector{src.ID: w}),
-		Sink: &connector.Recorder{}, Resyncs: resyncs,
+		Sink: &connector.Recorder{}, Resyncs: resyncs, Exposure: idle,
 	})
+	select {
+	case <-idle:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for the runtime to finish its startup check")
+	}
 	req := w.requester(t)
 	if err := req.RequestResync(t.Context(), "elsewhere"); err != nil {
 		t.Errorf("RequestResync(a container config does not allow) = %v, want nil", err)
