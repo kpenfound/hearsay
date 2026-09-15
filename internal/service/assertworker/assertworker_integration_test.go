@@ -281,6 +281,104 @@ func TestReadingADocumentAgainWritesNothingTwice(t *testing.T) {
 	}
 }
 
+// The #51 fixture plus one comment (#72): the issue proposes (S1), the merged
+// pull request does otherwise (S2), and the issue, commented on after the merge
+// and re-distilled, is read again and restated in other words (S3). S3 replaces
+// the issue's own S1; it is not recorded as reversing the merged pull request,
+// and the issue is left with one live stance on the topic.
+func TestARedistilledDocumentReplacesItsOwnStance(t *testing.T) {
+	pool := newPool(t)
+	src := newSource(t)
+	f := store(t, pool, src)
+	scope := l2.ScopeKey(testRepo(src), src, repo)
+	a := newAsserter(t, pool, src, loadFixtures(t))
+	assertDoc(t, a, f.issueID, scope)
+	assertDoc(t, a, f.prID, scope)
+
+	comment := issueComment(src)
+	if _, err := l0.New(pool).Append(t.Context(), comment); err != nil {
+		t.Fatalf("Append(comment) = %v", err)
+	}
+	commented := commentedIssueDoc(t, src)
+	if changed, err := l1.New(pool).Put(t.Context(), commented); err != nil || !changed {
+		t.Fatalf("Put(the commented issue) = %v, %v, want a new version", changed, err)
+	}
+	if r := assertDoc(t, a, f.issueID, scope); r.Unchanged || r.StancesWritten != 1 || r.TopicsOpened != 0 {
+		t.Fatalf("Assert(the commented issue) = %+v, want the topic continued with one new stance", r)
+	}
+
+	graph := l2.New(pool)
+	topics, err := graph.Topics(t.Context(), scope)
+	if err != nil || len(topics) != 1 {
+		t.Fatalf("Topics() = %+v, %v, want the one topic", topics, err)
+	}
+	history, err := graph.StanceHistory(t.Context(), topics[0].ID)
+	if err != nil || len(history) != 3 {
+		t.Fatalf("StanceHistory() = %+v, %v, want three stances", history, err)
+	}
+	s1, s2, s3 := history[0], history[1], history[2]
+	if s1.Position != issuePosition || s2.Position != prPosition || s3.Position != restatedPosition {
+		t.Fatalf("StanceHistory() positions = %q, %q, %q", s1.Position, s2.Position, s3.Position)
+	}
+	if s2.Supersedes != s1.ID {
+		t.Errorf("the pull request's stance supersedes %q, want the issue's first %q", s2.Supersedes, s1.ID)
+	}
+	if s3.Supersedes != s1.ID {
+		t.Errorf("the issue's restatement supersedes %q, want the issue's own earlier stance %q, not the merged pull request's", s3.Supersedes, s1.ID)
+	}
+	if !slices.Equal(s3.Evidence, []string{f.issueID}) || s3.Tier != l2.TierInferred {
+		t.Errorf("the restatement = %+v, want the issue's, inferred", s3)
+	}
+	superseded := map[string]bool{}
+	for _, st := range history {
+		superseded[st.Supersedes] = true
+	}
+	live := 0
+	for _, st := range history {
+		if st.Evidence[0] == f.issueID && !superseded[st.ID] {
+			live++
+		}
+	}
+	if live != 1 {
+		t.Errorf("the issue has %d unsuperseded stances on the topic, want 1", live)
+	}
+
+	// The comment is deleted and the issue re-distilled without it, so its
+	// last activity moves back before the merge. Read again (S4), it replaces
+	// S3 and retires it, though S3 is still the newest stated on the topic.
+	tombstone := event(src, connector.KindTombstone, comment.NativeID+":tombstone", at(9), "", "", "", "")
+	tombstone.Payload.Author, tombstone.Payload.Target = nil, comment.NativeID
+	if _, err := l0.New(pool).Append(t.Context(), tombstone); err != nil {
+		t.Fatalf("Append(tombstone) = %v", err)
+	}
+	uncommented := issueDoc(t, src)
+	if changed, err := l1.New(pool).Put(t.Context(), uncommented); err != nil || !changed {
+		t.Fatalf("Put(the issue without its comment) = %v, %v, want a new version", changed, err)
+	}
+	if r := assertDoc(t, a, f.issueID, scope); r.StancesWritten != 1 {
+		t.Fatalf("Assert(the issue without its comment) = %+v, want one new stance", r)
+	}
+	after, err := graph.StanceHistory(t.Context(), topics[0].ID)
+	if err != nil || len(after) != 4 {
+		t.Fatalf("StanceHistory() = %+v, %v, want four stances", after, err)
+	}
+	if last := after[len(after)-1]; last.ID != s3.ID {
+		t.Fatalf("the newest stated stance is %q, want the retired restatement %q", last.Position, s3.Position)
+	}
+
+	// The pull request read again is shown the topic at its current stance,
+	// the merged pull request's own, not at the newest stated. Only the
+	// recording keyed on that candidate exists, so showing the retired
+	// restatement fails the call.
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE l2_asserted SET distilled_at = distilled_at - interval '1 second' WHERE doc_id = $1`, f.prID); err != nil {
+		t.Fatalf("moving the recorded version: %v", err)
+	}
+	if r := assertDoc(t, a, f.prID, scope); r.Positions != 1 || r.StancesWritten != 0 {
+		t.Errorf("Assert(the pull request again) = %+v, want its one position, already stored", r)
+	}
+}
+
 // What a model writes is held to what L1 holds a person's words to: an email
 // address is scrubbed out of a position, and an assertion with nothing left in
 // its position, or a new topic with nothing left in its name, is dropped rather

@@ -120,6 +120,29 @@ func (s Stance) Validate() error {
 	return nil
 }
 
+// Current is the stance a topic stands at, given its history in the order
+// [Store.StanceHistory] returns it: the newest stated that a later reading of
+// its own document has not retired. It is [RetiredSQL]'s rule, and internal/l3's,
+// for a history already read. It reports false for a topic with no stance.
+func Current(history []Stance) (Stance, bool) {
+	from := make(map[string]string, len(history))
+	for _, st := range history {
+		from[st.ID] = st.Evidence[0]
+	}
+	retired := map[string]bool{}
+	for _, st := range history {
+		if st.Supersedes != "" && from[st.Supersedes] == st.Evidence[0] {
+			retired[st.Supersedes] = true
+		}
+	}
+	for i := len(history) - 1; i >= 0; i-- {
+		if !retired[history[i].ID] {
+			return history[i], true
+		}
+	}
+	return Stance{}, false
+}
+
 // TopicID is the id of a topic opened from a document. It is a function of the
 // scope, the document, the topic's name and where in the answer it came, so a
 // job run twice over the same answer opens the same topic rather than two.

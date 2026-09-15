@@ -56,7 +56,8 @@ type CurrentStance struct {
 }
 
 // currentSQL is every topic about one of the entities or an ancestor of one,
-// with the stance it stands at: the newest stated, which is the head of the
+// with the stance it stands at: the newest stated that a later reading of its
+// own document has not retired ([l2.RetiredSQL]), which is the head of the
 // supersession chain — a document read late forks the chain behind the head
 // and never replaces it (internal/l2). The walk up `part_of` is a UNION, so a
 // cycle ends it rather than looping.
@@ -71,7 +72,7 @@ SELECT t.id, t.scope, t.name, t.about, t.acl, t.opened_by, t.created_at,
        coalesce(p.position, ''), coalesce(p.acl, '[]'::jsonb)
 FROM l2_topics t
 JOIN LATERAL (
-    SELECT * FROM l2_stances WHERE topic_id = t.id
+    SELECT * FROM l2_stances s WHERE s.topic_id = t.id AND NOT ` + l2.RetiredSQL + `
     ORDER BY stated_at DESC, created_at DESC, id DESC LIMIT 1
 ) s ON true
 LEFT JOIN l2_stances p ON p.id = s.supersedes

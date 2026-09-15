@@ -239,6 +239,92 @@ func TestStancesAreSupersededNeverOverwritten(t *testing.T) {
 	}
 }
 
+// A document read again in a new version replaces its own stance on a topic
+// rather than answering whatever is newest there (#72).
+func TestANewReadingOfADocumentRetiresItsOwnStance(t *testing.T) {
+	pool := newPool(t)
+	store := l2.New(pool)
+	ctx := t.Context()
+	topic := openTopic(t, store, unique(), public)
+	add := func(st l2.Stance) l2.Stance {
+		t.Helper()
+		stored, written, err := store.AppendStance(ctx, st)
+		if err != nil || !written {
+			t.Fatalf("AppendStance(%s) = %v, written %v", st.Position, err, written)
+		}
+		return stored
+	}
+	live := func() []string {
+		t.Helper()
+		history, err := store.StanceHistory(ctx, topic.ID)
+		if err != nil {
+			t.Fatalf("StanceHistory() = %v", err)
+		}
+		superseded := map[string]bool{}
+		for _, st := range history {
+			superseded[st.Supersedes] = true
+		}
+		var out []string
+		for _, st := range history {
+			if !superseded[st.ID] {
+				out = append(out, st.Position)
+			}
+		}
+		return out
+	}
+
+	// The #51 fixture plus a comment: the issue proposes, the merged pull
+	// request does otherwise, and the issue, re-distilled after the merge,
+	// restates its proposal in other words.
+	s1 := add(stance(topic, "l1:s:issue", "move the lock into the queue", 1))
+	s2 := add(stance(topic, "l1:s:pr", "the engine takes the lock", 3))
+	s3 := add(stance(topic, "l1:s:issue", "the queue should hold the lock", 5))
+	if s2.Supersedes != s1.ID {
+		t.Errorf("the pull request's stance supersedes %q, want the issue's %q", s2.Supersedes, s1.ID)
+	}
+	if s3.Supersedes != s1.ID {
+		t.Errorf("the issue's restatement supersedes %q, want the issue's own earlier stance %q", s3.Supersedes, s1.ID)
+	}
+	from, err := store.StancesFrom(ctx, "l1:s:issue")
+	if err != nil {
+		t.Fatalf("StancesFrom(issue) = %v", err)
+	}
+	if kept := slices.DeleteFunc(from, func(st l2.Stance) bool { return st.TopicID != topic.ID }); len(kept) != 2 {
+		t.Errorf("StancesFrom(issue) on the topic = %+v, want both readings kept", kept)
+	}
+	if got, want := live(), []string{"the engine takes the lock", "the queue should hold the lock"}; !slices.Equal(got, want) {
+		t.Errorf("unsuperseded stances = %q, want %q: one per document", got, want)
+	}
+
+	// A later document on the topic answers the head, never the retired stance.
+	s4 := add(stance(topic, "l1:s:thread", "agreed, the engine", 6))
+	if s4.Supersedes != s3.ID {
+		t.Errorf("a later document's stance supersedes %q, want the head %q", s4.Supersedes, s3.ID)
+	}
+
+	// A reading stated earlier than the document's previous one — a deletion
+	// took the comment that moved its last activity — still replaces it, and
+	// the newer stance it retired is not the topic's current one.
+	s5 := add(stance(topic, "l1:s:thread", "the engine, for now", 2))
+	if s5.Supersedes != s4.ID {
+		t.Errorf("a reading stated before its document's last supersedes %q, want that document's %q", s5.Supersedes, s4.ID)
+	}
+	history, err := store.StanceHistory(ctx, topic.ID)
+	if err != nil {
+		t.Fatalf("StanceHistory() = %v", err)
+	}
+	if current, ok := l2.Current(history); !ok || current.ID != s3.ID {
+		t.Errorf("Current() = %+v, %v, want the issue's restatement: the thread's newer stance was retired", current, ok)
+	}
+
+	// A document stated after the retired stance skips it for the newest live
+	// one.
+	s6 := add(stance(topic, "l1:s:review", "ship it", 7))
+	if s6.Supersedes != s3.ID {
+		t.Errorf("a stance stated after a retired one supersedes %q, want the newest live one before it, %q", s6.Supersedes, s3.ID)
+	}
+}
+
 func TestTopicsAreOnlyOfferedToDocumentsTheirReadersMayRead(t *testing.T) {
 	pool := newPool(t)
 	store := l2.New(pool)

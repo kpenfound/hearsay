@@ -325,19 +325,39 @@ func aclJSON(acl connector.ACL) string {
 
 const stanceColumns = `id, topic_id, position, author, stated_at, evidence, coalesce(supersedes, ''), tier, acl, created_at`
 
-// predecessorSQL is the stance a new one supersedes: the newest stance on the
-// topic stated no later than it. A stance stated earlier than the topic's
-// current one — a document that was read late — supersedes what came before it
-// and is superseded by nothing, so the chain forks rather than a later stance
-// being rewritten to point at it. A stance is never overwritten.
+// RetiredSQL is the predicate, over a stance aliased `s`, that a later reading
+// of its own document replaced it: a stance from the same document on the same
+// topic supersedes it. A retired stance is never a topic's current one, and
+// never a predecessor again. It reads through the topic's index, not the whole
+// table. internal/l3 uses it too, so the head the views serve and the head the
+// store appends behind are the same stance.
+const RetiredSQL = `EXISTS (
+    SELECT 1 FROM l2_stances n
+    WHERE n.topic_id = s.topic_id AND n.supersedes = s.id AND n.evidence[1] = s.evidence[1])`
+
+// predecessorSQL is the stance a new one supersedes.
+//
+// A document that already holds a live stance on the topic is being read again
+// in a new version, and the new stance replaces that one, whenever either was
+// stated: one document holds at most one live stance per topic, and a
+// re-distilled document's restatement is recorded as a change to what that
+// document said, not as a reply to whatever is newest on the topic.
+//
+// Otherwise it is the newest live stance on the topic stated no later than the
+// new one. A stance stated earlier than the topic's current one — a document
+// that was read late — supersedes what came before it and is superseded by
+// nothing, so the chain forks rather than a later stance being rewritten to
+// point at it. A stance is never overwritten.
 const predecessorSQL = `
-SELECT id FROM l2_stances
-WHERE topic_id = $1 AND stated_at <= $2 AND id <> $3
-ORDER BY stated_at DESC, created_at DESC, id DESC
+SELECT s.id FROM l2_stances s
+WHERE s.topic_id = $1 AND s.id <> $3 AND (s.evidence[1] = $4 OR s.stated_at <= $2)
+  AND NOT ` + RetiredSQL + `
+ORDER BY s.evidence[1] = $4 DESC, s.stated_at DESC, s.created_at DESC, s.id DESC
 LIMIT 1`
 
-// AppendStance adds a stance to its topic, superseding the one before it, and
-// returns the stance as stored with whether this call wrote it. A stance's id is
+// AppendStance adds a stance to its topic, superseding the one before it — its
+// own document's earlier stance on the topic where there is one — and returns
+// the stance as stored with whether this call wrote it. A stance's id is
 // derived from its topic, its document and its position ([StanceID]), so one
 // already stored under the id is not written again — that is what makes
 // re-reading a document idempotent — and is returned as it was stored the first
@@ -357,7 +377,7 @@ func (s *Store) AppendStance(ctx context.Context, st Stance) (Stance, bool, erro
 		return Stance{}, false, fmt.Errorf("%w: stance %s is not the id derived from its topic, document and position", ErrInvalid, st.ID)
 	}
 	var predecessor *string
-	err := s.db.QueryRow(ctx, predecessorSQL, st.TopicID, st.StatedAt, st.ID).Scan(&predecessor)
+	err := s.db.QueryRow(ctx, predecessorSQL, st.TopicID, st.StatedAt, st.ID, st.Evidence[0]).Scan(&predecessor)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return Stance{}, false, fmt.Errorf("finding what stance %s supersedes: %w", st.ID, err)
 	}

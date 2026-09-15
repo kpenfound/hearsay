@@ -29,9 +29,18 @@ corrupt.
 - **"Merged" is read from the distiller's classification.** The connector
   contract gives a pull request no state, so [TierFor] reads a `pr` document
   whose outcome is `resolved` as a merged one.
-- **Supersession follows `stated_at`, the evidence's time.** A document read late
-  supersedes the newest stance before it and is superseded by nothing, so the
-  chain forks; the later stance is never rewritten to point at it.
+- **A new reading of a document replaces that document's own stance.** A
+  document that already holds a live stance on a topic — it was re-distilled,
+  or re-run after a deletion — supersedes that stance, not whatever is newest
+  on the topic, so one document holds at most one live stance per topic and a
+  restatement never reads as a reply to a later document. The replaced stance
+  is *retired* (`RetiredSQL`, [Current]): never a topic's current stance, and
+  never a predecessor again. A reading that takes the same position writes
+  nothing, so only a change is recorded, and always as a supersession.
+- **Otherwise supersession follows `stated_at`, the evidence's time.** A
+  document read late supersedes the newest live stance before it and is
+  superseded by nothing, so the chain forks; the later stance is never
+  rewritten to point at it.
 - **Idempotency has two layers.** `l2_asserted` records the version of each
   document read, compared for equality and never ordered, so a restart makes no
   model call. Topic and stance ids are derived from what produced them, and the
