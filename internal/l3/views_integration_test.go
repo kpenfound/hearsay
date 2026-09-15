@@ -190,6 +190,12 @@ func TestCurrentStancesAreTheHeadsTheReaderMayRead(t *testing.T) {
 	stance(forked, "l1:a", "first", 1, public)
 	stance(forked, "l1:b", "newest", 5, public)
 	stance(forked, "l1:c", "read late", 3, public) // forks behind the head
+	// A document read again, stated earlier than it was the first time (a
+	// deletion moved its last activity back): the newer stance it retired is
+	// not current.
+	restated := topic("restated", child)
+	stance(restated, "l1:k", "said at first", 8, public)
+	stance(restated, "l1:k", "said again", 6, public)
 	secretPast := topic("a private past", child)
 	stance(secretPast, "l1:d", "what kyle alone saw", 1, private)
 	stance(secretPast, "l1:e", "what everyone sees", 2, public)
@@ -230,6 +236,7 @@ func TestCurrentStancesAreTheHeadsTheReaderMayRead(t *testing.T) {
 
 	sams, withheld := read(sam)
 	wantSam := []row{
+		{"restated", "said again", "said at first", false},
 		{"forked", "newest", "first", false},
 		{"a private past", "what everyone sees", "", false},
 		{"inherited", "from the parent", "", true},
@@ -240,6 +247,7 @@ func TestCurrentStancesAreTheHeadsTheReaderMayRead(t *testing.T) {
 	}
 	kyles, withheld := read(kyle)
 	wantKyle := []row{
+		{"restated", "said again", "said at first", false},
 		{"forked", "newest", "first", false},
 		{"a private topic", "a public position", "", false},
 		{"a private present", "private now", "public once", false},

@@ -173,6 +173,33 @@ type exchange struct {
 	answer     map[string]any
 }
 
+// restatedPosition is the issue's proposal as the model words it when the
+// issue is read again after a comment: the same position, other words.
+const restatedPosition = "The job queue should hold the lock."
+
+// issueComment is a comment on the issue made after the pull request merged.
+func issueComment(src string) connector.Event {
+	comment := event(src, connector.KindMessage, repo+"#12:comment:90", at(5), "samr", "u2", "",
+		"Noting for the record that this was fixed differently in #31.")
+	comment.Payload.Parent, comment.Payload.Thread = repo+"#12", repo+"#12"
+	return comment
+}
+
+var commentedIssueBody = l1.Body{
+	Summary:     "The engine writes before taking its lock, which races with the job queue. The author proposes moving the lock into the job queue; a later comment notes #31 fixed it differently.",
+	Question:    "Where should the lock be taken?",
+	Outcome:     "Proposed: take the lock inside the job queue.",
+	OutcomeKind: l1.OutcomeProposed,
+}
+
+// commentedIssueDoc is the issue's second version: re-distilled after the
+// comment, so its last activity is after the merge.
+func commentedIssueDoc(t *testing.T, src string) l1.Document {
+	t.Helper()
+	f := newFixture(src)
+	return buildDoc(t, src, f.issue, []connector.Event{issueComment(src)}, commentedIssueBody)
+}
+
 func issueDoc(t *testing.T, src string) l1.Document { issue, _ := documents(t, src); return issue }
 func prDoc(t *testing.T, src string) l1.Document    { _, pr := documents(t, src); return pr }
 
@@ -194,6 +221,12 @@ func exchanges() []exchange {
 			doc:        issueDoc,
 			candidates: []assertworker.Candidate{{Name: topicName, Current: issuePosition}},
 			answer:     map[string]any{"assertions": []map[string]any{{"topic": "T1", "topic_name": topicName, "position": issuePosition}}},
+		},
+		{
+			name:       "the issue, commented on after the merge, restates its proposal in other words",
+			doc:        commentedIssueDoc,
+			candidates: []assertworker.Candidate{{Name: topicName, Current: prPosition}},
+			answer:     map[string]any{"assertions": []map[string]any{{"topic": "T1", "topic_name": topicName, "position": restatedPosition}}},
 		},
 		{
 			name: "the commit's answer carries what must not be stored",

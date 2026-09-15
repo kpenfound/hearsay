@@ -16,8 +16,9 @@ L2 it is not an L3 view — it is an L2 fact and belongs in `internal/l2`.
 - **Every view is for a reader.** The access lists are applied before a count
   cuts anything (`l1.Store.ListFor`), so a document somebody may not read never
   takes one of their places in `recent`.
-- **A topic's current stance is the newest stated,** the head of its supersession
-  chain. When the reader may not read it, the topic is left out and counted —
+- **A topic's current stance is the newest stated that is not retired,** the
+  head of its supersession chain; a stance its own document's later reading
+  replaced is retired (internal/l2). When the reader may not read it, the topic is left out and counted —
   the older stance they may read is not current, and offering it as current
   would be wrong in a way they could not see.
 - **A stance is an entity's own only when its topic's `about` names that entity

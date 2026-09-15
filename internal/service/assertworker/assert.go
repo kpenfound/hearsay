@@ -156,8 +156,8 @@ func (a *Asserter) Assert(ctx context.Context, docID, scope string) (Result, err
 			return Result{}, err
 		}
 		candidates[i] = Candidate{Name: t.Name}
-		if len(history) > 0 {
-			candidates[i].Current = history[len(history)-1].Position
+		if current, ok := l2.Current(history); ok {
+			candidates[i].Current = current.Position
 		}
 	}
 

@@ -432,9 +432,11 @@ has not read, which is what picks up documents written before it was deployed.
 
 Three rules to know before changing it:
 
-- **A stance is never overwritten.** A new one supersedes the newest stance on
-  its topic stated no later than it; a document read late forks the chain rather
-  than rewriting a later stance.
+- **A stance is never overwritten.** A new one supersedes its own document's
+  earlier stance on the topic where there is one — a re-distilled document
+  replaces what it said, it does not answer what came after — and otherwise the
+  newest live stance on its topic stated no later than it; a document read late
+  forks the chain rather than rewriting a later stance.
 - **Re-reading a document is idempotent twice over.** `l2_asserted` records
   which version (`distilled_at`) was read, so a restart makes no model call; and
   topic and stance ids are derived from what produced them — a stance's from its
