@@ -201,9 +201,14 @@ func (c *Connector) events(ctx context.Context, event string, v view, d delivery
 		if d.Review == nil || d.PullRequest == nil {
 			return nil, missing("review or pull_request")
 		}
-		// A submitted review does not change (docs/connector-contract.md), so an
-		// edit or a dismissal is not a new observation of it.
-		if d.Action != "submitted" || !d.Review.submitted() {
+		// An edit or a dismissal changes a review's content token, so it is a new
+		// revision (ADR-0012); a pending review is not an artifact yet.
+		switch d.Action {
+		case "submitted", "edited", "dismissed":
+		default:
+			return nil, nil
+		}
+		if !d.Review.submitted() {
 			return nil, nil
 		}
 		return one(v.reviewEvent(d.PullRequest.Number, *d.Review))

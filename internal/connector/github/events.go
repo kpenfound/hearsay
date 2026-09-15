@@ -1,6 +1,8 @@
 package github
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -373,13 +375,24 @@ func (r review) submitted() bool {
 	return r.SubmittedAt != nil && !strings.EqualFold(r.State, "pending")
 }
 
+// reviewToken is a review's content token: the first 16 hex digits of the
+// SHA-256 of its lower-case state, a newline, and its body (ADR-0012). GitHub
+// moves no version field when a review is edited or dismissed, so what changed
+// is hashed instead; a state has no newline in it, so the two cannot run
+// together.
+func reviewToken(r review) string {
+	sum := sha256.Sum256([]byte(strings.ToLower(r.State) + "\n" + r.Body))
+	return hex.EncodeToString(sum[:])[:16]
+}
+
 // reviewEvent is a submitted review on pull request number. Its state is lower
 // case whichever encoding it came in: REST says `APPROVED`, a webhook
-// `approved`.
+// `approved`. GitHub gives no time for an edit or a dismissal, so the revision
+// has no edited_at and ingest order decides which is current.
 func (v view) reviewEvent(number int, r review) (connector.Event, error) {
 	artifact := reviewArtifact(v.repo, number, r.ID)
 	parent := issueArtifact(v.repo, number)
-	ev, err := v.event(connector.KindReview, artifact, "", *r.SubmittedAt, time.Time{}, reviewNative{
+	ev, err := v.event(connector.KindReview, artifact, reviewToken(r), *r.SubmittedAt, time.Time{}, reviewNative{
 		ID: r.ID, State: strings.ToLower(r.State), CommitID: r.CommitID,
 	})
 	if err != nil {
