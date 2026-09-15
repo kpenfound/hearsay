@@ -33,6 +33,10 @@ type walker struct {
 	private   map[string]bool
 	publicErr error
 	sink      connector.Sink
+	// fail is what Resync returns for a container, and stuck makes it hand
+	// back the cursor it was given with nothing emitted.
+	fail  map[string]error
+	stuck map[string]bool
 	// during, if set, runs inside the call for this cursor, once.
 	during     func()
 	duringAt   connector.Cursor
@@ -40,7 +44,7 @@ type walker struct {
 }
 
 func newWalker(src connector.SourceConfig, pages int) *walker {
-	return &walker{Fake: connector.NewFake(src), pages: pages, private: map[string]bool{}}
+	return &walker{Fake: connector.NewFake(src), pages: pages, private: map[string]bool{}, fail: map[string]error{}, stuck: map[string]bool{}}
 }
 
 func (w *walker) Handler(sink connector.Sink) http.Handler {
@@ -64,7 +68,14 @@ func (w *walker) Resync(_ context.Context, _ connector.Sink, container string, f
 	w.mu.Lock()
 	w.calls = append(w.calls, container+"@"+string(from))
 	during := w.during
+	fail, stuck := w.fail[container], w.stuck[container]
 	w.mu.Unlock()
+	if fail != nil {
+		return connector.BackfillResult{}, fail
+	}
+	if stuck {
+		return connector.BackfillResult{Next: from}, nil
+	}
 	if during != nil && from == w.duringAt {
 		w.duringOnce.Do(during)
 	}
@@ -390,5 +401,90 @@ func TestRecorderExposed(t *testing.T) {
 				t.Errorf("Exposed = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func (w *walker) callsTo(container string) int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n := 0
+	for _, c := range w.calls {
+		if len(c) > len(container) && c[:len(container)+1] == container+"@" {
+			n++
+		}
+	}
+	return n
+}
+
+// A re-sync that makes no progress is a failure and not progress: it is
+// counted, and the stored record neither moves nor settles.
+func TestAResyncThatMakesNoProgressIsNotProgress(t *testing.T) {
+	src := runtimeSource("stuck")
+	w := newWalker(src, 4)
+	w.stuck["C123"] = true
+	resyncs := connector.NewMemoryResyncs()
+	resyncs.Set(src.ID, connector.Resync{Container: "C123", Owed: true, Cursor: "2", Generation: 1})
+	rt, stop := start(t, connector.RuntimeOptions{
+		Sources: []connector.SourceConfig{src}, Registry: registryOf(t, map[string]connector.Connector{src.ID: w}),
+		Sink: &connector.Recorder{}, Resyncs: resyncs,
+	})
+	waitFor(t, "the re-sync to be tried again", func() bool { return w.callsTo("C123") >= 2 })
+	waitFor(t, "the failure in health", func() bool { return rt.Health(t.Context()).Sources[0].ResyncFailures >= 1 })
+	if err := stop(); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	if rec := resyncs.Get(src.ID, "C123"); !rec.Owed || rec.Cursor != "2" || !rec.ResyncedAt.IsZero() {
+		t.Errorf("record after a stuck re-sync = %+v, want still owed at cursor 2", rec)
+	}
+}
+
+// A container whose re-sync keeps failing holds up neither another owed
+// container, which sorts after it, nor the startup check.
+func TestAFailingResyncHoldsUpNothingElse(t *testing.T) {
+	src := runtimeSource("blocked")
+	src.Containers = []string{"A000", "C123", "D456"}
+	w := newWalker(src, 3)
+	w.fail["A000"] = errors.New("repository not found")
+	w.private["D456"] = true
+	resyncs := connector.NewMemoryResyncs()
+	resyncs.Set(src.ID, connector.Resync{Container: "A000", Owed: true, Generation: 1})
+	resyncs.Set(src.ID, connector.Resync{Container: "C123", Owed: true, Generation: 1})
+	rt, stop := start(t, connector.RuntimeOptions{
+		Sources: []connector.SourceConfig{src}, Registry: registryOf(t, map[string]connector.Connector{src.ID: w}),
+		Sink: &connector.Recorder{}, Resyncs: resyncs, Exposure: exposure{{Container: "D456", LastPublic: time.Now()}},
+	})
+	waitFor(t, "the re-sync of C123", settled(resyncs, src.ID, "C123"))
+	waitFor(t, "the re-sync the check found", settled(resyncs, src.ID, "D456"))
+	waitFor(t, "A000's failures in health", func() bool { return rt.Health(t.Context()).Sources[0].ResyncFailures >= 1 })
+	if err := stop(); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	if rec := resyncs.Get(src.ID, "A000"); !rec.Owed {
+		t.Errorf("A000 = %+v, want still owed", rec)
+	}
+}
+
+// A request that arrives while the runtime is backing off from a failure is
+// walked at once, not after the backoff, which here is an hour.
+func TestARequestDuringABackoffIsNotKeptWaiting(t *testing.T) {
+	src := runtimeSource("backoff")
+	src.Containers = []string{"A000", "C123"}
+	src.Refresh = time.Hour
+	w := newWalker(src, 2)
+	w.fail["A000"] = errors.New("repository not found")
+	resyncs := connector.NewMemoryResyncs()
+	resyncs.Set(src.ID, connector.Resync{Container: "A000", Owed: true, Generation: 1})
+	rt, stop := start(t, connector.RuntimeOptions{
+		Sources: []connector.SourceConfig{src}, Registry: registryOf(t, map[string]connector.Connector{src.ID: w}),
+		Sink: &connector.Recorder{}, Resyncs: resyncs,
+		Cadence: connector.Cadence{MinRefresh: time.Millisecond, MaxBackoff: time.Hour, Shutdown: time.Second},
+	})
+	waitFor(t, "the runtime to back off", func() bool { return rt.Health(t.Context()).Sources[0].ResyncFailures >= 1 })
+	if err := w.requester(t).RequestResync(t.Context(), "C123"); err != nil {
+		t.Fatalf("RequestResync(C123) = %v", err)
+	}
+	waitFor(t, "the requested re-sync", settled(resyncs, src.ID, "C123"))
+	if err := stop(); err != nil {
+		t.Fatalf("Run() = %v", err)
 	}
 }

@@ -41,7 +41,7 @@ found two ways.
   its cursor and settles the debt only while the generation is the one it read,
   so a walk that began before a request, possibly while the repository was
   public again, never settles it.
-- **Startup finds what no delivery reported.** Once owed re-syncs are done, the
+- **Startup finds what no delivery reported.** Alongside the owed re-syncs, the
   runtime reads which containers L0 serves as public (`l0.Store.Exposed`: each
   artifact's current revision, past retractions), asks `Public` about each one
   config still allows, and owes a re-sync for each the source calls private. A
@@ -77,7 +77,8 @@ found two ways.
   is still public costs a call on every start.
 - A container the source will not answer about (a deleted repository) is
   retried with backoff and shows in `resync_failures` on `/readyz` for as long as
-  L0 serves it as public. Owed re-syncs are walked first, so it does not hold
-  them up.
+  L0 serves it as public. Each pass tries every owed container
+  and the check, and a pass where anything worked is not followed by a backoff,
+  so one failing container holds up neither the others nor the check.
 - `repository.publicized` still re-syncs nothing: that direction fails closed.
   Tombstones keep the ACL they were emitted with.

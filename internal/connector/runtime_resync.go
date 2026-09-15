@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
@@ -17,12 +18,15 @@ type resyncCheck struct {
 }
 
 // resync runs a [Resyncer]'s re-syncs for the life of the process: whatever the
-// store says is owed, one call at a time with the position stored after each,
-// then the startup check, then nothing until a delivery asks for another.
+// store says is owed, one call per container per pass with the position stored
+// after each, the startup check alongside them, then nothing until a delivery
+// asks for another.
 //
-// Owed re-syncs go first. The check can fail on one container for as long as
-// the source will not answer about it — a repository that was deleted — and a
-// debt already recorded must not wait on that.
+// A container that keeps failing — a repository deleted after it went private,
+// or one the token can no longer read — must not hold up the others, so a pass
+// tries every owed container and the check, and a pass in which something
+// worked is followed at once by the next rather than by a backoff. A wait,
+// whether idle or backing off, ends when a delivery asks for a re-sync.
 func (r *Runtime) resync(ctx context.Context, h *hosted, rs Resyncer) {
 	log := telemetry.Logger(ctx)
 	interval := r.opts.Cadence.Interval(h.src)
@@ -33,73 +37,92 @@ func (r *Runtime) resync(ctx context.Context, h *hosted, rs Resyncer) {
 
 	fails := 0
 	for {
-		idle, err := r.resyncPass(ctx, h, rs, &check)
+		progress, idle, err := r.resyncPass(ctx, h, rs, &check)
 		if ctx.Err() != nil {
 			log.InfoContext(ctx, "re-syncs stopped")
 			return
 		}
-		if err != nil {
+		var timer *time.Timer
+		var wait <-chan time.Time
+		switch {
+		case err != nil:
 			fails++
 			h.resyncFails.Store(int64(fails))
-			wait := r.opts.Cadence.Backoff(interval, fails)
-			log.WarnContext(ctx, "re-sync failed, retrying", "error", err, "failures", fails, "retry_in", wait.String())
-			if !sleep(ctx, wait) {
-				log.InfoContext(ctx, "re-syncs stopped")
-				return
+			if progress {
+				log.WarnContext(ctx, "re-sync failed for some containers, carrying on with the rest", "error", err, "failures", fails)
+				continue
 			}
+			backoff := r.opts.Cadence.Backoff(interval, fails)
+			log.WarnContext(ctx, "re-sync failed, retrying", "error", err, "failures", fails, "retry_in", backoff.String())
+			timer = time.NewTimer(backoff)
+			wait = timer.C
+		case !idle:
+			fails = 0
+			h.resyncFails.Store(0)
 			continue
-		}
-		fails = 0
-		h.resyncFails.Store(0)
-		if !idle {
-			continue
+		default:
+			fails = 0
+			h.resyncFails.Store(0)
 		}
 		select {
 		case <-ctx.Done():
 			log.InfoContext(ctx, "re-syncs stopped")
 			return
 		case <-h.gate.wake:
+		case <-wait:
+		}
+		if timer != nil {
+			timer.Stop()
 		}
 	}
 }
 
-// resyncPass does one thing and reports whether there was nothing to do: one
-// call of the first owed re-sync, or the startup check.
-func (r *Runtime) resyncPass(ctx context.Context, h *hosted, rs Resyncer, check *resyncCheck) (bool, error) {
+// resyncPass makes one call for every owed re-sync config allows and, until it
+// has answered, runs the startup check. It reports whether any of that moved
+// something forward, whether there was nothing to do at all, and every failure.
+func (r *Runtime) resyncPass(ctx context.Context, h *hosted, rs Resyncer, check *resyncCheck) (progress, idle bool, err error) {
 	records, err := r.opts.Resyncs.Resyncs(ctx, h.src.ID)
 	if err != nil {
-		return false, fmt.Errorf("reading the re-syncs: %w", err)
+		return false, false, fmt.Errorf("reading the re-syncs: %w", err)
 	}
+	var errs []error
+	owed := false
 	for _, rec := range records {
 		// A container config stopped allowing owes nothing any more: the gate
 		// would drop every event its walk emitted.
-		if rec.Owed && h.gate.allow.Allows(h.src.ID, rec.Container) {
-			return false, r.resyncCall(ctx, h, rs, rec)
+		if !rec.Owed || !h.gate.allow.Allows(h.src.ID, rec.Container) {
+			continue
 		}
+		owed = true
+		if err := r.resyncCall(ctx, h, rs, rec); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		progress = true
 	}
 
 	if !check.read {
 		exposed, err := r.opts.Exposure.Exposed(ctx, h.src.ID)
 		if err != nil {
-			return false, fmt.Errorf("reading which containers L0 serves as public: %w", err)
+			errs = append(errs, fmt.Errorf("reading which containers L0 serves as public: %w", err))
+			return progress, false, errors.Join(errs...)
 		}
 		check.read = true
 		check.pending = unsettled(h, exposed, records)
 	}
-	if len(check.pending) == 0 {
-		return true, nil
+	if !owed && len(check.pending) == 0 && len(errs) == 0 {
+		return false, true, nil
 	}
 
 	log := telemetry.Logger(ctx)
-	var (
-		still []Exposure
-		errs  []error
-	)
+	var still []Exposure
 	for _, e := range check.pending {
 		public, err := rs.Public(ctx, e.Container)
 		if err == nil && !public {
 			log.InfoContext(ctx, "container is no longer public and L0 serves it as public: a re-sync is owed", "container", e.Container)
-			err = r.opts.Resyncs.Owe(ctx, h.src.ID, e.Container)
+			if err = r.opts.Resyncs.Owe(ctx, h.src.ID, e.Container); err == nil {
+				progress = true
+			}
 		}
 		if err != nil {
 			still = append(still, e)
@@ -107,7 +130,7 @@ func (r *Runtime) resyncPass(ctx context.Context, h *hosted, rs Resyncer, check 
 		}
 	}
 	check.pending = still
-	return false, errors.Join(errs...)
+	return progress, false, errors.Join(errs...)
 }
 
 // unsettled is the exposed containers the check has to ask the connector

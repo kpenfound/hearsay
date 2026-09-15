@@ -6,7 +6,8 @@
 // `--source` selection (ADR-0003). What it hosts them with is
 // [connector.Runtime]: this package is the wiring — the configured sources, the
 // registry of factories, the L0 store to write to, the cursor store to keep
-// backfill positions in — and the HTTP surface the runtime needs, which is the
+// backfill positions in, the store ACL re-syncs are kept in and the L0 read that
+// finds a container still served as public — and the HTTP surface the runtime needs, which is the
 // push connectors' handlers and the service's health (ADR-0008).
 package connectors
 
