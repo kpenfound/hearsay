@@ -73,3 +73,8 @@ and its body**. `payload.revision.token` is that token, and `edited_at` is unset
   content L0 has not seen, becomes current by ingest order although it is older.
   GitHub delivers a review's changes seconds apart and a backfill re-reads the
   current content, so this is left to the next backfill.
+- A review edited back to content it had before gets that earlier revision's
+  id again, which deduplicates, so the revision in between stays current until
+  the review changes to something L0 has not seen. GitHub gives nothing
+  monotonic to put in the token instead; accepted as rare, and harmless for a
+  dismissal, which cannot be undone.
