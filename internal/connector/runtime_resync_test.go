@@ -465,20 +465,24 @@ func TestAFailingResyncHoldsUpNothingElse(t *testing.T) {
 }
 
 // A request that arrives while the runtime is backing off from a failure is
-// walked at once, not after the backoff, which here is an hour.
+// walked at once, not after the backoff, which here is an hour; and a re-sync
+// the startup check owes while another container fails is walked before the
+// runtime backs off at all.
 func TestARequestDuringABackoffIsNotKeptWaiting(t *testing.T) {
 	src := runtimeSource("backoff")
-	src.Containers = []string{"A000", "C123"}
+	src.Containers = []string{"A000", "C123", "D456"}
 	src.Refresh = time.Hour
 	w := newWalker(src, 2)
 	w.fail["A000"] = errors.New("repository not found")
+	w.private["D456"] = true
 	resyncs := connector.NewMemoryResyncs()
 	resyncs.Set(src.ID, connector.Resync{Container: "A000", Owed: true, Generation: 1})
 	rt, stop := start(t, connector.RuntimeOptions{
 		Sources: []connector.SourceConfig{src}, Registry: registryOf(t, map[string]connector.Connector{src.ID: w}),
-		Sink: &connector.Recorder{}, Resyncs: resyncs,
+		Sink: &connector.Recorder{}, Resyncs: resyncs, Exposure: exposure{{Container: "D456", LastPublic: time.Now()}},
 		Cadence: connector.Cadence{MinRefresh: time.Millisecond, MaxBackoff: time.Hour, Shutdown: time.Second},
 	})
+	waitFor(t, "the re-sync the check found", settled(resyncs, src.ID, "D456"))
 	waitFor(t, "the runtime to back off", func() bool { return rt.Health(t.Context()).Sources[0].ResyncFailures >= 1 })
 	if err := w.requester(t).RequestResync(t.Context(), "C123"); err != nil {
 		t.Fatalf("RequestResync(C123) = %v", err)
