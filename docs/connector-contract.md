@@ -325,10 +325,21 @@ Two consequences worth stating plainly, because they are the cost of that
 choice:
 
 - **It is a bulk operation.** A container that changes visibility means
-  re-emitting every artifact in it. That is what a re-sync is; a connector runs
-  one the way it runs a backfill — bounded work per call, resumable from a
-  cursor — and re-emitting an artifact whose permissions have not changed is
-  deduplicated away, so an interrupted re-sync can be run again.
+  re-emitting every artifact in it. That is what a re-sync is, and the runtime
+  drives it the way it drives a backfill: a connector that implements
+  `Resyncer` does bounded work per `Resync` call, and the runtime stores the
+  cursor after each one, so a re-sync interrupted by a restart resumes.
+  Re-emitting an artifact whose permissions have not changed is deduplicated
+  away, so walking part of a container twice costs nothing.
+- **What is owed is durable, and so is how it is found.** A push connector told
+  that a container stopped being public records the re-sync through its sink
+  (`ResyncRequester`) before it answers the delivery, so an answered delivery is
+  never a lost one. A delivery that never reached a running process, or failed,
+  is caught at startup: the runtime asks the connector (`Public`) about every
+  container L0 still serves as public and owes a re-sync for each the source
+  says is not. A container re-synced since its newest public artifact arrived is
+  not asked about, because what that walk could not reach a second walk would
+  not reach either ([ADR-0013](adr/0013-acl-re-syncs-are-durable-and-driven-by-the-runtime.md)).
 - **Until the re-emission lands, L0 holds the old ACL.** Ingest is eventually
   consistent with the source's permissions, and it is more permissive than the
   source in the window between the change and the re-sync. A source whose
@@ -418,6 +429,13 @@ type Backfiller interface {
     Connector
     Backfill(ctx context.Context, sink Sink, from Cursor) (BackfillResult, error)
 }
+
+// Optional: containers that can stop being public.
+type Resyncer interface {
+    Connector
+    Public(ctx context.Context, container string) (bool, error)
+    Resync(ctx context.Context, sink Sink, container string, from Cursor) (BackfillResult, error)
+}
 ```
 
 Push where the source supports it, poll otherwise; a connector may do both, and a
@@ -438,6 +456,15 @@ source that pushes still needs `Backfiller` to get its history.
   that must survive a restart, so it may not refer to anything held in memory,
   and it is *stored* as text: valid UTF-8, no NUL byte, at most 4096 bytes.
   Arbitrary bytes go in as base64 rather than as themselves.
+- **`Resync`** re-emits one bounded piece of one container's artifacts under the
+  ACL they have now, and means what `Backfill` means, for that container. The
+  runtime keeps one record per container — owed or not, the cursor, a count of
+  requests, when the last one finished — and a request that arrives during a
+  walk starts it again. A connector asks for one by type-asserting its sink to
+  `ResyncRequester` and calling `RequestResync(ctx, container)`, which returns
+  once the record is written and fails when the runtime has nowhere to keep it.
+  **`Public`** is a network call the runtime makes at startup, never on the
+  health path.
 - **`Health`** returns `ok`, `degraded` or `failed` with a detail line and the
   time of the last event. It must not make a network call, and its detail carries
   no credentials, no event text and no personal data: health is served more
@@ -510,7 +537,9 @@ the login as `handle`. ACL is `public` for a public repository and
 `{group, native_id: "acme/api"}` for a private one, which is the collaborator set
 resolved at read time rather than a frozen list. Webhooks are `Pusher` with
 signature verification in the handler; backfill is `Backfiller` over the REST
-list endpoints with the page cursor. Deleting a comment sends
+list endpoints with the page cursor; `repository.privatized` is a
+`RequestResync`, and the re-sync is `Resyncer` over the same walk for one
+repository, with no start date. Deleting a comment sends
 `issue_comment.deleted`, which is a `tombstone` with artifact
 `acme/api#12:comment:998:tombstone` and `target` the comment's artifact id.
 

@@ -56,6 +56,13 @@ re-distil everything ever ingested. A save never moves a cursor backwards, so tw
 replicas of one consumer cannot make the feed be read again; resetting one is
 deleting its row.
 
+`Resyncs` is the connector runtime's record of ACL re-syncs, one row per
+container of a source: owed or not, the cursor of the walk, a generation that a
+request bumps and a walk must still match to save or finish, and when the last
+one finished. `Store.Exposed` is the read that goes with it, which containers of
+a source have an artifact whose current revision is public; it reads a whole
+source, so the runtime asks once at startup (ADR-0013).
+
 `BackfillCursors` is the other cursor, and it is not the same thing. A feed
 cursor is a *reader's* position in the change feed and only moves forward; a
 backfill cursor is a *connector's* position in one source's history, and it is
