@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -263,9 +265,11 @@ type Recorder struct {
 
 	mu     sync.Mutex
 	events []Event
+	at     []time.Time
 }
 
-// Emit implements [Sink].
+// Emit implements [Sink]. An event emitted before is recorded again, where L0
+// would write nothing: a test asserting on what a connector sent wants both.
 func (r *Recorder) Emit(_ context.Context, ev Event) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -273,7 +277,45 @@ func (r *Recorder) Emit(_ context.Context, ev Event) error {
 		return r.Err
 	}
 	r.events = append(r.events, ev)
+	r.at = append(r.at, time.Now())
 	return nil
+}
+
+// Exposed implements [ExposureReader] over what was emitted, the way L0 reads
+// it for a connector that emits revisions in order: an artifact's current
+// revision is the one that arrived last, a retracted artifact is not served,
+// and a tombstone is not an artifact anyone reads.
+func (r *Recorder) Exposed(_ context.Context, source string) ([]Exposure, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	current := map[string]int{}
+	retracted := map[string]bool{}
+	for i, ev := range r.events {
+		if ev.Source != source {
+			continue
+		}
+		if ev.Kind == KindTombstone {
+			retracted[ev.Payload.Target] = true
+			continue
+		}
+		current[ev.Payload.Artifact] = i
+	}
+	last := map[string]time.Time{}
+	for artifact, i := range current {
+		ev := r.events[i]
+		if retracted[artifact] || !ev.ACL.public() {
+			continue
+		}
+		if c := ev.Payload.Container.NativeID; r.at[i].After(last[c]) {
+			last[c] = r.at[i]
+		}
+	}
+	out := []Exposure{}
+	for c, at := range last {
+		out = append(out, Exposure{Container: c, LastPublic: at})
+	}
+	slices.SortFunc(out, func(a, b Exposure) int { return strings.Compare(a.Container, b.Container) })
+	return out, nil
 }
 
 // Events returns a copy of what has been emitted, oldest first.

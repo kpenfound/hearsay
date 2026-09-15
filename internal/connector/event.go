@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -545,6 +546,11 @@ func (i Identity) validate(field string) error {
 	default:
 		return fmt.Errorf("%w: %s.kind %q is not an identity kind", ErrInvalidEvent, field, i.Kind)
 	}
+}
+
+// public reports whether the list lets everyone read.
+func (a ACL) public() bool {
+	return slices.ContainsFunc(a, func(e ACLEntry) bool { return e.Kind == ACLPublic })
 }
 
 func (a ACL) validate() error {
