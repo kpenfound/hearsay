@@ -36,6 +36,9 @@ const (
 	// baseSHA is where testdata/hooks/push.json says the branch was.
 	baseSHA = "a100000000000000000000000000000000000000"
 	nullSHA = "0000000000000000000000000000000000000000"
+	// reviewToken is review 77's content token: the first 16 hex digits of
+	// sha256("approved\nLooks good.").
+	reviewToken = "cca24e8b92a08e66"
 )
 
 // wantBackfill is every native id a backfill of acme/api emits, in the order it
@@ -47,7 +50,7 @@ var wantBackfill = []string{
 	"acme/api#3@2026-08-20T09:30:00Z",
 	"acme/api#1@2026-09-02T11:00:00Z",
 	"acme/api#2@2026-09-04T12:00:00Z",
-	"acme/api#2:review:77",
+	"acme/api#2:review:77@" + reviewToken,
 	"acme/api#3:comment:997@2026-08-15T10:00:00Z",
 	"acme/api#1:comment:998@2026-09-01T12:30:00Z",
 	"acme/api#2:comment:999@2026-09-03T09:00:00Z",
@@ -287,6 +290,19 @@ func (gh *fakeGitHub) touch(path string, n int, updatedAt string) {
 		}
 	}
 	gh.t.Fatalf("no item %d in %s", n, path)
+}
+
+// edit sets field of the item with id in a list.
+func (gh *fakeGitHub) edit(path string, id int, field string, value any) {
+	gh.mu.Lock()
+	defer gh.mu.Unlock()
+	for _, it := range gh.lists[path] {
+		if fmt.Sprint(it["id"]) == strconv.Itoa(id) {
+			it[field] = value
+			return
+		}
+	}
+	gh.t.Fatalf("no item with id %d in %s", id, path)
 }
 
 // rewind force-pushes a repository's default branch back one commit.
@@ -602,7 +618,9 @@ func TestBackfillEmitsTheContractsEvents(t *testing.T) {
 		text     string
 		time     string
 		editedAt string
-		native   string
+		// token is the revision token where it is not editedAt.
+		token  string
+		native string
 	}{
 		{
 			nativeID: "acme/api#1@2026-09-02T11:00:00Z", kind: connector.KindIssue, artifact: "acme/api#1", author: kyle,
@@ -620,8 +638,8 @@ func TestBackfillEmitsTheContractsEvents(t *testing.T) {
 			native: `"head":{"ref":"fix-health"`,
 		},
 		{
-			nativeID: "acme/api#2:review:77", kind: connector.KindReview, artifact: "acme/api#2:review:77", parent: "acme/api#2",
-			author: kyle, text: "Looks good.", time: "2026-09-04T11:00:00Z", native: `"state":"approved"`,
+			nativeID: "acme/api#2:review:77@" + reviewToken, kind: connector.KindReview, artifact: "acme/api#2:review:77", parent: "acme/api#2",
+			author: kyle, text: "Looks good.", time: "2026-09-04T11:00:00Z", token: reviewToken, native: `"state":"approved"`,
 		},
 		{
 			nativeID: "acme/api#3:comment:997@2026-08-15T10:00:00Z", kind: connector.KindMessage, artifact: "acme/api#3:comment:997", parent: "acme/api#3",
@@ -676,6 +694,10 @@ func TestBackfillEmitsTheContractsEvents(t *testing.T) {
 				t.Errorf("time = %s, want %s", got, tt.time)
 			}
 			switch {
+			case tt.token != "":
+				if p.Revision == nil || p.Revision.Token != tt.token || !p.Revision.EditedAt.IsZero() {
+					t.Errorf("revision = %+v, want token %s and no edited_at", p.Revision, tt.token)
+				}
 			case tt.editedAt == "" && p.Revision != nil:
 				t.Errorf("revision = %+v, want none", p.Revision)
 			case tt.editedAt != "" && p.Revision == nil:
@@ -1315,10 +1337,88 @@ func TestWebhookTombstones(t *testing.T) {
 	}
 }
 
+// A review edited or dismissed after it was ingested is a new revision of the
+// same artifact, whether a webhook brings the change or a later backfill reads
+// it, and the two agree on the event (issue #73).
+func TestAReviewEditedOrDismissedIsANewRevision(t *testing.T) {
+	const reviews = "/repos/acme/api/pulls/2/reviews"
+	submitted := string(hook(t, "pull_request_review.submitted"))
+	tests := []struct {
+		name      string
+		action    string
+		field     string
+		rest      string
+		hookValue string
+		token     string
+	}{
+		{
+			name: "an edited body", action: "edited", field: "body",
+			rest: "Looks good, once the handler is named.", hookValue: `"body": "Looks good, once the handler is named."`,
+			token: "56cc310aec1b377c",
+		},
+		{
+			name: "a dismissal", action: "dismissed", field: "state",
+			rest: "DISMISSED", hookValue: `"state": "dismissed"`,
+			token: "8e96a94ea376225d",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gh := newFakeGitHub(t)
+			src := newSource(t, gh, sourceID, nil)
+			c := newConnector(t, src)
+			before := &connector.Recorder{}
+			backfillAll(t, c, gateFor(src, c, before))
+
+			old := map[string]string{"body": `"body": "Looks good."`, "state": `"state": "approved"`}[tt.field]
+			body := strings.Replace(strings.Replace(submitted, `"action": "submitted"`, `"action": "`+tt.action+`"`, 1), old, tt.hookValue, 1)
+			live := &connector.Recorder{}
+			if code := deliver(t, c.Handler(gateFor(src, c, live)), "pull_request_review", []byte(body)); code != http.StatusAccepted {
+				t.Fatalf("status = %d, want 202", code)
+			}
+			hooked := live.Events()
+			if len(hooked) != 1 {
+				t.Fatalf("webhook emitted %v, want one review", nativeIDs(hooked))
+			}
+
+			gh.edit(reviews, 77, tt.field, tt.rest)
+			after := &connector.Recorder{}
+			again := newConnector(t, src)
+			backfillAll(t, again, gateFor(src, again, after))
+
+			var original, backfilled connector.Event
+			for _, ev := range before.Events() {
+				if ev.Kind == connector.KindReview {
+					original = ev
+				}
+			}
+			for _, ev := range after.Events() {
+				if ev.Kind == connector.KindReview {
+					backfilled = ev
+				}
+			}
+			want := "acme/api#2:review:77@" + tt.token
+			if backfilled.NativeID != want || backfilled.Payload.Revision == nil || backfilled.Payload.Revision.Token != tt.token {
+				t.Errorf("backfilled review = %s with revision %+v, want %s", backfilled.NativeID, backfilled.Payload.Revision, want)
+			}
+			if backfilled.ID == original.ID || backfilled.Payload.Artifact != original.Payload.Artifact {
+				t.Errorf("backfilled review is %s of %s, want a new id for artifact %s", backfilled.NativeID, backfilled.Payload.Artifact, original.Payload.Artifact)
+			}
+			if !backfilled.Time.Equal(original.Time) {
+				t.Errorf("time = %v, want the submission's %v", backfilled.Time, original.Time)
+			}
+			if a, b := asJSON(t, hooked[0]), asJSON(t, backfilled); a != b {
+				t.Errorf("webhook event differs from the backfilled one:\n%s\nwant\n%s", a, b)
+			}
+		})
+	}
+}
+
 func TestWebhookIgnoresWhatItDoesNotIngest(t *testing.T) {
 	repo := `"repository":{"full_name":"acme/api","private":false,"default_branch":"main"}`
-	review := strings.Replace(string(hook(t, "pull_request_review.submitted")), `"action": "submitted"`, `"action": "dismissed"`, 1)
 	pending := strings.Replace(string(hook(t, "pull_request_review.submitted")), `"state": "approved"`, `"state": "pending"`, 1)
+	pendingEdited := strings.Replace(pending, `"action": "submitted"`, `"action": "edited"`, 1)
+	requested := strings.Replace(string(hook(t, "pull_request_review.submitted")), `"action": "submitted"`, `"action": "review_requested"`, 1)
 	tests := []struct {
 		name, event, body string
 	}{
@@ -1326,8 +1426,9 @@ func TestWebhookIgnoresWhatItDoesNotIngest(t *testing.T) {
 		{"a push to another branch", "push", `{"ref":"refs/heads/feature","before":"` + baseSHA + `","after":"` + sha1 + `",` + repo + `}`},
 		{"a push that deletes the default branch", "push", `{"ref":"refs/heads/main","before":"` + sha1 + `","after":"` + nullSHA + `",` + repo + `}`},
 		{"a tag push", "push", `{"ref":"refs/tags/main","before":"` + baseSHA + `","after":"` + sha1 + `",` + repo + `}`},
-		{"a dismissed review", "pull_request_review", review},
 		{"a pending review", "pull_request_review", pending},
+		{"an edit to a pending review", "pull_request_review", pendingEdited},
+		{"a review action it does not read", "pull_request_review", requested},
 		{"an event it does not read", "star", `{"action":"created",` + repo + `}`},
 		{"an organisation event with no repository", "organization", `{"action":"member_added"}`},
 		{"a repository going public", "repository", `{"action":"publicized",` + repo + `}`},

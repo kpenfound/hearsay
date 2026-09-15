@@ -19,6 +19,7 @@ The format, numbering and supersession rules are in [ADR-0001](0001-record-archi
 | [0009](0009-configuration-as-a-gitops-directory.md) | Configuration is a GitOps directory of YAML, read at startup | accepted; the directory list is six, with `llm/` for [0005](0005-llm-provider-abstraction-with-three-model-tiers.md)'s tiers ([config.md](../config.md)) | 2026-09-09 |
 | [0010](0010-go-version-floor-tracks-the-current-release.md) | The Go version floor tracks the current release | accepted | 2026-09-09 |
 | [0011](0011-a-retry-superseded-by-a-pending-job-is-done.md) | A retry superseded by a pending job for its target is done, not requeued | accepted | 2026-09-14 |
+| [0012](0012-a-github-review-is-versioned-by-a-hash-of-its-content.md) | A GitHub review is versioned by a hash of its state and body | accepted | 2026-09-14 |
 
 ## Names other work depends on
 

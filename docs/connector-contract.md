@@ -500,7 +500,7 @@ Discord (v0.3.0) and Drive (v0.4.0) work.
 | Issue | `issue` | `acme/api#12` | `acme/api#12@<updated_at>` | repository `acme/api` |
 | Issue or PR comment | `message` | `acme/api#12:comment:998` | `…@<updated_at>` | repository |
 | Pull request | `pull_request` | `acme/api#31` | `…@<updated_at>` | repository |
-| Review | `review` | `acme/api#31:review:77` | same — a submitted review does not change | repository |
+| Review | `review` | `acme/api#31:review:77` | `…@<hash of state and body>` ([ADR-0012](adr/0012-a-github-review-is-versioned-by-a-hash-of-its-content.md)) | repository |
 | Review comment | `review_comment` | `acme/api#31:comment:88` | `…@<updated_at>` | repository |
 | Commit on the default branch | `commit` | `acme/api@<sha>` | same — a commit's content does not change | repository |
 
@@ -519,12 +519,20 @@ after it, so an issue at `acme/api#12@2026-09-09T12:00:00Z` has that timestamp a
 its token. A repository going private is an ACL change with no content change,
 and GitHub gives no version for visibility, so the connector composes the token
 the way the general rule says: `<content token>+perm:private` where the artifact
-has a content token, and `perm:private` alone where it does not. Reviews and
-commits are the second case — a review carries `submitted_at` and never changes,
-a commit's content never changes — so `acme/api@<sha>` re-emits as
-`acme/api@<sha>@perm:private`. Without that clause those two rows would re-emit
-with their original native ids, deduplicate to nothing, and keep `public` on
-every commit in a repository that is no longer public.
+has a content token, and `perm:private` alone where it does not. Commits are the
+second case — a commit's content never changes — so `acme/api@<sha>` re-emits as
+`acme/api@<sha>@perm:private`. Without that clause that row would re-emit with
+its original native id, deduplicate to nothing, and keep `public` on every commit
+in a repository that is no longer public.
+
+A review is the first case, though GitHub gives it no version: its body can be
+edited and it can be dismissed, and no field moves when either happens. Its
+content token is therefore the first 16 hex digits of the SHA-256 of its
+lower-case state, a newline, and its body
+([ADR-0012](adr/0012-a-github-review-is-versioned-by-a-hash-of-its-content.md)),
+so an edited or dismissed review is a new revision and a backfill that reads it
+after the fact does not collide with what L0 already holds. The source gives no
+time for the change, so the revision has no `edited_at` and ingest order decides.
 
 Checks out. The one thing worth naming: an edit to an issue body arrives with the
 same `updated_at` granularity as a label change, so a connector emitting on every

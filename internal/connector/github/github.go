@@ -41,11 +41,12 @@
 //     says how, and the tests change the fake API's data between calls.
 //   - A re-sync ignores `since`, and a push reads its commits in one REST call
 //     inside GitHub's ten-second delivery timeout.
-//   - Revision tokens compose as the contract says: the content token
-//     (`updated_at`) alone for a public repository, `<updated_at>+perm:private`
-//     for a private one, and `perm:private` alone for reviews and commits, which
-//     have no content token. A repository going private is re-synced: every
-//     artifact is emitted again under the private token and ACL.
+//   - Revision tokens compose as the contract says: the content token alone for
+//     a public repository, `<content token>+perm:private` for a private one, and
+//     `perm:private` alone for commits, which have no content token. The content
+//     token is `updated_at`, except for a review, which has none and is hashed
+//     from its state and body (ADR-0012). A repository going private is
+//     re-synced: every artifact is emitted again under the private token and ACL.
 package github
 
 import (
