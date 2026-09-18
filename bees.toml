@@ -15,7 +15,7 @@
 # Format version of this file. bees refuses files newer than it understands and
 # upgrades older ones in memory. Leave it alone; bees releases that change the
 # format say what to do.
-version = 2
+version = 3
 
 #===============================================================================
 # Project
@@ -129,34 +129,7 @@ review_assigned_prs = false
 # person approves it by removing the label. false lets a bee break its own
 # features down without a person's approval.
 feature_proposals = true
-# GitHub logins and/or org/team slugs the factory turns to when it needs a
-# person: mentioned in the needs-human comment and in the product manager's
-# questions, and asked to review an approved pull request. No leading @.
-#notify = ["your-github-login", "your-org/your-team"]
-# Minimum time between product manager runs (mail in the PM inbox triggers an
-# earlier run).
-#product_manager_interval = "1h"
-# Minimum time between QA runs. QA only runs when something was merged (mail in
-# the QA inbox triggers an earlier run).
-#qa_interval = "30m"
-# Work hours: outside this window GitHub is polled every off_hours_poll_interval
-# instead of poll_interval (the mailbox keeps running at full speed). Leave it
-# empty to poll around the clock. A window that starts after it ends wraps
-# midnight and belongs to the day it starts on ("22:00-06:00" on "fri" runs
-# into Saturday morning).
-# The first poll of the work day happens the moment the window opens, whatever
-# off_hours_poll_interval is.
-#work_hours = "09:00-18:00"
-# Default: 1h, or poll_interval when that is longer.
-#off_hours_poll_interval = "1h"
-#work_days = ["mon", "tue", "wed", "thu", "fri"]
-# IANA timezone the window is read in (default: the machine's local time).
-#timezone = "America/New_York"
-# Cost budgets in USD, spent against the session ledger ("bees cost").
-# 0 means unlimited, which is the default: budgets are opt-in.
-# Total across every session run for one work item. Checked between stages: the
-# session that passes it finishes, then the issue is escalated to a human.
-#max_cost_per_issue = 25.0
+
 # Whole factory, rolling 24 hours. At or over it no new session starts; the
 # sessions already running finish.
 max_cost_per_day = 300.0
@@ -183,12 +156,110 @@ max_cost_per_day_resume_percent = 80.0
 # shorthand and has no key here; "warn" is the closest equivalent.
 #level = "info"
 
+
+#===============================================================================
+# Codex Profiles
+#===============================================================================
+
+# [profiles.default]
+# agent = "codex"
+# model = "gpt-5.6-terra"
+# fallback_model = "gpt-5.6-sol"
+# effort = "high"
+# sandbox = "none"
+
+# [profiles.review_fast]
+# agent = "codex"
+# model = "gpt-5.6-luna"
+# fallback_model = "gpt-6-astra"
+# effort = "medium"
+# sandbox = "none"
+
+# [profiles.coder_smart]
+# agent = "codex"
+# model = "gpt-6-astra"
+# fallback_model = "gpt-6-astra"
+# effort = "high"
+
+# [profiles.coder_medium]
+# agent = "codex"
+# model = "gpt-6-sol"
+# fallback_model = "gpt-6-astra"
+# effort = "high"
+
+# [profiles.coder_dumb]
+# agent = "codex"
+# model = "gpt-5.6-luna"
+# fallback_model = "gpt-5.6-sol"
+# effort = "medium"
+
+# [profiles.manager_smart]
+# agent = "codex"
+# model = "gpt-5.6-sol"
+# fallback_model = "gpt-6-astra"
+# effort = "high"
+
+# [profiles.manager_dumb]
+# agent = "codex"
+# model = "gpt-5.6-terra"
+# fallback_model = "gpt-5.6-sol"
+# effort = "medium"
+
+#===============================================================================
+# Claude Profiles
+#===============================================================================
+
+[profiles.default]
+agent = "claude"
+model = "opus"
+fallback_model = "fable"
+effort = "high"
+sandbox = "none"
+
+[profiles.review_fast]
+agent = "claude"
+model = "opus"
+fallback_model = "fable"
+effort = "medium"
+sandbox = "none"
+
+[profiles.coder_smart]
+agent = "claude"
+model = "fable"
+effort = "medium"
+
+[profiles.coder_medium]
+agent = "claude"
+model = "opus"
+fallback_model = "fable"
+effort = "medium"
+
+[profiles.coder_dumb]
+agent = "claude"
+model = "opus"
+fallback_model = "fable"
+effort = "low"
+
+[profiles.manager_smart]
+agent = "claude"
+model = "opus"
+fallback_model = "fable"
+effort = "medium"
+
+[profiles.manager_dumb]
+agent = "claude"
+model = "opus"
+fallback_model = "fable"
+effort = "low"
+
+
 #===============================================================================
 # Global role settings — apply to every role, merged with [roles.<name>]:
 # prompts concatenate (global first), skills union, env and mcp servers union
 # (the role wins on a name conflict), scalars fall back to global then defaults.
 #===============================================================================
 [global]
+profile = "default"
 # Text appended to every role's base prompt.
 #prompt = """
 #"""
@@ -203,53 +274,20 @@ skills = [
 # How stale a skill clone may get before it is pulled: never, always or a
 # duration. Global only; see "bees skills".
 #skills_refresh = "24h"
-# claude model, and the model used once it has hit its usage limit.
-#model = "opus"
-#fallback_model = "sonnet"
-# CLI backend a session runs as.
-agent = "claude"        # claude | codex
-# Effort level: low, medium, high or max.
-#effort = "high"
-# Agentic turns per session and wall-clock limit.
 max_turns = 300
 timeout = "1h"
 # Tool restrictions passed straight to claude.
 #allowed_tools = []
-disallowed_tools = ["Artifact"]
+disallowed_tools = ["Artifact", "Bash(go test *)", "Bash(docker *)"]
 # Shell for claude's Bash tool in sessions (exported as $SHELL).
 #shell = "/bin/bash"
-# How much of the machine a session can reach: none, claude or container.
-# Set it per role in [roles.<name>] to box the roles that run untrusted code
-# harder than the ones that only read the repository.
-sandbox = "claude"
-# Image a container session runs in (sandbox = "container"): it must hold
-# the agent, git and gh. Name one per role for a role that runs the product.
-#sandbox_image = "ghcr.io/acme/widgets-bees:latest"
-# Path, relative to this file, to a dagger/container-use environment
-# definition the container sandbox builds and runs instead of sandbox_image.
-#container_use_environment = "dagger/container-use"
 
 # Environment variables exported into every session (claude, its Bash tool,
 # MCP servers, git). $VARS are expanded from the bees environment. Roles can
 # add or override entries in [roles.<name>.env].
-#[global.env]
-#CI = "true"
-#NPM_TOKEN = "$NPM_TOKEN"
+[global.env]
+DAGGER_X_RELEASE = "v1.0.0-beta.14"
 
-# MCP servers available to every role, one table per server. stdio servers
-# use command/args/env; remote servers use url (+ type = "http" | "sse",
-# headers). $VARS in env and headers are expanded from the bees environment.
-# Every session also gets the built-in "bees" server (mail, issues, outcome);
-# the name "bees" is reserved and cannot be configured here.
-#[global.mcp.github]
-#command = "npx"
-#args = ["-y", "@modelcontextprotocol/server-github"]
-#env = { GITHUB_PERSONAL_ACCESS_TOKEN = "$GITHUB_TOKEN" }
-#
-#[global.mcp.docs]
-#type = "http"
-#url = "https://mcp.example.com/docs"
-#headers = { Authorization = "Bearer $DOCS_TOKEN" }
 
 #===============================================================================
 # Per-role settings. Every key from [global] is valid here, plus enabled;
@@ -260,6 +298,7 @@ sandbox = "claude"
 
 # Owns the product vision and feature issues; breaks features into work items.
 [roles.product_manager]
+profile = "manager_smart"
 #prompt = """
 #"""
 # Smallest work item size to aim for when breaking a feature into work items:
@@ -268,84 +307,40 @@ sandbox = "claude"
 min_issue_size = "s"
 #prompt_file = ""
 #skills = []
-model = "sonnet"
-#fallback_model = "sonnet"
-#agent = "claude"        # claude | codex
-#effort = "high"
+
 #max_turns = 200
 #timeout = "45m"
 enabled = true
-#shell = "/bin/bash"
-#[roles.product_manager.env]
-#EXAMPLE = "value"
-#[roles.product_manager.mcp.example]
-#command = "example-mcp"
+
 
 # Triages issues into build-ready work and answers developer questions.
 [roles.project_manager]
+profile = "manager_dumb"
 #prompt = """
 #"""
-#prompt_file = ""
-#skills = []
-model = "sonnet"
-#fallback_model = "sonnet"
-#agent = "claude"        # claude | codex
-#effort = "high"
+
 #max_turns = 200
 #timeout = "45m"
 enabled = true
-#shell = "/bin/bash"
-#[roles.project_manager.env]
-#EXAMPLE = "value"
-#[roles.project_manager.mcp.example]
-#command = "example-mcp"
+
 
 # Implements one issue on a branch and opens a pull request.
 [roles.developer]
-#prompt = """
-#"""
+profile = "coder_medium"
+profile_by_size = { s = "coder_dumb", xs = "coder_dumb", l = "coder_smart" }
+prompt = """
+Validate changes with dagger check.
+ONLY RUN TESTS INSIDE DAGGER. DO NOT TEST WITH go test ON THE HOST.
+"""
 # Extra flags for every git commit the developer makes.
 #commit_flags = "--gpg-sign --signoff"
 # Largest size a developer takes: xs, s, m, l or xl. Anything bigger is sent
 # back to triage for the project manager to split.
-max_size = "xl"
-# Run a cheaper (or stronger) model for some work item sizes. Keys are the
-# sizes xs, s, m, l and xl; a size with no entry uses model above.
-model_by_size = { xs = "sonnet", s = "sonnet" }
-# Best of N: how many developer attempts one work item gets, keyed by size. An
-# assembler session then picks the pull request from the attempts. A size with
-# no entry gets one attempt, and an empty table is best-of-N off.
-#best_of_n_by_size = { l = 3 }
-# Model and prompt for each attempt, and for the assembler that picks between
-# them. Unset, an attempt runs the model and prompt above and so does the
-# assembler.
-#best_of_n_model = "opus"
-#best_of_n_prompt = """
-#"""
-#assembler_model = "opus"
-#assembler_prompt = """
-#"""
-#prompt_file = ""
-#skills = []
-#model = "opus"
-#fallback_model = "sonnet"
-#agent = "claude"        # claude | codex
-#effort = "high"
+max_size = "l"
 #max_turns = 200
 #timeout = "45m"
 enabled = true
-#shell = "/bin/bash"
-# Dagger is how this repository builds, lints and tests, and it needs the Docker
-# socket and the Dagger registry — both of which the "claude" sandbox denies. A
-# developer that cannot run `dagger check` cannot check its own work.
-sandbox = "none"
-[roles.developer.env]
-# The Dagger release this workspace is on. A CLI from a package manager is
-# older, and reads the workspace without being able to run it; see
-# CONTRIBUTING.md.
-DAGGER_X_RELEASE = "v1.0.0-beta.13"
-#[roles.developer.mcp.example]
-#command = "example-mcp"
+
 
 # Reviews pull requests and, optionally, merges them once checks are green.
 [roles.reviewer]
@@ -358,10 +353,6 @@ you — whether the change is correct, complete and what the issue asked for.
 """
 #prompt_file = ""
 #skills = []
-#model = "opus"
-#fallback_model = "sonnet"
-#agent = "claude"        # claude | codex
-#effort = "high"
 #max_turns = 200
 #timeout = "45m"
 # Disabling the reviewer treats pull requests as approved as soon as the
@@ -376,53 +367,23 @@ auto_merge = true
 # squash, merge or rebase.
 #merge_method = "squash"
 # Wait after approval before polling checks; some take a moment to start.
-#checks_wait = "1m"
-# How often to poll the checks while waiting (one API call each).
-#checks_poll_interval = "2m"
-# Escalate to a human if checks are still pending after this long.
-#checks_timeout = "30m"
-#max_check_fix_rounds = 2
-# Read the pull request's checks before the first review, so the reviewer
-# starts from a green pull request. A failing check goes to the reviewer in
-# checks mode first, exactly as it does after approval.
-#pre_review_checks = true
-# Review anyway when those checks are still pending after this long.
-#pre_review_checks_timeout = "10m"
-# The review stages, in order. Each gets its own focus and its own verdict,
-# and an approval needs every one of them to pass. One or more of
-# implementation, completeness, cleanliness, style, product-fit. product-fit
-# judges the change against the work item's parent feature and is off by
-# default.
+checks_wait = "30s"
+
 # The review angles a pull request of each size is reviewed from, one or more
 # of quick_general, general, docs, test_coverage, acceptance_criteria,
 # side_effects. A size not named here gets its default:
 angles = { xs = ["quick_general"], s = ["quick_general"], m = ["quick_general", "docs", "test_coverage"], l = ["general", "docs", "test_coverage"], xl = ["general", "docs", "test_coverage", "acceptance_criteria"] }
-# The model for the session that writes the review brief, for the judge, and
-# per angle. Unset: model.
-brief_model = "sonnet"
-judge_model = "sonnet"
-angle_models = { quick_general = "sonnet", docs = "sonnet", test_coverage = "sonnet" }
-#shell = "/bin/bash"
-#[roles.reviewer.env]
-#EXAMPLE = "value"
-#[roles.reviewer.mcp.example]
-#command = "example-mcp"
+# Phase execution profiles; unspecified phases use the size-resolved reviewer.
+# Brief/angles ignore sandbox and retain the host read-only floor: no commands,
+# writes, web/network tools, MCP/factory identity or writable/shared VCS.
+# The judge uses all five fields with reviewer-owned tools and permissions.
+brief_profile = "default"
+judge_profile = "default"
+angle_profiles = { quick_general = "review_fast", docs = "review_fast", test_coverage = "default" }
+
 
 # Tests the default branch after merges, files bugs, reports to the PM.
 [roles.qa]
-#prompt = """
-#"""
-#prompt_file = ""
-#skills = []
-#model = "opus"
-#fallback_model = "sonnet"
-#agent = "claude"        # claude | codex
-#effort = "high"
 #max_turns = 200
 #timeout = "45m"
 enabled = false
-#shell = "/bin/bash"
-#[roles.qa.env]
-#EXAMPLE = "value"
-#[roles.qa.mcp.example]
-#command = "example-mcp"
