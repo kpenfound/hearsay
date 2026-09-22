@@ -779,6 +779,11 @@ func TestEventDirectiveUsesCurrentRevisionAndPermission(t *testing.T) {
 	if got := decodeBundle(t, w.http(t, sam, "get_bundle", args)).Directive; got != nil {
 		t.Fatalf("ACL change revealed %+v", got)
 	}
+	denied := w.http(t, sam, "get_bundle", args)
+	absent := w.http(t, sam, "get_bundle", map[string]any{"scope": w.scope, "directive": "evt:missing:event"})
+	if !bytes.Equal(denied, absent) {
+		t.Fatalf("denied event disclosed its existence: %s versus %s", denied, absent)
+	}
 	// Private channel membership is resolved from the configured group at read time.
 	private := edit
 	private.NativeID = artifact + "@edit2"
