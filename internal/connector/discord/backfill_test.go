@@ -438,6 +438,8 @@ func TestFreshGatewaySessionWalksOutageGap(t *testing.T) {
 func TestBackfillAndGatewayUseSameMessageIdentity(t *testing.T) {
 	f := &restFixture{gatewayMessage: true}
 	f.messages = []map[string]any{f.message(testChannel, "1551744840499200011")}
+	f.messages[0]["content"] = "ask <@1551744840499200099>"
+	f.messages[0]["mentions"] = []map[string]any{{"id": "1551744840499200099", "username": "shed", "bot": true}}
 	server := httptest.NewServer(http.HandlerFunc(f.serve))
 	defer server.Close()
 	src := discordSource(server.URL)
