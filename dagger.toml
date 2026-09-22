@@ -8,14 +8,11 @@ source = "github.com/dagger/go"
 
 [modules.go.settings]
 includeExtraFiles = ["docs/config.md", "cmd/hearsay/README.md"]
-base = "test-services:go-test-base"
+base = "hearsay:go-test-base"
 lint = ["!**"]
 
 [modules.dagger-dang-sdk]
 source = "github.com/dagger/dang-sdk@v1.0.1"
-
-[modules.test-services]
-source = ".dagger/modules/test-services"
 
 [modules.hearsay]
 source = ".dagger/modules/hearsay"
@@ -25,7 +22,3 @@ module = "dagger-dang-sdk"
 
 [sdks.dang.scopes.".dagger/modules/hearsay"]
 is-module = true
-
-[sdks.dang.scopes.".dagger/modules/test-services"]
-is-module = true
-clients = ["./.dagger/modules/hearsay"]

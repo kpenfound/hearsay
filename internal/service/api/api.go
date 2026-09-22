@@ -10,11 +10,9 @@
 // text of a tools/call result at `/mcp`. There is one encoding and it is not the
 // interface's, which is what makes the same request byte-identical over both.
 //
-// Who a call is for is the [PrincipalHeader] header, and the agent asking on
-// their behalf the [AgentHeader] header, on both interfaces. Nothing
-// authenticates them yet: the service trusts the network in front of it the way
-// the dev stack does, and a deployment that does not is not one this build
-// supports.
+// Both interfaces authenticate the person named in [PrincipalHeader] with a
+// bearer token. When [AgentHeader] names an agent, that agent's token is also
+// required. Authentication precedes the shared call layer (ADR-0014).
 //
 // The assert and watch calls of docs/design.md#read-and-assert-api are later
 // work, and so are a bundle's directive, anchors and conflicts.
@@ -160,12 +158,17 @@ func embedTier(registry llm.Registry) (l1.Embedder, error) {
 func Handler(calls *Calls, pool *pgxpool.Pool) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/{call}", func(w http.ResponseWriter, r *http.Request) {
+		caller, authErr := calls.auth.authenticate(r.Header)
+		if authErr != nil {
+			writeError(w, authErr)
+			return
+		}
 		args, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequest))
 		if err != nil {
 			writeError(w, fail(http.StatusRequestEntityTooLarge, "the request body is over %d bytes", MaxRequest))
 			return
 		}
-		body, err := calls.Call(r.Context(), CallerOf(r.Header), r.PathValue("call"), args)
+		body, err := calls.Call(r.Context(), caller, r.PathValue("call"), args)
 		if err != nil {
 			writeError(w, asError(err))
 			return

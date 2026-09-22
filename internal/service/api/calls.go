@@ -29,25 +29,18 @@ import (
 // ingest allowlist names it and no connector may emit under it.
 const AuditSource = "hearsay"
 
-// Caller is who a request says it is: the person it is for, and the agent
-// asking on their behalf, if one is. Every interface reads these from the same
-// place — the [PrincipalHeader] and [AgentHeader] headers — so a request means
-// the same thing whichever one it came through.
+// Caller is the authenticated person a request is for and, if present, the
+// authenticated agent acting with that person's delegated credential.
 type Caller struct {
 	Principal string
 	Agent     string
 }
 
-// The headers a caller is named by.
+// The headers a caller is named by. Names alone grant no access.
 const (
 	PrincipalHeader = "Hearsay-Principal"
 	AgentHeader     = "Hearsay-Agent"
 )
-
-// CallerOf reads the caller from a request's headers.
-func CallerOf(h http.Header) Caller {
-	return Caller{Principal: strings.TrimSpace(h.Get(PrincipalHeader)), Agent: strings.TrimSpace(h.Get(AgentHeader))}
-}
 
 // Error is a call that did not succeed, with the HTTP status it is served as and
 // a message that is a fixed sentence or names only what the caller sent: it
@@ -93,6 +86,7 @@ type Calls struct {
 	graph     *l2.Store
 	assembler *bundle.Assembler
 	resolver  *principal.Resolver
+	auth      *authenticator
 	embedder  l1.Embedder
 	// now and id are the clock and the audit event id, replaceable by a test.
 	now func() time.Time
@@ -103,6 +97,10 @@ type Calls struct {
 // embedder is a deployment with no `embed` tier, whose search is full text
 // alone.
 func NewCalls(q l2.Querier, repo config.Repo, embedder l1.Embedder) (*Calls, error) {
+	auth, err := newAuthenticator(repo.Principals)
+	if err != nil {
+		return nil, fmt.Errorf("configuring API authentication: %w", err)
+	}
 	resolver, err := repo.Resolver()
 	if err != nil {
 		return nil, fmt.Errorf("building the identity resolver: %w", err)
@@ -113,6 +111,7 @@ func NewCalls(q l2.Querier, repo config.Repo, embedder l1.Embedder) (*Calls, err
 		graph:     l2.New(q),
 		assembler: bundle.New(q),
 		resolver:  resolver,
+		auth:      auth,
 		embedder:  embedder,
 		now:       time.Now,
 		id:        randomID,

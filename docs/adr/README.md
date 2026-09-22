@@ -21,6 +21,7 @@ The format, numbering and supersession rules are in [ADR-0001](0001-record-archi
 | [0011](0011-a-retry-superseded-by-a-pending-job-is-done.md) | A retry superseded by a pending job for its target is done, not requeued | accepted | 2026-09-14 |
 | [0012](0012-a-github-review-is-versioned-by-a-hash-of-its-content.md) | A GitHub review is versioned by a hash of its state and body | accepted | 2026-09-14 |
 | [0013](0013-acl-re-syncs-are-durable-and-driven-by-the-runtime.md) | ACL re-syncs are durable and driven by the runtime | accepted | 2026-09-15 |
+| [0014](0014-api-callers-use-per-principal-bearer-tokens.md) | API callers use per-principal bearer tokens | accepted | 2026-09-22 |
 
 ## Names other work depends on
 

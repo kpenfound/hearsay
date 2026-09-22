@@ -73,15 +73,18 @@ const kyleNode = "MDQ6VXNlcjE="
 func repo(src string) config.Repo {
 	return config.Repo{
 		Principals: []principal.Principal{
-			{ID: "kyle", Kind: principal.KindHuman, Identities: []principal.Identity{{Source: src, NativeID: kyleNode, Handle: "kpenfound"}}},
-			{ID: "sam", Kind: principal.KindHuman, Identities: []principal.Identity{{Source: src, NativeID: "MDQ6VXNlcjI=", Handle: "sam"}}},
-			{ID: "shed", Kind: principal.KindAgent, Class: principal.ClassWorker, Identities: []principal.Identity{{Source: src, Handle: "shed[bot]"}}},
+			{ID: "kyle", Kind: principal.KindHuman, TokenEnv: "HEARSAY_TEST_KYLE_TOKEN", Identities: []principal.Identity{{Source: src, NativeID: kyleNode, Handle: "kpenfound"}}},
+			{ID: "sam", Kind: principal.KindHuman, TokenEnv: "HEARSAY_TEST_SAM_TOKEN", Identities: []principal.Identity{{Source: src, NativeID: "MDQ6VXNlcjI=", Handle: "sam"}}},
+			{ID: "shed", Kind: principal.KindAgent, Class: principal.ClassWorker, TokenEnv: "HEARSAY_TEST_SHED_TOKEN", Identities: []principal.Identity{{Source: src, Handle: "shed[bot]"}}},
 		},
 	}
 }
 
 func newWorld(t *testing.T) *world {
 	t.Helper()
+	t.Setenv("HEARSAY_TEST_KYLE_TOKEN", "test-kyle-api-credential")
+	t.Setenv("HEARSAY_TEST_SAM_TOKEN", "test-sam-api-credential")
+	t.Setenv("HEARSAY_TEST_SHED_TOKEN", "test-shed-api-credential")
 	pool := newPool(t)
 	w := &world{src: newSource(), pool: pool}
 	w.project = "acme/" + w.src
@@ -186,9 +189,23 @@ func (w *world) post(t *testing.T, path string, caller api.Caller, body string) 
 	}
 	if caller.Principal != "" {
 		req.Header.Set(api.PrincipalHeader, caller.Principal)
+		switch caller.Principal {
+		case "kyle":
+			req.Header.Set(api.AuthorizationHeader, "Bearer test-kyle-api-credential")
+		case "sam":
+			req.Header.Set(api.AuthorizationHeader, "Bearer test-sam-api-credential")
+		case "shed":
+			req.Header.Set(api.AuthorizationHeader, "Bearer test-shed-api-credential")
+		}
 	}
 	if caller.Agent != "" {
 		req.Header.Set(api.AgentHeader, caller.Agent)
+		switch caller.Agent {
+		case "sam":
+			req.Header.Set(api.AgentTokenHeader, "test-sam-api-credential")
+		case "shed":
+			req.Header.Set(api.AgentTokenHeader, "test-shed-api-credential")
+		}
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

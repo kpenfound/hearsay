@@ -21,8 +21,8 @@ Dagger runs everything. The workspace is `dagger.toml`. The tests and the
 `go generate` drift check come from the reusable Go module
 (`github.com/dagger/go`) it installs; lint, the integration tests, the tidy and
 image checks, the binary, the image, migrations and the dev stack are `hearsay`, our own module
-in `.dagger/modules/hearsay/main.dang`, written in Dang. `test-services` beside
-it is the adapter that hands the Go module a container with Postgres attached.
+in `.dagger/modules/hearsay/main.dang`, written in Dang. Its `go-test-base`
+function hands the Go module a container with Postgres attached.
 There is no CI workflow: Dagger Cloud runs `dagger check` on every commit.
 
 ```sh
@@ -126,9 +126,10 @@ list.
 The API is not a stub. It serves `get_bundle`, `resolve`, `stance_history`,
 `get_l1`, `get_l0` and `search` as `POST /v1/<call>` and as MCP tools at `/mcp`,
 from one call layer whose bytes both interfaces serve verbatim, on `--listen`
-(default `:8080`; `hearsay all` takes `--api-listen`). The caller is the
-`Hearsay-Principal` header, and the agent acting for them `Hearsay-Agent`;
-nothing authenticates them yet. Every read is filtered by that principal's
+(default `:8080`; `hearsay all` takes `--api-listen`). The caller is named by
+`Hearsay-Principal` and authenticated by a bearer token; the agent acting for
+them is named by `Hearsay-Agent` and must supply its own token (ADR-0014).
+Every read is filtered by that principal's
 access lists, and every bundle served is an L0 `audit` event under source
 `hearsay`. The bundle is `internal/bundle`, over the views in `internal/l3`. It
 needs Postgres and refuses without it.
