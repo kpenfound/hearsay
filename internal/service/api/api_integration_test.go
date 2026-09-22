@@ -76,6 +76,7 @@ func repo(src string) config.Repo {
 			{ID: "kyle", Kind: principal.KindHuman, TokenEnv: "HEARSAY_TEST_KYLE_TOKEN", Identities: []principal.Identity{{Source: src, NativeID: kyleNode, Handle: "kpenfound"}}},
 			{ID: "sam", Kind: principal.KindHuman, TokenEnv: "HEARSAY_TEST_SAM_TOKEN", Identities: []principal.Identity{{Source: src, NativeID: "MDQ6VXNlcjI=", Handle: "sam"}}},
 			{ID: "shed", Kind: principal.KindAgent, Class: principal.ClassWorker, TokenEnv: "HEARSAY_TEST_SHED_TOKEN", Identities: []principal.Identity{{Source: src, Handle: "shed[bot]"}}},
+			{ID: "channel_members", Kind: principal.KindTeam, Identities: []principal.Identity{{Source: src, NativeID: "private-channel"}}, Members: []string{"kyle"}},
 		},
 	}
 }
@@ -778,14 +779,26 @@ func TestEventDirectiveUsesCurrentRevisionAndPermission(t *testing.T) {
 	if got := decodeBundle(t, w.http(t, sam, "get_bundle", args)).Directive; got != nil {
 		t.Fatalf("ACL change revealed %+v", got)
 	}
-	// Even kyle loses access when the current revision moves into a private channel.
+	// Private channel membership is resolved from the configured group at read time.
 	private := edit
 	private.NativeID = artifact + "@edit2"
 	private.Payload.Revision = &connector.Revision{Token: "edit2", EditedAt: day.Add(2 * time.Hour)}
 	private.ACL = connector.ACL{{Kind: connector.ACLGroup, Source: w.src, NativeID: "private-channel"}}
 	put(private)
+	if got := decodeBundle(t, w.http(t, kyle, "get_bundle", args)).Directive; got == nil || got.Text != private.Payload.Text {
+		t.Fatalf("member could not read private channel: %+v", got)
+	}
+	if got := decodeBundle(t, w.http(t, sam, "get_bundle", args)).Directive; got != nil {
+		t.Fatalf("non-member saw private channel: %+v", got)
+	}
+	// An inaccessible replacement ACL takes effect even for an old event id.
+	removed := private
+	removed.NativeID = artifact + "@edit3"
+	removed.Payload.Revision = &connector.Revision{Token: "edit3", EditedAt: day.Add(3 * time.Hour)}
+	removed.ACL = connector.ACL{{Kind: connector.ACLGroup, Source: w.src, NativeID: "removed-channel"}}
+	put(removed)
 	if got := decodeBundle(t, w.http(t, kyle, "get_bundle", args)).Directive; got != nil {
-		t.Fatalf("private channel revealed %+v", got)
+		t.Fatalf("removed channel permission revealed %+v", got)
 	}
 	tomb := connector.Event{Source: w.src, NativeID: artifact + ":tombstone", Kind: connector.KindTombstone, Time: day.Add(3 * time.Hour), Payload: connector.Payload{Artifact: artifact + ":tombstone", Target: artifact, Container: base.Payload.Container}, ACL: base.ACL}
 	put(tomb)
