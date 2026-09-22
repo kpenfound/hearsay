@@ -47,6 +47,21 @@ func pullRequest() (connector.Event, []connector.Event) {
 	return pr, []connector.Event{comment, bot, review}
 }
 
+func TestBuildChatWindowAcceptsMessageExtension(t *testing.T) {
+	ev := event(connector.KindMessage, "m1", at(0), who("u1", "kpenfound"), "", "A channel message")
+	ev.Kind = "discord.message"
+	ev.Payload.BaseKind = connector.KindMessage
+	ev.Payload.Container = connector.Container{Kind: connector.ContainerChannel, NativeID: "C1"}
+	key := l1.ChatWindowKey(ev)
+	doc, err := l1.BuildChatWindow(key, []connector.Event{ev}, testPrincipals(t), testRepo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Kind != l1.KindChatThread || doc.Source.NativeID != key || len(doc.L0Refs) != 1 {
+		t.Errorf("chat document = %+v", doc)
+	}
+}
+
 func TestBuild(t *testing.T) {
 	resolver := testPrincipals(t)
 	root, children := pullRequest()

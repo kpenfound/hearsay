@@ -268,6 +268,9 @@ type Filter struct {
 	Source string
 	// Kind reads one kind only.
 	Kind connector.Kind
+	// BaseKind reads a core kind, including extension kinds that declare it in
+	// payload.base_kind.
+	BaseKind connector.Kind
 	// Artifact reads one artifact's history — its first appearance and every
 	// revision of it — and requires Source, because an artifact id means
 	// nothing outside the source that minted it.
@@ -282,6 +285,11 @@ type Filter struct {
 	// The artifact itself is not in the result: it hangs off nothing, and
 	// whoever wants it asks for Artifact.
 	Thread string
+	// Container and the half-open source-time range read a chat window without
+	// scanning all events in a source. Both bounds require a container.
+	Container string
+	Since     time.Time
+	Before    time.Time
 }
 
 // Validate reports a filter that cannot mean what it says. Both reads call it,
@@ -292,6 +300,9 @@ func (f Filter) Validate() error {
 	}
 	if f.Thread != "" && f.Source == "" {
 		return errors.New("reading by thread needs a source: an artifact id is only unique within one")
+	}
+	if (f.Container != "" && f.Source == "") || ((!f.Since.IsZero() || !f.Before.IsZero()) && f.Container == "") {
+		return errors.New("reading a time window needs a source and container")
 	}
 	return nil
 }
@@ -304,6 +315,9 @@ func (f Filter) where(q *query) {
 	if f.Kind != "" {
 		q.and("e.kind", string(f.Kind))
 	}
+	if f.BaseKind != "" {
+		q.and("coalesce(e.payload->>'base_kind', e.kind)", string(f.BaseKind))
+	}
 	if f.Artifact != "" {
 		q.and("e.artifact", f.Artifact)
 	}
@@ -312,6 +326,15 @@ func (f Filter) where(q *query) {
 		// the same way here: an index on coalesce(a, b) serves a predicate on
 		// coalesce(a, b) and not one on a or b.
 		q.and(conversationSQL, f.Thread)
+	}
+	if f.Container != "" {
+		q.and("e.payload->'container'->>'native_id'", f.Container)
+	}
+	if !f.Since.IsZero() {
+		q.sql += " AND e.occurred_at >= " + q.placeholder(f.Since)
+	}
+	if !f.Before.IsZero() {
+		q.sql += " AND e.occurred_at < " + q.placeholder(f.Before)
 	}
 }
 

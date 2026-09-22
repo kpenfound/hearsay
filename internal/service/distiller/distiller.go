@@ -1,6 +1,6 @@
 // Package distiller turns L0 events into L1 documents. It is a stateless,
 // parallel, retryable worker on the `distill` model tier (ADR-0005): every job
-// it runs can be run again, and re-running one for an artifact produces the
+// it runs can be run again, and re-running one for a conversation produces the
 // same document.
 //
 // It is two loops over one database. The pump reads the L0 change feed and

@@ -25,18 +25,16 @@ var (
 	ErrNotFound = errors.New("no such l1 document")
 )
 
-// MaxDocIDLen bounds a document id. It is what [DocID] can produce from the
-// longest source id and the longest artifact id docs/connector-contract.md
-// allows, and it is well under the queue's own limit on a target id, which is
-// what a distill job carries.
-const MaxDocIDLen = len("l1:") + connector.MaxSourceIDLen + len(":") + connector.MaxNativeIDLen
+// MaxDocIDLen also covers a channel-window key made from the longest
+// container id and a Unix timestamp. It remains below the queue target limit.
+const MaxDocIDLen = len("l1:") + connector.MaxSourceIDLen + len(":chat:") + connector.MaxNativeIDLen + len(":-9223372036854775808")
 
 // Kind is what an L1 document is. It is L1's own vocabulary rather than L0's:
 // several L0 kinds make one document (a pull request with its reviews and its
 // comments is one `pr`), and one L0 kind can make several (a meeting
 // transcript is one `meeting_segment` per topic, later).
 //
-// docs/design.md#l1-distilled-documents lists the whole vocabulary. The three
+// docs/design.md#l1-distilled-documents lists the whole vocabulary. The kinds
 // here are the ones this build distils; the rest arrive with the sources that
 // produce them.
 type Kind string
@@ -49,6 +47,8 @@ const (
 	KindPR Kind = "pr"
 	// KindCommit is one commit on a watched branch.
 	KindCommit Kind = "commit"
+	// KindChatThread is a native thread or a channel conversation.
+	KindChatThread Kind = "chat_thread"
 )
 
 // rootKinds maps the L0 kind of an artifact that makes a document of its own to
@@ -59,16 +59,17 @@ var rootKinds = map[connector.Kind]Kind{
 	connector.KindIssue:       KindIssue,
 	connector.KindPullRequest: KindPR,
 	connector.KindCommit:      KindCommit,
+	connector.KindThread:      KindChatThread,
 }
 
 // Kinds is every document kind this build produces, in the order they are
 // documented.
-func Kinds() []Kind { return []Kind{KindIssue, KindPR, KindCommit} }
+func Kinds() []Kind { return []Kind{KindIssue, KindPR, KindCommit, KindChatThread} }
 
 // Valid reports whether k is a kind this build produces.
 func (k Kind) Valid() bool {
 	switch k {
-	case KindIssue, KindPR, KindCommit:
+	case KindIssue, KindPR, KindCommit, KindChatThread:
 		return true
 	}
 	return false
@@ -265,11 +266,10 @@ type Body struct {
 	Change string `json:"change,omitempty"`
 }
 
-// DocID is the id of the document for an artifact. It is a pure function of the
-// two, so re-distilling an artifact writes the same row rather than a second
-// one, and it is parseable back because a source id contains no colon
-// (docs/connector-contract.md) while an artifact id may.
-func DocID(source, artifact string) string { return "l1:" + source + ":" + artifact }
+// DocID is the id of the document for a source-native artifact or stable
+// conversation key. It is parseable because a source id contains no colon
+// (docs/connector-contract.md) while the key may.
+func DocID(source, key string) string { return "l1:" + source + ":" + key }
 
 // ParseDocID returns the source and artifact a document id was built from.
 func ParseDocID(id string) (source, artifact string, err error) {

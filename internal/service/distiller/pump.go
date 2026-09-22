@@ -227,7 +227,7 @@ func TargetOf(ctx context.Context, ev connector.Event, hidden Hidden) (string, b
 		target, ok := targetOf(ev)
 		return target, ok, nil
 	}
-	if root := conversationOf(ev); root != "" {
+	if root := conversationOf(ev); root != "" && ev.Payload.Container.Kind != connector.ContainerChannel {
 		return l1.DocID(ev.Source, root), true, nil
 	}
 	// The target is there: Event.Validate refuses a tombstone without one before
@@ -247,6 +247,12 @@ func TargetOf(ctx context.Context, ev connector.Event, hidden Hidden) (string, b
 func targetOf(ev connector.Event) (string, bool) {
 	if _, ok := l1.KindFor(ev); ok {
 		return l1.DocID(ev.Source, ev.Payload.Artifact), true
+	}
+	if ev.Payload.Container.Kind == connector.ContainerChannel && (ev.Kind == connector.KindMessage || ev.Payload.BaseKind == connector.KindMessage) {
+		if ev.Payload.Thread != "" {
+			return l1.DocID(ev.Source, ev.Payload.Thread), true
+		}
+		return l1.DocID(ev.Source, l1.ChatWindowKey(ev)), true
 	}
 	if root := conversationOf(ev); root != "" {
 		return l1.DocID(ev.Source, root), true

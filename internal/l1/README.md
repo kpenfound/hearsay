@@ -1,7 +1,7 @@
 # internal/l1
 
-The document layer: what was said. One document per L0 artifact, flat rows in
-one schema, rebuilt from L0 whenever the distillation changes.
+The document layer: what was said. One document per artifact or fixed channel
+conversation, flat rows in one schema, rebuilt from L0 when its events change.
 
 **Belongs here:** the envelope and the per-kind bodies, the store, deterministic
 reference extraction, the secrets and PII scrub that runs before `text` is
@@ -18,7 +18,8 @@ read path asks a model to generate anything.
 ## Things to know before changing it
 
 - **A document is a function of its events.** [Build] takes the current revision
-  of an artifact and of everything that hangs off it and produces everything but
+  of an artifact and of everything that hangs off it; [BuildChatWindow] takes
+  the current messages in a fixed channel time bucket. Both produce everything but
   the body; the body is the one part that takes a model call. Nothing else may
   reach into a document — not a clock, not a map iteration order — or
   re-distilling would rewrite a row that has not changed, which is the property
