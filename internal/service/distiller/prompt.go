@@ -52,6 +52,13 @@ Never quote a credential, a token, a key or a personal email address, even if th
 // kindPrompts is what each kind of artifact is for, and what is worth keeping
 // from it.
 var kindPrompts = map[l1.Kind]string{
+	l1.KindChatBurst: `This is one author's contiguous tangent inside a longer chat conversation.
+
+- summary: preserve the distinct facts or reasoning in this tangent, using only these messages.
+- outcome: empty; the containing thread owns any conclusion.
+- open_questions: empty.
+
+Set outcome_kind to none. Do not repeat the containing thread's conclusion.`,
 	l1.KindChatThread: `This is a conversation in a chat channel or native thread.
 
 - summary: briefly describe what people discussed.

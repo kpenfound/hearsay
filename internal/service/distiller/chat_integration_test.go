@@ -4,6 +4,7 @@ package distiller_test
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"slices"
 	"testing"
@@ -20,6 +21,108 @@ import (
 	"github.com/kpenfound/hearsay/internal/queue"
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
+
+func TestChatBurstReconcilesEditAndTombstone(t *testing.T) {
+	pool := newPool(t)
+	src := newSource(t)
+	authors := "AAABCBDE"
+	messages := make([]connector.Event, len(authors))
+	group := connector.ACLEntry{Kind: connector.ACLGroup, Source: src, NativeID: "C1"}
+	for i, author := range authors {
+		messages[i] = chatMessage(src, "burst-"+string(rune('0'+i)), "message "+string(rune('0'+i)), day.Add(time.Duration(i)*time.Minute))
+		messages[i].Payload.Author = who(src, string(author), string(author))
+		messages[i].ACL = connector.ACL{group}
+	}
+	key := l1.ChatWindowKey(messages[0])
+	edited := revised(messages[1], "edit-1", day.Add(10*time.Minute))
+	edited.Payload.Text = "edited private tangent"
+	withEdit := slices.Clone(messages)
+	withEdit[1] = edited
+	afterDelete := append(slices.Clone(withEdit[:2]), withEdit[3:]...)
+	repo := chatRepo(src)
+	resolver, _ := repo.Resolver()
+	fixtures := llm.NewFixtures()
+	seen := map[string]bool{}
+	var firstBurst l1.Document
+	for state, events := range [][]connector.Event{messages, withEdit, afterDelete} {
+		thread, err := l1.BuildChatWindow(key, events, resolver, repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bursts, err := l1.BuildChatBursts(key, events, resolver, repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state == 0 {
+			if len(bursts) != 1 {
+				t.Fatalf("initial bursts = %d", len(bursts))
+			}
+			firstBurst = bursts[0]
+		}
+		if state == 2 && len(bursts) != 0 {
+			t.Fatalf("tombstoned run still qualifies: %d", len(bursts))
+		}
+		for _, doc := range append([]l1.Document{thread}, bursts...) {
+			budget, _ := repo.LLM.Tier(llm.TierDistill)
+			req := distiller.RequestFor(doc, budget.MaxTokens)
+			fixtureKey := llm.FixtureKey(llm.TierDistill, req)
+			if seen[fixtureKey] {
+				continue
+			}
+			seen[fixtureKey] = true
+			answer := map[string]any{"summary": "Thread summary.", "outcome_kind": "none"}
+			if doc.Kind == l1.KindChatBurst {
+				answer["summary"] = "Private tangent summary."
+			}
+			body, _ := json.Marshal(answer)
+			if err := fixtures.Add(llm.CompletionFixture{Tier: llm.TierDistill, Request: req, Response: llm.Response{JSON: body, StopReason: llm.StopEnd}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	registry, err := llm.NewFake(repo.LLM, fixtures)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Repo = repo
+	d, err := distiller.New(pool, registry, &cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := l1.New(pool)
+	threadID := l1.DocID(src, key)
+	ingest(t, pool, messages)
+	if result, err := d.Distill(t.Context(), threadID); err != nil || !result.Written {
+		t.Fatalf("initial distill = %+v, %v", result, err)
+	}
+	burst, err := store.Get(t.Context(), firstBurst.ID)
+	if err != nil || burst.Kind != l1.KindChatBurst || !slices.Equal(burst.L0Refs, firstBurst.L0Refs) || len(burst.ACL) != 1 || burst.ACL[0] != group || burst.Body.OutcomeKind != l1.OutcomeNone || burst.Source.URL != messages[0].Payload.URL {
+		t.Fatalf("stored burst = %+v, %v", burst, err)
+	}
+	if result, err := d.Distill(t.Context(), threadID); err != nil || result.Written {
+		t.Fatalf("repeat distill = %+v, %v", result, err)
+	}
+	ingest(t, pool, []connector.Event{edited})
+	if _, err := d.Distill(t.Context(), threadID); err != nil {
+		t.Fatal(err)
+	}
+	burst, err = store.Get(t.Context(), firstBurst.ID)
+	if err != nil || slices.Equal(burst.L0Refs, firstBurst.L0Refs) || burst.RawText == firstBurst.RawText {
+		t.Fatalf("edited burst = %+v, %v", burst, err)
+	}
+	tombstone := chatMessage(src, "burst-tombstone", "", day.Add(20*time.Minute))
+	tombstone.Kind = connector.KindTombstone
+	tombstone.Payload.Target = messages[2].Payload.Artifact
+	tombstone.Payload.Author = nil
+	ingest(t, pool, []connector.Event{tombstone})
+	if _, err := d.Distill(t.Context(), threadID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Get(t.Context(), firstBurst.ID); !errors.Is(err, l1.ErrNotFound) {
+		t.Fatalf("retracted burst remains: %v", err)
+	}
+}
 
 func chatMessage(src, id, body string, when time.Time) connector.Event {
 	ev := event(src, connector.KindMessage, id, when, who(src, "u1", "kpenfound"), "", body)
