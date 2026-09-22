@@ -1,10 +1,12 @@
-// Package discord ingests guild messages, threads, and reactions through the
-// Discord Gateway. A source uses settings `guild` (the guild snowflake),
+// Package discord ingests live guild messages, threads, and reactions through
+// the Gateway and walks channel and thread history through REST. A source uses
+// settings `guild` (the guild snowflake),
 // `intents` (Gateway bitset; GUILDS, GUILD_MESSAGES, GUILD_MESSAGE_REACTIONS,
-// and MESSAGE_CONTENT are needed), and optionally `gateway_url` for a private
-// test gateway. Its only secret is `token`, the bot token. The runtime resolves
+// and MESSAGE_CONTENT are needed), and optionally `gateway_url` and `api_url`
+// for local fixtures. Its only secret is `token`, the bot token. The runtime resolves
 // that secret from the environment before calling Factory. A source's
 // containers are parent channel snowflakes; the runtime Gate enforces them.
+// Discord's REST lists expose current messages but no deleted-message list.
 package discord
 
 import (
@@ -239,8 +241,11 @@ func (c *Connector) Stream(ctx context.Context, sink connector.Sink) error {
 		c.mu.Unlock()
 		close(active)
 	}()
-	ws, _, err := websocket.DefaultDialer.DialContext(ctx, target, nil)
+	ws, response, err := websocket.DefaultDialer.DialContext(ctx, target, nil)
 	if err != nil {
+		if response != nil && response.Body != nil {
+			_ = response.Body.Close()
+		}
 		return fmt.Errorf("dial discord gateway: %w", err)
 	}
 	c.mu.Lock()
@@ -363,6 +368,16 @@ func (c *Connector) Stream(ctx context.Context, sink connector.Sink) error {
 				c.resumeURL = v.ResumeGatewayURL
 				c.mu.Unlock()
 				c.setHealth(connector.HealthOK, "connected")
+				// A fresh session has no replay sequence. A durable walk fills
+				// messages posted while this process was down, even after the
+				// one-time initial backfill finished in an earlier run.
+				if requester, ok := sink.(connector.ResyncRequester); ok {
+					for _, id := range c.containers {
+						if err := requester.RequestResync(ctx, id); err != nil && !errors.Is(err, connector.ErrNoResyncStore) {
+							return fmt.Errorf("recording restart gap walk for channel %s: %w", id, err)
+						}
+					}
+				}
 			}
 			if e.T == "RESUMED" {
 				c.setHealth(connector.HealthOK, "connected")

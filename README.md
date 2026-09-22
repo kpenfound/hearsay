@@ -97,7 +97,8 @@ something into L2 topics and stances.
 `hearsay connectors` is real too — it hosts, polls and backfills the connectors
 configuration names. GitHub (`type: github`) ingests issues, pull requests,
 reviews, comments and commits by webhook and backfill. Discord (`type: discord`)
-ingests guild messages, threads and reactions through its Gateway. A source of
+ingests guild messages, threads and reactions through its Gateway, backfills
+channel and thread history over REST, and re-syncs visibility changes. A source of
 an unregistered type is a startup failure.
 
 ## License

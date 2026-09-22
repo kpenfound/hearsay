@@ -121,6 +121,7 @@ sources:
     settings:
       guild: "824100000000000000"
       intents: 34305
+      # api_url: https://discord.com/api/v10 # optional; localhost for fixtures
     secrets:
       token: HEARSAY_DISCORD_BOT_TOKEN
 ```
@@ -128,8 +129,23 @@ sources:
 Run `hearsay connectors --config ./hearsay.yaml`. `/readyz` reports the
 connection state, last event time, retries, and allowlist drops. A bot token
 or intent rejected by the Gateway reports failed health. The Gateway session
-is resumed after a connection break within the process. Restart gap backfill
-and visibility re-sync are added in #89.
+is resumed after a connection break within the process. REST backfill walks each
+allowlisted parent channel and its active, public archived, and private archived
+threads, one bounded page at a time. The runtime stores its cursor in Postgres;
+an interrupted walk resumes after restart. Discord REST returns the current
+revision of messages, including edits, but does not list deleted messages.
+Gateway delete dispatches provide tombstones while the bot is connected.
+
+A new Gateway session requests a durable walk of each allowlisted channel to
+fill messages missed while the process was down, even when the initial backfill
+already finished. A channel visibility update requests the same walk before
+its Gateway sequence is acknowledged. At startup, the runtime also checks
+channels whose current L0 artifacts are still public and requests a walk if
+Discord now reports them private. The walk re-emits messages with a new
+permission revision and the current ACL. `/readyz` reports backfill and re-sync
+failures; a REST error or 429 retries the same page. Keep the bot's View Channel,
+Read Message History, and private-thread access after changing a channel's
+visibility, or the re-sync cannot read the artifacts it must re-emit.
 
 ## `scopes/`
 

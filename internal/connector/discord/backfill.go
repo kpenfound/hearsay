@@ -31,6 +31,7 @@ type walkPosition struct {
 	More          bool     `json:"more,omitempty"`
 }
 
+// Backfill reads one bounded page of allowlisted channel or thread history.
 func (c *Connector) Backfill(ctx context.Context, sink connector.Sink, from connector.Cursor) (connector.BackfillResult, error) {
 	if len(c.containers) == 0 {
 		return connector.BackfillResult{Done: true}, nil
@@ -56,6 +57,7 @@ func (c *Connector) Backfill(ctx context.Context, sink connector.Sink, from conn
 	return c.walk(ctx, sink, p, false)
 }
 
+// Public asks Discord whether a configured parent channel is public now.
 func (c *Connector) Public(ctx context.Context, container string) (bool, error) {
 	if !slices.Contains(c.containers, container) {
 		return false, fmt.Errorf("discord channel %s is not configured", container)
@@ -67,6 +69,7 @@ func (c *Connector) Public(ctx context.Context, container string) (bool, error) 
 	return len(acl) == 1 && acl[0].Kind == connector.ACLPublic, nil
 }
 
+// Resync walks one channel under its current permissions from a stored cursor.
 func (c *Connector) Resync(ctx context.Context, sink connector.Sink, container string, from connector.Cursor) (connector.BackfillResult, error) {
 	if !slices.Contains(c.containers, container) {
 		return connector.BackfillResult{}, fmt.Errorf("discord channel %s is not configured", container)

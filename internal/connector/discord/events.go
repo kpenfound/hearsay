@@ -418,6 +418,9 @@ func (c *Connector) emitThread(ctx context.Context, sink connector.Sink, ch chan
 	ev.Payload.URL = channelURL(c.guild, ch.ID)
 	ev.Payload.Author = &connector.Identity{Source: c.source, Kind: connector.IdentityUser, NativeID: ch.OwnerID}
 	ev.Payload.Thread = ""
+	token := c.permissionToken(ch.ID)
+	ev.NativeID = ev.Payload.Artifact + "@" + token
+	ev.Payload.Revision = &connector.Revision{Token: token}
 	return c.emit(ctx, sink, ev)
 }
 func threadArtifact(id string) string { return "thread:" + id }

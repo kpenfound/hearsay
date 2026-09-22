@@ -256,9 +256,10 @@ func TestGatewayReplayThroughRuntimeGate(t *testing.T) {
 			if tomb, ok := byID["thread:1551744840499200004:tombstone"]; !ok || tomb.Payload.Target != "thread:1551744840499200004" {
 				t.Errorf("thread tombstone = %+v", tomb)
 			}
-			if _, ok := byID["thread:1551744840499200004"]; !ok {
+			if _, ok := eventPrefix(byID, "thread:1551744840499200004@perm:"); !ok {
 				t.Error("thread artifact missing")
-			} else if got := byID["thread:1551744840499200004"].Payload.URL; got != "https://discord.com/channels/1551744840499200000/1551744840499200004" {
+			} else if thread, _ := eventPrefix(byID, "thread:1551744840499200004@perm:"); thread.Payload.URL != "https://discord.com/channels/1551744840499200000/1551744840499200004" {
+				got := thread.Payload.URL
 				t.Errorf("thread URL = %q", got)
 			}
 			if _, ok := eventPrefix(byID, "1551744840499200004@perm:"); !ok {
@@ -311,17 +312,20 @@ func TestHeartbeatAndClose(t *testing.T) {
 			t.Errorf("first opcode = %d", hello.Op)
 		}
 		_ = ws.WriteJSON(map[string]any{"op": 0, "t": "READY", "s": 42, "d": map[string]any{"session_id": "sess"}})
-		var hb struct {
-			Op int     `json:"op"`
-			D  float64 `json:"d"`
+		for range 5 {
+			var hb struct {
+				Op int     `json:"op"`
+				D  float64 `json:"d"`
+			}
+			if ws.ReadJSON(&hb) != nil {
+				return
+			}
+			_ = ws.WriteJSON(map[string]any{"op": 11, "d": nil})
+			if hb.Op == 1 && hb.D == 42 {
+				beat <- hb.D
+				break
+			}
 		}
-		if ws.ReadJSON(&hb) != nil {
-			return
-		}
-		if hb.Op == 1 {
-			beat <- hb.D
-		}
-		_ = ws.WriteJSON(map[string]any{"op": 11, "d": nil})
 		for {
 			var x any
 			if ws.ReadJSON(&x) != nil {
