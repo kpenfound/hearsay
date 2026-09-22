@@ -387,7 +387,10 @@ func (r *Runtime) Run(ctx context.Context) error {
 // restarted: a live source is not complete merely because its socket closed.
 func (r *Runtime) stream(ctx context.Context, h *hosted, streamer Streamer) {
 	log := telemetry.Logger(ctx)
-	interval := r.opts.Cadence.Interval(h.src)
+	interval := r.opts.Cadence.MinRefresh
+	if h.src.Refresh > 0 {
+		interval = r.opts.Cadence.Interval(h.src)
+	}
 	fails := 0
 	for {
 		if ctx.Err() != nil {

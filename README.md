@@ -29,6 +29,7 @@ a structured lookup. [docs/design.md](docs/design.md) has the full picture.
 flowchart LR
     subgraph sources["Sources"]
         GH["GitHub"]
+        Discord["Discord"]
         Slack["Slack"]
         Drive["Drive"]
     end
@@ -52,7 +53,7 @@ flowchart LR
         Human["Humans, via chat apps and CLIs"]
     end
 
-    GH & Slack & Drive --> C
+    GH & Discord & Slack & Drive --> C
     C --> L0
     L0 --> D --> L1
     L1 --> A --> L2

@@ -51,15 +51,15 @@ type reference struct {
 	MessageID string `json:"message_id"`
 }
 type message struct {
-	ID               string     `json:"id"`
-	GuildID          string     `json:"guild_id"`
-	ChannelID        string     `json:"channel_id"`
-	Author           *user      `json:"author"`
-	Member           *member    `json:"member"`
-	Content          string     `json:"content"`
-	Timestamp        time.Time  `json:"timestamp"`
-	EditedTimestamp  *time.Time `json:"edited_timestamp"`
-	MessageReference *reference `json:"message_reference"`
+	ID               string          `json:"id"`
+	GuildID          string          `json:"guild_id"`
+	ChannelID        string          `json:"channel_id"`
+	Author           *user           `json:"author"`
+	Member           *member         `json:"member"`
+	Content          string          `json:"content"`
+	Timestamp        time.Time       `json:"timestamp"`
+	EditedTimestamp  json.RawMessage `json:"edited_timestamp"`
+	MessageReference *reference      `json:"message_reference"`
 }
 type reaction struct {
 	GuildID   string  `json:"guild_id"`
@@ -302,10 +302,17 @@ func (c *Connector) emitMessage(ctx context.Context, sink connector.Sink, m mess
 		}
 	}
 	ev.Payload.URL = permalink(c.guild, m.ChannelID, m.ID)
-	if m.EditedTimestamp != nil && !m.EditedTimestamp.IsZero() {
-		token := m.EditedTimestamp.UTC().Format(time.RFC3339Nano)
+	if len(m.EditedTimestamp) > 0 && string(m.EditedTimestamp) != "null" {
+		var token string
+		if err := json.Unmarshal(m.EditedTimestamp, &token); err != nil {
+			return err
+		}
+		edited, err := time.Parse(time.RFC3339Nano, token)
+		if err != nil {
+			return fmt.Errorf("discord edited_timestamp: %w", err)
+		}
 		ev.NativeID = m.ID + "@" + token
-		ev.Payload.Revision = &connector.Revision{Token: token, EditedAt: *m.EditedTimestamp}
+		ev.Payload.Revision = &connector.Revision{Token: token, EditedAt: edited}
 	}
 	return c.emit(ctx, sink, ev)
 }

@@ -107,7 +107,7 @@ func TestGatewayReplayThroughRuntimeGate(t *testing.T) {
 				handshakes = append(handshakes, hello.Op)
 				mu.Unlock()
 				if n == 2 {
-					if hello.Op != 6 || hello.D["session_id"] != "sess" || hello.D["seq"] != float64(9) {
+					if hello.Op != 6 || hello.D["session_id"] != "sess" || hello.D["seq"] != float64(10) {
 						t.Errorf("RESUME = %+v", hello)
 					}
 					resumeStarted <- struct{}{}
@@ -230,11 +230,14 @@ func TestGatewayReplayThroughRuntimeGate(t *testing.T) {
 			if original.Payload.Thread != "1551744840499200004" || original.Payload.Container.NativeID != public {
 				t.Errorf("thread containment = %+v", original.Payload)
 			}
-			edited, ok := byID[message+"@2026-09-22T01:00:00Z"]
+			if reply, ok := byID["1551744840499200009"]; !ok || reply.Payload.Parent != message || reply.Payload.Thread != "1551744840499200004" {
+				t.Errorf("reply relationship = %+v", reply)
+			}
+			edited, ok := byID[message+"@2026-09-22T01:00:00.000000+00:00"]
 			if !ok {
 				t.Fatal("edited revision missing")
 			}
-			if edited.Payload.Revision == nil || edited.Payload.Revision.Token != "2026-09-22T01:00:00Z" || !edited.Time.Equal(original.Time) {
+			if edited.Payload.Revision == nil || edited.Payload.Revision.Token != "2026-09-22T01:00:00.000000+00:00" || !edited.Time.Equal(original.Time) {
 				t.Errorf("edited revision = %+v", edited)
 			}
 			if tomb, ok := byID[message+":tombstone"]; !ok || tomb.Payload.Target != message {

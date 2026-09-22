@@ -456,6 +456,8 @@ live source still needs `Backfiller` to get its history.
   capped backoff as a failed poll. The connector owns its socket, heartbeat,
   source session and replay sequence; it advances the sequence only after
   emitting the dispatch. Its `Close` stops and joins any goroutines it starts.
+  An unspecified `refresh` starts retries at the runtime's minimum refresh
+  (30 seconds), rather than a poller's five-minute default.
 - **`Handler`** is mounted by the runtime under a path it owns — `/hooks/<source
   id>` in Hearsay's own runtime, which is the URL the source is configured to
   deliver to. The handler verifies the source's own signature over the request —
@@ -590,6 +592,8 @@ content into the revision token instead of using `updated_at`.
 | Thread | `thread` | `<thread id>` | same | channel `<parent channel id>` |
 | Reaction | `reaction` | `<message id>:reaction:<user id>:<emoji>` | same | channel |
 | Deleted message | `tombstone` | `<message id>:tombstone` | same, with `target` `<message id>` | channel |
+| Deleted thread | `tombstone` | `<thread id>:tombstone` | same, with `target` `<thread id>` | parent channel |
+| Removed reaction | `tombstone` | `<reaction artifact>:tombstone` | same, with `target` `<reaction artifact>` | channel |
 
 Discord gives `edited_timestamp` as `null` until a message is edited, which is
 exactly the revision token this contract asks for. Threads are their own channel
@@ -599,6 +603,9 @@ contract draws between container and thread is load-bearing here. Reactions carr
 their author and no text, which is why `reaction` requires neither. ACL for an
 allowlisted private channel is `{group, native_id: <channel id>}`, so the member
 set is resolved at read time.
+The reaction emoji component is the custom emoji snowflake when one exists,
+otherwise the Unicode emoji URL-escaped so punctuation cannot change the id's
+structure.
 
 Discord is a `Streamer`: it dials the Gateway and resumes a session after an
 interrupted connection. The runtime owns retry, while the connector owns
