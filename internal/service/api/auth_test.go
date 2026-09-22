@@ -24,9 +24,9 @@ func TestAPIAuthenticatesBeforeCallingOnBothTransports(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := api.Handler(calls, nil)
-	paths := []struct{ path, body string }{
-		{"/v1/no_such_call", `{}`},
-		{"/mcp", `{"jsonrpc":"2.0","id":1,"method":"initialize"}`},
+	paths := []struct{ badPath, badBody, goodPath, goodBody string }{
+		{"/v1/get_l1", `{"id":""}`, "/v1/no_such_call", `{}`},
+		{"/mcp", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_l1","arguments":{}}}`, "/mcp", `{"jsonrpc":"2.0","id":1,"method":"initialize"}`},
 	}
 	cases := []struct {
 		name   string
@@ -45,17 +45,21 @@ func TestAPIAuthenticatesBeforeCallingOnBothTransports(t *testing.T) {
 	}
 	for _, path := range paths {
 		for _, tc := range cases {
-			t.Run(path.path+"/"+tc.name, func(t *testing.T) {
-				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, path.path, strings.NewReader(path.body))
+			t.Run(path.badPath+"/"+tc.name, func(t *testing.T) {
+				url, body := path.badPath, path.badBody
+				if tc.status == http.StatusOK {
+					url, body = path.goodPath, path.goodBody
+				}
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, url, strings.NewReader(body))
 				req.Header = tc.head.Clone()
 				w := httptest.NewRecorder()
 				handler.ServeHTTP(w, req)
 				want := tc.status
-				if tc.status == http.StatusOK && path.path != "/mcp" {
+				if tc.status == http.StatusOK && path.goodPath != "/mcp" {
 					want = http.StatusNotFound // passed authentication; the call name is unknown
 				}
 				if w.Code != want {
-					t.Errorf("POST %s = %d %s, want %d", path.path, w.Code, w.Body.String(), want)
+					t.Errorf("POST %s = %d %s, want %d", url, w.Code, w.Body.String(), want)
 				}
 			})
 		}
