@@ -617,7 +617,8 @@ message it was started from share the same Discord snowflake. The message keeps
 the bare snowflake; both artifacts can then coexist in L0.
 A message directly in a thread has `parent` set to the thread artifact. A
 message replying to another message has that message as `parent`; both keep the
-same `thread`.
+same `thread` inside a native thread. A reply in an ordinary channel has only
+`parent` and joins that channel's fixed time window.
 The reaction emoji component is the custom emoji snowflake when one exists,
 otherwise the Unicode emoji URL-escaped so punctuation cannot change the id's
 structure.

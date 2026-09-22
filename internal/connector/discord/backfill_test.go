@@ -160,6 +160,33 @@ func (*restFixture) message(channel, id string) map[string]any {
 	return map[string]any{"id": id, "guild_id": testGuild, "channel_id": channel, "content": "decision", "timestamp": "2026-09-22T00:00:00Z", "author": map[string]any{"id": "1551744840499200007", "username": "alice"}}
 }
 
+func TestChannelReplyKeepsParentWithoutInventingThread(t *testing.T) {
+	f := &restFixture{}
+	first := f.message(testChannel, "1551744840499200011")
+	reply := f.message(testChannel, "1551744840499200012")
+	reply["message_reference"] = map[string]any{"message_id": "1551744840499200011"}
+	f.messages = []map[string]any{reply, first}
+	server := httptest.NewServer(http.HandlerFunc(f.serve))
+	defer server.Close()
+	src := discordSource(server.URL)
+	c, err := discord.New(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := &connector.Recorder{}
+	walkDiscord(t, c, connector.NewGate(rec, src.ID, c.Describe(), connector.NewAllowlist(src)), "")
+	for _, ev := range rec.Events() {
+		if ev.Payload.Artifact != "1551744840499200012" {
+			continue
+		}
+		if ev.Payload.Parent != "1551744840499200011" || ev.Payload.Thread != "" || ev.Payload.Container.NativeID != testChannel {
+			t.Errorf("channel reply = %+v", ev.Payload)
+		}
+		return
+	}
+	t.Fatal("channel reply missing")
+}
+
 func discordSource(api string) connector.SourceConfig {
 	return connector.SourceConfig{ID: "chat", Type: discord.Type, Containers: []string{testChannel}, Settings: json.RawMessage(fmt.Sprintf(`{"guild":%q,"api_url":%q,"gateway_url":%q}`, testGuild, api, "ws"+strings.TrimPrefix(api, "http")+"/gateway")), Secrets: map[string]string{"token": "bot-token"}}
 }
