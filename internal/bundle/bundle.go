@@ -3,15 +3,20 @@ package bundle
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/l3"
+	"github.com/kpenfound/hearsay/internal/principal"
 )
 
 // The caps and the budget (docs/design.md#the-context-bundle).
@@ -43,6 +48,7 @@ var Handles = []string{"get_l1", "get_l0", "search", "stance_history", "resolve"
 // bottom. Every time is absolute: a relative age would make the same bundle
 // differ from one minute to the next.
 type Bundle struct {
+	Directive     *Directive `json:"directive,omitempty"`
 	Scope         Scope      `json:"scope"`
 	Anchors       []Anchor   `json:"anchors"`
 	Stances       []Stance   `json:"stances"`
@@ -50,6 +56,14 @@ type Bundle struct {
 	OpenQuestions []Question `json:"open_questions"`
 	Conflicts     []string   `json:"conflicts"`
 	Handles       []string   `json:"handles"`
+}
+
+// Directive is the current, readable L0 instruction that triggered a bundle.
+type Directive struct {
+	Text string `json:"text"`
+	From string `json:"from"`
+	Via  string `json:"via"`
+	L0   string `json:"l0"`
 }
 
 // Scope is what the bundle is for.
@@ -153,14 +167,24 @@ func Tokens(encoded []byte) int { return (len(encoded) + BytesPerToken - 1) / By
 
 // Assembler builds bundles from the views over one database.
 type Assembler struct {
-	views  *l3.Views
-	docs   *l1.Store
-	budget int
+	views    *l3.Views
+	docs     *l1.Store
+	events   *l0.Store
+	resolver *principal.Resolver
+	repo     config.Repo
+	budget   int
 }
 
 // New returns an assembler over a pool or a transaction, with the default budget.
 func New(q l3.Querier) *Assembler {
-	return &Assembler{views: l3.New(q), docs: l1.New(q), budget: DefaultBudget}
+	return &Assembler{views: l3.New(q), docs: l1.New(q), events: l0.New(q), budget: DefaultBudget}
+}
+
+// WithDirectiveSources supplies the identity and scope mappings used by event directives.
+func (a *Assembler) WithDirectiveSources(repo config.Repo, resolver *principal.Resolver) *Assembler {
+	c := *a
+	c.repo, c.resolver = repo, resolver
+	return &c
 }
 
 // WithBudget returns a copy of the assembler with another budget, in estimated
@@ -176,12 +200,22 @@ func (a *Assembler) WithBudget(tokens int) *Assembler {
 // with nothing in it rather than an error: scopes filter for relevance, and a
 // refusal would say something about what is there.
 func (a *Assembler) Assemble(ctx context.Context, reader l1.Reader, scope string) (Bundle, Report, error) {
+	return a.AssembleForEvent(ctx, reader, scope, "")
+}
+
+// AssembleForEvent adds a directive only from a current, readable event in the scope.
+func (a *Assembler) AssembleForEvent(ctx context.Context, reader l1.Reader, scope, eventID string) (Bundle, Report, error) {
 	in := Inputs{Scope: scope}
 	var report Report
 	if reader.Effective.Human != "" && reader.Effective.Grant.Scopes.Has(scope) {
 		var err error
 		if in, report.Withheld, err = a.gather(ctx, reader, scope); err != nil {
 			return Bundle{}, Report{}, err
+		}
+		if eventID != "" {
+			if in.Directive, err = a.directive(ctx, reader, scope, eventID); err != nil {
+				return Bundle{}, Report{}, err
+			}
 		}
 	}
 	b, trimmed, tokens, err := Build(in, a.budget)
@@ -227,9 +261,83 @@ func (a *Assembler) gather(ctx context.Context, reader l1.Reader, scope string) 
 	return in, withheld, nil
 }
 
+// directive reads the requested event only to identify its artifact, then reads
+// the current revision. A tombstone or an ACL change therefore takes effect on
+// every assembly, including a repeated request for an old revision's id.
+func (a *Assembler) directive(ctx context.Context, reader l1.Reader, scope, id string) (*Directive, error) {
+	if a.resolver == nil {
+		return nil, nil
+	}
+	requested, err := a.events.Get(ctx, id)
+	if errors.Is(err, l0.ErrNotFound) || errors.Is(err, l0.ErrRetracted) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	current, err := a.events.Current(ctx, l0.ListOptions{Filter: l0.Filter{Source: requested.Source, Artifact: requested.Payload.Artifact}, Limit: 1})
+	if err != nil {
+		return nil, err
+	}
+	if len(current) == 0 {
+		return nil, nil
+	}
+	ev := current[0]
+	if ev.Kind != connector.KindMessage || !reader.Allows(ev.ACL) || ev.Payload.Text == "" {
+		return nil, nil
+	}
+	// The conversation's document is the authoritative scope mapping once it
+	// exists. Before distillation, a configured covering scope is enough.
+	conversation := ev.Payload.Thread
+	if conversation == "" {
+		conversation = ev.Payload.Parent
+	}
+	if conversation == "" {
+		conversation = ev.Payload.Artifact
+	}
+	doc, err := a.docs.Get(ctx, l1.DocID(ev.Source, conversation))
+	scoped := err == nil && slices.Contains(doc.Scope, scope)
+	if errors.Is(err, l1.ErrNotFound) {
+		for _, configured := range a.repo.Scopes {
+			if configured.Covers(ev.Source, ev.Payload.Container.NativeID) && slices.Contains(configured.Entities, scope) {
+				scoped = true
+			}
+		}
+	} else if err != nil {
+		return nil, err
+	}
+	if !scoped {
+		return nil, nil
+	}
+	addressed := false
+	for _, hint := range ev.Payload.Mentions {
+		resolved := a.resolver.Resolve(hint)
+		if resolved.Status == principal.Resolved && resolved.Principal.Kind == principal.KindAgent && resolved.Principal.Class.Valid() {
+			addressed = true
+			break
+		}
+	}
+	if !addressed {
+		return nil, nil
+	}
+	from := ""
+	if ev.Payload.Author != nil {
+		resolved := a.resolver.Resolve(*ev.Payload.Author)
+		if resolved.Status == principal.Resolved {
+			from = resolved.Principal.ID
+		}
+	}
+	via := ev.Source + ":" + ev.Payload.Container.NativeID
+	if ev.Payload.Thread != "" {
+		via += ":" + ev.Payload.Thread
+	}
+	return &Directive{Text: ev.Payload.Text, From: from, Via: via, L0: ev.ID}, nil
+}
+
 // Inputs are what a bundle is built from, already filtered for its reader.
 type Inputs struct {
-	Scope string
+	Scope     string
+	Directive *Directive
 	// Direct are the entity ids the scope is about: the scope, then the
 	// entities its own document is about.
 	Direct []string
@@ -255,6 +363,7 @@ type Inputs struct {
 // It is a pure function of its inputs, which is what makes a bundle cacheable.
 func Build(in Inputs, budget int) (Bundle, Trimmed, int, error) {
 	b := Bundle{
+		Directive:     in.Directive,
 		Scope:         Scope{ID: in.Scope, Entities: []Entity{}},
 		Anchors:       []Anchor{},
 		Stances:       []Stance{},

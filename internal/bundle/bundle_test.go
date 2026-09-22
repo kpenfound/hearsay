@@ -342,3 +342,35 @@ func TestTrimOfThousandsOfInheritedStances(t *testing.T) {
 		t.Errorf("trimming %d stances took %s", n, elapsed)
 	}
 }
+
+// The directive is a fixed block: budgeting still removes the same lower
+// sections in the documented order, and the instruction itself stays verbatim.
+func TestDirectiveKeepsBudgetAndOtherSections(t *testing.T) {
+	in := inputs()
+	in.Directive = &bundle.Directive{Text: "  @shed do this\n exactly  ", From: "kyle", Via: "discord:channel:thread", L0: "evt:1"}
+	full, _, _, err := bundle.Build(in, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full.Directive.Text != in.Directive.Text {
+		t.Fatalf("directive text = %q", full.Directive.Text)
+	}
+	without := in
+	without.Directive = nil
+	base, _, _, err := bundle.Build(without, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full.Directive = nil
+	if fmt.Sprintf("%+v", full) != fmt.Sprintf("%+v", base) {
+		t.Fatal("a directive changed another section")
+	}
+	budget := tokens(t, base)
+	with, trimmed, used, err := bundle.Build(in, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if with.Directive == nil || trimmed.OpenQuestions == 0 || used > budget || tokens(t, with) != used {
+		t.Fatalf("budgeted bundle: directive=%+v trimmed=%+v used=%d budget=%d", with.Directive, trimmed, used, budget)
+	}
+}

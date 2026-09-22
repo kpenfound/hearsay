@@ -38,7 +38,7 @@ subject to the `recent` cap; no code content, ever.
   that is what "identical output regardless of which interface asked" rests on.
 - **Only a line with an id.** An entity has a `line` only when it is a document
   the reader may read, and then it carries that document's `l1`.
-- **Not built yet:** the directive, anchors (always `[]`) and conflicts
+- **Not built yet:** anchors (always `[]`) and conflicts
   (always `[]`).
 
 See [docs/design.md](../../docs/design.md#the-context-bundle).

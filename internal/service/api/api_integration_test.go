@@ -636,8 +636,8 @@ func TestMCPSpeaksTheProtocol(t *testing.T) {
 	if e := rpc(`not json`)["error"]; e == nil {
 		t.Error("a body that is not JSON was not an error")
 	}
-	if _, isError := w.mcp(t, kyle, "get_bundle", map[string]any{"scope": w.scope, "directive": "skip it"}); !isError {
-		t.Error("an argument get_bundle does not take was accepted")
+	if _, isError := w.mcp(t, kyle, "get_bundle", map[string]any{"scope": w.scope, "directive": "skip it"}); isError {
+		t.Error("an unknown directive event id should produce an ordinary bundle")
 	}
 	if status, got := w.post(t, "/v1/get_bundle", kyle, `{"scope":" "}`); status != http.StatusBadRequest {
 		t.Errorf("get_bundle with no scope = %d %s, want 400", status, got)
@@ -714,4 +714,91 @@ func TestRunServesUntilCancelled(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("Run did not return within 10s of cancellation")
 	}
+}
+
+func TestEventDirectiveUsesCurrentRevisionAndPermission(t *testing.T) {
+	w := newWorld(t)
+	artifact := w.project + "#12:message:directive"
+	base := connector.Event{
+		Source: w.src, NativeID: artifact, Kind: connector.KindMessage, Time: day,
+		Payload: connector.Payload{
+			Artifact: artifact, Container: connector.Container{Kind: connector.ContainerChannel, NativeID: w.project},
+			Thread: w.project + "#12", Text: "  <@shed> deploy\n by hand  ",
+			Author:   &connector.Identity{Source: w.src, Kind: connector.IdentityUser, NativeID: kyleNode},
+			Mentions: []connector.Identity{{Source: w.src, Kind: connector.IdentityBot, Handle: "shed[bot]"}},
+		}, ACL: connector.ACL{{Kind: connector.ACLPublic}},
+	}
+	put := func(ev connector.Event) {
+		t.Helper()
+		if _, err := l0.New(w.pool).Append(t.Context(), ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put(base)
+	id := connector.EventID(w.src, artifact)
+	args := map[string]any{"scope": w.scope, "directive": id}
+	ordinary := decodeBundle(t, w.http(t, kyle, "get_bundle", map[string]any{"scope": w.scope}))
+	gotHTTP := w.http(t, kyle, "get_bundle", args)
+	gotMCP, isError := w.mcp(t, kyle, "get_bundle", args)
+	if isError || !bytes.Equal(gotHTTP, gotMCP) {
+		t.Fatalf("HTTP %s MCP %s error %v", gotHTTP, gotMCP, isError)
+	}
+	b := decodeBundle(t, gotHTTP)
+	if b.Directive == nil || b.Directive.Text != base.Payload.Text || b.Directive.From != "kyle" || b.Directive.Via != w.src+":"+w.project+":"+w.project+"#12" || b.Directive.L0 != id {
+		t.Fatalf("directive = %+v", b.Directive)
+	}
+	b.Directive = nil
+	if !bytes.Equal(mustJSON(t, b), mustJSON(t, ordinary)) {
+		t.Fatal("directive changed ordinary bundle sections")
+	}
+	if denied := decodeBundle(t, w.http(t, sam, "get_bundle", map[string]any{"scope": "code:other", "directive": id})); denied.Directive != nil {
+		t.Fatal("foreign scope revealed a directive")
+	}
+	for _, mentions := range [][]connector.Identity{nil, {{Source: w.src, Kind: connector.IdentityUser, NativeID: kyleNode}}, {{Source: w.src, Kind: connector.IdentityBot, NativeID: "unknown"}}} {
+		ev := base
+		ev.NativeID = artifact + strconv.Itoa(len(mentions)) + "nonagent"
+		ev.Payload.Artifact = ev.NativeID
+		ev.Payload.Mentions = mentions
+		put(ev)
+		if got := decodeBundle(t, w.http(t, kyle, "get_bundle", map[string]any{"scope": w.scope, "directive": connector.EventID(w.src, ev.NativeID)})); got.Directive != nil {
+			t.Fatalf("non-agent mention gave %+v", got.Directive)
+		}
+	}
+	// A later revision narrows the ACL and changes the text. The old event id
+	// cannot replay its earlier, public payload on a repeated request.
+	edit := base
+	edit.NativeID = artifact + "@edit1"
+	edit.Payload.Revision = &connector.Revision{Token: "edit1", EditedAt: day.Add(time.Hour)}
+	edit.Payload.Text = "<@shed> revised instruction"
+	edit.ACL = connector.ACL{{Kind: connector.ACLIdentity, Source: w.src, NativeID: kyleNode}}
+	put(edit)
+	if got := decodeBundle(t, w.http(t, kyle, "get_bundle", args)).Directive; got == nil || got.Text != edit.Payload.Text || got.L0 != connector.EventID(w.src, edit.NativeID) {
+		t.Fatalf("edited directive = %+v", got)
+	}
+	if got := decodeBundle(t, w.http(t, sam, "get_bundle", args)).Directive; got != nil {
+		t.Fatalf("ACL change revealed %+v", got)
+	}
+	// Even kyle loses access when the current revision moves into a private channel.
+	private := edit
+	private.NativeID = artifact + "@edit2"
+	private.Payload.Revision = &connector.Revision{Token: "edit2", EditedAt: day.Add(2 * time.Hour)}
+	private.ACL = connector.ACL{{Kind: connector.ACLGroup, Source: w.src, NativeID: "private-channel"}}
+	put(private)
+	if got := decodeBundle(t, w.http(t, kyle, "get_bundle", args)).Directive; got != nil {
+		t.Fatalf("private channel revealed %+v", got)
+	}
+	tomb := connector.Event{Source: w.src, NativeID: artifact + ":tombstone", Kind: connector.KindTombstone, Time: day.Add(3 * time.Hour), Payload: connector.Payload{Artifact: artifact + ":tombstone", Target: artifact, Container: base.Payload.Container}, ACL: base.ACL}
+	put(tomb)
+	if got := decodeBundle(t, w.http(t, kyle, "get_bundle", args)).Directive; got != nil {
+		t.Fatalf("deleted instruction revealed %+v", got)
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
