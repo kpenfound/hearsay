@@ -27,7 +27,7 @@ var (
 
 // MaxDocIDLen also covers a channel-window key made from the longest
 // container id and a Unix timestamp. It remains below the queue target limit.
-const MaxDocIDLen = len("l1:") + connector.MaxSourceIDLen + len(":chat:") + connector.MaxNativeIDLen + len(":-9223372036854775808")
+const MaxDocIDLen = len("l1:") + connector.MaxSourceIDLen + len(":burst:chat:") + 2*connector.MaxNativeIDLen + len(":-9223372036854775808")
 
 // Kind is what an L1 document is. It is L1's own vocabulary rather than L0's:
 // several L0 kinds make one document (a pull request with its reviews and its
@@ -49,6 +49,8 @@ const (
 	KindCommit Kind = "commit"
 	// KindChatThread is a native thread or a channel conversation.
 	KindChatThread Kind = "chat_thread"
+	// KindChatBurst is a gated single-author run within a long conversation.
+	KindChatBurst Kind = "chat_burst"
 )
 
 // rootKinds maps the L0 kind of an artifact that makes a document of its own to
@@ -64,12 +66,12 @@ var rootKinds = map[connector.Kind]Kind{
 
 // Kinds is every document kind this build produces, in the order they are
 // documented.
-func Kinds() []Kind { return []Kind{KindIssue, KindPR, KindCommit, KindChatThread} }
+func Kinds() []Kind { return []Kind{KindIssue, KindPR, KindCommit, KindChatThread, KindChatBurst} }
 
 // Valid reports whether k is a kind this build produces.
 func (k Kind) Valid() bool {
 	switch k {
-	case KindIssue, KindPR, KindCommit, KindChatThread:
+	case KindIssue, KindPR, KindCommit, KindChatThread, KindChatBurst:
 		return true
 	}
 	return false

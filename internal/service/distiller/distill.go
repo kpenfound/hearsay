@@ -34,7 +34,8 @@ import (
 // a worker that stops working.
 const CallTimeout = 2 * time.Minute
 
-// Distiller turns one artifact or channel conversation into one L1 document. It is the whole of what a
+// Distiller turns one artifact or channel conversation into L1 documents. A
+// long chat may also produce burst documents. It is the whole of what a
 // `distill` job does, and it is a value a test can drive directly: the worker
 // loop around it is [Run]'s.
 //
@@ -202,7 +203,7 @@ func (d *Distiller) Distill(ctx context.Context, docID string) (Result, error) {
 		// document derived from nothing is not a document, and leaving one
 		// standing would serve what the source deleted
 		// (docs/design.md#deletion-and-provenance).
-		deleted, err := d.docs.Delete(ctx, docID)
+		deleted, err := d.deleteConversation(ctx, source, artifact, docID)
 		if err != nil {
 			return Result{}, err
 		}
@@ -247,20 +248,23 @@ func (d *Distiller) Distill(ctx context.Context, docID string) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("building %s: %w", docID, err)
 	}
-	return d.writeDocument(ctx, result, source, artifact, root.Payload.Container.NativeID, doc)
+	if doc.Kind == l1.KindChatThread {
+		return d.writeThread(ctx, result, source, artifact, root.Payload.Container.NativeID, doc, children)
+	}
+	return d.writeDocument(ctx, result, source, artifact, root.Payload.Container.NativeID, doc, nil)
 }
 
 // chatWindow reads current revisions in one indexed container/time range.
-func (d *Distiller) chatWindow(ctx context.Context, source, key, container string, start time.Time) (l1.Document, error) {
+func (d *Distiller) chatWindowMessages(ctx context.Context, source, key, container string, start time.Time) (l1.Document, []connector.Event, error) {
 	events, err := d.events.Current(ctx, l0.ListOptions{
 		Filter: l0.Filter{Source: source, BaseKind: connector.KindMessage, Container: container, Since: start, Before: start.Add(l1.ChatWindow)},
 		Limit:  l0.MaxLimit,
 	})
 	if err != nil {
-		return l1.Document{}, err
+		return l1.Document{}, nil, err
 	}
 	if len(events) >= l0.MaxLimit {
-		return l1.Document{}, fmt.Errorf("chat window %s has at least %d messages", key, l0.MaxLimit)
+		return l1.Document{}, nil, fmt.Errorf("chat window %s has at least %d messages", key, l0.MaxLimit)
 	}
 	var messages []connector.Event
 	for _, ev := range events {
@@ -268,13 +272,19 @@ func (d *Distiller) chatWindow(ctx context.Context, source, key, container strin
 			messages = append(messages, ev)
 		}
 	}
-	return l1.BuildChatWindow(key, messages, d.resolver, d.repo)
+	doc, err := l1.BuildChatWindow(key, messages, d.resolver, d.repo)
+	return doc, messages, err
+}
+
+func (d *Distiller) chatWindow(ctx context.Context, source, key, container string, start time.Time) (l1.Document, error) {
+	doc, _, err := d.chatWindowMessages(ctx, source, key, container, start)
+	return doc, err
 }
 
 func (d *Distiller) distillChatWindow(ctx context.Context, result Result, source, key, container string, start time.Time) (Result, error) {
-	doc, err := d.chatWindow(ctx, source, key, container, start)
+	doc, messages, err := d.chatWindowMessages(ctx, source, key, container, start)
 	if errors.Is(err, l1.ErrNotDistilled) {
-		deleted, err := d.docs.Delete(ctx, result.DocID)
+		deleted, err := d.deleteConversation(ctx, source, key, result.DocID)
 		if err != nil {
 			return Result{}, err
 		}
@@ -284,10 +294,41 @@ func (d *Distiller) distillChatWindow(ctx context.Context, result Result, source
 	if err != nil {
 		return Result{}, err
 	}
-	return d.writeDocument(ctx, result, source, key, container, doc)
+	return d.writeThread(ctx, result, source, key, container, doc, messages)
 }
 
-func (d *Distiller) writeDocument(ctx context.Context, result Result, source, artifact, container string, doc l1.Document) (Result, error) {
+func (d *Distiller) deleteConversation(ctx context.Context, source, artifact, docID string) (bool, error) {
+	var deleted bool
+	err := pgx.BeginFunc(ctx, d.pool, func(tx pgx.Tx) error {
+		var err error
+		deleted, err = l1.New(tx).Delete(ctx, docID)
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `DELETE FROM l1_docs WHERE source = $1 AND kind = $2 AND left(source_native_id, length($3)) = $3`, source, l1.KindChatBurst, l1.BurstPrefix(artifact))
+		return err
+	})
+	if err != nil {
+		return false, fmt.Errorf("removing conversation %s: %w", docID, err)
+	}
+	return deleted, nil
+}
+
+func (d *Distiller) writeThread(ctx context.Context, result Result, source, artifact, container string, doc l1.Document, messages []connector.Event) (Result, error) {
+	var eligible []connector.Event
+	for _, ev := range messages {
+		if ev.Kind == connector.KindMessage || ev.Payload.BaseKind == connector.KindMessage {
+			eligible = append(eligible, ev)
+		}
+	}
+	bursts, err := l1.BuildChatBursts(artifact, eligible, d.resolver, d.repo)
+	if err != nil {
+		return Result{}, err
+	}
+	return d.writeDocument(ctx, result, source, artifact, container, doc, bursts)
+}
+
+func (d *Distiller) writeDocument(ctx context.Context, result Result, source, artifact, container string, doc l1.Document, bursts []l1.Document) (Result, error) {
 	docID := result.DocID
 
 	body, err := d.distil(ctx, doc)
@@ -297,6 +338,21 @@ func (d *Distiller) writeDocument(ctx context.Context, result Result, source, ar
 	doc, redacted, err := doc.WithBody(body)
 	if err != nil {
 		return Result{}, err
+	}
+	for i := range bursts {
+		burstBody, err := d.distil(ctx, bursts[i])
+		if err != nil {
+			return Result{}, err
+		}
+		// The whole thread owns the conclusion. A burst preserves its tangent
+		// only, and must not assert the same decision a second time.
+		burstBody.Outcome, burstBody.Question = "", ""
+		burstBody.OutcomeKind = l1.OutcomeNone
+		burstBody.OpenQuestions = nil
+		bursts[i], _, err = bursts[i].WithBody(burstBody)
+		if err != nil {
+			return Result{}, err
+		}
 	}
 
 	// The model call is the slow part, and the queue's dedupe on (kind, target)
@@ -328,12 +384,35 @@ func (d *Distiller) writeDocument(ctx context.Context, result Result, source, ar
 	// nothing new for L2 to read.
 	err = pgx.BeginFunc(ctx, d.pool, func(tx pgx.Tx) error {
 		written, err := l1.New(tx).Put(ctx, doc)
-		if err != nil || !written {
+		if err != nil {
 			return err
 		}
-		result.Written = true
-		result.Asserting, err = l2.EnqueueAssertion(ctx, tx, d.repo, doc, container)
-		return err
+		if written {
+			result.Written = true
+			result.Asserting, err = l2.EnqueueAssertion(ctx, tx, d.repo, doc, container)
+			if err != nil {
+				return err
+			}
+		}
+		if doc.Kind != l1.KindChatThread {
+			return nil
+		}
+		prefix := l1.BurstPrefix(artifact)
+		ids := make([]string, len(bursts))
+		for i, burst := range bursts {
+			ids[i] = burst.ID
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM l1_docs WHERE source = $1 AND kind = $2 AND left(source_native_id, length($3)) = $3 AND NOT (id = ANY($4))`, source, l1.KindChatBurst, prefix, ids); err != nil {
+			return fmt.Errorf("reconciling bursts of %s: %w", docID, err)
+		}
+		for _, burst := range bursts {
+			changed, err := l1.New(tx).Put(ctx, burst)
+			if err != nil {
+				return err
+			}
+			result.Written = result.Written || changed
+		}
+		return nil
 	})
 	if err != nil {
 		return Result{}, err
@@ -357,6 +436,11 @@ func (d *Distiller) writeDocument(ctx context.Context, result Result, source, ar
 		return Result{}, err
 	}
 	result.Embedded = embedded
+	for _, burst := range bursts {
+		if _, err := d.embed(ctx, burst.ID); err != nil {
+			return Result{}, err
+		}
+	}
 	return result, nil
 }
 
