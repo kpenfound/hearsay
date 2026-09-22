@@ -13,7 +13,9 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,6 +32,7 @@ const (
 	// SecretToken is the name of the bot credential in source secrets.
 	SecretToken     = "token"
 	defaultGateway  = "wss://gateway.discord.gg/?v=10&encoding=json"
+	defaultAPI      = "https://discord.com/api/v10"
 	requiredIntents = (1 << 0) | (1 << 9) | (1 << 10) | (1 << 15)
 	viewChannel     = uint64(1 << 10)
 )
@@ -39,12 +42,17 @@ type Settings struct {
 	Guild      string `json:"guild"`
 	Intents    int    `json:"intents"`
 	GatewayURL string `json:"gateway_url"`
+	APIURL     string `json:"api_url"`
 }
 
 // Connector maintains one Discord Gateway session for a source.
 type Connector struct {
 	source, guild, token, gateway string
 	intents                       int
+	api                           string
+	http                          *http.Client
+	containers                    []string
+	nextRequest                   time.Time
 	mu                            sync.Mutex
 	status                        connector.HealthStatus
 	detail                        string
@@ -60,7 +68,11 @@ type Connector struct {
 	messages                      map[string]message
 }
 
-var _ connector.Streamer = (*Connector)(nil)
+var (
+	_ connector.Streamer   = (*Connector)(nil)
+	_ connector.Backfiller = (*Connector)(nil)
+	_ connector.Resyncer   = (*Connector)(nil)
+)
 
 // Factory builds a Discord connector for the runtime registry.
 func Factory(_ context.Context, src connector.SourceConfig) (connector.Connector, error) {
@@ -109,7 +121,23 @@ func New(src connector.SourceConfig) (*Connector, error) {
 	if u.Scheme == "ws" && !strings.HasPrefix(u.Host, "127.0.0.1:") && !strings.HasPrefix(u.Host, "localhost:") {
 		return nil, errors.New("discord gateway_url must use wss outside localhost")
 	}
-	return &Connector{source: src.ID, guild: s.Guild, token: src.Secrets[SecretToken], gateway: gateway, intents: s.Intents, status: connector.HealthDegraded, detail: "reconnecting", channels: map[string]channel{}, roles: map[string]uint64{}, messages: map[string]message{}}, nil
+	api := s.APIURL
+	if api == "" {
+		api = defaultAPI
+	}
+	u, err = url.Parse(api)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
+		return nil, errors.New("discord api_url must be an HTTP URL without query or fragment")
+	}
+	if u.Scheme == "http" && u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost" {
+		return nil, errors.New("discord api_url must use https outside localhost")
+	}
+	containers := slices.Clone(src.Containers)
+	if slices.Contains(containers, connector.AllowAll) {
+		return nil, errors.New("discord containers must name channel snowflakes, not *")
+	}
+	slices.Sort(containers)
+	return &Connector{source: src.ID, guild: s.Guild, token: src.Secrets[SecretToken], gateway: gateway, api: strings.TrimRight(api, "/"), http: &http.Client{Timeout: 30 * time.Second}, containers: containers, intents: s.Intents, status: connector.HealthDegraded, detail: "reconnecting", channels: map[string]channel{}, roles: map[string]uint64{}, messages: map[string]message{}}, nil
 }
 func snowflake(s string) bool {
 	if s == "" {
