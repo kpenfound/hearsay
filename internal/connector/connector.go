@@ -184,8 +184,9 @@ type SourceConfig struct {
 	// credentials can see — which is a deliberate choice a human makes, not a
 	// default.
 	Containers []string
-	// Refresh is how often the runtime calls Poll. It is ignored by a connector
-	// that only pushes, and the runtime applies its own floor and jitter.
+	// Refresh is how often the runtime calls Poll, and the base retry cadence
+	// for Stream. It is ignored by a connector that only pushes. The runtime
+	// applies its own floor and jitter.
 	Refresh time.Duration
 	// Settings is the connector's own configuration, as JSON. A connector
 	// decodes it with DecodeSettings and fails construction if it cannot.

@@ -19,14 +19,16 @@ import (
 )
 
 type uniqueSink struct {
-	mu       sync.Mutex
-	recorder connector.Recorder
-	seen     map[string]bool
+	mu         sync.Mutex
+	recorder   connector.Recorder
+	seen       map[string]bool
+	deliveries []connector.Event
 }
 
 func (s *uniqueSink) Emit(ctx context.Context, ev connector.Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.deliveries = append(s.deliveries, ev)
 	if s.seen[ev.ID] {
 		return nil
 	}
@@ -37,6 +39,11 @@ func (s *uniqueSink) Emit(ctx context.Context, ev connector.Event) error {
 	return nil
 }
 func (s *uniqueSink) events() []connector.Event { return s.recorder.Events() }
+func (s *uniqueSink) allDeliveries() []connector.Event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]connector.Event(nil), s.deliveries...)
+}
 
 func fixture(t *testing.T, name string) []map[string]any {
 	t.Helper()
@@ -202,6 +209,13 @@ func TestGatewayReplayThroughRuntimeGate(t *testing.T) {
 				t.Errorf("handshakes = %v, want IDENTIFY then RESUME", gotHandshakes)
 			}
 			events := sink.events()
+			counts := map[string]int{}
+			for _, ev := range sink.allDeliveries() {
+				counts[ev.NativeID]++
+			}
+			if counts[message] != 2 || counts[message+":tombstone"] != 2 {
+				t.Errorf("replayed delivery counts = %v", counts)
+			}
 			byID := map[string]connector.Event{}
 			for _, ev := range events {
 				if _, ok := byID[ev.NativeID]; ok {

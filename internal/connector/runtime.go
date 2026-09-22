@@ -21,11 +21,11 @@ import (
 const (
 	// DefaultMinRefresh is the floor under a source's refresh: the runtime
 	// never polls a source more often than this, whatever config asks for. A
-	// source that wants to be quicker than this wants a webhook.
+	// source that needs immediate live events wants a push or stream mode.
 	DefaultMinRefresh = 30 * time.Second
 	// DefaultRefresh is the cadence for a source whose config names none.
 	DefaultRefresh = 5 * time.Minute
-	// DefaultMaxBackoff caps the delay after a failed poll or backfill call. It
+	// DefaultMaxBackoff caps the delay after a failed poll, stream, or backfill call. It
 	// is a cap and not a cadence: a source polled less often than this is
 	// retried on its own cadence rather than dragged up to this one.
 	DefaultMaxBackoff = 15 * time.Minute

@@ -91,7 +91,7 @@ distil nothing, because a configuration is what says there is anything to do.
 
 The connectors service is not a stub either. It builds one connector per
 configured source through a registry the binary wires up, polls the pollers on
-their own cadence, drives the backfillers through a cursor it keeps in Postgres, walks the ACL
+their own cadence, supervises streams, drives the backfillers through a cursor it keeps in Postgres, walks the ACL
 re-syncs a container going private owes from a record it keeps there too
 (ADR-0013),
 mounts the pushers' handlers under `/hooks/<source>` and answers `/healthz` (the
