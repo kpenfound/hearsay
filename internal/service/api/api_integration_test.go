@@ -754,9 +754,9 @@ func TestEventDirectiveUsesCurrentRevisionAndPermission(t *testing.T) {
 	if denied := decodeBundle(t, w.http(t, sam, "get_bundle", map[string]any{"scope": "code:other", "directive": id})); denied.Directive != nil {
 		t.Fatal("foreign scope revealed a directive")
 	}
-	for _, mentions := range [][]connector.Identity{nil, {{Source: w.src, Kind: connector.IdentityUser, NativeID: kyleNode}}, {{Source: w.src, Kind: connector.IdentityBot, NativeID: "unknown"}}} {
+	for i, mentions := range [][]connector.Identity{nil, {{Source: w.src, Kind: connector.IdentityUser, NativeID: kyleNode}}, {{Source: w.src, Kind: connector.IdentityBot, NativeID: "unknown"}}} {
 		ev := base
-		ev.NativeID = artifact + strconv.Itoa(len(mentions)) + "nonagent"
+		ev.NativeID = artifact + strconv.Itoa(i) + "nonagent"
 		ev.Payload.Artifact = ev.NativeID
 		ev.Payload.Mentions = mentions
 		put(ev)
