@@ -725,7 +725,7 @@ func TestEventDirectiveUsesCurrentRevisionAndPermission(t *testing.T) {
 			Artifact: artifact, Container: connector.Container{Kind: connector.ContainerChannel, NativeID: w.project},
 			Thread: w.project + "#12", Text: "  <@shed> deploy\n by hand  ",
 			Author:   &connector.Identity{Source: w.src, Kind: connector.IdentityUser, NativeID: kyleNode},
-			Mentions: []connector.Identity{{Source: w.src, Kind: connector.IdentityBot, Handle: "shed[bot]"}},
+			Mentions: []connector.Identity{{Source: w.src, Kind: connector.IdentityBot, NativeID: "shed-native", Handle: "shed[bot]"}},
 		}, ACL: connector.ACL{{Kind: connector.ACLPublic}},
 	}
 	put := func(ev connector.Event) {
