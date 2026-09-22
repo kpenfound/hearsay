@@ -449,7 +449,7 @@ The distiller assigns a class to every L1 document it produces, from the
 document's kind and the state of the artifact behind it: `pr` is `merged_pr`
 when it merged and `pull_request` otherwise, `meeting_segment` is `meeting`,
 `wiki_section` is `spec`, `issue` is `issue`, `commit` is `commit`,
-`slack_thread` and `slack_burst` are `chat_thread` unless the container is a
+`chat_thread` and `chat_burst` are `chat_thread` unless the container is a
 direct-message container, and `agent_turn` is `agent`. That is a contract on L1,
 written here because authority is what needs it.
 
