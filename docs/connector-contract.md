@@ -591,15 +591,21 @@ content into the revision token instead of using `updated_at`.
 
 | Artifact | kind | artifact id | native_id | container |
 |---|---|---|---|---|
-| Message | `message` | `<message id>` | `<id>@<edited_timestamp>` when edited | channel `<channel id>` |
-| Thread | `thread` | `thread:<thread id>` | same | channel `<parent channel id>` |
+| Message | `message` | `<message id>` | `<id>@perm:<hash>` or `<id>@<edited_timestamp>+perm:<hash>` when edited | channel `<channel id>` |
+| Thread | `thread` | `thread:<thread id>` | `<artifact>@perm:<hash>` | channel `<parent channel id>` |
 | Reaction | `reaction` | `<message id>:reaction:<user id>:<emoji>` | same | channel |
 | Deleted message | `tombstone` | `<message id>:tombstone` | same, with `target` `<message id>` | channel |
 | Deleted thread | `tombstone` | `thread:<thread id>:tombstone` | same, with `target` `thread:<thread id>` | parent channel |
 | Removed reaction | `tombstone` | `<reaction artifact>:tombstone` | same, with `target` `<reaction artifact>` | channel |
 
-Discord gives `edited_timestamp` as `null` until a message is edited, which is
-exactly the revision token this contract asks for. Threads are their own channel
+Discord gives `edited_timestamp` as `null` until a message is edited. The
+permission component is always present, including for a public channel with
+no overwrites, so a later public→private→public transition does not try to
+re-use the original public event id. It is the first 16 hex digits of SHA-256
+of the parent channel's permission overwrites sorted by id and type, with an
+empty list encoded as `[]`. Discord provides no permission-change timestamp,
+so those revisions have no `edited_at`; an edited message keeps its source edit
+timestamp in `edited_at`. Threads are their own channel
 ids, so a message in a thread has `container` = the parent channel (what the
 allowlist names) and `thread` = the thread's artifact id — the distinction the
 contract draws between container and thread is load-bearing here. Reactions carry
@@ -622,6 +628,15 @@ IDENTIFY, heartbeats, sequence and RESUME. A private thread uses its own group
 id so its narrower membership is not widened to the parent channel. Gateway
 delete and reaction dispatches omit an occurrence timestamp; their `time` uses
 the target message snowflake's source creation time.
+
+Discord is also a `Backfiller` and `Resyncer`. It walks parent messages and
+active and archived threads through REST using a stored page cursor. A fresh
+Gateway READY requests a durable walk for missed messages after an outage;
+`CHANNEL_UPDATE` requests one when the channel's public visibility changes.
+The runtime's startup `Public` check catches a private change made while the
+process was down. REST message lists expose only messages that still exist;
+they expose edited current revisions but no historical edit versions or
+deletion tombstones.
 
 Discord has no version number for a channel's permissions, so a channel that
 changes visibility is the composed-token case: the connector re-emits the

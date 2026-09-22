@@ -2,9 +2,11 @@ package discord
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -161,8 +163,20 @@ func (c *Connector) dispatch(ctx context.Context, sink connector.Sink, kind stri
 			return nil
 		}
 		c.mu.Lock()
+		old := c.channels[ch.ID]
+		oldPublic := c.publicLocked(ch.ID)
 		c.channels[ch.ID] = ch
+		newPublic := c.publicLocked(ch.ID)
 		c.mu.Unlock()
+		if kind == "CHANNEL_UPDATE" && old.ID != "" && oldPublic != newPublic && slices.Contains(c.containers, ch.ID) {
+			requester, ok := sink.(connector.ResyncRequester)
+			if !ok {
+				return connector.ErrNoResyncStore
+			}
+			if err := requester.RequestResync(ctx, ch.ID); err != nil {
+				return err
+			}
+		}
 		if strings.HasPrefix(kind, "THREAD_") && kind == "THREAD_CREATE" {
 			return c.emitThread(ctx, sink, ch)
 		}
@@ -275,14 +289,7 @@ func (c *Connector) place(channelID string) (connector.Container, string, connec
 		ch = c.channels[id]
 	}
 	container := connector.Container{Kind: connector.ContainerChannel, NativeID: id, Name: ch.Name}
-	public := c.roles[c.guild]&viewChannel != 0
-	for _, ow := range ch.PermissionOverwrites {
-		if ow.ID == c.guild && ow.Type == 0 {
-			allow, _ := strconv.ParseUint(ow.Allow, 10, 64)
-			deny, _ := strconv.ParseUint(ow.Deny, 10, 64)
-			public = (public && deny&viewChannel == 0) || allow&viewChannel != 0
-		}
-	}
+	public := c.publicLocked(id)
 	// A private thread is narrower than its parent. It is read through its
 	// own group, while the allowlist still names the parent channel.
 	if c.channels[channelID].Type == 12 {
@@ -292,6 +299,42 @@ func (c *Connector) place(channelID string) (connector.Container, string, connec
 		return container, thread, connector.ACL{{Kind: connector.ACLPublic}}
 	}
 	return container, thread, connector.ACL{{Kind: connector.ACLGroup, Source: c.source, NativeID: id}}
+}
+func (c *Connector) publicLocked(id string) bool {
+	ch := c.channels[id]
+	public := c.roles[c.guild]&viewChannel != 0
+	for _, ow := range ch.PermissionOverwrites {
+		if ow.ID == c.guild && ow.Type == 0 {
+			allow, _ := strconv.ParseUint(ow.Allow, 10, 64)
+			deny, _ := strconv.ParseUint(ow.Deny, 10, 64)
+			public = (public && deny&viewChannel == 0) || allow&viewChannel != 0
+		}
+	}
+	return public
+}
+
+// permissionToken is canonical across Gateway and REST observations. Discord
+// supplies no overwrite version or change time; ingest order orders revisions.
+func (c *Connector) permissionToken(channelID string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ch := c.channels[channelID]
+	if ch.Type == 10 || ch.Type == 11 || ch.Type == 12 {
+		ch = c.channels[ch.ParentID]
+	}
+	ows := slices.Clone(ch.PermissionOverwrites)
+	if ows == nil {
+		ows = []overwrite{}
+	}
+	slices.SortFunc(ows, func(a, b overwrite) int {
+		if a.ID != b.ID {
+			return strings.Compare(a.ID, b.ID)
+		}
+		return a.Type - b.Type
+	})
+	raw, _ := json.Marshal(ows)
+	hash := sha256.Sum256(raw)
+	return fmt.Sprintf("perm:%x", hash[:8])
 }
 func (c *Connector) identity(u *user, nick string) *connector.Identity {
 	if u == nil || u.ID == "" {
@@ -357,18 +400,23 @@ func (c *Connector) emitMessage(ctx context.Context, sink connector.Sink, m mess
 		}
 	}
 	ev.Payload.URL = permalink(c.guild, m.ChannelID, m.ID)
+	perm := c.permissionToken(m.ChannelID)
+	token := perm
+	var edited time.Time
 	if len(m.EditedTimestamp) > 0 && string(m.EditedTimestamp) != "null" {
-		var token string
-		if err := json.Unmarshal(m.EditedTimestamp, &token); err != nil {
+		var stamp string
+		if err := json.Unmarshal(m.EditedTimestamp, &stamp); err != nil {
 			return err
 		}
-		edited, err := time.Parse(time.RFC3339Nano, token)
+		var err error
+		edited, err = time.Parse(time.RFC3339Nano, stamp)
 		if err != nil {
 			return fmt.Errorf("discord edited_timestamp: %w", err)
 		}
-		ev.NativeID = m.ID + "@" + token
-		ev.Payload.Revision = &connector.Revision{Token: token, EditedAt: edited}
+		token = stamp + "+" + perm
 	}
+	ev.NativeID = m.ID + "@" + token
+	ev.Payload.Revision = &connector.Revision{Token: token, EditedAt: edited}
 	return c.emit(ctx, sink, ev)
 }
 func (c *Connector) emitThread(ctx context.Context, sink connector.Sink, ch channel) error {
@@ -380,6 +428,9 @@ func (c *Connector) emitThread(ctx context.Context, sink connector.Sink, ch chan
 	ev.Payload.URL = channelURL(c.guild, ch.ID)
 	ev.Payload.Author = &connector.Identity{Source: c.source, Kind: connector.IdentityUser, NativeID: ch.OwnerID}
 	ev.Payload.Thread = ""
+	token := c.permissionToken(ch.ID)
+	ev.NativeID = ev.Payload.Artifact + "@" + token
+	ev.Payload.Revision = &connector.Revision{Token: token}
 	return c.emit(ctx, sink, ev)
 }
 func threadArtifact(id string) string { return "thread:" + id }

@@ -1,10 +1,12 @@
-// Package discord ingests guild messages, threads, and reactions through the
-// Discord Gateway. A source uses settings `guild` (the guild snowflake),
+// Package discord ingests live guild messages, threads, and reactions through
+// the Gateway and walks channel and thread history through REST. A source uses
+// settings `guild` (the guild snowflake),
 // `intents` (Gateway bitset; GUILDS, GUILD_MESSAGES, GUILD_MESSAGE_REACTIONS,
-// and MESSAGE_CONTENT are needed), and optionally `gateway_url` for a private
-// test gateway. Its only secret is `token`, the bot token. The runtime resolves
+// and MESSAGE_CONTENT are needed), and optionally `gateway_url` and `api_url`
+// for local fixtures. Its only secret is `token`, the bot token. The runtime resolves
 // that secret from the environment before calling Factory. A source's
 // containers are parent channel snowflakes; the runtime Gate enforces them.
+// Discord's REST lists expose current messages but no deleted-message list.
 package discord
 
 import (
@@ -13,7 +15,9 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,6 +34,7 @@ const (
 	// SecretToken is the name of the bot credential in source secrets.
 	SecretToken     = "token"
 	defaultGateway  = "wss://gateway.discord.gg/?v=10&encoding=json"
+	defaultAPI      = "https://discord.com/api/v10"
 	requiredIntents = (1 << 0) | (1 << 9) | (1 << 10) | (1 << 15)
 	viewChannel     = uint64(1 << 10)
 )
@@ -39,12 +44,17 @@ type Settings struct {
 	Guild      string `json:"guild"`
 	Intents    int    `json:"intents"`
 	GatewayURL string `json:"gateway_url"`
+	APIURL     string `json:"api_url"`
 }
 
 // Connector maintains one Discord Gateway session for a source.
 type Connector struct {
 	source, guild, token, gateway string
 	intents                       int
+	api                           string
+	http                          *http.Client
+	containers                    []string
+	nextRequest                   time.Time
 	mu                            sync.Mutex
 	status                        connector.HealthStatus
 	detail                        string
@@ -60,7 +70,11 @@ type Connector struct {
 	messages                      map[string]message
 }
 
-var _ connector.Streamer = (*Connector)(nil)
+var (
+	_ connector.Streamer   = (*Connector)(nil)
+	_ connector.Backfiller = (*Connector)(nil)
+	_ connector.Resyncer   = (*Connector)(nil)
+)
 
 // Factory builds a Discord connector for the runtime registry.
 func Factory(_ context.Context, src connector.SourceConfig) (connector.Connector, error) {
@@ -109,7 +123,23 @@ func New(src connector.SourceConfig) (*Connector, error) {
 	if u.Scheme == "ws" && !strings.HasPrefix(u.Host, "127.0.0.1:") && !strings.HasPrefix(u.Host, "localhost:") {
 		return nil, errors.New("discord gateway_url must use wss outside localhost")
 	}
-	return &Connector{source: src.ID, guild: s.Guild, token: src.Secrets[SecretToken], gateway: gateway, intents: s.Intents, status: connector.HealthDegraded, detail: "reconnecting", channels: map[string]channel{}, roles: map[string]uint64{}, messages: map[string]message{}}, nil
+	api := s.APIURL
+	if api == "" {
+		api = defaultAPI
+	}
+	u, err = url.Parse(api)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
+		return nil, errors.New("discord api_url must be an HTTP URL without query or fragment")
+	}
+	if u.Scheme == "http" && u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost" {
+		return nil, errors.New("discord api_url must use https outside localhost")
+	}
+	containers := slices.Clone(src.Containers)
+	if slices.Contains(containers, connector.AllowAll) {
+		return nil, errors.New("discord containers must name channel snowflakes, not *")
+	}
+	slices.Sort(containers)
+	return &Connector{source: src.ID, guild: s.Guild, token: src.Secrets[SecretToken], gateway: gateway, api: strings.TrimRight(api, "/"), http: &http.Client{Timeout: 30 * time.Second}, containers: containers, intents: s.Intents, status: connector.HealthDegraded, detail: "reconnecting", channels: map[string]channel{}, roles: map[string]uint64{}, messages: map[string]message{}}, nil
 }
 func snowflake(s string) bool {
 	if s == "" {
@@ -211,8 +241,11 @@ func (c *Connector) Stream(ctx context.Context, sink connector.Sink) error {
 		c.mu.Unlock()
 		close(active)
 	}()
-	ws, _, err := websocket.DefaultDialer.DialContext(ctx, target, nil)
+	ws, response, err := websocket.DefaultDialer.DialContext(ctx, target, nil)
 	if err != nil {
+		if response != nil && response.Body != nil {
+			_ = response.Body.Close()
+		}
 		return fmt.Errorf("dial discord gateway: %w", err)
 	}
 	c.mu.Lock()
@@ -335,6 +368,16 @@ func (c *Connector) Stream(ctx context.Context, sink connector.Sink) error {
 				c.resumeURL = v.ResumeGatewayURL
 				c.mu.Unlock()
 				c.setHealth(connector.HealthOK, "connected")
+				// A fresh session has no replay sequence. A durable walk fills
+				// messages posted while this process was down, even after the
+				// one-time initial backfill finished in an earlier run.
+				if requester, ok := sink.(connector.ResyncRequester); ok {
+					for _, id := range c.containers {
+						if err := requester.RequestResync(ctx, id); err != nil && !errors.Is(err, connector.ErrNoResyncStore) {
+							return fmt.Errorf("recording restart gap walk for channel %s: %w", id, err)
+						}
+					}
+				}
 			}
 			if e.T == "RESUMED" {
 				c.setHealth(connector.HealthOK, "connected")
