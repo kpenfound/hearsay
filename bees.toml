@@ -15,7 +15,7 @@
 # Format version of this file. bees refuses files newer than it understands and
 # upgrades older ones in memory. Leave it alone; bees releases that change the
 # format say what to do.
-version = 3
+version = 5
 
 #===============================================================================
 # Project
@@ -157,101 +157,7 @@ max_cost_per_day_resume_percent = 80.0
 #level = "info"
 
 
-#===============================================================================
-# Codex Profiles
-#===============================================================================
-
-# [profiles.default]
-# agent = "codex"
-# model = "gpt-5.6-terra"
-# fallback_model = "gpt-5.6-sol"
-# effort = "high"
-# sandbox = "none"
-
-# [profiles.review_fast]
-# agent = "codex"
-# model = "gpt-5.6-luna"
-# fallback_model = "gpt-6-astra"
-# effort = "medium"
-# sandbox = "none"
-
-# [profiles.coder_smart]
-# agent = "codex"
-# model = "gpt-6-astra"
-# fallback_model = "gpt-6-astra"
-# effort = "high"
-
-# [profiles.coder_medium]
-# agent = "codex"
-# model = "gpt-6-sol"
-# fallback_model = "gpt-6-astra"
-# effort = "high"
-
-# [profiles.coder_dumb]
-# agent = "codex"
-# model = "gpt-5.6-luna"
-# fallback_model = "gpt-5.6-sol"
-# effort = "medium"
-
-# [profiles.manager_smart]
-# agent = "codex"
-# model = "gpt-5.6-sol"
-# fallback_model = "gpt-6-astra"
-# effort = "high"
-
-# [profiles.manager_dumb]
-# agent = "codex"
-# model = "gpt-5.6-terra"
-# fallback_model = "gpt-5.6-sol"
-# effort = "medium"
-
-#===============================================================================
-# Claude Profiles
-#===============================================================================
-
-[profiles.default]
-agent = "claude"
-model = "opus"
-fallback_model = "fable"
-effort = "high"
-sandbox = "none"
-
-[profiles.review_fast]
-agent = "claude"
-model = "opus"
-fallback_model = "fable"
-effort = "medium"
-sandbox = "none"
-
-[profiles.coder_smart]
-agent = "claude"
-model = "fable"
-effort = "medium"
-
-[profiles.coder_medium]
-agent = "claude"
-model = "opus"
-fallback_model = "fable"
-effort = "medium"
-
-[profiles.coder_dumb]
-agent = "claude"
-model = "opus"
-fallback_model = "fable"
-effort = "low"
-
-[profiles.manager_smart]
-agent = "claude"
-model = "opus"
-fallback_model = "fable"
-effort = "medium"
-
-[profiles.manager_dumb]
-agent = "claude"
-model = "opus"
-fallback_model = "fable"
-effort = "low"
-
+# Agent profiles are defined in ~/.config/bees/defaults.toml.
 
 #===============================================================================
 # Global role settings — apply to every role, merged with [roles.<name>]:
