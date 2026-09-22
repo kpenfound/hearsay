@@ -83,7 +83,7 @@ type Result struct {
 	// model call was made.
 	Unchanged bool
 	// TopicsOpened and StancesWritten count the rows this run wrote. Both are
-	// zero on a re-run that the model answered the same way.
+	// zero when the document version was already asserted.
 	TopicsOpened   int
 	StancesWritten int
 	// Positions is how many positions the answer took.
@@ -217,16 +217,17 @@ func (a *Asserter) Assert(ctx context.Context, docID, scope string) (Result, err
 			if err := w.ExtendTopic(ctx, topicID, about, keys); err != nil {
 				return err
 			}
+			tier := l2.TierFor(doc)
 			_, written, err := w.AppendStance(ctx, l2.Stance{
-				ID:       l2.StanceID(topicID, docID, position),
+				ID:       l2.StanceID(topicID, docID, position, stored.DistilledAt, tier),
 				TopicID:  topicID,
 				Position: position,
 				Author:   authorOf(doc),
 				StatedAt: doc.Time.LastActivity,
 				Evidence: []string{docID},
-				Tier:     l2.TierFor(doc),
+				Tier:     tier,
 				ACL:      doc.ACL,
-			})
+			}, stored.DistilledAt)
 			if err != nil {
 				return err
 			}

@@ -35,8 +35,8 @@ corrupt.
   on the topic, so one document holds at most one live stance per topic and a
   restatement never reads as a reply to a later document. The replaced stance
   is *retired* (`RetiredSQL`, [Current]): never a topic's current stance, and
-  never a predecessor again. A reading that takes the same position writes
-  nothing, so only a change is recorded, and always as a supersession.
+  never a predecessor again. A new document version writes a supersession even
+  if it takes the same position.
 - **Otherwise supersession follows `stated_at`, the evidence's time.** A
   document read late supersedes the newest live stance before it and is
   superseded by nothing, so the chain forks; the later stance is never
@@ -44,9 +44,10 @@ corrupt.
 - **Idempotency has two layers.** `l2_asserted` records the version of each
   document read, compared for equality and never ordered, so a restart makes no
   model call. Topic and stance ids are derived from what produced them, and the
-  store refuses a stance id that is not [StanceID] of its topic, document and
-  position, so the primary key holds one document to one stance per position per
-  topic and a re-read that answers the same way writes nothing.
+  store refuses a stance id that is not [StanceID] of its topic, document,
+  position, document version and tier. The primary key skips a retry of the
+  same reading, while a new version or tier records another stance even if the
+  position is worded the same way.
 - **A topic is only offered to a document everyone who may read it may read the
   topic too** (`readableBy`): a public topic, or one whose access list carries
   every grant of the document's, compared without labels. Otherwise a private

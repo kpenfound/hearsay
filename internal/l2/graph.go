@@ -150,11 +150,11 @@ func TopicID(scope, docID string, index int, name string) string {
 	return "topic:" + digest(scope, docID, fmt.Sprint(index), name)
 }
 
-// StanceID is the id of a stance: one document's position on one topic. The
-// store refuses a stance whose id is anything else, which is what makes the
-// primary key hold one document to one stance per position per topic.
-func StanceID(topicID, docID, position string) string {
-	return "stance:" + digest(topicID, docID, position)
+// StanceID identifies one reading of a document taking a position on a topic
+// at a tier. A new document version or tier gets a new row even when its words
+// match an earlier reading; a retry of the same reading gets the same id.
+func StanceID(topicID, docID, position string, distilledAt time.Time, tier Tier) string {
+	return "stance:" + digest(topicID, docID, position, distilledAt.UTC().Format(time.RFC3339Nano), string(tier))
 }
 
 // digest is a short hex id over parts that cannot run into each other: each is

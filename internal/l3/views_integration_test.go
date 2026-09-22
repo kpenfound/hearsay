@@ -178,10 +178,11 @@ func TestCurrentStancesAreTheHeadsTheReaderMayRead(t *testing.T) {
 	}
 	stance := func(tp l2.Topic, doc, position string, hour int, acl connector.ACL) {
 		t.Helper()
+		at := day.Add(time.Duration(hour) * time.Hour)
 		_, _, err := graph.AppendStance(ctx, l2.Stance{
-			ID: l2.StanceID(tp.ID, doc, position), TopicID: tp.ID, Position: position,
-			StatedAt: day.Add(time.Duration(hour) * time.Hour), Evidence: []string{doc}, Tier: l2.TierInferred, ACL: acl,
-		})
+			ID: l2.StanceID(tp.ID, doc, position, at, l2.TierInferred), TopicID: tp.ID, Position: position,
+			StatedAt: at, Evidence: []string{doc}, Tier: l2.TierInferred, ACL: acl,
+		}, at)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -301,8 +302,8 @@ func TestABundleForAScopeNotGrantedIsEmpty(t *testing.T) {
 	if _, err := graph.OpenTopic(t.Context(), tp); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := graph.AppendStance(t.Context(), l2.Stance{ID: l2.StanceID(tp.ID, "l1:x", "p"), TopicID: tp.ID, Position: "p",
-		StatedAt: day, Evidence: []string{"l1:x"}, Tier: l2.TierRatified, ACL: public}); err != nil {
+	if _, _, err := graph.AppendStance(t.Context(), l2.Stance{ID: l2.StanceID(tp.ID, "l1:x", "p", day, l2.TierRatified), TopicID: tp.ID, Position: "p",
+		StatedAt: day, Evidence: []string{"l1:x"}, Tier: l2.TierRatified, ACL: public}, day); err != nil {
 		t.Fatal(err)
 	}
 

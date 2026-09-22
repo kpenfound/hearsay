@@ -156,10 +156,11 @@ func newWorld(t *testing.T) *world {
 	}
 	stance := func(tp l2.Topic, docID, position string, hour int, tier l2.Tier, acl connector.ACL) {
 		t.Helper()
+		at := day.Add(time.Duration(hour) * time.Hour)
 		_, _, err := graph.AppendStance(ctx, l2.Stance{
-			ID: l2.StanceID(tp.ID, docID, position), TopicID: tp.ID, Position: position, Author: "kyle",
-			StatedAt: day.Add(time.Duration(hour) * time.Hour), Evidence: []string{docID}, Tier: tier, ACL: acl,
-		})
+			ID: l2.StanceID(tp.ID, docID, position, at, tier), TopicID: tp.ID, Position: position, Author: "kyle",
+			StatedAt: at, Evidence: []string{docID}, Tier: tier, ACL: acl,
+		}, at)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -553,9 +554,9 @@ func TestAnotherItemsTopicsAreInheritedAndDropFirst(t *testing.T) {
 		}
 		position := strings.Repeat("retry with a jittered backoff, ", 6) + strconv.Itoa(i)
 		if _, _, err := graph.AppendStance(t.Context(), l2.Stance{
-			ID: l2.StanceID(tp.ID, doc, position), TopicID: tp.ID, Position: position, Author: "kyle",
+			ID: l2.StanceID(tp.ID, doc, position, day.Add(4*time.Hour), l2.TierRatified), TopicID: tp.ID, Position: position, Author: "kyle",
 			StatedAt: day.Add(4 * time.Hour), Evidence: []string{doc}, Tier: l2.TierRatified, ACL: public,
-		}); err != nil {
+		}, day.Add(4*time.Hour)); err != nil {
 			t.Fatal(err)
 		}
 	}

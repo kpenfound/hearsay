@@ -200,6 +200,62 @@ func TestAnIssueThenAMergedPullRequestIsOneTopicWithTwoStances(t *testing.T) {
 	}
 }
 
+func TestAProposedPullRequestBecomesRatifiedWithTheSamePosition(t *testing.T) {
+	pool := newPool(t)
+	src := newSource(t)
+	f := store(t, pool, src)
+	merged := prDoc(t, src)
+	proposal := prBody
+	proposal.OutcomeKind = l1.OutcomeProposed
+	proposal.Outcome = "Proposed, pending review."
+	proposed, _, err := merged.WithBody(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := l1.New(pool).Put(t.Context(), proposed); err != nil || !changed {
+		t.Fatalf("Put(proposed PR) = %v, %v", changed, err)
+	}
+	fx := loadFixtures(t)
+	if err := fx.Add(llm.CompletionFixture{
+		Tier: llm.TierAssert, Request: assertworker.RequestFor(proposed, nil, assertBudget()),
+		Response: llm.Response{JSON: []byte(`{"assertions":[{"topic":"new","topic_name":"` + topicName + `","position":"` + prPosition + `"}]}`),
+			StopReason: llm.StopEnd, Model: "recorded"},
+	}); err != nil {
+		t.Fatalf("recording the proposed PR reading: %v", err)
+	}
+	scope := l2.ScopeKey(testRepo(src), src, repo)
+	a := newAsserter(t, pool, src, fx)
+	if r := assertDoc(t, a, f.prID, scope); r.StancesWritten != 1 || r.TopicsOpened != 1 {
+		t.Fatalf("Assert(proposed PR) = %+v, want one inferred stance", r)
+	}
+	if changed, err := l1.New(pool).Put(t.Context(), merged); err != nil || !changed {
+		t.Fatalf("Put(merged PR) = %v, %v", changed, err)
+	}
+	if r := assertDoc(t, a, f.prID, scope); r.StancesWritten != 1 || r.TopicsOpened != 0 {
+		t.Fatalf("Assert(merged PR) = %+v, want one new ratified stance", r)
+	}
+	graph := l2.New(pool)
+	topics, err := graph.Topics(t.Context(), scope)
+	if err != nil || len(topics) != 1 {
+		t.Fatalf("Topics() = %+v, %v, want one topic", topics, err)
+	}
+	history, err := graph.StanceHistory(t.Context(), topics[0].ID)
+	if err != nil || len(history) != 2 {
+		t.Fatalf("StanceHistory() = %+v, %v, want both readings", history, err)
+	}
+	if history[0].Position != prPosition || history[0].Tier != l2.TierInferred ||
+		history[1].Position != prPosition || history[1].Tier != l2.TierRatified ||
+		history[1].ID == history[0].ID || history[1].Supersedes != history[0].ID {
+		t.Errorf("PR history = %+v, want inferred then ratified at the same position", history)
+	}
+	if current, ok := l2.Current(history); !ok || current.ID != history[1].ID {
+		t.Errorf("Current() = %+v, %v, want the ratified stance", current, ok)
+	}
+	if r := assertDoc(t, a, f.prID, scope); !r.Unchanged || r.StancesWritten != 0 {
+		t.Errorf("retry of merged version = %+v, want nothing written", r)
+	}
+}
+
 // The other acceptance criterion: re-running over the same documents — a
 // restart, a job run twice — does not duplicate stances, and does not ask the
 // model again.
@@ -233,10 +289,9 @@ func TestTheWorkerIsIdempotentAcrossRestarts(t *testing.T) {
 	}
 }
 
-// A document read again in a new version — a crash that lost the record of the
-// read, a re-distillation — asks the model again, and an answer that takes the
-// same position writes nothing twice.
-func TestReadingADocumentAgainWritesNothingTwice(t *testing.T) {
+// Losing the assertion checkpoint makes the same L1 version run again. It
+// asks the model, but the identical reading writes no second stance.
+func TestRetryingTheSameVersionWritesNothingTwice(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
 	f := store(t, pool, src)

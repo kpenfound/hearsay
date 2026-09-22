@@ -158,9 +158,10 @@ func openTopic(t *testing.T, store *l2.Store, scope string, acl connector.ACL, k
 }
 
 func stance(topic l2.Topic, doc, position string, hour int) l2.Stance {
+	at := time.Date(2026, 9, 9, hour, 0, 0, 0, time.UTC)
 	return l2.Stance{
-		ID: l2.StanceID(topic.ID, doc, position), TopicID: topic.ID, Position: position,
-		StatedAt: time.Date(2026, 9, 9, hour, 0, 0, 0, time.UTC), Evidence: []string{doc},
+		ID: l2.StanceID(topic.ID, doc, position, at, l2.TierInferred), TopicID: topic.ID, Position: position,
+		StatedAt: at, Evidence: []string{doc},
 		Tier: l2.TierInferred, ACL: public,
 	}
 }
@@ -173,7 +174,7 @@ func TestStancesAreSupersededNeverOverwritten(t *testing.T) {
 
 	add := func(st l2.Stance) (l2.Stance, bool) {
 		t.Helper()
-		stored, written, err := store.AppendStance(ctx, st)
+		stored, written, err := store.AppendStance(ctx, st, st.StatedAt)
 		if err != nil {
 			t.Fatalf("AppendStance(%s) = %v", st.Position, err)
 		}
@@ -212,7 +213,7 @@ func TestStancesAreSupersededNeverOverwritten(t *testing.T) {
 
 	forged := stance(topic, "l1:s:other", "y", 7)
 	forged.ID = "stance:chosen-by-the-caller"
-	if _, _, err := store.AppendStance(ctx, forged); !errors.Is(err, l2.ErrInvalid) {
+	if _, _, err := store.AppendStance(ctx, forged, forged.StatedAt); !errors.Is(err, l2.ErrInvalid) {
 		t.Errorf("AppendStance(an id not derived from the stance) = %v, want ErrInvalid", err)
 	}
 
@@ -234,7 +235,7 @@ func TestStancesAreSupersededNeverOverwritten(t *testing.T) {
 
 	preset := stance(topic, "l1:s:other", "x", 6)
 	preset.Supersedes = first.ID
-	if _, _, err := store.AppendStance(ctx, preset); !errors.Is(err, l2.ErrInvalid) {
+	if _, _, err := store.AppendStance(ctx, preset, preset.StatedAt); !errors.Is(err, l2.ErrInvalid) {
 		t.Errorf("AppendStance(naming its predecessor) = %v, want ErrInvalid", err)
 	}
 }
@@ -248,7 +249,7 @@ func TestANewReadingOfADocumentRetiresItsOwnStance(t *testing.T) {
 	topic := openTopic(t, store, unique(), public)
 	add := func(st l2.Stance) l2.Stance {
 		t.Helper()
-		stored, written, err := store.AppendStance(ctx, st)
+		stored, written, err := store.AppendStance(ctx, st, st.StatedAt)
 		if err != nil || !written {
 			t.Fatalf("AppendStance(%s) = %v, written %v", st.Position, err, written)
 		}
@@ -322,6 +323,37 @@ func TestANewReadingOfADocumentRetiresItsOwnStance(t *testing.T) {
 	s6 := add(stance(topic, "l1:s:review", "ship it", 7))
 	if s6.Supersedes != s3.ID {
 		t.Errorf("a stance stated after a retired one supersedes %q, want the newest live one before it, %q", s6.Supersedes, s3.ID)
+	}
+}
+
+func TestReturningToAnEarlierPositionWritesANewStance(t *testing.T) {
+	pool := newPool(t)
+	store := l2.New(pool)
+	topic := openTopic(t, store, unique(), public)
+	doc := "l1:s:" + unique()
+	positions := []string{"take X", "take X prime", "take X"}
+	var history []l2.Stance
+	for i, position := range positions {
+		st := stance(topic, doc, position, i+1)
+		got, written, err := store.AppendStance(t.Context(), st, st.StatedAt)
+		if err != nil || !written {
+			t.Fatalf("AppendStance(version %d) = %+v, %v, written %v", i+1, got, err, written)
+		}
+		history = append(history, got)
+	}
+	if history[2].ID == history[0].ID || history[2].Supersedes != history[1].ID {
+		t.Errorf("return to X = %+v, want a new stance superseding %s", history[2], history[1].ID)
+	}
+	stored, err := store.StanceHistory(t.Context(), topic.ID)
+	if err != nil || len(stored) != 3 {
+		t.Fatalf("StanceHistory() = %+v, %v, want all three readings", stored, err)
+	}
+	if current, ok := l2.Current(stored); !ok || current.ID != history[2].ID {
+		t.Errorf("Current() = %+v, %v, want the returned position", current, ok)
+	}
+	retry := stance(topic, doc, positions[2], 3)
+	if again, written, err := store.AppendStance(t.Context(), retry, retry.StatedAt); err != nil || written || again.ID != history[2].ID {
+		t.Errorf("retry of version 3 = %+v, %v, written %v, want original row", again, err, written)
 	}
 }
 
@@ -415,7 +447,7 @@ func TestTopicsBySimilarityReadTheEvidenceVectors(t *testing.T) {
 	bare := embeddedDoc(t, pool, src, "acme/api#4", nil)
 
 	topic := openTopic(t, store, scope, public)
-	if _, _, err := store.AppendStance(ctx, stance(topic, evidence, "a position", 1)); err != nil {
+	if _, _, err := store.AppendStance(ctx, stance(topic, evidence, "a position", 1), time.Date(2026, 9, 9, 1, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("AppendStance() = %v", err)
 	}
 
