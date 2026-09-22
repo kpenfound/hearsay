@@ -121,6 +121,11 @@ func TestGatewayReplayThroughRuntimeGate(t *testing.T) {
 					if e["t"] == "READY" {
 						e["d"].(map[string]any)["resume_gateway_url"] = gatewayURL
 					}
+					if e["t"] == "MESSAGE_CREATE" && e["d"].(map[string]any)["id"] == message {
+						d := e["d"].(map[string]any)
+						d["content"] = "<@1551744840499200099> check this, not <@1551744840499200088>"
+						d["mentions"] = []map[string]any{{"id": "1551744840499200099", "username": "shed", "bot": true}, {"id": "1551744840499200088", "username": "sam"}, {"id": "1551744840499200077", "username": "implicit"}}
+					}
 					if err := ws.WriteJSON(e); err != nil {
 						return
 					}
@@ -230,6 +235,9 @@ func TestGatewayReplayThroughRuntimeGate(t *testing.T) {
 			original, ok := byID[message]
 			if !ok {
 				t.Fatal("original message missing")
+			}
+			if len(original.Payload.Mentions) != 2 || original.Payload.Mentions[0].NativeID != "1551744840499200099" || original.Payload.Mentions[0].Kind != connector.IdentityBot || original.Payload.Mentions[1].NativeID != "1551744840499200088" {
+				t.Errorf("explicit mention hints = %+v", original.Payload.Mentions)
 			}
 			if original.Payload.Thread != "thread:1551744840499200004" || original.Payload.Parent != "thread:1551744840499200004" || original.Payload.Container.NativeID != public {
 				t.Errorf("thread containment = %+v", original.Payload)
