@@ -77,6 +77,11 @@ type deleted struct {
 	GuildID   string `json:"guild_id"`
 	ChannelID string `json:"channel_id"`
 }
+type bulkDeleted struct {
+	IDs       []string `json:"ids"`
+	GuildID   string   `json:"guild_id"`
+	ChannelID string   `json:"channel_id"`
+}
 
 func (c *Connector) dispatch(ctx context.Context, sink connector.Sink, kind string, raw json.RawMessage) error {
 	switch kind {
@@ -100,6 +105,11 @@ func (c *Connector) dispatch(ctx context.Context, sink connector.Sink, kind stri
 			c.channels[ch.ID] = ch
 		}
 		c.mu.Unlock()
+		for _, ch := range g.Threads {
+			if err := c.emitThread(ctx, sink, ch); err != nil {
+				return err
+			}
+		}
 	case "CHANNEL_CREATE", "CHANNEL_UPDATE", "THREAD_CREATE", "THREAD_UPDATE":
 		var ch channel
 		if err := json.Unmarshal(raw, &ch); err != nil {
@@ -114,6 +124,23 @@ func (c *Connector) dispatch(ctx context.Context, sink connector.Sink, kind stri
 		if strings.HasPrefix(kind, "THREAD_") && kind == "THREAD_CREATE" {
 			return c.emitThread(ctx, sink, ch)
 		}
+	case "THREAD_DELETE":
+		var ch channel
+		if err := json.Unmarshal(raw, &ch); err != nil {
+			return err
+		}
+		if ch.GuildID != c.guild {
+			return nil
+		}
+		c.mu.Lock()
+		if ch.ParentID == "" {
+			ch.ParentID = c.channels[ch.ID].ParentID
+		}
+		c.mu.Unlock()
+		if ch.ParentID == "" {
+			return nil
+		}
+		return c.emitTombstone(ctx, sink, ch.ID, ch.ID+":tombstone", ch.ID, snowflakeTime(ch.ID))
 	case "MESSAGE_CREATE", "MESSAGE_UPDATE":
 		var m message
 		if err := json.Unmarshal(raw, &m); err != nil {
@@ -165,6 +192,19 @@ func (c *Connector) dispatch(ctx context.Context, sink connector.Sink, kind stri
 			return nil
 		}
 		return c.emitTombstone(ctx, sink, d.ChannelID, d.ID+":tombstone", d.ID, snowflakeTime(d.ID))
+	case "MESSAGE_DELETE_BULK":
+		var d bulkDeleted
+		if err := json.Unmarshal(raw, &d); err != nil {
+			return err
+		}
+		if d.GuildID != c.guild {
+			return nil
+		}
+		for _, id := range d.IDs {
+			if err := c.emitTombstone(ctx, sink, d.ChannelID, id+":tombstone", id, snowflakeTime(id)); err != nil {
+				return err
+			}
+		}
 	case "MESSAGE_REACTION_ADD", "MESSAGE_REACTION_REMOVE":
 		var r reaction
 		if err := json.Unmarshal(raw, &r); err != nil {

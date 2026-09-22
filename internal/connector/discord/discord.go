@@ -52,6 +52,7 @@ type Connector struct {
 	session, resumeURL            string
 	seq                           int64
 	conn                          *websocket.Conn
+	stop                          context.CancelFunc
 	active                        chan struct{}
 	closed                        bool
 	channels                      map[string]channel
@@ -146,7 +147,11 @@ func (c *Connector) Close(ctx context.Context) error {
 	c.closed = true
 	conn := c.conn
 	active := c.active
+	stop := c.stop
 	c.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
 	if conn != nil {
 		_ = conn.Close()
 	}
@@ -187,6 +192,8 @@ func (c *Connector) Stream(ctx context.Context, sink connector.Sink) error {
 	}
 	active := make(chan struct{})
 	c.active = active
+	ctx, cancelStream := context.WithCancel(ctx)
+	c.stop = cancelStream
 	if c.status != connector.HealthFailed {
 		c.status = connector.HealthDegraded
 		c.detail = "reconnecting"
@@ -196,7 +203,14 @@ func (c *Connector) Stream(ctx context.Context, sink connector.Sink) error {
 		target = c.resumeURL
 	}
 	c.mu.Unlock()
-	defer func() { c.mu.Lock(); c.active = nil; c.mu.Unlock(); close(active) }()
+	defer func() {
+		cancelStream()
+		c.mu.Lock()
+		c.active = nil
+		c.stop = nil
+		c.mu.Unlock()
+		close(active)
+	}()
 	ws, _, err := websocket.DefaultDialer.DialContext(ctx, target, nil)
 	if err != nil {
 		return fmt.Errorf("dial discord gateway: %w", err)
@@ -221,14 +235,16 @@ func (c *Connector) Stream(ctx context.Context, sink connector.Sink) error {
 		}
 	}()
 	stop := make(chan struct{})
+	watchDone := make(chan struct{})
 	go func() {
+		defer close(watchDone)
 		select {
 		case <-ctx.Done():
 			_ = ws.Close()
 		case <-stop:
 		}
 	}()
-	defer close(stop)
+	defer func() { close(stop); <-watchDone }()
 	var first envelope
 	if err := ws.ReadJSON(&first); err != nil {
 		return fmt.Errorf("read gateway hello: %w", err)

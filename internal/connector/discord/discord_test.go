@@ -63,7 +63,7 @@ func TestGatewayReplayThroughRuntimeGate(t *testing.T) {
 		private    bool
 	}{
 		{name: "public and private channels", containers: []string{public, private}, dropped: 1, private: true},
-		{name: "public channel only", containers: []string{public}, dropped: 2},
+		{name: "public channel only", containers: []string{public}, dropped: 3},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -71,6 +71,10 @@ func TestGatewayReplayThroughRuntimeGate(t *testing.T) {
 			connections := 0
 			handshakes := []int{}
 			serverDone := make(chan struct{}, 1)
+			resumeStarted := make(chan struct{}, 1)
+			releaseResume := make(chan struct{})
+			release := sync.OnceFunc(func() { close(releaseResume) })
+			defer release()
 			var gatewayURL string
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				ws, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
@@ -99,6 +103,8 @@ func TestGatewayReplayThroughRuntimeGate(t *testing.T) {
 					if hello.Op != 6 || hello.D["session_id"] != "sess" || hello.D["seq"] != float64(9) {
 						t.Errorf("RESUME = %+v", hello)
 					}
+					resumeStarted <- struct{}{}
+					<-releaseResume
 				}
 				name := "first"
 				if n > 1 {
@@ -155,6 +161,15 @@ func TestGatewayReplayThroughRuntimeGate(t *testing.T) {
 				}
 			}()
 			select {
+			case <-resumeStarted:
+			case <-time.After(5 * time.Second):
+				t.Fatal("gateway did not reconnect")
+			}
+			if h := rt.Health(t.Context()).Sources[0]; h.Status != connector.HealthDegraded || h.Detail != "reconnecting" {
+				t.Errorf("reconnecting health = %+v", h)
+			}
+			release()
+			select {
 			case <-serverDone:
 			case <-time.After(5 * time.Second):
 				t.Fatal("gateway replay did not finish")
@@ -163,12 +178,16 @@ func TestGatewayReplayThroughRuntimeGate(t *testing.T) {
 			for {
 				h := rt.Health(t.Context()).Sources[0]
 				foundDelete := false
+				foundBulk := false
 				for _, ev := range sink.events() {
-					if ev.NativeID == message+":tombstone" {
+					if ev.NativeID == "1551744840499200004:tombstone" {
 						foundDelete = true
 					}
+					if ev.NativeID == "1551744840499200008:tombstone" {
+						foundBulk = true
+					}
 				}
-				if h.Status == connector.HealthOK && h.Dropped == tt.dropped && foundDelete {
+				if h.Status == connector.HealthOK && h.Dropped == tt.dropped && foundDelete && foundBulk == tt.private {
 					break
 				}
 				if time.Now().After(deadline) {
@@ -207,6 +226,9 @@ func TestGatewayReplayThroughRuntimeGate(t *testing.T) {
 			if tomb, ok := byID[message+":tombstone"]; !ok || tomb.Payload.Target != message {
 				t.Errorf("message tombstone = %+v", tomb)
 			}
+			if tomb, ok := byID["1551744840499200004:tombstone"]; !ok || tomb.Payload.Target != "1551744840499200004" {
+				t.Errorf("thread tombstone = %+v", tomb)
+			}
 			if _, ok := byID["1551744840499200006"]; ok {
 				t.Error("non-allowlisted message was emitted")
 			}
@@ -217,6 +239,9 @@ func TestGatewayReplayThroughRuntimeGate(t *testing.T) {
 			if ok && (len(priv.ACL) != 1 || priv.ACL[0].Kind != connector.ACLGroup || priv.ACL[0].NativeID != private) {
 				t.Errorf("private ACL = %+v", priv.ACL)
 			}
+			if tomb, present := byID["1551744840499200008:tombstone"]; present != tt.private || (present && tomb.Payload.Target != "1551744840499200008") {
+				t.Errorf("bulk tombstone = %+v, present %v", tomb, present)
+			}
 			reaction := "1551744840499200005:reaction:1551744840499200007:%F0%9F%91%8D"
 			if _, ok := byID[reaction]; !ok {
 				t.Error("reaction missing")
@@ -225,5 +250,104 @@ func TestGatewayReplayThroughRuntimeGate(t *testing.T) {
 				t.Errorf("reaction tombstone = %+v", ev)
 			}
 		})
+	}
+}
+
+func TestHeartbeatAndClose(t *testing.T) {
+	const guild = "1551744840499200000"
+	beat := make(chan float64, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer ws.Close()
+		_ = ws.WriteJSON(map[string]any{"op": 10, "d": map[string]any{"heartbeat_interval": 25}})
+		var hello struct {
+			Op int `json:"op"`
+		}
+		if ws.ReadJSON(&hello) != nil {
+			return
+		}
+		if hello.Op != 2 {
+			t.Errorf("first opcode = %d", hello.Op)
+		}
+		_ = ws.WriteJSON(map[string]any{"op": 0, "t": "READY", "s": 42, "d": map[string]any{"session_id": "sess"}})
+		var hb struct {
+			Op int     `json:"op"`
+			D  float64 `json:"d"`
+		}
+		if ws.ReadJSON(&hb) != nil {
+			return
+		}
+		if hb.Op == 1 {
+			beat <- hb.D
+		}
+		_ = ws.WriteJSON(map[string]any{"op": 11, "d": nil})
+		for {
+			var x any
+			if ws.ReadJSON(&x) != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+	src := connector.SourceConfig{ID: "chat", Type: discord.Type, Containers: []string{"1551744840499200001"}, Settings: json.RawMessage(fmt.Sprintf(`{"guild":%q,"gateway_url":%q}`, guild, "ws"+strings.TrimPrefix(server.URL, "http"))), Secrets: map[string]string{"token": "test-bot-token"}}
+	c, err := discord.New(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := &connector.Recorder{}
+	gate := connector.NewGate(rec, src.ID, c.Describe(), connector.NewAllowlist(src))
+	done := make(chan error, 1)
+	go func() { done <- c.Stream(t.Context(), gate) }()
+	select {
+	case seq := <-beat:
+		if seq != 42 {
+			t.Errorf("heartbeat seq = %v, want 42", seq)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("heartbeat not sent")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if err := c.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Stream outlived Close")
+	}
+}
+
+func TestRejectedGatewayReportsFailedWithoutSecrets(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer ws.Close()
+		_ = ws.WriteJSON(map[string]any{"op": 10, "d": map[string]any{"heartbeat_interval": 5000}})
+		var hello any
+		if ws.ReadJSON(&hello) != nil {
+			return
+		}
+		_ = ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(4014, "bad intents"), time.Now().Add(time.Second))
+	}))
+	defer server.Close()
+	src := connector.SourceConfig{ID: "chat", Type: discord.Type, Containers: []string{"1551744840499200001"}, Settings: json.RawMessage(fmt.Sprintf(`{"guild":"1551744840499200000","gateway_url":%q}`, "ws"+strings.TrimPrefix(server.URL, "http"))), Secrets: map[string]string{"token": "secret-value"}}
+	c, err := discord.New(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close(t.Context())
+	gate := connector.NewGate(&connector.Recorder{}, src.ID, c.Describe(), connector.NewAllowlist(src))
+	if err := c.Stream(t.Context(), gate); err == nil {
+		t.Fatal("rejected gateway returned no error")
+	}
+	h := c.Health(t.Context())
+	if h.Status != connector.HealthFailed || strings.Contains(h.Detail, "secret-value") {
+		t.Errorf("failed health = %+v", h)
 	}
 }
