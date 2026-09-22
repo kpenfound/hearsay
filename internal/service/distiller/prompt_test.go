@@ -54,6 +54,7 @@ func TestSchemaDeclaresOnlyTheFieldsAKindHas(t *testing.T) {
 		{kind: l1.KindIssue, has: []string{"question"}, hasNot: []string{"change"}},
 		{kind: l1.KindPR, has: []string{"change"}, hasNot: []string{"question"}},
 		{kind: l1.KindCommit, has: []string{"change"}, hasNot: []string{"question"}},
+		{kind: l1.KindChatThread, has: []string{"question"}, hasNot: []string{"change"}},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.kind), func(t *testing.T) {

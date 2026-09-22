@@ -43,11 +43,12 @@ hands back a history, which is what provenance needs and what distillation does
 not — and doing the fold in one statement is also what keeps a limit meaningful,
 because the limit counts artifacts there and revisions in a listing.
 
-`Filter.Thread` reads one conversation: every event that hangs off an artifact,
-which is what an L1 document is assembled from. It matches the contract's own
+`Filter.Thread` reads every event that hangs off an artifact, such as a native
+thread or tracker item. It matches the contract's own
 rule — an event's `thread` is the root of the conversation, and its `parent` is
 that root on a source with no threads — so it is one predicate either sort of
-source answers, and it is indexed as the same expression.
+source answers, and it is indexed as the same expression. Channel windows use
+`Filter.Container`, `Since` and `Before` with a separate index.
 
 `Cursors` is where a consumer of the change feed keeps its position, one row per
 consumer rather than per replica. It lives in the database because a consumer is

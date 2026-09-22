@@ -56,12 +56,62 @@ func tombstoneFor(target string) connector.Event {
 // five.
 func TestTargetOf(t *testing.T) {
 	fixture := hiddenOf(fixtureEvents(source))
+	chat := event(source, connector.KindMessage, "m1", at(1), who(source, "u1", "kpenfound"), "", "hello")
+	chat.Payload.Container = connector.Container{Kind: connector.ContainerChannel, NativeID: "C1"}
+	fixture["m1"] = chat
+	chatTarget := l1.DocID(source, l1.ChatWindowKey(chat))
 	tests := []struct {
 		name   string
 		ev     connector.Event
 		hidden distiller.Hidden
 		want   string
 	}{{
+		name: "a channel message targets its fixed window",
+		ev:   chat,
+		want: chatTarget,
+	}, {
+		name: "a chat extension message targets the same window",
+		ev: func() connector.Event {
+			ev := chat
+			ev.Kind = "discord.message"
+			ev.Payload.BaseKind = connector.KindMessage
+			return ev
+		}(),
+		want: chatTarget,
+	}, {
+		name: "a parent-only reply remains in the channel window",
+		ev: func() connector.Event {
+			ev := chat
+			ev.Payload.Artifact = "m2"
+			ev.NativeID = "m2"
+			ev.Payload.Parent = "m1"
+			return ev
+		}(),
+		want: chatTarget,
+	}, {
+		name: "a native thread targets its own artifact",
+		ev: func() connector.Event {
+			ev := chat
+			ev.Kind = connector.KindThread
+			ev.Payload.Artifact = "th1"
+			ev.NativeID = "th1"
+			return ev
+		}(),
+		want: l1.DocID(source, "th1"),
+	}, {
+		name: "a reply in a native thread targets that thread",
+		ev:   func() connector.Event { ev := chat; ev.Payload.Thread = "th1"; return ev }(),
+		want: l1.DocID(source, "th1"),
+	}, {
+		name: "a channel tombstone re-derives the window behind it",
+		ev: func() connector.Event {
+			ev := tombstoneFor("m1")
+			ev.Payload.Container = chat.Payload.Container
+			return ev
+		}(),
+		hidden: fixture,
+		want:   chatTarget,
+	}, {
 		name: "an artifact that makes a document is its own target",
 		ev:   event(source, connector.KindIssue, repo+"#12", at(0), who(source, "u1", "kpenfound"), "an issue", "text"),
 		want: issueID,

@@ -52,6 +52,14 @@ Never quote a credential, a token, a key or a personal email address, even if th
 // kindPrompts is what each kind of artifact is for, and what is worth keeping
 // from it.
 var kindPrompts = map[l1.Kind]string{
+	l1.KindChatThread: `This is a conversation in a chat channel or native thread.
+
+- summary: briefly describe what people discussed.
+- question: the main question, if one was asked. Empty otherwise.
+- outcome: only what participants explicitly decided or resolved. Empty for a routine exchange.
+- open_questions: questions the conversation leaves unanswered, one per entry.
+
+A routine exchange has outcome_kind none. Do not turn a suggestion into a decision.`,
 	l1.KindIssue: `This is a tracker issue and the conversation on it.
 
 - summary: what is being asked for or reported, and where the conversation got to.
@@ -158,7 +166,7 @@ func schemaFor(kind l1.Kind) *llm.Schema {
 		},
 	}
 	switch kind {
-	case l1.KindIssue:
+	case l1.KindIssue, l1.KindChatThread:
 		properties["question"] = schemaNode{
 			Type:        "string",
 			Description: "The question the issue is asking, in one sentence. Empty when it reports rather than asks.",

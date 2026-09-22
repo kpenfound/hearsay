@@ -65,11 +65,11 @@ func TestKindFor(t *testing.T) {
 		{kind: connector.KindIssue, want: l1.KindIssue, ok: true},
 		{kind: connector.KindPullRequest, want: l1.KindPR, ok: true},
 		{kind: connector.KindCommit, want: l1.KindCommit, ok: true},
+		{kind: connector.KindThread, want: l1.KindChatThread, ok: true},
 		{kind: connector.KindMessage},
 		{kind: connector.KindReview},
 		{kind: connector.KindReviewComment},
 		{kind: connector.KindTombstone},
-		{kind: connector.KindThread},
 		{kind: "jira.story", baseKind: connector.KindIssue, want: l1.KindIssue, ok: true},
 		{kind: "figma.file", baseKind: connector.KindDocument},
 	}

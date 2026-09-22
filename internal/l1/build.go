@@ -55,15 +55,38 @@ func Build(in Input) (Document, error) {
 	if !ok {
 		return Document{}, fmt.Errorf("%w: %s is not an artifact this build distils", ErrNotDistilled, in.Root.Kind)
 	}
+	return build(in, kind, in.Root.Payload.Artifact, false)
+}
+
+// BuildChatWindow builds a channel conversation from its current message
+// revisions. The key is a fixed source-time bucket, independent of which
+// message arrived first or remains after a deletion.
+func BuildChatWindow(key string, messages []connector.Event, resolver *principal.Resolver, repo config.Repo) (Document, error) {
+	if len(messages) == 0 {
+		return Document{}, ErrNotDistilled
+	}
+	ordered := slices.Clone(messages)
+	slices.SortFunc(ordered, byConversationOrder)
+	for _, ev := range ordered {
+		if (ev.Kind != connector.KindMessage && ev.Payload.BaseKind != connector.KindMessage) || ev.Payload.Container.Kind != connector.ContainerChannel || ev.Payload.Thread != "" || ChatWindowKey(ev) != key {
+			return Document{}, fmt.Errorf("message %s does not belong to chat window %s", ev.NativeID, key)
+		}
+	}
+	return build(Input{Root: ordered[0], Children: ordered[1:], Resolver: resolver, Repo: repo}, KindChatThread, key, true)
+}
+
+func build(in Input, kind Kind, artifact string, window bool) (Document, error) {
+	if err := in.Root.Validate(); err != nil {
+		return Document{}, fmt.Errorf("the root event: %w", err)
+	}
 
 	root := in.Root
-	artifact := root.Payload.Artifact
 	children := slices.Clone(in.Children)
 	for i, child := range children {
 		if child.Source != root.Source {
 			return Document{}, fmt.Errorf("child %s is from source %q and the artifact is from %q", child.NativeID, child.Source, root.Source)
 		}
-		if conversationOf(child) != artifact {
+		if !window && conversationOf(child) != artifact {
 			return Document{}, fmt.Errorf("child %s hangs off %q, not off %q", child.NativeID, conversationOf(child), artifact)
 		}
 		if err := child.Validate(); err != nil {

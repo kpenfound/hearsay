@@ -395,9 +395,6 @@ func (c *Connector) emitMessage(ctx context.Context, sink connector.Sink, m mess
 	}
 	if m.MessageReference != nil {
 		ev.Payload.Parent = m.MessageReference.MessageID
-		if ev.Payload.Thread == "" {
-			ev.Payload.Thread = m.MessageReference.MessageID
-		}
 	}
 	ev.Payload.URL = permalink(c.guild, m.ChannelID, m.ID)
 	perm := c.permissionToken(m.ChannelID)

@@ -42,8 +42,8 @@ The exact shape a connector emits — the id format, the `kind` vocabulary, the 
 A common envelope plus a per-kind body. Every L1 doc is one row in one table.
 
 ```yaml
-id: l1:slack:C123:1725812345.0001
-kind: slack_thread | slack_burst | meeting_segment | pr | issue | commit | wiki_section | agent_turn
+id: l1:discord:thread:123456789012345678
+kind: chat_thread | chat_burst | meeting_segment | pr | issue | commit | wiki_section | agent_turn
 source: { system, native_id, url }
 l0_refs: [event ids]                  # provenance, required
 time: { created, updated, last_activity }
@@ -61,7 +61,7 @@ embedding: ...
 
 body:
   summary: ...
-  question: ...                       # slack, issue
+  question: ...                       # chat, issue
   outcome: ...                        # what was concluded, if anything
   outcome_kind: resolved | decided | proposed | open | none
   open_questions: [...]

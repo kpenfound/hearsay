@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
@@ -33,7 +34,7 @@ import (
 // a worker that stops working.
 const CallTimeout = 2 * time.Minute
 
-// Distiller turns one artifact into one L1 document. It is the whole of what a
+// Distiller turns one artifact or channel conversation into one L1 document. It is the whole of what a
 // `distill` job does, and it is a value a test can drive directly: the worker
 // loop around it is [Run]'s.
 //
@@ -184,6 +185,9 @@ func (d *Distiller) Distill(ctx context.Context, docID string) (Result, error) {
 		return Result{}, err
 	}
 	result := Result{DocID: docID}
+	if container, start, ok := l1.ParseChatWindowKey(artifact); ok {
+		return d.distillChatWindow(ctx, result, source, artifact, container, start)
+	}
 
 	roots, err := d.events.Current(ctx, l0.ListOptions{
 		Filter: l0.Filter{Source: source, Artifact: artifact},
@@ -243,6 +247,48 @@ func (d *Distiller) Distill(ctx context.Context, docID string) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("building %s: %w", docID, err)
 	}
+	return d.writeDocument(ctx, result, source, artifact, root.Payload.Container.NativeID, doc)
+}
+
+// chatWindow reads current revisions in one indexed container/time range.
+func (d *Distiller) chatWindow(ctx context.Context, source, key, container string, start time.Time) (l1.Document, error) {
+	events, err := d.events.Current(ctx, l0.ListOptions{
+		Filter: l0.Filter{Source: source, BaseKind: connector.KindMessage, Container: container, Since: start, Before: start.Add(l1.ChatWindow)},
+		Limit:  l0.MaxLimit,
+	})
+	if err != nil {
+		return l1.Document{}, err
+	}
+	if len(events) >= l0.MaxLimit {
+		return l1.Document{}, fmt.Errorf("chat window %s has at least %d messages", key, l0.MaxLimit)
+	}
+	var messages []connector.Event
+	for _, ev := range events {
+		if ev.Payload.Thread == "" && ev.Payload.Container.Kind == connector.ContainerChannel {
+			messages = append(messages, ev)
+		}
+	}
+	return l1.BuildChatWindow(key, messages, d.resolver, d.repo)
+}
+
+func (d *Distiller) distillChatWindow(ctx context.Context, result Result, source, key, container string, start time.Time) (Result, error) {
+	doc, err := d.chatWindow(ctx, source, key, container, start)
+	if errors.Is(err, l1.ErrNotDistilled) {
+		deleted, err := d.docs.Delete(ctx, result.DocID)
+		if err != nil {
+			return Result{}, err
+		}
+		result.Deleted, result.Skipped = deleted, !deleted
+		return result, nil
+	}
+	if err != nil {
+		return Result{}, err
+	}
+	return d.writeDocument(ctx, result, source, key, container, doc)
+}
+
+func (d *Distiller) writeDocument(ctx context.Context, result Result, source, artifact, container string, doc l1.Document) (Result, error) {
+	docID := result.DocID
 
 	body, err := d.distil(ctx, doc)
 	if err != nil {
@@ -286,7 +332,7 @@ func (d *Distiller) Distill(ctx context.Context, docID string) (Result, error) {
 			return err
 		}
 		result.Written = true
-		result.Asserting, err = l2.EnqueueAssertion(ctx, tx, d.repo, doc, root.Payload.Container.NativeID)
+		result.Asserting, err = l2.EnqueueAssertion(ctx, tx, d.repo, doc, container)
 		return err
 	})
 	if err != nil {
@@ -330,6 +376,13 @@ func (d *Distiller) embed(ctx context.Context, docID string) (bool, error) {
 // the second half of the check described in Distill: same reads, same builder,
 // so what it returns is comparable to what Build already produced.
 func (d *Distiller) provenanceNow(ctx context.Context, source, artifact string) ([]string, error) {
+	if container, start, ok := l1.ParseChatWindowKey(artifact); ok {
+		doc, err := d.chatWindow(ctx, source, artifact, container, start)
+		if errors.Is(err, l1.ErrNotDistilled) {
+			return nil, nil
+		}
+		return doc.L0Refs, err
+	}
 	roots, err := d.events.Current(ctx, l0.ListOptions{
 		Filter: l0.Filter{Source: source, Artifact: artifact},
 		Limit:  1,
