@@ -73,11 +73,10 @@ same linter at a release built with the current Go, and adds `go vet` and the
 formatter check. Turn the module's own check back on when its pin catches up,
 if there is a reason to prefer it.
 
-A third module, `test-services` in `.dagger/modules/test-services/`, is the
-adapter between the two. Its one function, `go-test-base`, is a Go image with
-`hearsay`'s Postgres bound as a service and `HEARSAY_DATABASE_URL` pointing at
-it, and the Go module's `base` setting in `dagger.toml` is wired to it. That is
-how the Go module gets the Go release `go.mod` asks for, and a database beside
+`hearsay:go-test-base` is a Go image with Postgres bound as a service and
+`HEARSAY_DATABASE_URL` pointing at it, and the Go module's `base` setting in
+`dagger.toml` is wired to it. This gives the Go module the release `go.mod`
+asks for and a database beside
 every test it runs. Today no test it runs uses the database: the ones that need
 Postgres carry the `integration` build tag and run in `hearsay:integration-test`
 instead, after the migrations. The other setting, `includeExtraFiles`, mounts
@@ -94,7 +93,7 @@ dagger api call hearsay migrate --database-url=env:HEARSAY_DATABASE_URL
 dagger api call hearsay playground          # a shell in the runtime, binary on PATH, Postgres beside it
 dagger api call hearsay qa --script '...'   # the same, running a script; returns its output
 dagger api call hearsay go-version          # what go.mod asks for; every Go container uses it
-dagger api call test-services go-test-base  # the container the Go module receives
+dagger api call hearsay go-test-base        # the container the Go module receives
 dagger settings go                          # the Go module's settings and their values
 dagger api functions                        # the modules; add a name for its functions
 ```
@@ -157,9 +156,8 @@ editing `main.dang` is the whole change; `dagger api functions hearsay` shows
 whether it still loads, and `dagger api call` runs one function. Type errors
 surface when a function is first called, not when the module is listed.
 
-`test-services` depends on `hearsay` (its `dagger-module.toml` says so), not
-the other way round, so the Go release and the Postgres are written down once,
-in `hearsay`.
+The Go test base lives in `hearsay`, so the Go release and Postgres are written
+down once.
 
 `dagger.toml` pins the Dang SDK to a commit rather than tracking its `main`:
 the SDK's `main` moves ahead of the released engine, and an SDK newer than
@@ -180,7 +178,7 @@ it in its own commit, doing nothing else, so a new toolchain's stricter vet or
 lint lands somewhere it can be read:
 
 1. Edit the `go` directive in `go.mod`. That is the only place a person writes
-   the version: `hearsay` reads it, and `test-services` asks `hearsay`.
+   the version: `hearsay` reads it for every Go container.
 2. Re-pin `dagger.lock`. It records the resolved digests of
    `golang:<the go directive>` and `golang:<the go directive>-alpine`, and it
    is never pruned: `dagger update` only "refreshes entries already recorded",

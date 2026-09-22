@@ -37,6 +37,19 @@ type Hearsay {
   }
 
   """
+  The base container the reusable Go module receives for its tests. Keep it
+  here so the Go version and Postgres match the rest of Hearsay's checks. The
+  Go module adds the source, working directory and caches; it expects Alpine
+  because it builds its helper binaries there.
+  """
+  goTestBase(ws: Workspace!): Container! {
+    container
+      .from("golang:" + goVersion(ws) + "-alpine")
+      .withServiceBinding("postgres", postgres)
+      .withEnvVariable("HEARSAY_DATABASE_URL", databaseUrl)
+  }
+
+  """
   The container every Go command runs in: the toolchain go.mod asks for, the
   caches, and the source at /src.
   """

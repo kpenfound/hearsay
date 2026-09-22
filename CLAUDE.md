@@ -21,8 +21,8 @@ Dagger runs everything. The workspace is `dagger.toml`. The tests and the
 `go generate` drift check come from the reusable Go module
 (`github.com/dagger/go`) it installs; lint, the integration tests, the tidy and
 image checks, the binary, the image, migrations and the dev stack are `hearsay`, our own module
-in `.dagger/modules/hearsay/main.dang`, written in Dang. `test-services` beside
-it is the adapter that hands the Go module a container with Postgres attached.
+in `.dagger/modules/hearsay/main.dang`, written in Dang. Its `go-test-base`
+function hands the Go module a container with Postgres attached.
 There is no CI workflow: Dagger Cloud runs `dagger check` on every commit.
 
 ```sh
