@@ -66,6 +66,7 @@ type message struct {
 	ChannelID        string          `json:"channel_id"`
 	Author           *user           `json:"author"`
 	Member           *member         `json:"member"`
+	Mentions         []user          `json:"mentions"`
 	Content          string          `json:"content"`
 	Timestamp        time.Time       `json:"timestamp"`
 	EditedTimestamp  json.RawMessage `json:"edited_timestamp"`
@@ -380,6 +381,15 @@ func (c *Connector) emitMessage(ctx context.Context, sink connector.Sink, m mess
 		nick = m.Member.Nick
 	}
 	ev.Payload.Author = c.identity(m.Author, nick)
+	for i := range m.Mentions {
+		u := &m.Mentions[i]
+		if !strings.Contains(m.Content, "<@"+u.ID+">") && !strings.Contains(m.Content, "<@!"+u.ID+">") {
+			continue
+		}
+		if hint := c.identity(u, ""); hint != nil {
+			ev.Payload.Mentions = append(ev.Payload.Mentions, *hint)
+		}
+	}
 	if ev.Payload.Thread != "" {
 		ev.Payload.Parent = ev.Payload.Thread
 	}

@@ -109,7 +109,7 @@ func NewCalls(q l2.Querier, repo config.Repo, embedder l1.Embedder) (*Calls, err
 		docs:      l1.New(q),
 		events:    l0.New(q),
 		graph:     l2.New(q),
-		assembler: bundle.New(q),
+		assembler: bundle.New(q).WithDirectiveSources(repo, resolver),
 		resolver:  resolver,
 		auth:      auth,
 		embedder:  embedder,
@@ -128,8 +128,8 @@ type call struct {
 
 // calls is the whole API surface, in the order the design lists it.
 var calls = []call{
-	{Tool{"get_bundle", "The context bundle for a scope: its entities, current stances, recent activity and open questions, every line carrying an L1 id.",
-		schema(`{"scope":{"type":"string","description":"the entity id the bundle is for, such as tracker:github:acme/api#12"}}`, "scope")}, getBundle},
+	{Tool{"get_bundle", "The context bundle for a scope, with an optional directive from a triggering L0 message id; its other sections contain entities, current stances, recent activity and open questions.",
+		schema(`{"scope":{"type":"string","description":"the entity id the bundle is for, such as tracker:github:acme/api#12"},"directive":{"type":"string","description":"L0 event id of the triggering message"}}`, "scope")}, getBundle},
 	{Tool{"resolve", "The entity ids a piece of text names, by alias and by path.",
 		schema(`{"text":{"type":"string"}}`, "text")}, resolve},
 	{Tool{"stance_history", "Every stance on a topic the caller may read, oldest first.",
@@ -250,7 +250,8 @@ func required(name, value string) error {
 
 func getBundle(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, raw json.RawMessage) (any, error) {
 	var args struct {
-		Scope string `json:"scope"`
+		Scope     string `json:"scope"`
+		Directive string `json:"directive"`
 	}
 	if err := decode(raw, &args); err != nil {
 		return nil, err
@@ -258,7 +259,7 @@ func getBundle(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, r
 	if err := required("scope", args.Scope); err != nil {
 		return nil, err
 	}
-	b, report, err := c.assembler.Assemble(ctx, reader, args.Scope)
+	b, report, err := c.assembler.AssembleForEvent(ctx, reader, args.Scope, args.Directive)
 	if err != nil {
 		return nil, err
 	}
