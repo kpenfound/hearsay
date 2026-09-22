@@ -9,7 +9,7 @@ all.
 
 **Belongs here:** the L0 event type and everything in it — kinds, payload
 metadata, identity hints, ACL entries, id derivation and validation — the
-connector interface (lifecycle, push vs poll, backfill with a cursor, health),
+connector interface (lifecycle, push, poll and stream, backfill with a cursor, health),
 the source config a connector consumes, the registry and the ingest gate, the
 runtime that starts, supervises and shuts connectors down, and a fake connector
 for tests. Individual connectors live in subpackages
@@ -25,8 +25,8 @@ The event type lives here rather than in `internal/l0` because the event shape
 writers — `assert`, and the audit event every bundle produces — use the same
 type.
 
-The interface is the third-party extension point, so a change to it is a
-breaking change for anyone shipping a connector.
+The interface is the third-party extension point. Ingest modes are additive
+optional interfaces; the base Connector methods remain required.
 
 Four things to know about the runtime before changing it:
 

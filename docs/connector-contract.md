@@ -408,8 +408,8 @@ type Connector interface {
 ```
 
 A `Connector` on its own cannot produce anything. Every connector implements at
-least one of the two ingest modes, and the runtime refuses to start one that
-implements neither:
+least one of the three ingest modes, and the runtime refuses to start one that
+implements none:
 
 ```go
 // Push: the source calls us.
@@ -422,6 +422,12 @@ type Pusher interface {
 type Poller interface {
     Connector
     Poll(ctx context.Context, sink Sink) error
+}
+
+// Stream: we dial the source, which sends events on the connection.
+type Streamer interface {
+    Connector
+    Stream(ctx context.Context, sink Sink) error
 }
 
 // Optional: history.
@@ -438,12 +444,18 @@ type Resyncer interface {
 }
 ```
 
-Push where the source supports it, poll otherwise; a connector may do both, and a
-source that pushes still needs `Backfiller` to get its history.
+Push where the source supports it, poll for bounded reads, and stream for a
+client-dialed live connection. A connector may implement several modes, and a
+live source still needs `Backfiller` to get its history.
 
 - **`Poll`** is never called concurrently with itself, so a poller may keep its
   position in memory without locking. It returns when it has emitted what one
   pass found. An error is retried on the next tick with backoff.
+- **`Stream`** runs in a runtime-owned goroutine until its connection ends or
+  its context is cancelled. The runtime retries an ended stream with the same
+  capped backoff as a failed poll. The connector owns its socket, heartbeat,
+  source session and replay sequence; it advances the sequence only after
+  emitting the dispatch. Its `Close` stops and joins any goroutines it starts.
 - **`Handler`** is mounted by the runtime under a path it owns — `/hooks/<source
   id>` in Hearsay's own runtime, which is the URL the source is configured to
   deliver to. The handler verifies the source's own signature over the request —
@@ -587,6 +599,13 @@ contract draws between container and thread is load-bearing here. Reactions carr
 their author and no text, which is why `reaction` requires neither. ACL for an
 allowlisted private channel is `{group, native_id: <channel id>}`, so the member
 set is resolved at read time.
+
+Discord is a `Streamer`: it dials the Gateway and resumes a session after an
+interrupted connection. The runtime owns retry, while the connector owns
+IDENTIFY, heartbeats, sequence and RESUME. A private thread uses its own group
+id so its narrower membership is not widened to the parent channel. Gateway
+delete and reaction dispatches omit an occurrence timestamp; their `time` uses
+the target message snowflake's source creation time.
 
 Discord has no version number for a channel's permissions, so a channel that
 changes visibility is the composed-token case: the connector re-emits the

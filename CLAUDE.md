@@ -98,9 +98,9 @@ mounts the pushers' handlers under `/hooks/<source>` and answers `/healthz` (the
 process is up) and `/readyz` (the database, its schema, and what each source
 says about itself) on `--listen` (default `:8081`, and `hearsay all` takes the
 flag too). It writes L0, so it refuses without a
-database too. One connector ships, GitHub (`internal/connector/github`, whose
-package comment documents its settings and secrets); a configured source of any
-other type is a startup failure until its type is in the registry.
+database too. GitHub (`internal/connector/github`) and Discord
+(`internal/connector/discord`) ship, and their package comments document
+settings and secrets. An unregistered type is a startup failure.
 
 The assertion worker is not a stub. The distiller enqueues a serialized `assert`
 job, keyed by scope, in the transaction that writes a document whose outcome is

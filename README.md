@@ -34,7 +34,7 @@ flowchart LR
     end
 
     subgraph services["Four services, one binary"]
-        C["Connectors<br/>push or poll, write L0 only"]
+        C["Connectors<br/>push, poll or stream; write L0 only"]
         D["Distiller<br/>L0 to L1, cheap model"]
         A["Assertion worker<br/>L1 to L2, better model, serialized per scope"]
         API["API<br/>bundle assembly, MCP and HTTP, audit"]
@@ -63,7 +63,7 @@ flowchart LR
     API <-- "get_bundle, resolve, search, assert" --> Agent & Human
 ```
 
-Only the GitHub connector ships today; Slack and Drive are where the design
+GitHub and Discord connectors ship today; Slack and Drive are where the design
 points next.
 
 ## Quick start
@@ -94,9 +94,10 @@ has been ingested, `hearsay distiller` turns those events into L1 documents, and
 `hearsay assert-worker` turns the documents that decided, proposed or resolved
 something into L2 topics and stances.
 `hearsay connectors` is real too — it hosts, polls and backfills the connectors
-configuration names. One connector ships, GitHub (`type: github`: issues, pull
-requests, reviews, comments and commits, by webhook and backfill); a source of
-any other type is still a startup failure.
+configuration names. GitHub (`type: github`) ingests issues, pull requests,
+reviews, comments and commits by webhook and backfill. Discord (`type: discord`)
+ingests guild messages, threads and reactions through its Gateway. A source of
+an unregistered type is a startup failure.
 
 ## License
 

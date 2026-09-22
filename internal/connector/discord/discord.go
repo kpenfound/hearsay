@@ -1,0 +1,360 @@
+// Package discord ingests guild messages, threads, and reactions through the
+// Discord Gateway. A source uses settings `guild` (the guild snowflake),
+// `intents` (Gateway bitset; GUILDS, GUILD_MESSAGES, GUILD_MESSAGE_REACTIONS,
+// and MESSAGE_CONTENT are needed), and optionally `gateway_url` for a private
+// test gateway. Its only secret is `token`, the bot token. The runtime resolves
+// that secret from the environment before calling Factory. A source's
+// containers are parent channel snowflakes; the runtime Gate enforces them.
+package discord
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math/rand/v2"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/gorilla/websocket"
+
+	"github.com/kpenfound/hearsay/internal/connector"
+)
+
+const (
+	// Type is the connector type registered by the binary.
+	Type = "discord"
+	// SecretToken is the name of the bot credential in source secrets.
+	SecretToken     = "token"
+	defaultGateway  = "wss://gateway.discord.gg/?v=10&encoding=json"
+	requiredIntents = (1 << 0) | (1 << 9) | (1 << 10) | (1 << 15)
+	viewChannel     = uint64(1 << 10)
+)
+
+// Settings configures a guild Gateway stream.
+type Settings struct {
+	Guild      string `json:"guild"`
+	Intents    int    `json:"intents"`
+	GatewayURL string `json:"gateway_url"`
+}
+
+// Connector maintains one Discord Gateway session for a source.
+type Connector struct {
+	source, guild, token, gateway string
+	intents                       int
+	mu                            sync.Mutex
+	status                        connector.HealthStatus
+	detail                        string
+	last                          time.Time
+	session, resumeURL            string
+	seq                           int64
+	conn                          *websocket.Conn
+	active                        chan struct{}
+	closed                        bool
+	channels                      map[string]channel
+	roles                         map[string]uint64
+	messages                      map[string]message
+}
+
+var _ connector.Streamer = (*Connector)(nil)
+
+// Factory builds a Discord connector for the runtime registry.
+func Factory(_ context.Context, src connector.SourceConfig) (connector.Connector, error) {
+	return New(src)
+}
+
+// New validates a resolved source and creates an idle connector.
+func New(src connector.SourceConfig) (*Connector, error) {
+	var s Settings
+	if err := src.DecodeSettings(&s); err != nil {
+		return nil, err
+	}
+	if !snowflake(s.Guild) {
+		return nil, errors.New("discord setting guild must be a snowflake")
+	}
+	if s.Intents == 0 {
+		s.Intents = requiredIntents
+	}
+	if s.Intents&requiredIntents != requiredIntents {
+		return nil, errors.New("discord intents must include GUILDS, GUILD_MESSAGES, GUILD_MESSAGE_REACTIONS, and MESSAGE_CONTENT")
+	}
+	for name := range src.Secrets {
+		if name != SecretToken {
+			return nil, fmt.Errorf("discord does not read secret %q", name)
+		}
+	}
+	if src.Secrets[SecretToken] == "" {
+		return nil, errors.New("discord secret token is required")
+	}
+	if len(src.Containers) == 0 {
+		return nil, errors.New("discord containers must name at least one channel")
+	}
+	for _, id := range src.Containers {
+		if id != connector.AllowAll && !snowflake(id) {
+			return nil, fmt.Errorf("discord container %q must be a channel snowflake", id)
+		}
+	}
+	gateway := s.GatewayURL
+	if gateway == "" {
+		gateway = defaultGateway
+	}
+	u, err := url.Parse(gateway)
+	if err != nil || (u.Scheme != "wss" && u.Scheme != "ws") || u.Host == "" {
+		return nil, errors.New("discord gateway_url must be a WebSocket URL")
+	}
+	if u.Scheme == "ws" && !strings.HasPrefix(u.Host, "127.0.0.1:") && !strings.HasPrefix(u.Host, "localhost:") {
+		return nil, errors.New("discord gateway_url must use wss outside localhost")
+	}
+	return &Connector{source: src.ID, guild: s.Guild, token: src.Secrets[SecretToken], gateway: gateway, intents: s.Intents, status: connector.HealthDegraded, detail: "reconnecting", channels: map[string]channel{}, roles: map[string]uint64{}, messages: map[string]message{}}, nil
+}
+func snowflake(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// Describe declares the kinds the Gateway emits.
+func (c *Connector) Describe() connector.Descriptor {
+	return connector.Descriptor{Type: Type, Kinds: []connector.Kind{connector.KindMessage, connector.KindThread, connector.KindReaction, connector.KindTombstone}}
+}
+
+// Health reports cached connection state without network IO.
+func (c *Connector) Health(context.Context) connector.Health {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return connector.Health{Status: c.status, Detail: c.detail, LastEventAt: c.last}
+}
+func (c *Connector) setHealth(status connector.HealthStatus, detail string) {
+	c.mu.Lock()
+	c.status = status
+	c.detail = detail
+	c.mu.Unlock()
+}
+
+// Close stops the socket and waits for Stream's goroutines to leave.
+func (c *Connector) Close(ctx context.Context) error {
+	c.mu.Lock()
+	c.closed = true
+	conn := c.conn
+	active := c.active
+	c.mu.Unlock()
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if active != nil {
+		select {
+		case <-active:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+type envelope struct {
+	Op int             `json:"op"`
+	D  json.RawMessage `json:"d"`
+	S  *int64          `json:"s"`
+	T  string          `json:"t"`
+}
+type hello struct {
+	HeartbeatInterval int `json:"heartbeat_interval"`
+}
+type ready struct {
+	SessionID        string `json:"session_id"`
+	ResumeGatewayURL string `json:"resume_gateway_url"`
+}
+
+// Stream connects, identifies or resumes, and consumes Gateway dispatches.
+func (c *Connector) Stream(ctx context.Context, sink connector.Sink) error {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return connector.ErrClosed
+	}
+	if c.active != nil {
+		c.mu.Unlock()
+		return errors.New("discord stream already running")
+	}
+	active := make(chan struct{})
+	c.active = active
+	if c.status != connector.HealthFailed {
+		c.status = connector.HealthDegraded
+		c.detail = "reconnecting"
+	}
+	target := c.gateway
+	if c.session != "" && c.resumeURL != "" {
+		target = c.resumeURL
+	}
+	c.mu.Unlock()
+	defer func() { c.mu.Lock(); c.active = nil; c.mu.Unlock(); close(active) }()
+	ws, _, err := websocket.DefaultDialer.DialContext(ctx, target, nil)
+	if err != nil {
+		return fmt.Errorf("dial discord gateway: %w", err)
+	}
+	c.mu.Lock()
+	c.conn = ws
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		if c.conn == ws {
+			c.conn = nil
+		}
+		c.mu.Unlock()
+		_ = ws.Close()
+		if ctx.Err() == nil {
+			c.mu.Lock()
+			if c.status != connector.HealthFailed {
+				c.status = connector.HealthDegraded
+				c.detail = "reconnecting"
+			}
+			c.mu.Unlock()
+		}
+	}()
+	stop := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = ws.Close()
+		case <-stop:
+		}
+	}()
+	defer close(stop)
+	var first envelope
+	if err := ws.ReadJSON(&first); err != nil {
+		return fmt.Errorf("read gateway hello: %w", err)
+	}
+	if first.Op != 10 {
+		return errors.New("gateway did not send HELLO")
+	}
+	var h hello
+	if err := json.Unmarshal(first.D, &h); err != nil || h.HeartbeatInterval <= 0 {
+		return errors.New("gateway HELLO has invalid heartbeat interval")
+	}
+	var writeMu sync.Mutex
+	send := func(op int, d any) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return ws.WriteJSON(map[string]any{"op": op, "d": d})
+	}
+	c.mu.Lock()
+	session, seq := c.session, c.seq
+	c.mu.Unlock()
+	if session != "" {
+		err = send(6, map[string]any{"token": c.token, "session_id": session, "seq": seq})
+	} else {
+		err = send(2, map[string]any{"token": c.token, "intents": c.intents, "properties": map[string]string{"os": "hearsay", "browser": "hearsay", "device": "hearsay"}})
+	}
+	if err != nil {
+		return fmt.Errorf("identify or resume: %w", err)
+	}
+	hbCtx, cancel := context.WithCancel(ctx)
+	hbDone := make(chan struct{})
+	ack := make(chan struct{}, 1)
+	ack <- struct{}{}
+	go func() {
+		defer close(hbDone)
+		timer := time.NewTimer(time.Duration(rand.Float64()*float64(h.HeartbeatInterval)) * time.Millisecond)
+		defer timer.Stop()
+		for {
+			select {
+			case <-hbCtx.Done():
+				return
+			case <-timer.C:
+				select {
+				case <-ack:
+				default:
+					_ = ws.Close()
+					return
+				}
+				c.mu.Lock()
+				seq := c.seq
+				c.mu.Unlock()
+				if send(1, seq) != nil {
+					_ = ws.Close()
+					return
+				}
+				timer.Reset(time.Duration(h.HeartbeatInterval) * time.Millisecond)
+			}
+		}
+	}()
+	defer func() { cancel(); <-hbDone }()
+	for {
+		var e envelope
+		if err := ws.ReadJSON(&e); err != nil {
+			var closed *websocket.CloseError
+			if errors.As(err, &closed) && (closed.Code == 4004 || closed.Code == 4013 || closed.Code == 4014) {
+				c.setHealth(connector.HealthFailed, "gateway rejected bot token or intents")
+			}
+			return fmt.Errorf("read discord gateway: %w", err)
+		}
+		switch e.Op {
+		case 0:
+			if e.T == "READY" {
+				var v ready
+				if err := json.Unmarshal(e.D, &v); err != nil {
+					return err
+				}
+				c.mu.Lock()
+				c.session = v.SessionID
+				c.resumeURL = v.ResumeGatewayURL
+				c.mu.Unlock()
+				c.setHealth(connector.HealthOK, "connected")
+			}
+			if e.T == "RESUMED" {
+				c.setHealth(connector.HealthOK, "connected")
+			}
+			if err := c.dispatch(ctx, sink, e.T, e.D); err != nil {
+				return err
+			}
+			if e.S != nil {
+				c.mu.Lock()
+				c.seq = *e.S
+				c.mu.Unlock()
+			}
+		case 1:
+			c.mu.Lock()
+			seq := c.seq
+			c.mu.Unlock()
+			if err := send(1, seq); err != nil {
+				return err
+			}
+		case 7:
+			return errors.New("gateway requested reconnect")
+		case 9:
+			var resumable bool
+			_ = json.Unmarshal(e.D, &resumable)
+			if !resumable {
+				c.mu.Lock()
+				c.session = ""
+				c.resumeURL = ""
+				c.seq = 0
+				c.mu.Unlock()
+			}
+			return errors.New("gateway invalidated session")
+		case 11:
+			select {
+			case ack <- struct{}{}:
+			default:
+			}
+		}
+	}
+}
+
+// Discord snowflakes encode creation time in their high 42 bits.
+func snowflakeTime(id string) time.Time {
+	n, err := strconv.ParseUint(id, 10, 64)
+	if err != nil {
+		return time.Time{}
+	}
+	return time.UnixMilli(int64(n>>22) + 1420070400000).UTC()
+}

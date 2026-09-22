@@ -105,6 +105,32 @@ renamed afterwards ([connector contract](connector-contract.md#source-ids)).
 | `settings` | Opaque to Hearsay and passed to the connector, which rejects a field it does not have. What belongs here is documented by the connector. |
 | `secrets` | A map from the name the connector asks for to **the name of an environment variable**. A value that is not an environment variable name is an error, because a configuration repository is checked in and a token pasted here would be too. |
 
+### Discord Gateway source
+
+Install the bot in the guild with **View Channel**, **Read Message History**,
+and access to each channel and thread it should ingest. Enable the privileged
+**Message Content** intent in the Discord developer portal; without it Discord
+sends empty message text. `intents` is the Gateway bitset. The default includes
+GUILDS, GUILD_MESSAGES, GUILD_MESSAGE_REACTIONS, and MESSAGE_CONTENT.
+
+```yaml
+sources:
+  - id: team-chat
+    type: discord
+    containers: ["824100000000000001"] # parent channel ids, including their threads
+    settings:
+      guild: "824100000000000000"
+      intents: 34305
+    secrets:
+      token: HEARSAY_DISCORD_BOT_TOKEN
+```
+
+Run `hearsay connectors --config ./hearsay.yaml`. `/readyz` reports the
+connection state, last event time, retries, and allowlist drops. A bot token
+or intent rejected by the Gateway reports failed health. The Gateway session
+is resumed after a connection break within the process. Restart gap backfill
+and visibility re-sync are added in #89.
+
 ## `scopes/`
 
 A scope is a named bundle of sources: what is *relevant* to a piece of work.

@@ -216,6 +216,7 @@ type hosted struct {
 	gate *Gate
 
 	pollFails     atomic.Int64
+	streamFails   atomic.Int64
 	backfillFails atomic.Int64
 	backfillDone  atomic.Bool
 	backfilled    atomic.Int64
@@ -223,7 +224,7 @@ type hosted struct {
 }
 
 // Runtime hosts a set of connectors: it builds one per configured source, polls
-// the pollers on their own cadence, drives the backfillers through their
+// the pollers, supervises streams, drives the backfillers through their
 // cursors, mounts the pushers' handlers, and reports what all of them think of
 // themselves.
 //
@@ -332,6 +333,13 @@ func (r *Runtime) Run(ctx context.Context) error {
 				r.poll(hctx, h, poller)
 			}()
 		}
+		if streamer, ok := h.conn.(Streamer); ok {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				r.stream(hctx, h, streamer)
+			}()
+		}
 		backfiller, ok := h.conn.(Backfiller)
 		switch {
 		case !ok:
@@ -373,6 +381,30 @@ func (r *Runtime) Run(ctx context.Context) error {
 	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.opts.Cadence.Shutdown)
 	defer cancel()
 	return r.Close(closeCtx)
+}
+
+// stream supervises a client-dialed connection. A completed stream is also
+// restarted: a live source is not complete merely because its socket closed.
+func (r *Runtime) stream(ctx context.Context, h *hosted, streamer Streamer) {
+	log := telemetry.Logger(ctx)
+	interval := r.opts.Cadence.Interval(h.src)
+	fails := 0
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		err := streamer.Stream(ctx, h.gate)
+		if ctx.Err() != nil {
+			return
+		}
+		fails++
+		h.streamFails.Store(int64(fails))
+		wait := r.opts.Cadence.Backoff(interval, fails)
+		log.WarnContext(ctx, "stream ended, reconnecting", "error", err, "failures", fails, "retry_in", wait.String())
+		if !sleep(ctx, wait) {
+			return
+		}
+	}
 }
 
 // Close closes every connector, once. Every connector is closed even when one
@@ -605,6 +637,9 @@ type SourceHealth struct {
 	// zero once one succeeds. The failure itself is in the log; a count is what
 	// health can carry without repeating a message from a source.
 	PollFailures int64 `json:"poll_failures"`
+	// StreamFailures counts consecutive disconnected streams. The connector's
+	// own health gives the connection state and last event time.
+	StreamFailures int64 `json:"stream_failures"`
 	// BackfillFailures is how many times in a row the source's backfill has
 	// failed — the call itself, or the store that will not take the position it
 	// returned — and zero once one works. A backfill retries forever, so
@@ -631,6 +666,10 @@ func (r *Runtime) Health(ctx context.Context) RuntimeHealth {
 	out := RuntimeHealth{Status: HealthOK, Sources: make([]SourceHealth, 0, len(r.conns))}
 	for _, h := range r.conns {
 		health := h.conn.Health(ctx)
+		streamFailures := h.streamFails.Load()
+		if health.Status == HealthOK {
+			streamFailures = 0
+		}
 		out.Sources = append(out.Sources, SourceHealth{
 			Source:           h.src.ID,
 			Type:             h.src.Type,
@@ -639,6 +678,7 @@ func (r *Runtime) Health(ctx context.Context) RuntimeHealth {
 			LastEventAt:      health.LastEventAt,
 			Dropped:          h.gate.Dropped(),
 			PollFailures:     h.pollFails.Load(),
+			StreamFailures:   streamFailures,
 			BackfillFailures: h.backfillFails.Load(),
 			BackfillDone:     h.backfillDone.Load(),
 			Backfilled:       h.backfilled.Load(),
