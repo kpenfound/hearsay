@@ -88,7 +88,7 @@ renamed afterwards ([connector contract](connector-contract.md#source-ids)).
   containers:                # required; the ingest allowlist, default deny
     - acme/api
     - acme/infra
-  refresh: 2m                # optional; how often a polling connector polls
+  refresh: 2m                # optional; poll cadence or stream retry base
   settings:                  # optional; the connector's own configuration
     since: 2026-01-01
   secrets:                   # optional; names of environment variables
@@ -101,9 +101,35 @@ renamed afterwards ([connector contract](connector-contract.md#source-ids)).
 | `id` | The source id. It appears in every event id, so it is chosen once. |
 | `type` | The connector type: `github`, `discord`, `drive`, or a third party's. |
 | `containers` | The repositories, channels or folders this source may ingest, **by native id** — a repository full name, a channel id, a folder id, never a display name. This is control point 1 of [access control](design.md#access-control): default deny, so a container that is not listed is not ingested. `*` widens it to everything the credentials can see, and must then be the only entry. |
-| `refresh` | A duration (`30s`, `5m`, `1h`). Ignored by a connector that only receives pushes; the runtime applies its own floor and jitter — never more often than every 30 seconds, and each tick up to a tenth of the interval later than it is due. A source that names none is polled every five minutes. |
+| `refresh` | A duration (`30s`, `5m`, `1h`). The poll interval and base retry interval for a stream. Ignored by a connector that only receives pushes; the runtime applies its own floor and jitter — never more often than every 30 seconds, and each tick up to a tenth of the interval later than it is due. Without it, polls run every five minutes and failed streams retry from a 30-second base. |
 | `settings` | Opaque to Hearsay and passed to the connector, which rejects a field it does not have. What belongs here is documented by the connector. |
 | `secrets` | A map from the name the connector asks for to **the name of an environment variable**. A value that is not an environment variable name is an error, because a configuration repository is checked in and a token pasted here would be too. |
+
+### Discord Gateway source
+
+Install the bot in the guild with **View Channel**, **Read Message History**,
+and access to each channel and thread it should ingest. Enable the privileged
+**Message Content** intent in the Discord developer portal; without it Discord
+sends empty message text. `intents` is the Gateway bitset. The default includes
+GUILDS, GUILD_MESSAGES, GUILD_MESSAGE_REACTIONS, and MESSAGE_CONTENT.
+
+```yaml
+sources:
+  - id: team-chat
+    type: discord
+    containers: ["824100000000000001"] # parent channel ids, including their threads
+    settings:
+      guild: "824100000000000000"
+      intents: 34305
+    secrets:
+      token: HEARSAY_DISCORD_BOT_TOKEN
+```
+
+Run `hearsay connectors --config ./hearsay.yaml`. `/readyz` reports the
+connection state, last event time, retries, and allowlist drops. A bot token
+or intent rejected by the Gateway reports failed health. The Gateway session
+is resumed after a connection break within the process. Restart gap backfill
+and visibility re-sync are added in #89.
 
 ## `scopes/`
 

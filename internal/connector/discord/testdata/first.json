@@ -1,0 +1,191 @@
+[
+  {
+    "op": 0,
+    "t": "READY",
+    "s": 1,
+    "d": {
+      "session_id": "sess",
+      "resume_gateway_url": "REPLACE"
+    }
+  },
+  {
+    "op": 0,
+    "t": "GUILD_CREATE",
+    "s": 2,
+    "d": {
+      "id": "1551744840499200000",
+      "roles": [
+        {
+          "id": "1551744840499200000",
+          "permissions": "1024"
+        }
+      ],
+      "channels": [
+        {
+          "id": "1551744840499200001",
+          "guild_id": "1551744840499200000",
+          "name": "general",
+          "type": 0
+        },
+        {
+          "id": "1551744840499200002",
+          "guild_id": "1551744840499200000",
+          "name": "secret",
+          "type": 0,
+          "permission_overwrites": [
+            {
+              "id": "1551744840499200000",
+              "type": 0,
+              "allow": "0",
+              "deny": "1024"
+            }
+          ]
+        },
+        {
+          "id": "1551744840499200003",
+          "guild_id": "1551744840499200000",
+          "name": "outside",
+          "type": 0
+        }
+      ],
+      "threads": []
+    }
+  },
+  {
+    "op": 0,
+    "t": "THREAD_CREATE",
+    "s": 3,
+    "d": {
+      "id": "1551744840499200004",
+      "guild_id": "1551744840499200000",
+      "parent_id": "1551744840499200001",
+      "owner_id": "1551744840499200007",
+      "name": "planning",
+      "type": 11
+    }
+  },
+  {
+    "op": 0,
+    "t": "MESSAGE_CREATE",
+    "s": 4,
+    "d": {
+      "id": "1551744840499200005",
+      "guild_id": "1551744840499200000",
+      "channel_id": "1551744840499200004",
+      "content": "first",
+      "timestamp": "2026-09-22T00:00:00Z",
+      "author": {
+        "id": "1551744840499200007",
+        "username": "alice",
+        "global_name": "Alice"
+      }
+    }
+  },
+  {
+    "op": 0,
+    "t": "MESSAGE_CREATE",
+    "s": 5,
+    "d": {
+      "id": "1551744840499200006",
+      "guild_id": "1551744840499200000",
+      "channel_id": "1551744840499200003",
+      "content": "outside",
+      "timestamp": "2026-09-22T00:00:00Z",
+      "author": {
+        "id": "1551744840499200007",
+        "username": "alice"
+      }
+    }
+  },
+  {
+    "op": 0,
+    "t": "MESSAGE_CREATE",
+    "s": 6,
+    "d": {
+      "id": "1551744840499200008",
+      "guild_id": "1551744840499200000",
+      "channel_id": "1551744840499200002",
+      "content": "private",
+      "timestamp": "2026-09-22T00:00:00Z",
+      "author": {
+        "id": "1551744840499200007",
+        "username": "alice"
+      }
+    }
+  },
+  {
+    "op": 0,
+    "t": "MESSAGE_UPDATE",
+    "s": 7,
+    "d": {
+      "id": "1551744840499200005",
+      "guild_id": "1551744840499200000",
+      "channel_id": "1551744840499200004",
+      "content": "edited",
+      "edited_timestamp": "2026-09-22T01:00:00.000000+00:00"
+    }
+  },
+  {
+    "op": 0,
+    "t": "MESSAGE_REACTION_ADD",
+    "s": 8,
+    "d": {
+      "guild_id": "1551744840499200000",
+      "channel_id": "1551744840499200004",
+      "message_id": "1551744840499200005",
+      "user_id": "1551744840499200007",
+      "emoji": {
+        "name": "👍"
+      }
+    }
+  },
+  {
+    "op": 0,
+    "t": "MESSAGE_REACTION_REMOVE",
+    "s": 9,
+    "d": {
+      "guild_id": "1551744840499200000",
+      "channel_id": "1551744840499200004",
+      "message_id": "1551744840499200005",
+      "user_id": "1551744840499200007",
+      "emoji": {
+        "name": "👍"
+      }
+    }
+  },
+  {
+    "op": 0,
+    "t": "MESSAGE_CREATE",
+    "s": 10,
+    "d": {
+      "id": "1551744840499200009",
+      "guild_id": "1551744840499200000",
+      "channel_id": "1551744840499200004",
+      "content": "reply",
+      "timestamp": "2026-09-22T00:00:01Z",
+      "author": {
+        "id": "1551744840499200007",
+        "username": "alice"
+      },
+      "message_reference": {
+        "message_id": "1551744840499200005"
+      }
+    }
+  },
+  {
+    "op": 0,
+    "t": "MESSAGE_CREATE",
+    "s": 11,
+    "d": {
+      "id": "1551744840499200004",
+      "guild_id": "1551744840499200000",
+      "channel_id": "1551744840499200001",
+      "content": "starter",
+      "timestamp": "2026-09-22T00:00:00Z",
+      "author": {
+        "id": "1551744840499200007",
+        "username": "alice"
+      }
+    }
+  }
+]

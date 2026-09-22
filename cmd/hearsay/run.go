@@ -12,6 +12,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/connector/discord"
 	"github.com/kpenfound/hearsay/internal/connector/github"
 	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/llm"
@@ -403,6 +404,7 @@ func connectorRegistry() *connector.Registry {
 	// Register fails only for an empty type, a nil factory or a type claimed
 	// twice, which a fixed list cannot be; TestConnectorRegistry pins the list.
 	_ = registry.Register(github.Type, github.Factory)
+	_ = registry.Register(discord.Type, discord.Factory)
 	return registry
 }
 

@@ -19,9 +19,11 @@ var (
 	ErrUnknownType = errors.New("unknown connector type")
 	// ErrDuplicateType is returned when two factories claim the same type.
 	ErrDuplicateType = errors.New("connector type already registered")
-	// ErrNoIngestMode is returned for a connector that implements neither
-	// [Poller] nor [Pusher] and so could never produce an event.
-	ErrNoIngestMode = errors.New("connector implements neither Poller nor Pusher")
+	// ErrNoIngestMode is returned for a connector with no ingest mode.
+	ErrNoIngestMode = errors.New("connector implements no ingest mode")
+	// ErrStreamPermanent stops runtime retries for a stream whose source rejected
+	// its credentials or configuration. The connector reports failed health.
+	ErrStreamPermanent = errors.New("stream cannot recover without operator action")
 	// ErrForeignSource is returned when a connector emits an event for a source
 	// other than the one it was configured for.
 	ErrForeignSource = errors.New("event is from another source")
@@ -42,11 +44,11 @@ type Sink interface {
 
 // Connector is what a source module implements. It is deliberately small: on
 // its own a Connector cannot produce anything, and it must also implement
-// [Poller] or [Pusher], which is how it ingests. [Backfiller] is optional and
+// [Poller], [Pusher], or [Streamer], which is how it ingests. [Backfiller] is optional and
 // adds history.
 //
 // The lifecycle is: the runtime builds one connector per configured source with
-// a [Factory], ingests through Poller or Pusher until the process is shutting
+// a [Factory], ingests through Poller, Pusher, or Streamer until the process is shutting
 // down, and calls Close. A connector owns no goroutine that outlives Close.
 type Connector interface {
 	// Describe returns what this connector is and what it emits. It is called
@@ -75,8 +77,16 @@ type Poller interface {
 	Poll(ctx context.Context, sink Sink) error
 }
 
-// Pusher is a connector the source calls: a webhook, or a socket the connector
-// itself dials from Handler's lifetime. The runtime mounts the handler under a
+// Streamer dials and reads a long-lived source connection. Stream returns when
+// the connection ends; the runtime calls it again with backoff after an error,
+// unless the error wraps [ErrStreamPermanent].
+// The runtime owns its goroutine and cancels ctx before calling Close.
+type Streamer interface {
+	Connector
+	Stream(ctx context.Context, sink Sink) error
+}
+
+// Pusher is a connector the source calls, such as a webhook. The runtime mounts the handler under a
 // path it owns and hands it a sink.
 //
 // The handler verifies the source's own signature over the request. The runtime
@@ -178,8 +188,9 @@ type SourceConfig struct {
 	// credentials can see — which is a deliberate choice a human makes, not a
 	// default.
 	Containers []string
-	// Refresh is how often the runtime calls Poll. It is ignored by a connector
-	// that only pushes, and the runtime applies its own floor and jitter.
+	// Refresh is how often the runtime calls Poll, and the base retry cadence
+	// for Stream. It is ignored by a connector that only pushes. The runtime
+	// applies its own floor and jitter.
 	Refresh time.Duration
 	// Settings is the connector's own configuration, as JSON. A connector
 	// decodes it with DecodeSettings and fails construction if it cannot.
@@ -272,7 +283,8 @@ func (r *Registry) New(ctx context.Context, src SourceConfig) (Connector, error)
 	// close it — New is the only thing holding it — so New does.
 	_, poller := c.(Poller)
 	_, pusher := c.(Pusher)
-	if !poller && !pusher {
+	_, streamer := c.(Streamer)
+	if !poller && !pusher && !streamer {
 		return nil, closeRejected(ctx, c, fmt.Errorf("source %q: connector %q: %w", src.ID, src.Type, ErrNoIngestMode))
 	}
 	if desc := c.Describe(); desc.Type != src.Type {

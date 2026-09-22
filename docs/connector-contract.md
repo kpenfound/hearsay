@@ -408,8 +408,8 @@ type Connector interface {
 ```
 
 A `Connector` on its own cannot produce anything. Every connector implements at
-least one of the two ingest modes, and the runtime refuses to start one that
-implements neither:
+least one of the three ingest modes, and the runtime refuses to start one that
+implements none:
 
 ```go
 // Push: the source calls us.
@@ -422,6 +422,12 @@ type Pusher interface {
 type Poller interface {
     Connector
     Poll(ctx context.Context, sink Sink) error
+}
+
+// Stream: we dial the source, which sends events on the connection.
+type Streamer interface {
+    Connector
+    Stream(ctx context.Context, sink Sink) error
 }
 
 // Optional: history.
@@ -438,12 +444,23 @@ type Resyncer interface {
 }
 ```
 
-Push where the source supports it, poll otherwise; a connector may do both, and a
-source that pushes still needs `Backfiller` to get its history.
+Push where the source supports it, poll for bounded reads, and stream for a
+client-dialed live connection. A connector may implement several modes, and a
+live source still needs `Backfiller` to get its history.
 
 - **`Poll`** is never called concurrently with itself, so a poller may keep its
   position in memory without locking. It returns when it has emitted what one
   pass found. An error is retried on the next tick with backoff.
+- **`Stream`** runs in a runtime-owned goroutine until its connection ends or
+  its context is cancelled. The runtime retries an ended stream with the same
+  capped backoff as a failed poll. The connector owns its socket, heartbeat,
+  source session and replay sequence; it advances the sequence only after
+  emitting the dispatch. Its `Close` stops and joins any goroutines it starts.
+  An unspecified `refresh` starts retries at the runtime's minimum refresh
+  (30 seconds), rather than a poller's five-minute default.
+  A stream that receives a permanent source rejection returns
+  `ErrStreamPermanent` and reports failed health; the runtime stops retrying
+  it until the process is restarted after an operator fixes the source.
 - **`Handler`** is mounted by the runtime under a path it owns — `/hooks/<source
   id>` in Hearsay's own runtime, which is the URL the source is configured to
   deliver to. The handler verifies the source's own signature over the request —
@@ -500,7 +517,7 @@ connector:
 | `ID` | The source id. Goes in every event. |
 | `Type` | The connector type, which selects the factory. |
 | `Containers` | The repositories, channels or folders this source may ingest, by native id. Default deny; `*` widens it. |
-| `Refresh` | How often the runtime calls `Poll`. Ignored by a push-only connector; the runtime applies its own floor and jitter. |
+| `Refresh` | How often the runtime calls `Poll`, and the retry base for `Stream`. Ignored by a push-only connector; the runtime applies its own floor and jitter. A stream with none retries from the minimum refresh (30 seconds). |
 | `Settings` | The connector's own configuration, as JSON. Decode it with `DecodeSettings`, which rejects unknown fields so that a typo in config fails at startup. |
 | `Secrets` | Credentials, resolved by the runtime from the environment. They never live in the config repository, which is checked in: config names a secret, the runtime supplies its value. |
 
@@ -575,9 +592,11 @@ content into the revision token instead of using `updated_at`.
 | Artifact | kind | artifact id | native_id | container |
 |---|---|---|---|---|
 | Message | `message` | `<message id>` | `<id>@<edited_timestamp>` when edited | channel `<channel id>` |
-| Thread | `thread` | `<thread id>` | same | channel `<parent channel id>` |
+| Thread | `thread` | `thread:<thread id>` | same | channel `<parent channel id>` |
 | Reaction | `reaction` | `<message id>:reaction:<user id>:<emoji>` | same | channel |
 | Deleted message | `tombstone` | `<message id>:tombstone` | same, with `target` `<message id>` | channel |
+| Deleted thread | `tombstone` | `thread:<thread id>:tombstone` | same, with `target` `thread:<thread id>` | parent channel |
+| Removed reaction | `tombstone` | `<reaction artifact>:tombstone` | same, with `target` `<reaction artifact>` | channel |
 
 Discord gives `edited_timestamp` as `null` until a message is edited, which is
 exactly the revision token this contract asks for. Threads are their own channel
@@ -587,6 +606,22 @@ contract draws between container and thread is load-bearing here. Reactions carr
 their author and no text, which is why `reaction` requires neither. ACL for an
 allowlisted private channel is `{group, native_id: <channel id>}`, so the member
 set is resolved at read time.
+The `thread:` artifact prefix is necessary because a public thread and the
+message it was started from share the same Discord snowflake. The message keeps
+the bare snowflake; both artifacts can then coexist in L0.
+A message directly in a thread has `parent` set to the thread artifact. A
+message replying to another message has that message as `parent`; both keep the
+same `thread`.
+The reaction emoji component is the custom emoji snowflake when one exists,
+otherwise the Unicode emoji URL-escaped so punctuation cannot change the id's
+structure.
+
+Discord is a `Streamer`: it dials the Gateway and resumes a session after an
+interrupted connection. The runtime owns retry, while the connector owns
+IDENTIFY, heartbeats, sequence and RESUME. A private thread uses its own group
+id so its narrower membership is not widened to the parent channel. Gateway
+delete and reaction dispatches omit an occurrence timestamp; their `time` uses
+the target message snowflake's source creation time.
 
 Discord has no version number for a channel's permissions, so a channel that
 changes visibility is the composed-token case: the connector re-emits the

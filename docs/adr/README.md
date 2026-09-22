@@ -23,6 +23,8 @@ The format, numbering and supersession rules are in [ADR-0001](0001-record-archi
 | [0013](0013-acl-re-syncs-are-durable-and-driven-by-the-runtime.md) | ACL re-syncs are durable and driven by the runtime | accepted | 2026-09-15 |
 | [0014](0014-api-callers-use-per-principal-bearer-tokens.md) | API callers use per-principal bearer tokens | accepted | 2026-09-22 |
 
+| [0015](0015-runtime-owned-streams-for-client-dialed-sources.md) | Runtime-owned streams for client-dialed sources | accepted | 2026-09-22 |
+
 ## Names other work depends on
 
 The four service subcommands ([ADR-0003](0003-one-binary-four-service-subcommands.md)):
