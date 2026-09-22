@@ -322,6 +322,9 @@ func (c *Connector) permissionToken(channelID string) string {
 		ch = c.channels[ch.ParentID]
 	}
 	ows := slices.Clone(ch.PermissionOverwrites)
+	if ows == nil {
+		ows = []overwrite{}
+	}
 	slices.SortFunc(ows, func(a, b overwrite) int {
 		if a.ID != b.ID {
 			return strings.Compare(a.ID, b.ID)

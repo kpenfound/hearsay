@@ -194,7 +194,7 @@ func TestGatewayReplayThroughRuntimeGate(t *testing.T) {
 					if ev.NativeID == "1551744840499200008:tombstone" {
 						foundBulk = true
 					}
-					if ev.NativeID == "1551744840499200010" {
+					if strings.HasPrefix(ev.NativeID, "1551744840499200010@perm:") {
 						foundChangedVisibility = true
 					}
 				}
@@ -217,7 +217,13 @@ func TestGatewayReplayThroughRuntimeGate(t *testing.T) {
 			for _, ev := range sink.allDeliveries() {
 				counts[ev.NativeID]++
 			}
-			if counts[message] != 2 || counts[message+":tombstone"] != 2 {
+			originalDeliveries := 0
+			for id, n := range counts {
+				if strings.HasPrefix(id, message+"@perm:") {
+					originalDeliveries += n
+				}
+			}
+			if originalDeliveries != 2 || counts[message+":tombstone"] != 2 {
 				t.Errorf("replayed delivery counts = %v", counts)
 			}
 			byID := map[string]connector.Event{}
@@ -227,21 +233,21 @@ func TestGatewayReplayThroughRuntimeGate(t *testing.T) {
 				}
 				byID[ev.NativeID] = ev
 			}
-			original, ok := byID[message]
+			original, ok := eventPrefix(byID, message+"@perm:")
 			if !ok {
 				t.Fatal("original message missing")
 			}
 			if original.Payload.Thread != "thread:1551744840499200004" || original.Payload.Parent != "thread:1551744840499200004" || original.Payload.Container.NativeID != public {
 				t.Errorf("thread containment = %+v", original.Payload)
 			}
-			if reply, ok := byID["1551744840499200009"]; !ok || reply.Payload.Parent != message || reply.Payload.Thread != "thread:1551744840499200004" {
+			if reply, ok := eventPrefix(byID, "1551744840499200009@perm:"); !ok || reply.Payload.Parent != message || reply.Payload.Thread != "thread:1551744840499200004" {
 				t.Errorf("reply relationship = %+v", reply)
 			}
-			edited, ok := byID[message+"@2026-09-22T01:00:00.000000+00:00"]
+			edited, ok := eventPrefix(byID, message+"@2026-09-22T01:00:00.000000+00:00+perm:")
 			if !ok {
 				t.Fatal("edited revision missing")
 			}
-			if edited.Payload.Revision == nil || edited.Payload.Revision.Token != "2026-09-22T01:00:00.000000+00:00" || !edited.Time.Equal(original.Time) {
+			if edited.Payload.Revision == nil || !strings.HasPrefix(edited.Payload.Revision.Token, "2026-09-22T01:00:00.000000+00:00+perm:") || !edited.Time.Equal(original.Time) {
 				t.Errorf("edited revision = %+v", edited)
 			}
 			if tomb, ok := byID[message+":tombstone"]; !ok || tomb.Payload.Target != message {
@@ -255,20 +261,20 @@ func TestGatewayReplayThroughRuntimeGate(t *testing.T) {
 			} else if got := byID["thread:1551744840499200004"].Payload.URL; got != "https://discord.com/channels/1551744840499200000/1551744840499200004" {
 				t.Errorf("thread URL = %q", got)
 			}
-			if _, ok := byID["1551744840499200004"]; !ok {
+			if _, ok := eventPrefix(byID, "1551744840499200004@perm:"); !ok {
 				t.Error("starter message with same Discord id missing")
 			}
-			if _, ok := byID["1551744840499200006"]; ok {
+			if _, ok := eventPrefix(byID, "1551744840499200006@perm:"); ok {
 				t.Error("non-allowlisted message was emitted")
 			}
-			priv, ok := byID["1551744840499200008"]
+			priv, ok := eventPrefix(byID, "1551744840499200008@perm:")
 			if ok != tt.private {
 				t.Errorf("private event present = %v", ok)
 			}
 			if ok && (len(priv.ACL) != 1 || priv.ACL[0].Kind != connector.ACLGroup || priv.ACL[0].NativeID != private) {
 				t.Errorf("private ACL = %+v", priv.ACL)
 			}
-			if changed, ok := byID["1551744840499200010"]; !ok || len(changed.ACL) != 1 || changed.ACL[0].Kind != connector.ACLGroup || changed.ACL[0].NativeID != public {
+			if changed, ok := eventPrefix(byID, "1551744840499200010@perm:"); !ok || len(changed.ACL) != 1 || changed.ACL[0].Kind != connector.ACLGroup || changed.ACL[0].NativeID != public {
 				t.Errorf("ACL after guild role change = %+v", changed.ACL)
 			}
 			if tomb, present := byID["1551744840499200008:tombstone"]; present != tt.private || (present && tomb.Payload.Target != "1551744840499200008") {
@@ -491,4 +497,13 @@ func TestPermanentRejectionStopsRuntimeRetry(t *testing.T) {
 	if got != 1 {
 		t.Errorf("permanent rejection made %d connections, want one", got)
 	}
+}
+
+func eventPrefix(events map[string]connector.Event, prefix string) (connector.Event, bool) {
+	for id, ev := range events {
+		if strings.HasPrefix(id, prefix) {
+			return ev, true
+		}
+	}
+	return connector.Event{}, false
 }
