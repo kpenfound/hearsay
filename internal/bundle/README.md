@@ -34,6 +34,7 @@ subject to the `recent` cap; no code content, ever.
   request's stance would make the budget no limit at all. A code entity asked
   for as the scope owns every topic in it, so that bundle is the one that can
   still grow past the budget.
+- **A directive comes from L0, never request text.** Assembly reads the current revision and its ACL for every request; the requested id only identifies the artifact. The block is verbatim and cannot be trimmed.
 - **[Encode] is the one encoding.** Every interface serves its bytes verbatim;
   that is what "identical output regardless of which interface asked" rests on.
 - **Only a line with an id.** An entity has a `line` only when it is a document

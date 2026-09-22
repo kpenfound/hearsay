@@ -128,7 +128,7 @@ type call struct {
 
 // calls is the whole API surface, in the order the design lists it.
 var calls = []call{
-	{Tool{"get_bundle", "The context bundle for a scope: its entities, current stances, recent activity and open questions, every line carrying an L1 id.",
+	{Tool{"get_bundle", "The context bundle for a scope, with an optional directive from a triggering L0 message id; its other sections contain entities, current stances, recent activity and open questions.",
 		schema(`{"scope":{"type":"string","description":"the entity id the bundle is for, such as tracker:github:acme/api#12"},"directive":{"type":"string","description":"L0 event id of the triggering message"}}`, "scope")}, getBundle},
 	{Tool{"resolve", "The entity ids a piece of text names, by alias and by path.",
 		schema(`{"text":{"type":"string"}}`, "text")}, resolve},
