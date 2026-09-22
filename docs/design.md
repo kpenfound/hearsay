@@ -147,7 +147,7 @@ Rebuilt from L2 on demand. Never written directly.
 
 ## The context bundle
 
-The primary read. Built deterministically from L2 and L3 for a given scope and principal. Pointers plus one line of distillation per pointer. Nothing raw. Every line carries an L1 or L0 id the consumer can follow.
+The primary read. Built deterministically from L2 and L3 for a given scope and principal. Pointers plus one line of distillation per pointer. The optional event-backed directive is the triggering L0 message verbatim; other sections carry no raw source text. Every line carries an L1 or L0 id the consumer can follow.
 
 ```yaml
 bundle:
