@@ -75,6 +75,11 @@ func MCP(calls *Calls) http.Handler {
 			writeError(w, fail(http.StatusMethodNotAllowed, "this server offers no event stream: send JSON-RPC as a POST"))
 			return
 		}
+		caller, authErr := calls.auth.authenticate(r.Header)
+		if authErr != nil {
+			writeError(w, authErr)
+			return
+		}
 		raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequest))
 		if err != nil {
 			writeError(w, fail(http.StatusRequestEntityTooLarge, "the request body is over %d bytes", MaxRequest))
@@ -126,7 +131,7 @@ func MCP(calls *Calls) http.Handler {
 				resp.Error = &rpcError{rpcInvalidParams, "tools/call takes a name and arguments"}
 				break
 			}
-			body, err := calls.Call(r.Context(), CallerOf(r.Header), params.Name, params.Arguments)
+			body, err := calls.Call(r.Context(), caller, params.Name, params.Arguments)
 			if err != nil {
 				resp.Result = ToolResult{Content: []ToolContent{{Type: "text", Text: string(ErrorBody(asError(err)))}}, IsError: true}
 				break

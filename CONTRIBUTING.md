@@ -260,11 +260,13 @@ The API is built. It needs Postgres — it reads every layer and writes an L0
 `audit` event per bundle served — so `hearsay api` refuses without
 `--database-url`. It serves `POST /v1/<call>`, MCP at `/mcp`, `/healthz` and
 `/readyz` on `--listen` (`HEARSAY_API_LISTEN`, default `:8080`; `hearsay all`
-takes `--api-listen`). The caller is the `Hearsay-Principal` header and the agent
-acting for them `Hearsay-Agent`; nothing authenticates them yet. To try it:
+takes `--api-listen`). The caller is named by `Hearsay-Principal` and must
+present that person's bearer token. An agent named by `Hearsay-Agent` must also
+present its own token. Configure each in `principals/` (ADR-0014). To try it:
 
 ```sh
 curl -s -X POST localhost:8080/v1/get_bundle -H 'Hearsay-Principal: kyle' \
+  -H "Authorization: Bearer $HEARSAY_KYLE_TOKEN" \
   -d '{"scope":"tracker:github:acme/api#12"}'
 ```
 
