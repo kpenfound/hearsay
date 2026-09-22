@@ -368,3 +368,112 @@ func TestRejectedGatewayReportsFailedWithoutSecrets(t *testing.T) {
 		t.Errorf("failed health = %+v", h)
 	}
 }
+
+func TestInvalidSequenceStartsNewSession(t *testing.T) {
+	var mu sync.Mutex
+	handshakes := []int{}
+	count := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer ws.Close()
+		mu.Lock()
+		count++
+		n := count
+		mu.Unlock()
+		_ = ws.WriteJSON(map[string]any{"op": 10, "d": map[string]any{"heartbeat_interval": 5000}})
+		var hello struct {
+			Op int `json:"op"`
+		}
+		if ws.ReadJSON(&hello) != nil {
+			return
+		}
+		mu.Lock()
+		handshakes = append(handshakes, hello.Op)
+		mu.Unlock()
+		if n == 1 {
+			_ = ws.WriteJSON(map[string]any{"op": 0, "t": "READY", "s": 4, "d": map[string]any{"session_id": "sess"}})
+			_ = ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(4007, "invalid seq"), time.Now().Add(time.Second))
+			return
+		}
+		_ = ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(4014, "disallowed"), time.Now().Add(time.Second))
+	}))
+	defer server.Close()
+	src := connector.SourceConfig{ID: "chat", Type: discord.Type, Containers: []string{"1551744840499200001"}, Settings: json.RawMessage(fmt.Sprintf(`{"guild":"1551744840499200000","gateway_url":%q}`, "ws"+strings.TrimPrefix(server.URL, "http"))), Secrets: map[string]string{"token": "test"}}
+	c, err := discord.New(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close(t.Context())
+	gate := connector.NewGate(&connector.Recorder{}, src.ID, c.Describe(), connector.NewAllowlist(src))
+	if err := c.Stream(t.Context(), gate); err == nil {
+		t.Fatal("invalid sequence did not end stream")
+	}
+	if err := c.Stream(t.Context(), gate); err == nil {
+		t.Fatal("rejected second session did not end stream")
+	}
+	mu.Lock()
+	got := append([]int(nil), handshakes...)
+	mu.Unlock()
+	if len(got) != 2 || got[0] != 2 || got[1] != 2 {
+		t.Errorf("handshakes = %v, want IDENTIFY twice", got)
+	}
+}
+
+func TestPermanentRejectionStopsRuntimeRetry(t *testing.T) {
+	var mu sync.Mutex
+	connections := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer ws.Close()
+		mu.Lock()
+		connections++
+		mu.Unlock()
+		_ = ws.WriteJSON(map[string]any{"op": 10, "d": map[string]any{"heartbeat_interval": 5000}})
+		var hello any
+		if ws.ReadJSON(&hello) != nil {
+			return
+		}
+		_ = ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(4014, "disallowed"), time.Now().Add(time.Second))
+	}))
+	defer server.Close()
+	src := connector.SourceConfig{ID: "chat", Type: discord.Type, Containers: []string{"1551744840499200001"}, Settings: json.RawMessage(fmt.Sprintf(`{"guild":"1551744840499200000","gateway_url":%q}`, "ws"+strings.TrimPrefix(server.URL, "http"))), Secrets: map[string]string{"token": "BOT_TOKEN_ENV"}}
+	reg := connector.NewRegistry()
+	if err := reg.Register(discord.Type, discord.Factory); err != nil {
+		t.Fatal(err)
+	}
+	rt, err := connector.NewRuntime(t.Context(), connector.RuntimeOptions{Sources: []connector.SourceConfig{src}, Registry: reg, Sink: &connector.Recorder{}, Lookup: func(string) (string, bool) { return "test", true }, Cadence: connector.Cadence{MinRefresh: time.Millisecond, Refresh: time.Millisecond, MaxBackoff: 5 * time.Millisecond, Shutdown: time.Second}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- rt.Run(ctx) }()
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("runtime did not stop")
+		}
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for rt.Health(t.Context()).Sources[0].Status != connector.HealthFailed {
+		if time.Now().After(deadline) {
+			t.Fatal("failed health not reported")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(30 * time.Millisecond)
+	mu.Lock()
+	got := connections
+	mu.Unlock()
+	if got != 1 {
+		t.Errorf("permanent rejection made %d connections, want one", got)
+	}
+}

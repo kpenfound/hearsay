@@ -308,8 +308,18 @@ func (c *Connector) Stream(ctx context.Context, sink connector.Sink) error {
 		var e envelope
 		if err := ws.ReadJSON(&e); err != nil {
 			var closed *websocket.CloseError
-			if errors.As(err, &closed) && (closed.Code == 4004 || closed.Code == 4013 || closed.Code == 4014) {
-				c.setHealth(connector.HealthFailed, "gateway rejected bot token or intents")
+			if errors.As(err, &closed) {
+				switch closed.Code {
+				case 4007, 4009:
+					c.mu.Lock()
+					c.session = ""
+					c.resumeURL = ""
+					c.seq = 0
+					c.mu.Unlock()
+				case 4004, 4010, 4011, 4012, 4013, 4014:
+					c.setHealth(connector.HealthFailed, "gateway rejected bot token, intents, or configuration")
+					return fmt.Errorf("%w: gateway close code %d", connector.ErrStreamPermanent, closed.Code)
+				}
 			}
 			return fmt.Errorf("read discord gateway: %w", err)
 		}

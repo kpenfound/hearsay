@@ -458,6 +458,9 @@ live source still needs `Backfiller` to get its history.
   emitting the dispatch. Its `Close` stops and joins any goroutines it starts.
   An unspecified `refresh` starts retries at the runtime's minimum refresh
   (30 seconds), rather than a poller's five-minute default.
+  A stream that receives a permanent source rejection returns
+  `ErrStreamPermanent` and reports failed health; the runtime stops retrying
+  it until the process is restarted after an operator fixes the source.
 - **`Handler`** is mounted by the runtime under a path it owns — `/hooks/<source
   id>` in Hearsay's own runtime, which is the URL the source is configured to
   deliver to. The handler verifies the source's own signature over the request —
@@ -514,7 +517,7 @@ connector:
 | `ID` | The source id. Goes in every event. |
 | `Type` | The connector type, which selects the factory. |
 | `Containers` | The repositories, channels or folders this source may ingest, by native id. Default deny; `*` widens it. |
-| `Refresh` | How often the runtime calls `Poll`. Ignored by a push-only connector; the runtime applies its own floor and jitter. |
+| `Refresh` | How often the runtime calls `Poll`, and the retry base for `Stream`. Ignored by a push-only connector; the runtime applies its own floor and jitter. A stream with none retries from the minimum refresh (30 seconds). |
 | `Settings` | The connector's own configuration, as JSON. Decode it with `DecodeSettings`, which rejects unknown fields so that a typo in config fails at startup. |
 | `Secrets` | Credentials, resolved by the runtime from the environment. They never live in the config repository, which is checked in: config names a secret, the runtime supplies its value. |
 

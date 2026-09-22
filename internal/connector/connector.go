@@ -21,6 +21,9 @@ var (
 	ErrDuplicateType = errors.New("connector type already registered")
 	// ErrNoIngestMode is returned for a connector with no ingest mode.
 	ErrNoIngestMode = errors.New("connector implements no ingest mode")
+	// ErrStreamPermanent stops runtime retries for a stream whose source rejected
+	// its credentials or configuration. The connector reports failed health.
+	ErrStreamPermanent = errors.New("stream cannot recover without operator action")
 	// ErrForeignSource is returned when a connector emits an event for a source
 	// other than the one it was configured for.
 	ErrForeignSource = errors.New("event is from another source")
@@ -75,7 +78,8 @@ type Poller interface {
 }
 
 // Streamer dials and reads a long-lived source connection. Stream returns when
-// the connection ends; the runtime calls it again with backoff after an error.
+// the connection ends; the runtime calls it again with backoff after an error,
+// unless the error wraps [ErrStreamPermanent].
 // The runtime owns its goroutine and cancels ctx before calling Close.
 type Streamer interface {
 	Connector

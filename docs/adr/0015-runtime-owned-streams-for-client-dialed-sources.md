@@ -20,6 +20,8 @@ on shutdown. The connector owns its socket and protocol heartbeat, maintains a
 session id and acknowledged dispatch sequence across reconnects, and resumes
 before identifying anew. The sequence advances after the dispatch reaches the
 Gate, so a failed sink write can be replayed. L0 ids make replays idempotent.
+Permanent source rejections return `ErrStreamPermanent`, stop runtime retries,
+and report failed health until an operator fixes the source and restarts it.
 
 ## Consequences
 

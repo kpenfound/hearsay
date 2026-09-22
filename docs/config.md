@@ -88,7 +88,7 @@ renamed afterwards ([connector contract](connector-contract.md#source-ids)).
   containers:                # required; the ingest allowlist, default deny
     - acme/api
     - acme/infra
-  refresh: 2m                # optional; how often a polling connector polls
+  refresh: 2m                # optional; poll cadence or stream retry base
   settings:                  # optional; the connector's own configuration
     since: 2026-01-01
   secrets:                   # optional; names of environment variables

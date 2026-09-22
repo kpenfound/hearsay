@@ -400,6 +400,10 @@ func (r *Runtime) stream(ctx context.Context, h *hosted, streamer Streamer) {
 		if ctx.Err() != nil {
 			return
 		}
+		if errors.Is(err, ErrStreamPermanent) {
+			log.ErrorContext(ctx, "stream cannot recover", "error", err)
+			return
+		}
 		fails++
 		h.streamFails.Store(int64(fails))
 		wait := r.opts.Cadence.Backoff(interval, fails)
@@ -640,8 +644,8 @@ type SourceHealth struct {
 	// zero once one succeeds. The failure itself is in the log; a count is what
 	// health can carry without repeating a message from a source.
 	PollFailures int64 `json:"poll_failures"`
-	// StreamFailures counts consecutive disconnected streams. The connector's
-	// own health gives the connection state and last event time.
+	// StreamFailures counts ended stream calls since startup while the source
+	// is disconnected, and is zero when the connector reports connected.
 	StreamFailures int64 `json:"stream_failures"`
 	// BackfillFailures is how many times in a row the source's backfill has
 	// failed — the call itself, or the store that will not take the position it
