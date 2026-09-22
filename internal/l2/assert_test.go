@@ -149,8 +149,16 @@ func TestIDsAreDerivedFromEveryPart(t *testing.T) {
 			t.Errorf("TopicID collided for different parts: %q", other)
 		}
 	}
-	if l2.StanceID("t", "d", "p") == l2.StanceID("t", "d", "q") || l2.StanceID("t", "d", "p") == l2.StanceID("t", "e", "p") {
+	at := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)
+	if l2.StanceID("t", "d", "p", at, l2.TierInferred) == l2.StanceID("t", "d", "q", at, l2.TierInferred) ||
+		l2.StanceID("t", "d", "p", at, l2.TierInferred) == l2.StanceID("t", "e", "p", at, l2.TierInferred) {
 		t.Error("StanceID collided for different parts")
+	}
+	baseStance := l2.StanceID("t", "d", "p", at, l2.TierInferred)
+	if baseStance == l2.StanceID("t", "d", "p", at.Add(time.Second), l2.TierInferred) ||
+		baseStance == l2.StanceID("t", "d", "p", at, l2.TierRatified) ||
+		baseStance != l2.StanceID("t", "d", "p", at.In(time.FixedZone("offset", 3600)), l2.TierInferred) {
+		t.Error("StanceID must distinguish versions and tiers, but not time zones")
 	}
 }
 

@@ -358,23 +358,22 @@ LIMIT 1`
 // AppendStance adds a stance to its topic, superseding the one before it — its
 // own document's earlier stance on the topic where there is one — and returns
 // the stance as stored with whether this call wrote it. A stance's id is
-// derived from its topic, its document and its position ([StanceID]), so one
-// already stored under the id is not written again — that is what makes
-// re-reading a document idempotent — and is returned as it was stored the first
-// time.
+// derived from its topic, document, position, document version and tier
+// ([StanceID]). The same reading is not written twice and is returned as first
+// stored; a new reading can supersede it even when the position is unchanged.
 //
 // The predecessor is read and the row written in two statements, which is safe
 // only because one scope's writes are serialized (ADR-0007); the caller runs it
 // in the transaction that holds the rest of what the document asserted.
-func (s *Store) AppendStance(ctx context.Context, st Stance) (Stance, bool, error) {
+func (s *Store) AppendStance(ctx context.Context, st Stance, distilledAt time.Time) (Stance, bool, error) {
 	if err := st.Validate(); err != nil {
 		return Stance{}, false, err
 	}
 	if st.Supersedes != "" {
 		return Stance{}, false, fmt.Errorf("%w: stance %s names what it supersedes, which the store decides", ErrInvalid, st.ID)
 	}
-	if st.ID != StanceID(st.TopicID, st.Evidence[0], st.Position) {
-		return Stance{}, false, fmt.Errorf("%w: stance %s is not the id derived from its topic, document and position", ErrInvalid, st.ID)
+	if distilledAt.IsZero() || st.ID != StanceID(st.TopicID, st.Evidence[0], st.Position, distilledAt, st.Tier) {
+		return Stance{}, false, fmt.Errorf("%w: stance %s is not the id derived from its topic, document, position, version and tier", ErrInvalid, st.ID)
 	}
 	var predecessor *string
 	err := s.db.QueryRow(ctx, predecessorSQL, st.TopicID, st.StatedAt, st.ID, st.Evidence[0]).Scan(&predecessor)
