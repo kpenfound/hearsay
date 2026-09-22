@@ -592,10 +592,10 @@ content into the revision token instead of using `updated_at`.
 | Artifact | kind | artifact id | native_id | container |
 |---|---|---|---|---|
 | Message | `message` | `<message id>` | `<id>@<edited_timestamp>` when edited | channel `<channel id>` |
-| Thread | `thread` | `<thread id>` | same | channel `<parent channel id>` |
+| Thread | `thread` | `thread:<thread id>` | same | channel `<parent channel id>` |
 | Reaction | `reaction` | `<message id>:reaction:<user id>:<emoji>` | same | channel |
 | Deleted message | `tombstone` | `<message id>:tombstone` | same, with `target` `<message id>` | channel |
-| Deleted thread | `tombstone` | `<thread id>:tombstone` | same, with `target` `<thread id>` | parent channel |
+| Deleted thread | `tombstone` | `thread:<thread id>:tombstone` | same, with `target` `thread:<thread id>` | parent channel |
 | Removed reaction | `tombstone` | `<reaction artifact>:tombstone` | same, with `target` `<reaction artifact>` | channel |
 
 Discord gives `edited_timestamp` as `null` until a message is edited, which is
@@ -606,6 +606,12 @@ contract draws between container and thread is load-bearing here. Reactions carr
 their author and no text, which is why `reaction` requires neither. ACL for an
 allowlisted private channel is `{group, native_id: <channel id>}`, so the member
 set is resolved at read time.
+The `thread:` artifact prefix is necessary because a public thread and the
+message it was started from share the same Discord snowflake. The message keeps
+the bare snowflake; both artifacts can then coexist in L0.
+A message directly in a thread has `parent` set to the thread artifact. A
+message replying to another message has that message as `parent`; both keep the
+same `thread`.
 The reaction emoji component is the custom emoji snowflake when one exists,
 otherwise the Unicode emoji URL-escaped so punctuation cannot change the id's
 structure.

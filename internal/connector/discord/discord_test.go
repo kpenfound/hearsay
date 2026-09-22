@@ -107,7 +107,7 @@ func TestGatewayReplayThroughRuntimeGate(t *testing.T) {
 				handshakes = append(handshakes, hello.Op)
 				mu.Unlock()
 				if n == 2 {
-					if hello.Op != 6 || hello.D["session_id"] != "sess" || hello.D["seq"] != float64(10) {
+					if hello.Op != 6 || hello.D["session_id"] != "sess" || hello.D["seq"] != float64(11) {
 						t.Errorf("RESUME = %+v", hello)
 					}
 					resumeStarted <- struct{}{}
@@ -186,15 +186,19 @@ func TestGatewayReplayThroughRuntimeGate(t *testing.T) {
 				h := rt.Health(t.Context()).Sources[0]
 				foundDelete := false
 				foundBulk := false
+				foundChangedVisibility := false
 				for _, ev := range sink.events() {
-					if ev.NativeID == "1551744840499200004:tombstone" {
+					if ev.NativeID == "thread:1551744840499200004:tombstone" {
 						foundDelete = true
 					}
 					if ev.NativeID == "1551744840499200008:tombstone" {
 						foundBulk = true
 					}
+					if ev.NativeID == "1551744840499200010" {
+						foundChangedVisibility = true
+					}
 				}
-				if h.Status == connector.HealthOK && h.Dropped == tt.dropped && foundDelete && foundBulk == tt.private {
+				if h.Status == connector.HealthOK && h.Dropped == tt.dropped && foundDelete && foundBulk == tt.private && foundChangedVisibility {
 					break
 				}
 				if time.Now().After(deadline) {
@@ -227,10 +231,10 @@ func TestGatewayReplayThroughRuntimeGate(t *testing.T) {
 			if !ok {
 				t.Fatal("original message missing")
 			}
-			if original.Payload.Thread != "1551744840499200004" || original.Payload.Container.NativeID != public {
+			if original.Payload.Thread != "thread:1551744840499200004" || original.Payload.Parent != "thread:1551744840499200004" || original.Payload.Container.NativeID != public {
 				t.Errorf("thread containment = %+v", original.Payload)
 			}
-			if reply, ok := byID["1551744840499200009"]; !ok || reply.Payload.Parent != message || reply.Payload.Thread != "1551744840499200004" {
+			if reply, ok := byID["1551744840499200009"]; !ok || reply.Payload.Parent != message || reply.Payload.Thread != "thread:1551744840499200004" {
 				t.Errorf("reply relationship = %+v", reply)
 			}
 			edited, ok := byID[message+"@2026-09-22T01:00:00.000000+00:00"]
@@ -243,8 +247,16 @@ func TestGatewayReplayThroughRuntimeGate(t *testing.T) {
 			if tomb, ok := byID[message+":tombstone"]; !ok || tomb.Payload.Target != message {
 				t.Errorf("message tombstone = %+v", tomb)
 			}
-			if tomb, ok := byID["1551744840499200004:tombstone"]; !ok || tomb.Payload.Target != "1551744840499200004" {
+			if tomb, ok := byID["thread:1551744840499200004:tombstone"]; !ok || tomb.Payload.Target != "thread:1551744840499200004" {
 				t.Errorf("thread tombstone = %+v", tomb)
+			}
+			if _, ok := byID["thread:1551744840499200004"]; !ok {
+				t.Error("thread artifact missing")
+			} else if got := byID["thread:1551744840499200004"].Payload.URL; got != "https://discord.com/channels/1551744840499200000/1551744840499200004" {
+				t.Errorf("thread URL = %q", got)
+			}
+			if _, ok := byID["1551744840499200004"]; !ok {
+				t.Error("starter message with same Discord id missing")
 			}
 			if _, ok := byID["1551744840499200006"]; ok {
 				t.Error("non-allowlisted message was emitted")
@@ -255,6 +267,9 @@ func TestGatewayReplayThroughRuntimeGate(t *testing.T) {
 			}
 			if ok && (len(priv.ACL) != 1 || priv.ACL[0].Kind != connector.ACLGroup || priv.ACL[0].NativeID != private) {
 				t.Errorf("private ACL = %+v", priv.ACL)
+			}
+			if changed, ok := byID["1551744840499200010"]; !ok || len(changed.ACL) != 1 || changed.ACL[0].Kind != connector.ACLGroup || changed.ACL[0].NativeID != public {
+				t.Errorf("ACL after guild role change = %+v", changed.ACL)
 			}
 			if tomb, present := byID["1551744840499200008:tombstone"]; present != tt.private || (present && tomb.Payload.Target != "1551744840499200008") {
 				t.Errorf("bulk tombstone = %+v, present %v", tomb, present)

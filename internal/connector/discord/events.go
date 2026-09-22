@@ -37,6 +37,14 @@ type guild struct {
 	Channels []channel `json:"channels"`
 	Threads  []channel `json:"threads"`
 }
+type roleChanged struct {
+	GuildID string `json:"guild_id"`
+	Role    role   `json:"role"`
+}
+type threadsSynced struct {
+	GuildID string    `json:"guild_id"`
+	Threads []channel `json:"threads"`
+}
 type user struct {
 	ID         string `json:"id"`
 	Username   string `json:"username"`
@@ -110,6 +118,39 @@ func (c *Connector) dispatch(ctx context.Context, sink connector.Sink, kind stri
 				return err
 			}
 		}
+	case "GUILD_ROLE_UPDATE":
+		var change roleChanged
+		if err := json.Unmarshal(raw, &change); err != nil {
+			return err
+		}
+		if change.GuildID != c.guild {
+			return nil
+		}
+		permissions, err := strconv.ParseUint(change.Role.Permissions, 10, 64)
+		if err != nil {
+			return fmt.Errorf("discord role permissions: %w", err)
+		}
+		c.mu.Lock()
+		c.roles[change.Role.ID] = permissions
+		c.mu.Unlock()
+	case "THREAD_LIST_SYNC":
+		var sync threadsSynced
+		if err := json.Unmarshal(raw, &sync); err != nil {
+			return err
+		}
+		if sync.GuildID != c.guild {
+			return nil
+		}
+		c.mu.Lock()
+		for _, ch := range sync.Threads {
+			c.channels[ch.ID] = ch
+		}
+		c.mu.Unlock()
+		for _, ch := range sync.Threads {
+			if err := c.emitThread(ctx, sink, ch); err != nil {
+				return err
+			}
+		}
 	case "CHANNEL_CREATE", "CHANNEL_UPDATE", "THREAD_CREATE", "THREAD_UPDATE":
 		var ch channel
 		if err := json.Unmarshal(raw, &ch); err != nil {
@@ -140,7 +181,8 @@ func (c *Connector) dispatch(ctx context.Context, sink connector.Sink, kind stri
 		if ch.ParentID == "" {
 			return nil
 		}
-		return c.emitTombstone(ctx, sink, ch.ID, ch.ID+":tombstone", ch.ID, snowflakeTime(ch.ID))
+		artifact := threadArtifact(ch.ID)
+		return c.emitTombstone(ctx, sink, ch.ID, artifact+":tombstone", artifact, snowflakeTime(ch.ID))
 	case "MESSAGE_CREATE", "MESSAGE_UPDATE":
 		var m message
 		if err := json.Unmarshal(raw, &m); err != nil {
@@ -225,7 +267,7 @@ func (c *Connector) place(channelID string) (connector.Container, string, connec
 	id := channelID
 	thread := ""
 	if ch.Type == 11 || ch.Type == 12 || ch.Type == 10 {
-		thread = ch.ID
+		thread = threadArtifact(ch.ID)
 		if ch.ParentID != "" {
 			id = ch.ParentID
 		}
@@ -295,6 +337,9 @@ func (c *Connector) emitMessage(ctx context.Context, sink connector.Sink, m mess
 		nick = m.Member.Nick
 	}
 	ev.Payload.Author = c.identity(m.Author, nick)
+	if ev.Payload.Thread != "" {
+		ev.Payload.Parent = ev.Payload.Thread
+	}
 	if m.MessageReference != nil {
 		ev.Payload.Parent = m.MessageReference.MessageID
 		if ev.Payload.Thread == "" {
@@ -320,17 +365,22 @@ func (c *Connector) emitThread(ctx context.Context, sink connector.Sink, ch chan
 	if ch.OwnerID == "" || ch.Name == "" {
 		return nil
 	}
-	ev := c.event(connector.KindThread, ch.ID, ch.ID, snowflakeTime(ch.ID))
+	ev := c.event(connector.KindThread, threadArtifact(ch.ID), ch.ID, snowflakeTime(ch.ID))
 	ev.Payload.Title = ch.Name
-	ev.Payload.URL = permalink(c.guild, ch.ID, ch.ID)
+	ev.Payload.URL = channelURL(c.guild, ch.ID)
 	ev.Payload.Author = &connector.Identity{Source: c.source, Kind: connector.IdentityUser, NativeID: ch.OwnerID}
 	ev.Payload.Thread = ""
 	return c.emit(ctx, sink, ev)
 }
+func threadArtifact(id string) string { return "thread:" + id }
 func (c *Connector) emitTombstone(ctx context.Context, sink connector.Sink, channelID, artifact, target string, at time.Time) error {
 	ev := c.event(connector.KindTombstone, artifact, channelID, at)
 	ev.Payload.Target = target
-	ev.Payload.URL = permalink(c.guild, channelID, target)
+	if strings.HasPrefix(target, "thread:") {
+		ev.Payload.URL = channelURL(c.guild, channelID)
+	} else {
+		ev.Payload.URL = permalink(c.guild, channelID, target)
+	}
 	return c.emit(ctx, sink, ev)
 }
 func (c *Connector) emitReaction(ctx context.Context, sink connector.Sink, r reaction, remove bool) error {
@@ -367,4 +417,7 @@ func (c *Connector) emitReaction(ctx context.Context, sink connector.Sink, r rea
 }
 func permalink(guild, channel, message string) string {
 	return "https://discord.com/channels/" + guild + "/" + channel + "/" + message
+}
+func channelURL(guild, channel string) string {
+	return "https://discord.com/channels/" + guild + "/" + channel
 }
