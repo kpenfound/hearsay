@@ -256,6 +256,12 @@ func (l *loader) buildPrincipals(r Repo) []principal.Principal {
 		if !kind.Valid() {
 			l.bad(a, "kind", "%q is not a principal kind: want one of %s", p.Kind, join(principal.Kinds()))
 		} else {
+			if p.TokenEnv != "" && !isEnvVarName(p.TokenEnv) {
+				l.bad(a, "token_env", "%q is not the name of an environment variable: config names a secret and the API supplies its value", p.TokenEnv)
+			}
+			if kind == principal.KindTeam && p.TokenEnv != "" {
+				l.bad(a, "token_env", "a team cannot call the API, so it cannot have a token")
+			}
 			switch {
 			case kind == principal.KindAgent && p.Class == "":
 				l.bad(a, "class", "is required on an agent: it decides what the agent may read and write. Want one of %s", join(principal.Classes()))
@@ -287,6 +293,7 @@ func (l *loader) buildPrincipals(r Repo) []principal.Principal {
 			Name:       p.Name,
 			Kind:       kind,
 			Class:      class,
+			TokenEnv:   p.TokenEnv,
 			Identities: l.buildIdentities(r, a, p, identities),
 			Members:    slices.Clone(p.Members),
 		}

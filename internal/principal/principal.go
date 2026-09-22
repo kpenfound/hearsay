@@ -36,6 +36,9 @@ type Principal struct {
 	// Class is an agent's access class (docs/design.md#access-control). It is
 	// required on an agent and empty on a human and on a team.
 	Class Class
+	// TokenEnv names the environment variable holding this human's or agent's
+	// API bearer token. It is never the token itself. Teams cannot call the API.
+	TokenEnv string
 	// Identities are the source-native identities that are this principal: the
 	// mapping [Resolver] resolves an event's identity hints against.
 	Identities []Identity

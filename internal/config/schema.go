@@ -83,6 +83,7 @@ type principalDoc struct {
 	Name       string        `yaml:"name"`
 	Kind       string        `yaml:"kind"`
 	Class      string        `yaml:"class"`
+	TokenEnv   string        `yaml:"token_env"`
 	Identities []identityDoc `yaml:"identities"`
 	Members    []string      `yaml:"members"`
 }

@@ -219,7 +219,7 @@ Four control points, from cheapest to most involved.
 1. Ingest allowlist. Default deny at L0. Public channels, named repos, specified Drive folders, transcripts for tagged meetings. DMs and private channels are never ingested unless listed. What is not in L0 cannot leak.
 2. ACL inheritance at L1. Every doc carries the source's access list at ingest and re-syncs on change.
 3. Derived-object classification at L2. A stance inherits the most restrictive ACL of any of its evidence. Per-viewer recomputation is a later option if this proves too lossy.
-4. Principal-based reads. Every read is filtered by an effective principal, the intersection of the agent's grants and the invoking human's. Handles fail closed.
+4. Principal-based reads. An API caller authenticates as the invoking human; an agent acting for them also authenticates as that agent. Every read is filtered by the effective principal, the intersection of the agent's grants and the invoking human's. Handles fail closed.
 
 Scopes filter for relevance. ACLs grant permission. They are never the same mechanism.
 

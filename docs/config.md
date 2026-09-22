@@ -147,6 +147,7 @@ part of onboarding worth spending effort on.
 - id: kyle                   # required; the id stances, owners and authority use
   name: Kyle Penfound        # optional
   kind: human                # optional; human (the default), agent or team
+  token_env: HEARSAY_KYLE_TOKEN # required when this person calls the API
   identities:                # required on a human and an agent; at least one
     - source: github
       native_id: "MDQ6VXNlcjE="
@@ -157,6 +158,7 @@ part of onboarding worth spending effort on.
 - id: shed
   kind: agent
   class: worker              # required on an agent: observer, worker, orchestrator, steward
+  token_env: HEARSAY_SHED_TOKEN # required when this agent calls the API
   identities:
     - source: github
       handle: "shed-agent[bot]"
@@ -167,6 +169,21 @@ part of onboarding worth spending effort on.
 ```
 
 An identity needs a `native_id`, a `handle`, or both.
+
+`token_env` names an environment variable holding a random, distinct API token.
+It is never the token value. The API resolves it when it starts and refuses to
+start if a human or agent lacks a `token_env`, if its variable is unset or empty,
+or if two principals share a token. Teams cannot have tokens. Other services
+can read the identity mapping without API credentials, so configuration
+validation checks the name but does not require a token for every principal.
+
+For `POST /v1/<call>` and `POST /mcp`, send `Hearsay-Principal: <human id>` and
+`Authorization: Bearer <human token>`. An agent acting for the human must also
+send `Hearsay-Agent: <agent id>` and `Hearsay-Agent-Token: <agent token>`.
+The agent needs both credentials: possession of the person's token is the
+delegation to act for that person, and its own token identifies the agent.
+Missing or mismatched credentials are HTTP 401 before a call runs. Put TLS in
+front of the API so these bearer tokens are not exposed in transit (ADR-0014).
 
 - `native_id` is the source's stable id — a GitHub node id, a Discord user id, a
   Google account id. It survives a rename, so it is the key to match on. It is
@@ -580,6 +597,7 @@ scopes:
 principals:
   - id: kyle
     name: Kyle Penfound
+    token_env: HEARSAY_KYLE_TOKEN
     identities:
       - source: github
         native_id: MDQ6VXNlcjE=
@@ -592,6 +610,7 @@ principals:
 
   - id: robin
     name: Robin Okonkwo
+    token_env: HEARSAY_ROBIN_TOKEN
     identities:
       - source: github
         handle: robinok
@@ -602,6 +621,7 @@ principals:
     name: shed
     kind: agent
     class: worker
+    token_env: HEARSAY_SHED_TOKEN
     identities:
       - source: github
         handle: shed-agent[bot]
@@ -727,6 +747,7 @@ entities: [code:acme/api, code:acme/api:engine/server]
 # principals/people.yaml — several objects, so a list.
 - id: kyle
   name: Kyle Penfound
+  token_env: HEARSAY_KYLE_TOKEN
   identities:
     - source: github
       native_id: MDQ6VXNlcjE=
@@ -739,6 +760,7 @@ entities: [code:acme/api, code:acme/api:engine/server]
 
 - id: robin
   name: Robin Okonkwo
+  token_env: HEARSAY_ROBIN_TOKEN
   identities:
     - source: github
       handle: robinok
@@ -753,6 +775,7 @@ entities: [code:acme/api, code:acme/api:engine/server]
   name: shed
   kind: agent
   class: worker
+  token_env: HEARSAY_SHED_TOKEN
   identities:
     - source: github
       handle: shed-agent[bot]

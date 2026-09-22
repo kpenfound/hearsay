@@ -253,6 +253,16 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 			want:  []string{`principal "shed": class: is required on an agent`},
 		},
 		{
+			name:  "a token value instead of an environment variable name",
+			files: with(map[string]string{"principals/p.yaml": "id: kyle\ntoken_env: pasted-secret\nidentities: [{source: github, handle: kpenfound}]\n"}),
+			want:  []string{`principal "kyle": token_env: "pasted-secret" is not the name of an environment variable`},
+		},
+		{
+			name:  "a team with an API token",
+			files: with(map[string]string{"principals/p.yaml": "id: team\nkind: team\nidentities: [{source: github, handle: api-team}]\ntoken_env: TEAM_TOKEN\n"}),
+			want:  []string{`principal "team": token_env: a team cannot call the API`},
+		},
+		{
 			name:  "a human with an agent class",
 			files: with(map[string]string{"principals/p.yaml": "id: kyle\nclass: steward\nidentities: [{source: github, handle: kpenfound}]\n"}),
 			want:  []string{`principal "kyle": class: is an agent's access class, and this principal is a human`},
@@ -537,7 +547,7 @@ func containsSubstring(problems []string, want string) bool {
 func TestLoadPrincipalsAndResolver(t *testing.T) {
 	repo, err := config.Load(writeFiles(t, with(map[string]string{
 		"principals/p.yaml": "" +
-			"- id: kyle\n  name: Kyle Penfound\n  identities: [{source: github, native_id: MDQ6VXNlcjE=, handle: KPenfound}]\n" +
+			"- id: kyle\n  name: Kyle Penfound\n  token_env: HEARSAY_KYLE_TOKEN\n  identities: [{source: github, native_id: MDQ6VXNlcjE=, handle: KPenfound}]\n" +
 			// A native id is matched byte for byte, so two that differ only in
 			// case are two identities. A GitHub node id is base64: its case is
 			// meaning rather than spelling.
@@ -553,7 +563,7 @@ func TestLoadPrincipalsAndResolver(t *testing.T) {
 	}
 
 	kyle, ok := repo.Principal("kyle")
-	if !ok || kyle.Kind != principal.KindHuman || kyle.Name != "Kyle Penfound" {
+	if !ok || kyle.Kind != principal.KindHuman || kyle.Name != "Kyle Penfound" || kyle.TokenEnv != "HEARSAY_KYLE_TOKEN" {
 		t.Errorf("Principal(kyle) = %+v, %v", kyle, ok)
 	}
 	// A handle is stored as it was written, and folded when it is matched.
