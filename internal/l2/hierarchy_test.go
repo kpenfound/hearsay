@@ -141,10 +141,11 @@ func TestNestByPattern(t *testing.T) {
 		{
 			name: "an entity is part of the nearest entity its patterns lie under",
 			entities: []l2.Located{
-				{ID: "engine", Repo: api, PathPatterns: []string{"engine/**"}},
-				{ID: "server", Repo: api, PathPatterns: []string{"engine/server/**"}},
-				{ID: "write", Repo: api, PathPatterns: []string{"engine/server/write/**"}},
+				// Deepest first, so a farther ancestor is met after the nearest.
 				{ID: "go-files", Repo: api, PathPatterns: []string{"engine/server/*.go", "engine/server/x/**/*.go"}},
+				{ID: "write", Repo: api, PathPatterns: []string{"engine/server/write/**"}},
+				{ID: "server", Repo: api, PathPatterns: []string{"engine/server/**"}},
+				{ID: "engine", Repo: api, PathPatterns: []string{"engine/**"}},
 			},
 			want: l2.Parents{"go-files": {"server"}, "server": {"engine"}, "write": {"server"}},
 		},
