@@ -99,8 +99,9 @@ process is up) and `/readyz` (the database, its schema, and what each source
 says about itself) on `--listen` (default `:8081`, and `hearsay all` takes the
 flag too). It writes L0, so it refuses without a
 database too. GitHub (`internal/connector/github`), Discord
-(`internal/connector/discord`) and Drive (`internal/connector/drive`) ship, and their package comments document
-settings and secrets. An unregistered type is a startup failure.
+(`internal/connector/discord`), Drive (`internal/connector/drive`) and Obsidian
+(`internal/connector/obsidian`) ship, and their package comments document
+settings and deployment constraints. An unregistered type is a startup failure.
 
 The assertion worker is not a stub. The distiller enqueues a serialized `assert`
 job, keyed by scope, in the transaction that writes a document whose outcome is
