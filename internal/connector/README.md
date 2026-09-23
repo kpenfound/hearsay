@@ -34,6 +34,9 @@ Four things to know about the runtime before changing it:
   gives it, which is what lets a poller keep its position in memory without
   locking. Anything that would call `Poll` from somewhere else breaks the
   contract rather than the runtime.
+- A `CursorPoller` uses that same caller and a separate runtime-owned durable
+  cursor. Notifications can wake its poll loop; the cadence catches missed
+  notifications.
 - **The backfill cursor is stored before the next call is made**, so an
   interrupted backfill resumes rather than starting again. The store is a
   `CursorStore`, which is `internal/l0`'s `BackfillCursors` in a process and

@@ -166,6 +166,8 @@ sources:
     settings:
       transcript_candidate_folder_ids: [meetings-folder-id]
       meeting_transcript_label_id: label-id-from-drive
+      # Optional: externally reachable HTTPS /hooks/drive endpoint
+      notification_url: https://hearsay.example.com/hooks/drive
     secrets:
       credentials: HEARSAY_DRIVE_CREDENTIALS
 ```
@@ -186,7 +188,12 @@ head revision ID (or, for native Docs, an accessible revisions list), an author
 for a document, or readable sharing permissions are skipped. `webViewLink`
 becomes the source URL. If a file has a `calendar_attendee_emails` Drive
 property containing comma-separated email addresses, those become attendee
-identity hints. Live Drive change sync is handled separately.
+identity hints. Live sync consumes the Drive changes feed using a separate
+durable cursor. On first use or after a token expires, it reconciles configured
+folders against L0. The source's `refresh` cadence remains the polling fallback
+when notifications are unavailable or missed. If `notification_url` is set,
+point it to this source's externally reachable `/hooks/<source id>` endpoint;
+the connector renews its Drive notification channel before it expires.
 
 ### Obsidian source
 

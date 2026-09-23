@@ -281,6 +281,50 @@ func (r *Recorder) Emit(_ context.Context, ev Event) error {
 	return nil
 }
 
+// CurrentArtifact implements ArtifactReader for connector tests.
+func (r *Recorder) CurrentArtifact(_ context.Context, source, artifact string) (Event, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var current Event
+	found := false
+	for _, ev := range r.events {
+		if ev.Source != source {
+			continue
+		}
+		if ev.Kind == KindTombstone && ev.Payload.Target == artifact {
+			found = false
+			continue
+		}
+		if ev.Payload.Artifact == artifact && ev.Kind != KindTombstone {
+			current, found = ev, true
+		}
+	}
+	return current, found, nil
+}
+
+// CurrentArtifacts implements ArtifactReader for connector tests.
+func (r *Recorder) CurrentArtifacts(_ context.Context, source string) ([]Event, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	current := map[string]Event{}
+	for _, ev := range r.events {
+		if ev.Source != source {
+			continue
+		}
+		if ev.Kind == KindTombstone {
+			delete(current, ev.Payload.Target)
+		} else {
+			current[ev.Payload.Artifact] = ev
+		}
+	}
+	out := make([]Event, 0, len(current))
+	for _, ev := range current {
+		out = append(out, ev)
+	}
+	slices.SortFunc(out, func(a, b Event) int { return strings.Compare(a.Payload.Artifact, b.Payload.Artifact) })
+	return out, nil
+}
+
 // Exposed implements [ExposureReader] over what was emitted, the way L0 reads
 // it for a connector that emits revisions in order: an artifact's current
 // revision is the one that arrived last, a retracted artifact is not served,

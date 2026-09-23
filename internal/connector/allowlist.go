@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -87,8 +88,9 @@ type Gate struct {
 
 	// resyncs and wake are set by the runtime for a [Resyncer] it has a
 	// [ResyncStore] for; a gate without them records no re-sync.
-	resyncs ResyncStore
-	wake    chan struct{}
+	resyncs  ResyncStore
+	wake     chan struct{}
+	pollWake chan struct{}
 }
 
 // NewGate returns the gate for one connector: the source it was configured for,
@@ -150,6 +152,42 @@ func (g *Gate) RequestResync(ctx context.Context, container string) error {
 		// when it takes it.
 	}
 	return nil
+}
+
+// CurrentArtifact reads only this gate's source. The reader is behind the gate
+// because a connector must not bypass the allowlist to emit what it finds.
+func (g *Gate) CurrentArtifact(ctx context.Context, source, artifact string) (Event, bool, error) {
+	if source != g.source {
+		return Event{}, false, ErrForeignSource
+	}
+	r, ok := g.sink.(ArtifactReader)
+	if !ok {
+		return Event{}, false, errors.New("sink cannot read current artifacts")
+	}
+	return r.CurrentArtifact(ctx, source, artifact)
+}
+
+// CurrentArtifacts reads this gate's source for change-feed recovery.
+func (g *Gate) CurrentArtifacts(ctx context.Context, source string) ([]Event, error) {
+	if source != g.source {
+		return nil, ErrForeignSource
+	}
+	r, ok := g.sink.(ArtifactReader)
+	if !ok {
+		return nil, errors.New("sink cannot read current artifacts")
+	}
+	return r.CurrentArtifacts(ctx, source)
+}
+
+// RequestPoll wakes the polling loop after a verified notification.
+func (g *Gate) RequestPoll() {
+	if g.pollWake == nil {
+		return
+	}
+	select {
+	case g.pollWake <- struct{}{}:
+	default:
+	}
 }
 
 // Dropped is how many events the gate has refused because their container is

@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"maps"
@@ -276,6 +277,7 @@ func NewRuntime(ctx context.Context, opts RuntimeOptions) (*Runtime, error) {
 			return nil, r.abandon(ctx, err)
 		}
 		h := &hosted{src: src, conn: conn, gate: NewGate(opts.Sink, src.ID, conn.Describe(), allow)}
+		h.gate.pollWake = make(chan struct{}, 1)
 		if _, ok := conn.(Resyncer); ok && opts.Resyncs != nil {
 			h.gate.resyncs = opts.Resyncs
 			h.gate.wake = make(chan struct{}, 1)
@@ -442,13 +444,43 @@ func (r *Runtime) poll(ctx context.Context, h *hosted, poller Poller) {
 	// has just started ingests rather than waiting out a refresh interval.
 	wait := jitter(0)
 	fails := 0
+	var cursor Cursor
+	var cursorKey string
+	if _, ok := poller.(CursorPoller); ok {
+		// A separate key keeps the completed initial backfill untouched.
+		sum := sha256.Sum256([]byte(h.src.ID))
+		cursorKey = fmt.Sprintf("live-%x", sum[:16])
+	}
 	for {
-		if !sleep(ctx, wait) {
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
 			log.InfoContext(ctx, "polling stopped")
 			return
+		case <-timer.C:
+		case <-h.gate.pollWake:
+			timer.Stop()
 		}
-
-		err := poller.Poll(ctx, h.gate)
+		var err error
+		if cp, ok := poller.(CursorPoller); ok {
+			if r.opts.Cursors == nil {
+				err = errors.New("change polling needs a durable cursor store")
+			} else {
+				var state BackfillState
+				state, err = r.opts.Cursors.Load(ctx, cursorKey)
+				if err == nil {
+					cursor = state.Cursor
+					var next Cursor
+					next, err = cp.PollFrom(ctx, h.gate, cursor)
+					if err == nil && next != cursor {
+						err = r.opts.Cursors.Save(ctx, cursorKey, BackfillState{Cursor: next})
+					}
+				}
+			}
+		} else {
+			err = poller.Poll(ctx, h.gate)
+		}
 		switch {
 		case err != nil && ctx.Err() != nil:
 			// Cancelled mid-poll: the process is shutting down, not the source

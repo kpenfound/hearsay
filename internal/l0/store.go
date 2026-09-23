@@ -221,6 +221,48 @@ func (s *Store) Get(ctx context.Context, id string) (connector.Event, error) {
 	return ev, nil
 }
 
+// CurrentArtifact returns the current visible revision, if any, for a source
+// artifact. Change-feed connectors use its former container and ACL on removal.
+func (s *Store) CurrentArtifact(ctx context.Context, source, artifact string) (connector.Event, bool, error) {
+	events, err := s.Current(ctx, ListOptions{Filter: Filter{Source: source, Artifact: artifact}, Limit: 1})
+	if err != nil {
+		return connector.Event{}, false, err
+	}
+	if len(events) == 0 {
+		return connector.Event{}, false, nil
+	}
+	return events[0], true, nil
+}
+
+// CurrentArtifacts is the source snapshot used when a change token is first
+// acquired or expires. It deliberately has no result cap: recovery must not
+// mistake a truncated L0 list for deleted files.
+func (s *Store) CurrentArtifacts(ctx context.Context, source string) ([]connector.Event, error) {
+	rows, err := s.db.Query(ctx, `
+SELECT DISTINCT ON (e.artifact) `+eventColumns+`
+  FROM l0_events e
+ WHERE e.source = $1 AND e.kind <> 'tombstone' AND `+notRetractedSQL+`
+ ORDER BY e.artifact, e.revision_edited_at DESC NULLS LAST, e.seq DESC`, source)
+	if err != nil {
+		return nil, fmt.Errorf("reading current artifacts of %s: %w", source, err)
+	}
+	defer rows.Close()
+	out := []connector.Event{}
+	for rows.Next() {
+		var ev connector.Event
+		var kind string
+		var payload, acl []byte
+		if err := rows.Scan(&ev.ID, &ev.Source, &ev.NativeID, &kind, &ev.Time, &payload, &acl); err != nil {
+			return nil, err
+		}
+		if err := decodeInto(&ev, kind, payload, acl); err != nil {
+			return nil, err
+		}
+		out = append(out, ev)
+	}
+	return out, rows.Err()
+}
+
 // Retracted returns the current revision of an artifact a tombstone covers, by
 // the same revision order [Store.Current] uses. It returns [ErrNotFound] when
 // the source holds no event of the artifact, or holds some that nothing has
