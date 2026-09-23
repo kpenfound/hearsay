@@ -4,9 +4,9 @@ Derived views: what is true right now. Rebuilt from L2 on demand, never written
 directly.
 
 **Belongs here:** current stances for an entity (including ones inherited from
-ancestors, tagged as inherited), recent L1 activity on a scope, open questions,
-and ownership derived from participation and authorship. Caching and
-materialization of these views, if it becomes worth it.
+ancestors, tagged as inherited), a scope's anchors, recent L1 activity on a
+scope, open questions, and ownership derived from participation and
+authorship. Caching and materialization of these views, if it becomes worth it.
 
 **Does not belong here:** any write path. If something cannot be recomputed from
 L2 it is not an L3 view — it is an L2 fact and belongs in `internal/l2`.
@@ -16,13 +16,20 @@ L2 it is not an L3 view — it is an L2 fact and belongs in `internal/l2`.
 - **Every view is for a reader.** The access lists are applied before a count
   cuts anything (`l1.Store.ListFor`), so a document somebody may not read never
   takes one of their places in `recent`.
-- **A topic's current stance is the newest stated that is not retired,** the
-  head of its supersession chain; a stance its own document's later reading
-  replaced is retired (internal/l2). When the reader may not read it, the topic is left out and counted —
-  the older stance they may read is not current, and offering it as current
-  would be wrong in a way they could not see. Whether they may read it is what
-  its documents allow now (`l2.Access`): the topic's opening document, and
-  every piece of the stance's evidence.
+- **A topic's current stance and tier are computed** under the policy in force
+  for its scope (`l2.Store.Assess`, `l2.Stand`): the highest-ranked evidence
+  among live stances within the contested window, most recent on a tie. The
+  current stance is chosen from every stance on the topic, not from the ones
+  the reader may read. When the reader may not read the topic or its current
+  stance, the topic is left out and counted — an older stance they may read is
+  not current, and offering it as current would be wrong in a way they could
+  not see. A stance the reader may not read does not make the topic contested
+  for them.
+- **Whether a reader may read a topic or a stance is what its documents allow
+  now** (`l2.Access`): the topic's opening document, and every piece of the
+  stance's evidence. The access lists stored on topics and stances record the
+  moment they were written and authorize nothing; a document re-synced private
+  or retracted since takes what was derived from it with it.
 - **A stance is an entity's own only when its topic's `about` names that entity
   itself.** Every other topic reached — through a related entity (for a tracker
   item, the code entities its own document is about) or through an ancestor of
@@ -32,6 +39,10 @@ L2 it is not an L3 view — it is an L2 fact and belongs in `internal/l2`.
   entity the item's document is about" would make every topic in the repository
   a stance of every item. The walk up `part_of` is a recursive `UNION`, so a
   cycle ends it.
+- **Anchors are read for a reader too.** A pin the reader may not read is left
+  out and takes no place, and "most referenced" counts only documents the
+  reader may read on both ends (`l1.Store.MostReferencedFor`), so a private
+  document neither wins nor decides what does.
 - **Ownership and "who knows X" are not built yet.**
 
 See [docs/design.md](../../docs/design.md#l3-derived-views).

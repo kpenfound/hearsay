@@ -22,13 +22,17 @@ func doc(id string, kind l1.Kind, hour int, summary string) l1.Stored {
 	}}
 }
 
+// current is a topic standing at tier. The tier its stance was written with is
+// always inferred, so a bundle that served or budgeted by the written tier
+// rather than the computed one would show it.
 func current(topic string, tier l2.Tier, hour int) l3.CurrentStance {
 	return l3.CurrentStance{
 		Topic: l2.Topic{ID: "topic:" + topic, Name: topic},
 		Stance: l2.Stance{
-			ID: "stance:" + topic, Position: "the position on " + topic, Tier: tier,
+			ID: "stance:" + topic, Position: "the position on " + topic, Tier: l2.TierInferred,
 			StatedAt: day.Add(time.Duration(hour) * time.Hour), Evidence: []string{"l1:gh:acme/api#" + topic},
 		},
+		Tier: tier,
 	}
 }
 
@@ -37,9 +41,9 @@ func inherited(c l3.CurrentStance) l3.CurrentStance {
 	return c
 }
 
-// inputs is a scope with something in every section: two ratified stances and
-// two inferred ones of its own and a ratified one it inherits, five recent
-// documents and three open questions.
+// inputs is a scope with something in every section: a pinned anchor and a
+// defaulted one, two ratified stances and two inferred ones of its own and a
+// ratified one it inherits, five recent documents and three open questions.
 func inputs() bundle.Inputs {
 	subject := doc("l1:gh:acme/api#12", l1.KindIssue, 9, "Move the lock out of the request path.\nMore detail.")
 	in := bundle.Inputs{
@@ -48,6 +52,10 @@ func inputs() bundle.Inputs {
 		Subject: &subject,
 		Entities: []l2.Entity{
 			{ID: "code:acme/api", Type: l2.TypeProject, Name: "api", Owners: []string{"kyle"}},
+		},
+		Anchors: []l3.Anchor{
+			{Doc: doc("l1:gh:acme/api#1200", l1.KindIssue, 1, "Engine schema v3 design.\nThe long version."), PinnedBy: "kyle"},
+			{Doc: doc("l1:wiki:design/locks.md#locking", l1.KindWikiSection, 2, "How the request path takes its locks.")},
 		},
 		Stances: []l3.CurrentStance{
 			current("r1", l2.TierRatified, 8),
@@ -93,28 +101,34 @@ func TestBuildDropsFromTheBottom(t *testing.T) {
 	withoutQuestions.OpenQuestions = []bundle.Question{}
 	withoutRecent := withoutQuestions
 	withoutRecent.Recent.Items = []bundle.Item{}
-	withoutInherited := withoutRecent
-	withoutInherited.Stances = withoutRecent.Stances[:4]
+	withoutAnchors := withoutRecent
+	withoutAnchors.Anchors = []bundle.Anchor{}
+	withoutInherited := withoutAnchors
+	withoutInherited.Stances = withoutAnchors.Stances[:4]
 
 	tests := []struct {
 		name   string
 		budget int
 		want   bundle.Trimmed
-		// stances are the topic names left, in order.
+		// anchors are how many anchors are left; stances are the topic names
+		// left, in order.
+		anchors int
 		stances []string
 	}{
 		{name: "a budget the bundle fits keeps everything", budget: size,
-			stances: []string{"r1", "i1", "r2", "i2", "x1"}},
+			anchors: 2, stances: []string{"r1", "i1", "r2", "i2", "x1"}},
 		{name: "one token over drops the last open question first", budget: size - 1,
-			want: bundle.Trimmed{OpenQuestions: 1}, stances: []string{"r1", "i1", "r2", "i2", "x1"}},
-		{name: "recent shrinks before stances", budget: tokens(t, withoutQuestions) - 1,
-			want: bundle.Trimmed{OpenQuestions: 3, Recent: 1}, stances: []string{"r1", "i1", "r2", "i2", "x1"}},
-		{name: "an inherited stance drops first, though it is ratified", budget: tokens(t, withoutRecent) - 1,
-			want: bundle.Trimmed{OpenQuestions: 3, Recent: 5, Stances: 1}, stances: []string{"r1", "i1", "r2", "i2"}},
+			want: bundle.Trimmed{OpenQuestions: 1}, anchors: 2, stances: []string{"r1", "i1", "r2", "i2", "x1"}},
+		{name: "recent shrinks before anchors and stances", budget: tokens(t, withoutQuestions) - 1,
+			want: bundle.Trimmed{OpenQuestions: 3, Recent: 1}, anchors: 2, stances: []string{"r1", "i1", "r2", "i2", "x1"}},
+		{name: "anchors drop after recent, last first, before any stance", budget: tokens(t, withoutRecent) - 1,
+			want: bundle.Trimmed{OpenQuestions: 3, Recent: 5, Anchors: 1}, anchors: 1, stances: []string{"r1", "i1", "r2", "i2", "x1"}},
+		{name: "an inherited stance drops first, though it is ratified", budget: tokens(t, withoutAnchors) - 1,
+			want: bundle.Trimmed{OpenQuestions: 3, Recent: 5, Anchors: 2, Stances: 1}, stances: []string{"r1", "i1", "r2", "i2"}},
 		{name: "then the scope's own stances drop last first, the inferred ones only", budget: tokens(t, withoutInherited) - 1,
-			want: bundle.Trimmed{OpenQuestions: 3, Recent: 5, Stances: 2}, stances: []string{"r1", "i1", "r2"}},
+			want: bundle.Trimmed{OpenQuestions: 3, Recent: 5, Anchors: 2, Stances: 2}, stances: []string{"r1", "i1", "r2"}},
 		{name: "the scope's own ratified stances never drop, even over budget", budget: 1,
-			want: bundle.Trimmed{OpenQuestions: 3, Recent: 5, Stances: 3}, stances: []string{"r1", "r2"}},
+			want: bundle.Trimmed{OpenQuestions: 3, Recent: 5, Anchors: 2, Stances: 3}, stances: []string{"r1", "r2"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -131,6 +145,9 @@ func TestBuildDropsFromTheBottom(t *testing.T) {
 			}
 			if strings.Join(names, ",") != strings.Join(tt.stances, ",") {
 				t.Errorf("stances = %v, want %v", names, tt.stances)
+			}
+			if len(got.Anchors) != tt.anchors || (tt.anchors > 0 && got.Anchors[0].PinnedBy != "kyle") {
+				t.Errorf("anchors = %+v, want the first %d", got.Anchors, tt.anchors)
 			}
 			if n != tokens(t, got) {
 				t.Errorf("reported %d tokens, the bundle is %d", n, tokens(t, got))
@@ -167,7 +184,9 @@ func TestBuildLaysOutTheDesignsShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, section := range []string{`"anchors":[]`, `"conflicts":[]`, `"handles":["get_l1","get_l0","search","stance_history","resolve"]`} {
+	anchors := `"anchors":[{"l1":"l1:gh:acme/api#1200","kind":"issue","line":"Engine schema v3 design.","pinned_by":"kyle"},` +
+		`{"l1":"l1:wiki:design/locks.md#locking","kind":"wiki_section","line":"How the request path takes its locks."}]`
+	for _, section := range []string{anchors, `"conflicts":[]`, `"handles":["get_l1","get_l0","search","stance_history","resolve"]`} {
 		if !strings.Contains(string(body), section) {
 			t.Errorf("the encoded bundle has no %s: %s", section, body)
 		}
@@ -224,6 +243,9 @@ func reference(b bundle.Bundle, budget int) (bundle.Bundle, bundle.Trimmed, int)
 		case len(b.Recent.Items) > 0:
 			b.Recent.Items = b.Recent.Items[:len(b.Recent.Items)-1]
 			trimmed.Recent++
+		case len(b.Anchors) > 0:
+			b.Anchors = b.Anchors[:len(b.Anchors)-1]
+			trimmed.Anchors++
 		default:
 			last := -1
 			for i := len(b.Stances) - 1; i >= 0 && last < 0; i-- {
@@ -296,7 +318,7 @@ func TestTrimMatchesReEncodingAfterEveryDrop(t *testing.T) {
 func TestTrimOfThousandsOfInheritedStances(t *testing.T) {
 	const n = 4000
 	in := inputs()
-	in.Questions, in.Recent = nil, l3.Activity{}
+	in.Questions, in.Recent, in.Anchors = nil, l3.Activity{}, nil
 	own := len(in.Stances) - 1 // inputs ends with one inherited stance
 	in.Stances = in.Stances[:own]
 	for i := range n {

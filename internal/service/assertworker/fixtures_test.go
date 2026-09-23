@@ -73,6 +73,9 @@ func newFixture(src string) fixture {
 	pr := event(src, connector.KindPullRequest, repo+"#31", at(3), "kpenfound", "u1",
 		"engine: take the lock before writing",
 		"Fixes #12. Rather than moving the lock into the job queue, the engine now takes it before the write. See https://github.com/acme/api/issues/12.")
+	// It merged, and the source says so: that is what makes its document a
+	// merged_pr, and a stance read from it ratified.
+	pr.Payload.Native = json.RawMessage(`{"state":"closed","merged_at":"` + at(4).Format(time.RFC3339) + `"}`)
 	review := event(src, connector.KindReview, repo+"#31:review:77", at(4), "samr", "u2", "", "Approved, and merged.")
 	review.Payload.Parent, review.Payload.Thread = repo+"#31", repo+"#31"
 	return fixture{

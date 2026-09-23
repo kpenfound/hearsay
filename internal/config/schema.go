@@ -114,6 +114,8 @@ type authorityDoc struct {
 	Scope      string        `yaml:"scope"`
 	Ranking    []string      `yaml:"ranking"`
 	RatifiedBy *ratifiersDoc `yaml:"ratified_by"`
+	// ContestedWindow is a duration, such as 336h; absent inherits.
+	ContestedWindow string `yaml:"contested_window"`
 }
 
 // ratifiersDoc is what may ratify a stance. A list that is absent inherits from

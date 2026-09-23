@@ -229,7 +229,7 @@ func (a *Asserter) Assert(ctx context.Context, docID, scope string) (Result, err
 			if err := w.ExtendTopic(ctx, topicID, about, keys); err != nil {
 				return err
 			}
-			tier := l2.TierFor(doc)
+			tier := l2.RecordedTier(a.repo.Authority.ForScope(scope), doc)
 			judgement := l2.JudgementUnknown
 			if as.Judgement != nil && shown {
 				judgement = *as.Judgement

@@ -687,6 +687,9 @@ func (l *loader) buildAuthority(r Repo) Authority {
 				return ""
 			})
 		}
+		if p.ContestedWindow != "" {
+			policy.ContestedWindow = l.contestedWindow(a, p.ContestedWindow)
+		}
 		policies = append(policies, policy)
 		// A nil list is one this file did not set. Either field being present is
 		// enough: the ranking and the ratifiers are the two halves of the same
@@ -709,6 +712,24 @@ func (l *loader) buildAuthority(r Repo) Authority {
 		l.checkRatifiersAreRanked(m.at, p)
 	}
 	return auth
+}
+
+// contestedWindow reads a policy's contested window. It is a Go duration —
+// 336h, not 14d — like every other duration in the configuration, and it has
+// to be positive: a window of nothing compares nothing, which would make a
+// topic uncontestable by accident. What it cannot read is reported and left
+// unset, so the policy inherits.
+func (l *loader) contestedWindow(a at, written string) time.Duration {
+	d, err := time.ParseDuration(written)
+	switch {
+	case err != nil:
+		l.bad(a, "contested_window", "%q is not a duration: want something like 336h for 14 days", written)
+		return 0
+	case d <= 0:
+		l.bad(a, "contested_window", "%s is not positive: leave it out to inherit the window, or give one longer than nothing", written)
+		return 0
+	}
+	return d
 }
 
 // checkRatifiersAreRanked reports an artifact class that ratifies on its own

@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
@@ -35,17 +36,33 @@ const RecentCandidates = 50
 
 // Views are the derived views over one database. Nothing here writes.
 type Views struct {
-	db   Querier
-	docs *l1.Store
+	db        Querier
+	docs      *l1.Store
+	graph     *l2.Store
+	authority config.Authority
 }
 
-// New returns the views over a pool or a transaction. The caller owns it.
-func New(q Querier) *Views { return &Views{db: q, docs: l1.New(q)} }
+// New returns the views over a pool or a transaction, under the built-in
+// authority policy. The caller owns it.
+func New(q Querier) *Views { return &Views{db: q, docs: l1.New(q), graph: l2.New(q)} }
+
+// WithAuthority returns a copy of the views that computes tiers under a
+// configuration's authority policies rather than the built-in one.
+func (v *Views) WithAuthority(a config.Authority) *Views {
+	c := *v
+	c.authority = a
+	return &c
+}
 
 // CurrentStance is the stance a topic stands at now, for a reader.
 type CurrentStance struct {
-	Topic  l2.Topic
+	Topic l2.Topic
+	// Stance is the topic's current stance, computed under the policy in
+	// force for its scope ([l2.Stand]). Its Tier is the tier it was written
+	// with; the tier it is served at is Tier below.
 	Stance l2.Stance
+	// Tier is the computed tier: ratified, inferred or contested.
+	Tier l2.Tier
 	// Supersedes is the position the stance replaced, empty for the first
 	// stance on a topic and for one the reader may not read.
 	Supersedes string
@@ -55,29 +72,18 @@ type CurrentStance struct {
 	Inherited bool
 }
 
-// currentSQL is every topic about one of the entities or an ancestor of one,
-// with the stance it stands at: the newest stated that a later reading of its
-// own document has not retired ([l2.RetiredSQL]), which is the head of the
-// supersession chain — a document read late forks the chain behind the head
-// and never replaces it (internal/l2). The walk up `part_of` is a UNION, so a
-// cycle ends it rather than looping.
-const currentSQL = `
+// topicsSQL is every topic about one of the entities or an ancestor of one. The
+// walk up `part_of` is a UNION, so a cycle ends it rather than looping.
+const topicsSQL = `
 WITH RECURSIVE up(id) AS (
     SELECT unnest($1::text[])
     UNION
     SELECT unnest(e.part_of) FROM l2_entities e JOIN up ON e.id = up.id
 )
-SELECT t.id, t.scope, t.name, t.about, t.acl, t.opened_by, t.created_at,
-       s.id, s.position, s.author, s.stated_at, s.evidence, coalesce(s.supersedes, ''), s.tier, s.acl, s.created_at,
-       coalesce(p.position, ''), coalesce(p.evidence, '{}'::text[])
+SELECT t.id, t.scope, t.name, t.about, t.acl, t.opened_by, t.created_at
 FROM l2_topics t
-JOIN LATERAL (
-    SELECT * FROM l2_stances s WHERE s.topic_id = t.id AND NOT ` + l2.RetiredSQL + `
-    ORDER BY stated_at DESC, created_at DESC, id DESC LIMIT 1
-) s ON true
-LEFT JOIN l2_stances p ON p.id = s.supersedes
 WHERE t.about && ARRAY(SELECT id FROM up)
-ORDER BY s.stated_at DESC, t.id`
+ORDER BY t.id`
 
 // CurrentStances is the stance every topic about one entity stands at, then the
 // ones it inherits: topics about the related entities — for a tracker item, the
@@ -92,10 +98,13 @@ ORDER BY s.stated_at DESC, t.id`
 // so is every topic one of them opened. Counting those as the item's own would
 // make every topic in the repository a stance of every item in it.
 //
-// A topic the reader may not read, or whose current stance they may not read,
-// is left out and counted in the second result. The older stance they may read
-// is not offered in its place: it is not current, and a bundle that said it was
-// would be wrong in a way the reader could not see.
+// Where a topic stands — its current stance and tier — is computed under the
+// policy in force for its scope ([l2.Store.Assess]). The current stance is
+// chosen from every stance on the topic, not from what the reader may read: it
+// is the topic's, and a bundle that offered an older one in its place would be
+// wrong in a way the reader could not see. A topic the reader may not read, or
+// whose current stance they may not read, is left out and counted in the second
+// result. A stance they may not read does not make the topic contested for them.
 //
 // Who may read is decided from L1 as it is now ([l2.Access]): a topic by the
 // document that opened it, a stance by every piece of its evidence. A document
@@ -106,79 +115,72 @@ func (v *Views) CurrentStances(ctx context.Context, reader l1.Reader, own string
 		return []CurrentStance{}, 0, nil
 	}
 	entities := append([]string{own}, related...)
-	rows, err := v.db.Query(ctx, currentSQL, entities)
-	if err != nil {
-		return nil, 0, fmt.Errorf("reading current stances: %w", err)
-	}
-	defer rows.Close()
-	var (
-		read   []CurrentStance
-		priors []l2.Stance
-	)
-	for rows.Next() {
-		var (
-			c                   CurrentStance
-			prior               l2.Stance
-			tier                string
-			topicACL, stanceACL []byte
-		)
-		if err := rows.Scan(&c.Topic.ID, &c.Topic.Scope, &c.Topic.Name, &c.Topic.About, &topicACL, &c.Topic.OpenedBy, &c.Topic.CreatedAt,
-			&c.Stance.ID, &c.Stance.Position, &c.Stance.Author, &c.Stance.StatedAt, &c.Stance.Evidence, &c.Stance.Supersedes,
-			&tier, &stanceACL, &c.Stance.CreatedAt, &c.Supersedes, &prior.Evidence); err != nil {
-			return nil, 0, fmt.Errorf("reading current stances: %w", err)
-		}
-		c.Stance.TopicID, c.Stance.Tier = c.Topic.ID, l2.Tier(tier)
-		c.Topic.CreatedAt = c.Topic.CreatedAt.UTC()
-		c.Stance.StatedAt, c.Stance.CreatedAt = c.Stance.StatedAt.UTC(), c.Stance.CreatedAt.UTC()
-		if err := errors.Join(
-			json.Unmarshal(topicACL, &c.Topic.ACL),
-			json.Unmarshal(stanceACL, &c.Stance.ACL),
-		); err != nil {
-			return nil, 0, fmt.Errorf("decoding the access lists of topic %s: %w", c.Topic.ID, err)
-		}
-		read = append(read, c)
-		priors = append(priors, prior)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, 0, fmt.Errorf("reading current stances: %w", err)
-	}
-	rows.Close()
-
-	topics := make([]l2.Topic, len(read))
-	stances := make([]l2.Stance, 0, 2*len(read))
-	for i, c := range read {
-		topics[i] = c.Topic
-		stances = append(stances, c.Stance, priors[i])
-	}
-	access, err := l2.New(v.db).Access(ctx, topics, stances)
+	topics, err := v.topics(ctx, entities)
 	if err != nil {
 		return nil, 0, err
 	}
+	assessed, err := v.graph.Assess(ctx, v.authority, reader, topics)
+	if err != nil {
+		return nil, 0, fmt.Errorf("reading current stances: %w", err)
+	}
 	out := []CurrentStance{}
 	withheld := 0
-	for i, c := range read {
-		if !access.Topic(reader, c.Topic) || !access.Stance(reader, c.Stance) {
+	for _, a := range assessed {
+		if !a.Stands {
+			continue
+		}
+		current := a.Standing.Current
+		if !a.Access.Topic(reader, a.Topic) || !a.Access.Stance(reader, current) {
 			withheld++
 			continue
 		}
-		if !access.Stance(reader, priors[i]) {
-			c.Supersedes = ""
+		c := CurrentStance{Topic: a.Topic, Stance: current, Tier: a.Standing.Tier, Inherited: !slices.Contains(a.Topic.About, own)}
+		for _, st := range a.History {
+			if st.ID == current.Supersedes && a.Access.Stance(reader, st) {
+				c.Supersedes = st.Position
+			}
 		}
-		c.Inherited = !slices.Contains(c.Topic.About, own)
 		out = append(out, c)
 	}
-	// Stable, so each half keeps the statement's newest-first order.
+	// Own before inherited, and each newest stated first.
 	slices.SortStableFunc(out, func(a, b CurrentStance) int {
-		switch {
-		case a.Inherited == b.Inherited:
-			return 0
-		case b.Inherited:
-			return -1
-		default:
+		if a.Inherited != b.Inherited {
+			if b.Inherited {
+				return -1
+			}
 			return 1
 		}
+		if c := b.Stance.StatedAt.Compare(a.Stance.StatedAt); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Topic.ID, b.Topic.ID)
 	})
 	return out, withheld, nil
+}
+
+func (v *Views) topics(ctx context.Context, entities []string) ([]l2.Topic, error) {
+	rows, err := v.db.Query(ctx, topicsSQL, entities)
+	if err != nil {
+		return nil, fmt.Errorf("reading current stances: %w", err)
+	}
+	defer rows.Close()
+	var out []l2.Topic
+	for rows.Next() {
+		var t l2.Topic
+		var acl []byte
+		if err := rows.Scan(&t.ID, &t.Scope, &t.Name, &t.About, &acl, &t.OpenedBy, &t.CreatedAt); err != nil {
+			return nil, fmt.Errorf("reading current stances: %w", err)
+		}
+		if err := json.Unmarshal(acl, &t.ACL); err != nil {
+			return nil, fmt.Errorf("decoding the access list of topic %s: %w", t.ID, err)
+		}
+		t.CreatedAt = t.CreatedAt.UTC()
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading current stances: %w", err)
+	}
+	return out, nil
 }
 
 // Activity is the recent activity on a scope.
@@ -196,19 +198,28 @@ type Activity struct {
 // [RecentCandidates] newest takes a place first, and the rest of the places go
 // by recency, so five commits do not crowd out the one issue that changed the
 // plan.
-func (v *Views) Recent(ctx context.Context, reader l1.Reader, scope string, n int) (Activity, error) {
+//
+// The documents in except — a bundle's anchors — take no place and are not
+// counted among the candidates, so an anchor is never repeated as activity and
+// never costs `recent` one of its places. They still count as activity on the
+// scope: an edit to an anchor can be the scope's last activity.
+func (v *Views) Recent(ctx context.Context, reader l1.Reader, scope string, n int, except []string) (Activity, error) {
 	if n <= 0 {
 		return Activity{Items: []l1.Stored{}}, nil
 	}
-	candidates, err := v.docs.ListFor(ctx, reader, l1.ListOptions{Scope: scope, Limit: RecentCandidates})
+	listed, err := v.docs.ListFor(ctx, reader, l1.ListOptions{Scope: scope, Limit: RecentCandidates + len(except)})
 	if err != nil {
 		return Activity{}, err
 	}
 	out := Activity{Items: []l1.Stored{}}
-	if len(candidates) == 0 {
+	if len(listed) == 0 {
 		return out, nil
 	}
-	out.LastActivity = candidates[0].Time.LastActivity
+	out.LastActivity = listed[0].Time.LastActivity
+	candidates := slices.DeleteFunc(listed, func(doc l1.Stored) bool { return slices.Contains(except, doc.ID) })
+	if len(candidates) > RecentCandidates {
+		candidates = candidates[:RecentCandidates]
+	}
 
 	taken := make([]bool, len(candidates))
 	seen := map[l1.Kind]bool{}
@@ -235,6 +246,80 @@ func (v *Views) Recent(ctx context.Context, reader l1.Reader, scope string, n in
 		if taken[i] {
 			out.Items = append(out.Items, doc)
 		}
+	}
+	return out, nil
+}
+
+// Anchor is a durable document that defines a scope (docs/design.md#anchors).
+type Anchor struct {
+	Doc l1.Stored
+	// PinnedBy is the principal who pinned it, empty for an anchor that was
+	// inferred or defaulted.
+	PinnedBy string
+}
+
+// Anchors is up to n documents that define an entity, for a reader: the ones
+// people pinned to it, first pinned first; then the one inferred as the most
+// referenced by the other documents about it ([l1.Store.MostReferencedFor]);
+// then its `spec` documents, newest activity first. A document is an anchor
+// once, where it first qualifies, and nothing configured adds one (docs/config.md).
+//
+// Every one is a document the reader may read. A pinned document they may not
+// read — or one no longer in L1 — is left out and takes no place, and the
+// inference and the defaults only ever see what they may read, so what is
+// hidden from them neither takes a place nor decides which document does.
+func (v *Views) Anchors(ctx context.Context, reader l1.Reader, scope string, n int) ([]Anchor, error) {
+	out := []Anchor{}
+	if n <= 0 || scope == "" || reader.Effective.Human == "" || !reader.Effective.Grant.Scopes.Has(scope) {
+		return out, nil
+	}
+	add := func(doc l1.Stored, pinnedBy string) {
+		if len(out) < n && !slices.ContainsFunc(out, func(a Anchor) bool { return a.Doc.ID == doc.ID }) {
+			out = append(out, Anchor{Doc: doc, PinnedBy: pinnedBy})
+		}
+	}
+
+	pins, err := v.graph.Pins(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	for _, pin := range pins {
+		if len(out) == n {
+			return out, nil
+		}
+		doc, err := v.docs.Get(ctx, pin.L1)
+		if errors.Is(err, l1.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if reader.MayRead(doc.Document) {
+			add(doc, pin.PinnedBy)
+		}
+	}
+	if len(out) == n {
+		return out, nil
+	}
+
+	inferred, _, ok, err := v.docs.MostReferencedFor(ctx, reader, scope)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		add(inferred, "")
+	}
+	if len(out) == n {
+		return out, nil
+	}
+
+	// Enough that the ones already taken cannot leave a place unfilled.
+	specs, err := v.docs.ListFor(ctx, reader, l1.ListOptions{Scope: scope, Class: config.ArtifactSpec, Limit: n + len(out)})
+	if err != nil {
+		return nil, err
+	}
+	for _, doc := range specs {
+		add(doc, "")
 	}
 	return out, nil
 }

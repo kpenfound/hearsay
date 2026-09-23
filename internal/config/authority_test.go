@@ -3,6 +3,7 @@ package config_test
 import (
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/kpenfound/hearsay/internal/config"
 )
@@ -143,6 +144,7 @@ func TestAuthorityComposition(t *testing.T) {
 					Sources:    []string{"*"},
 					Artifacts:  []config.ArtifactClass{config.ArtifactMergedPR},
 				},
+				ContestedWindow: config.DefaultContestedWindow,
 			},
 		},
 		{
@@ -158,6 +160,7 @@ func TestAuthorityComposition(t *testing.T) {
 					Sources:    []string{"*"},
 					Artifacts:  []config.ArtifactClass{config.ArtifactMergedPR},
 				},
+				ContestedWindow: config.DefaultContestedWindow,
 			},
 		},
 		{
@@ -173,6 +176,42 @@ func TestAuthorityComposition(t *testing.T) {
 					Sources:    []string{"*"},
 					Artifacts:  []config.ArtifactClass{config.ArtifactMergedPR},
 				},
+				ContestedWindow: config.DefaultContestedWindow,
+			},
+		},
+		{
+			name: "a scope inherits the default policy's contested window",
+			authority: "- scope: \"*\"\n  contested_window: 168h\n" +
+				"- scope: api\n  ranking: [merged_pr, meeting]\n",
+			scope: "api",
+			want: config.Policy{
+				Scope:           "api",
+				Ranking:         []config.ArtifactClass{config.ArtifactMergedPR, config.ArtifactMeeting},
+				RatifiedBy:      config.DefaultPolicy().RatifiedBy,
+				ContestedWindow: 7 * 24 * time.Hour,
+			},
+		},
+		{
+			name: "a contested window a scope sets replaces the inherited one",
+			authority: "- scope: \"*\"\n  contested_window: 168h\n" +
+				"- scope: api\n  contested_window: 36h\n",
+			scope: "api",
+			want: config.Policy{
+				Scope:           "api",
+				Ranking:         config.DefaultPolicy().Ranking,
+				RatifiedBy:      config.DefaultPolicy().RatifiedBy,
+				ContestedWindow: 36 * time.Hour,
+			},
+		},
+		{
+			name:      "another scope keeps the default policy's window when one scope sets its own",
+			authority: "- scope: \"*\"\n  contested_window: 168h\n- scope: api\n  contested_window: 36h\n",
+			scope:     "web",
+			want: config.Policy{
+				Scope:           "*",
+				Ranking:         config.DefaultPolicy().Ranking,
+				RatifiedBy:      config.DefaultPolicy().RatifiedBy,
+				ContestedWindow: 7 * 24 * time.Hour,
 			},
 		},
 		{
@@ -209,6 +248,9 @@ func TestAuthorityComposition(t *testing.T) {
 			}
 			if !slices.Equal(got.RatifiedBy.Artifacts, tt.want.RatifiedBy.Artifacts) {
 				t.Errorf("ratified_by.artifacts = %v, want %v", got.RatifiedBy.Artifacts, tt.want.RatifiedBy.Artifacts)
+			}
+			if got.ContestedWindow != tt.want.ContestedWindow || got.Window() != tt.want.ContestedWindow {
+				t.Errorf("contested_window = %v (in force %v), want %v", got.ContestedWindow, got.Window(), tt.want.ContestedWindow)
 			}
 		})
 	}
@@ -250,6 +292,12 @@ func TestZeroAuthorityIsTheDefaultPolicy(t *testing.T) {
 	}
 	if len(a.Scopes()) != 0 {
 		t.Errorf("the zero Authority has scopes %v", a.Scopes())
+	}
+	if got := a.Default().Window(); got != 14*24*time.Hour {
+		t.Errorf("the zero Authority's contested window is %v, want 14 days", got)
+	}
+	if got := (config.Policy{}).Window(); got != config.DefaultContestedWindow {
+		t.Errorf("an unset contested window is %v in force, want the default", got)
 	}
 }
 

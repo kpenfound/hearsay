@@ -360,6 +360,8 @@ func TestAProposedPullRequestBecomesRatifiedWithTheSamePosition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Before it merged, the source said it was an open pull request.
+	proposed.ArtifactClass = config.ArtifactPullRequest
 	if changed, err := l1.New(pool).Put(t.Context(), proposed); err != nil || !changed {
 		t.Fatalf("Put(proposed PR) = %v, %v", changed, err)
 	}

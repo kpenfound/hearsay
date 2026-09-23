@@ -84,6 +84,7 @@ type Calls struct {
 	docs      *l1.Store
 	events    *l0.Store
 	graph     *l2.Store
+	authority config.Authority
 	assembler *bundle.Assembler
 	resolver  *principal.Resolver
 	auth      *authenticator
@@ -109,7 +110,8 @@ func NewCalls(q l2.Querier, repo config.Repo, embedder l1.Embedder) (*Calls, err
 		docs:      l1.New(q),
 		events:    l0.New(q),
 		graph:     l2.New(q),
-		assembler: bundle.New(q).WithDirectiveSources(repo, resolver),
+		assembler: bundle.New(q).WithDirectiveSources(repo, resolver).WithAuthority(repo.Authority),
+		authority: repo.Authority,
 		resolver:  resolver,
 		auth:      auth,
 		embedder:  embedder,
@@ -132,7 +134,7 @@ var calls = []call{
 		schema(`{"scope":{"type":"string","description":"the entity id the bundle is for, such as tracker:github:acme/api#12"},"directive":{"type":"string","description":"L0 event id of the triggering message"}}`, "scope")}, getBundle},
 	{Tool{"resolve", "The entity ids a piece of text names, by alias and by path.",
 		schema(`{"text":{"type":"string"}}`, "text")}, resolve},
-	{Tool{"stance_history", "Every stance on a topic the caller may read, oldest first.",
+	{Tool{"stance_history", "Every stance on a topic the caller may read, oldest first, with the topic's current stance and its tier: ratified, inferred or contested.",
 		schema(`{"topic":{"type":"string","description":"a topic id, from a bundle's topic_id"}}`, "topic")}, stanceHistory},
 	{Tool{"get_l1", "One L1 document by id.",
 		schema(`{"id":{"type":"string"}}`, "id")}, getL1},
@@ -380,14 +382,29 @@ func resolve(ctx context.Context, c *Calls, _ Caller, _ l1.Reader, raw json.RawM
 
 // StanceRecord is one stance in a history.
 type StanceRecord struct {
-	ID         string   `json:"id"`
-	Position   string   `json:"position"`
-	Judgement  *string  `json:"judgement"`
-	Author     string   `json:"author,omitempty"`
-	StatedAt   string   `json:"stated_at"`
-	Tier       string   `json:"tier"`
-	Supersedes string   `json:"supersedes,omitempty"`
-	Evidence   []string `json:"evidence"`
+	ID        string  `json:"id"`
+	Position  string  `json:"position"`
+	Judgement *string `json:"judgement"`
+	Author    string  `json:"author,omitempty"`
+	StatedAt  string  `json:"stated_at"`
+	// RecordedTier is the tier the stance was written with: a record of that
+	// moment, not the tier the topic stands at, which is [History.Tier].
+	RecordedTier string   `json:"recorded_tier"`
+	Supersedes   string   `json:"supersedes,omitempty"`
+	Evidence     []string `json:"evidence"`
+}
+
+// History is a topic's `stance_history`: every stance on it the caller may
+// read, oldest first, and where the topic stands — its current stance and the
+// tier computed under the policy in force for its scope, the same the bundle
+// and L3 serve. Current and Tier are empty where the caller may not read the
+// current stance, as the bundle leaves such a topic out.
+type History struct {
+	Topic   string         `json:"topic"`
+	ID      string         `json:"topic_id"`
+	Current string         `json:"current,omitempty"`
+	Tier    string         `json:"tier,omitempty"`
+	Stances []StanceRecord `json:"stances"`
 }
 
 func stanceHistory(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json.RawMessage) (any, error) {
@@ -410,33 +427,29 @@ func stanceHistory(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, ra
 	if err != nil {
 		return nil, err
 	}
-	history, err := c.graph.StanceHistory(ctx, topic.ID)
+	assessed, err := c.graph.Assess(ctx, c.authority, reader, []l2.Topic{topic})
 	if err != nil {
 		return nil, err
 	}
-	access, err := c.graph.Access(ctx, []l2.Topic{topic}, history)
-	if err != nil {
-		return nil, err
-	}
-	if !access.Topic(reader, topic) {
+	a := assessed[0]
+	if !a.Access.Topic(reader, topic) {
 		// One answer for both, so a topic somebody may not read is not
 		// distinguishable from one that does not exist. Handles fail closed.
 		return nil, fail(http.StatusNotFound, "no topic %q", args.Topic)
 	}
 	visible := map[string]bool{}
-	out := struct {
-		Topic   string         `json:"topic"`
-		ID      string         `json:"topic_id"`
-		Stances []StanceRecord `json:"stances"`
-	}{Topic: topic.Name, ID: topic.ID, Stances: []StanceRecord{}}
-	for _, st := range history {
-		if !access.Stance(reader, st) {
+	out := History{Topic: topic.Name, ID: topic.ID, Stances: []StanceRecord{}}
+	if a.Stands && a.Access.Stance(reader, a.Standing.Current) {
+		out.Current, out.Tier = a.Standing.Current.ID, string(a.Standing.Tier)
+	}
+	for _, st := range a.History {
+		if !a.Access.Stance(reader, st) {
 			continue
 		}
 		visible[st.ID] = true
 		out.Stances = append(out.Stances, StanceRecord{
 			ID: st.ID, Position: st.Position, Author: st.Author, StatedAt: st.StatedAt.UTC().Format(time.RFC3339),
-			Tier: string(st.Tier), Supersedes: st.Supersedes, Evidence: st.Evidence,
+			RecordedTier: string(st.Tier), Supersedes: st.Supersedes, Evidence: st.Evidence,
 			Judgement: stanceJudgement(st.Judgement),
 		})
 	}
