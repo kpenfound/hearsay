@@ -124,3 +124,30 @@ func (c *client) getJSON(ctx context.Context, path string, query url.Values, v a
 	}
 	return nil
 }
+
+func (c *client) postJSON(ctx context.Context, path string, query url.Values, body any, result any) error {
+	token, err := c.accessToken(ctx)
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	u := c.base + path + "?" + query.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return &statusError{resp.StatusCode, path}
+	}
+	return json.NewDecoder(io.LimitReader(resp.Body, maxBody)).Decode(result)
+}

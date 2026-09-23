@@ -8,6 +8,7 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -94,5 +95,111 @@ func TestDriveBackfillThroughGateAndSQL(t *testing.T) {
 	}
 	if len(again) != len(stored) {
 		t.Errorf("replayed page wrote %d events, want %d", len(again), len(stored))
+	}
+}
+
+// The change cursor, event IDs, current revision and retraction all survive a
+// connector replacement through the real SQL sink.
+func TestDriveLiveSyncThroughSQL(t *testing.T) {
+	database := os.Getenv("HEARSAY_DATABASE_URL")
+	if database == "" {
+		t.Skip("HEARSAY_DATABASE_URL is not set")
+	}
+	pool, err := db.Connect(t.Context(), database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	f := &liveFixture{files: map[string]liveFile{
+		"doc":      {Folder: "docs", Head: "r1", Text: "one", Public: true},
+		"untagged": {Folder: "meet", Head: "r1", Text: "hidden", Public: true},
+		"outside":  {Folder: "elsewhere", Head: "r1", Text: "hidden", Public: true},
+	}, changes: map[string][]string{"s0": {}}, start: "s0"}
+	server := httptest.NewServer(http.HandlerFunc(f.serve))
+	defer server.Close()
+	src := source(t, server.URL)
+	src.ID = "drivelive" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	events := l0.New(pool)
+	cursors := l0.NewBackfillCursors(pool)
+	c, err := drive.New(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := connector.NewGate(events, src.ID, c.Describe(), connector.NewAllowlist(src))
+	cursor, err := c.PollFrom(t.Context(), gate, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cursors.Save(t.Context(), src.ID, connector.BackfillState{Cursor: cursor}); err != nil {
+		t.Fatal(err)
+	}
+	current := func() []connector.Event {
+		t.Helper()
+		got, err := events.Current(t.Context(), l0.ListOptions{Filter: l0.Filter{Source: src.ID, Kind: connector.KindDocument}, Limit: l0.MaxLimit})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := current(); len(got) != 1 || got[0].Payload.Artifact != "doc" {
+		t.Fatalf("initial current = %+v", got)
+	}
+	// Restart and resume from the SQL cursor after a sharing-only change.
+	c, err = drive.New(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.set("doc", liveFile{Folder: "docs", Head: "r1", Text: "one", Public: false})
+	f.next("s0", "s1", "doc", "untagged", "outside")
+	state, err := cursors.Load(t.Context(), src.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := c.PollFrom(t.Context(), gate, state.Cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cursors.Save(t.Context(), src.ID, connector.BackfillState{Cursor: next}); err != nil {
+		t.Fatal(err)
+	}
+	got := current()
+	if len(got) != 1 || got[0].Payload.Text != "one" || !strings.HasPrefix(got[0].Payload.Revision.Token, "r1+perm:") {
+		t.Fatalf("ACL-only revision = %+v", got)
+	}
+	for _, entry := range got[0].ACL {
+		if entry.Kind == connector.ACLPublic {
+			t.Fatal("current ACL retained public access")
+		}
+	}
+	before, err := events.List(t.Context(), l0.ListOptions{Filter: l0.Filter{Source: src.ID}, Limit: l0.MaxLimit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.PollFrom(t.Context(), gate, state.Cursor); err != nil {
+		t.Fatal(err)
+	}
+	after, err := events.List(t.Context(), l0.ListOptions{Filter: l0.Filter{Source: src.ID}, Limit: l0.MaxLimit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Errorf("replay wrote %d new rows", len(after)-len(before))
+	}
+	// A move outside the allowlist retracts only the formerly eligible file.
+	f.set("doc", liveFile{Folder: "elsewhere", Head: "r1", Text: "one", Public: false})
+	f.next("s1", "s2", "doc")
+	_, err = c.PollFrom(t.Context(), gate, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := current(); len(got) != 0 {
+		t.Errorf("moved-out file remains current: %+v", got)
+	}
+	tombs, err := events.List(t.Context(), l0.ListOptions{Filter: l0.Filter{Source: src.ID, Kind: connector.KindTombstone}, Limit: l0.MaxLimit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tombs) != 1 || tombs[0].Payload.Target != "doc" || tombs[0].Payload.Container.NativeID != "docs" || len(tombs[0].ACL) != len(after[len(after)-1].ACL) {
+		t.Errorf("tombstone = %+v", tombs)
 	}
 }
