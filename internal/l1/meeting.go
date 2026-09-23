@@ -53,7 +53,7 @@ func BuildMeetingSegments(root connector.Event, spans []MeetingSpan, resolver *p
 	for _, span := range spans {
 		topic := strings.ToLower(strings.Join(strings.Fields(span.Topic), " "))
 		if topic == "" || len(topic) > 160 || span.Start <= previous || span.End < span.Start || span.End > len(lines) {
-			return nil, fmt.Errorf("%w: invalid meeting span %+v", ErrInvalidDocument, span)
+			return nil, fmt.Errorf("%w: invalid meeting span %d-%d", ErrInvalidDocument, span.Start, span.End)
 		}
 		previous = span.End
 		if _, ok := byTopic[topic]; !ok {
