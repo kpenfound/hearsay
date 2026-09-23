@@ -155,6 +155,8 @@ func (l *loader) buildSources() []connector.SourceConfig {
 		switch {
 		case src.ID == "":
 			wrong = "is required: it is the id every event from this source carries"
+		case src.ID == "hearsay":
+			wrong = `"hearsay" is reserved for Hearsay's own audit and assertion events`
 		case !connector.ValidSourceID(src.ID):
 			wrong = fmt.Sprintf("%q is not a source id: 1 to %d bytes of lowercase letters, digits, - and _, starting with a letter or a digit", src.ID, connector.MaxSourceIDLen)
 		}
