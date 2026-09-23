@@ -427,8 +427,11 @@ two jobs that run at once never touch the same topic (ADR-0007). The worker
 shows the `assert` tier the topics the document may be continuing — reference
 overlap first, embedding similarity second, and only topics everyone who may
 read the document may read — and appends a stance to one or opens a new one. At
-startup it seeds `l2_entities` from `code/` and enqueues every such document it
-has not read, which is what picks up documents written before it was deployed.
+startup it seeds `l2_entities` from `code/`, and from the root directories and
+CODEOWNERS files of the GitHub repositories `code/` names (read with the
+source's token, which the worker's environment must carry), and enqueues every
+such document it has not read, which is what picks up documents written before
+it was deployed.
 
 Three rules to know before changing it:
 

@@ -1,0 +1,26 @@
+{
+  "id": 800000001,
+  "node_id": "R_kgDOL7abcd",
+  "name": "api",
+  "full_name": "acme/api",
+  "private": true,
+  "owner": {
+    "login": "acme",
+    "id": 9000001,
+    "node_id": "O_kgDOAIlUQQ",
+    "type": "Organization"
+  },
+  "html_url": "https://github.com/acme/api",
+  "description": "The Acme API",
+  "fork": false,
+  "url": "https://api.github.com/repos/acme/api",
+  "created_at": "2025-11-02T10:00:00Z",
+  "updated_at": "2026-09-04T13:05:00Z",
+  "pushed_at": "2026-09-04T13:05:00Z",
+  "size": 4211,
+  "language": "Go",
+  "archived": false,
+  "disabled": false,
+  "visibility": "private",
+  "default_branch": "main"
+}
