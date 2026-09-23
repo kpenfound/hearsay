@@ -1,0 +1,7 @@
+Facilitator: Welcome to the weekly planning meeting.
+Facilitator: First topic is the API retry policy.
+Engineer: The engine retries failed requests three times. See acme/api#31.
+Lead: Agreed, cap retries at three and record the reason in the issue.
+Facilitator: Next topic is the job queue dashboard.
+Engineer: I propose a queue depth chart for operators. See https://github.com/acme/api/pull/42.
+Lead: We need usage data before deciding. The dashboard remains open.

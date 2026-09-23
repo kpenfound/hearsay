@@ -2,7 +2,8 @@
 
 The document layer: what was said. Artifacts and fixed channel conversations
 have a document; long chat conversations may also have gated burst documents,
-and markdown documents have independently distilled wiki sections.
+markdown documents have independently distilled wiki sections, and transcripts
+have one independently distilled segment per topic.
 All are flat rows in one schema, rebuilt from L0 when their events change.
 
 **Belongs here:** the envelope and the per-kind bodies, the store, deterministic
@@ -23,7 +24,8 @@ read path asks a model to generate anything.
   of an artifact and of everything that hangs off it; [BuildChatWindow] takes
   the current messages in a fixed channel time bucket; [BuildChatBursts] derives
   gated single-author runs from those current messages; [BuildWikiSections]
-  partitions markdown at headings. They produce everything but
+  partitions markdown at headings; [BuildMeetingSegments] takes numbered
+  transcript ranges and combines repeated ranges for one topic. They produce everything but
   the body; the body is the one part that takes a model call. Nothing else may
   reach into a document — not a clock, not a map iteration order — or
   re-distilling would rewrite a row that has not changed, which is the property
@@ -31,8 +33,8 @@ read path asks a model to generate anything.
 - **Only current revisions.** An artifact's earlier revisions are in L0 and are
   what a provenance walk reads. An access-list re-sync is a revision like any
   other, so building from anything but the newest would inherit an access list
-  that has been replaced. An unchanged wiki section may retain its prior L0
-  reference when another section changes; an ACL change refreshes all sections.
+  that has been replaced. An unchanged wiki section or meeting segment may retain its prior L0
+  reference when another part changes; an ACL change refreshes all parts.
 - **The access list is folded, not inherited.** A document quotes every event in
   it, so it carries the grants every one of them carries. A reply that shares no
   grant with the artifact is left out of the document rather than narrowing it to
