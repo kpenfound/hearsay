@@ -33,6 +33,10 @@ type Assertion struct {
 	Agent string `json:"agent"`
 	// Principal is the person the agent acted for.
 	Principal string `json:"principal"`
+	// Session names the agent session artifact, when the call named one.
+	Session string `json:"session,omitempty"`
+	// SessionSource disambiguates that artifact among configured agent sources.
+	SessionSource string `json:"session_source,omitempty"`
 }
 
 // NativeID is the native id of the event that carries the assertion. It is
@@ -41,6 +45,9 @@ type Assertion struct {
 // that differs in anything is another.
 func (a Assertion) NativeID() string {
 	parts := append([]string{a.Agent, a.Principal, a.Topic, a.Position}, a.Evidence...)
+	if a.Session != "" {
+		parts = append(parts, a.SessionSource, a.Session)
+	}
 	return "assertion:" + digest(parts...)
 }
 

@@ -14,6 +14,8 @@
 // Both interfaces authenticate the person named in [PrincipalHeader] with a
 // bearer token. When [AgentHeader] names an agent, that agent's token is also
 // required. Authentication precedes the shared call layer (ADR-0014).
+// An authenticated agent may name its session in [SessionHeader]; the call
+// layer links audits and assertions to its artifact (ADR-0017).
 //
 // The watch call of docs/design.md#read-and-assert-api is later work, and so
 // are a bundle's conflicts.

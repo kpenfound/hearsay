@@ -74,10 +74,11 @@ const kyleNode = "MDQ6VXNlcjE="
 
 func repo(src string) config.Repo {
 	return config.Repo{
+		Sources: []connector.SourceConfig{{ID: src + "session", Type: "agent", Containers: []string{"*"}}},
 		Principals: []principal.Principal{
-			{ID: "kyle", Kind: principal.KindHuman, Grant: principal.Grant{Scopes: principal.AllScopes()}, TokenEnv: "HEARSAY_TEST_KYLE_TOKEN", Identities: []principal.Identity{{Source: src, NativeID: kyleNode, Handle: "kpenfound"}}},
-			{ID: "sam", Kind: principal.KindHuman, Grant: principal.Grant{Scopes: principal.AllScopes()}, TokenEnv: "HEARSAY_TEST_SAM_TOKEN", Identities: []principal.Identity{{Source: src, NativeID: "MDQ6VXNlcjI=", Handle: "sam"}}},
-			{ID: "shed", Kind: principal.KindAgent, Class: principal.ClassWorker, Grant: principal.Grant{Scopes: principal.AllScopes()}, TokenEnv: "HEARSAY_TEST_SHED_TOKEN", Identities: []principal.Identity{{Source: src, Handle: "shed[bot]"}}},
+			{ID: "kyle", Kind: principal.KindHuman, Grant: principal.Grant{Scopes: principal.AllScopes()}, TokenEnv: "HEARSAY_TEST_KYLE_TOKEN", Identities: []principal.Identity{{Source: src, NativeID: kyleNode, Handle: "kpenfound"}, {Source: src + "session", NativeID: "kyle"}}},
+			{ID: "sam", Kind: principal.KindHuman, Grant: principal.Grant{Scopes: principal.AllScopes()}, TokenEnv: "HEARSAY_TEST_SAM_TOKEN", Identities: []principal.Identity{{Source: src, NativeID: "MDQ6VXNlcjI=", Handle: "sam"}, {Source: src + "session", NativeID: "sam"}}},
+			{ID: "shed", Kind: principal.KindAgent, Class: principal.ClassWorker, Grant: principal.Grant{Scopes: principal.AllScopes()}, TokenEnv: "HEARSAY_TEST_SHED_TOKEN", Identities: []principal.Identity{{Source: src, Handle: "shed[bot]"}, {Source: src + "session", NativeID: "shed"}}},
 			{ID: "peek", Kind: principal.KindAgent, Class: principal.ClassObserver, Grant: principal.Grant{Scopes: principal.AllScopes()}, TokenEnv: "HEARSAY_TEST_PEEK_TOKEN", Identities: []principal.Identity{{Source: src, Handle: "peek[bot]"}}},
 			{ID: "channel_members", Kind: principal.KindTeam, Identities: []principal.Identity{{Source: src, NativeID: "private-channel"}}, Members: []string{"kyle"}},
 		},
@@ -217,6 +218,9 @@ func (w *world) post(t *testing.T, path string, caller api.Caller, body string) 
 		case "peek":
 			req.Header.Set(api.AgentTokenHeader, "test-peek-api-credential")
 		}
+	}
+	if caller.Session != "" {
+		req.Header.Set(api.SessionHeader, caller.Session)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -728,7 +732,7 @@ func TestMCPSpeaksTheProtocol(t *testing.T) {
 	for _, tool := range tools {
 		names = append(names, tool.(map[string]any)["name"].(string))
 	}
-	if strings.Join(names, ",") != "get_bundle,resolve,stance_history,get_l1,get_l0,search,assert" {
+	if strings.Join(names, ",") != "get_bundle,resolve,stance_history,get_l1,get_l0,get_session,search,assert" {
 		t.Errorf("tools = %v", names)
 	}
 	if e := rpc(`{"jsonrpc":"2.0","id":3,"method":"resources/list"}`)["error"]; e == nil {

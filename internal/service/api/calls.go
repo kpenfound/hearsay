@@ -19,6 +19,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/bundle"
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/connector/agent"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
@@ -38,12 +39,16 @@ const AuditSource = connector.SelfSource
 type Caller struct {
 	Principal string
 	Agent     string
+	Session   string
+	// SessionSource is resolved from the authenticated session artifact.
+	SessionSource string
 }
 
 // The headers a caller is named by. Names alone grant no access.
 const (
 	PrincipalHeader = "Hearsay-Principal"
 	AgentHeader     = "Hearsay-Agent"
+	SessionHeader   = "Hearsay-Session"
 )
 
 // Error is a call that did not succeed, with the HTTP status it is served as and
@@ -85,16 +90,17 @@ type Tool struct {
 // interface serves verbatim. That is what makes the same request over MCP and
 // HTTP byte-identical — there is one encoding, and it happens here.
 type Calls struct {
-	db        DB
-	docs      *l1.Store
-	events    *l0.Store
-	graph     *l2.Store
-	authority config.Authority
-	assembler *bundle.Assembler
-	cache     *bundleCache
-	resolver  *principal.Resolver
-	auth      *authenticator
-	embedder  l1.Embedder
+	db             DB
+	docs           *l1.Store
+	events         *l0.Store
+	graph          *l2.Store
+	authority      config.Authority
+	assembler      *bundle.Assembler
+	cache          *bundleCache
+	resolver       *principal.Resolver
+	auth           *authenticator
+	embedder       l1.Embedder
+	sessionSources []string
 	// now and id are the clock and the audit event id, replaceable by a test.
 	// The clock is also an assertion event's time.
 	now func() time.Time
@@ -120,19 +126,26 @@ func NewCalls(q DB, repo config.Repo, embedder l1.Embedder) (*Calls, error) {
 	if err != nil {
 		return nil, fmt.Errorf("building the identity resolver: %w", err)
 	}
+	var sessionSources []string
+	for _, source := range repo.Sources {
+		if source.Type == agent.Type {
+			sessionSources = append(sessionSources, source.ID)
+		}
+	}
 	return &Calls{
-		db:        q,
-		docs:      l1.New(q),
-		events:    l0.New(q),
-		graph:     l2.New(q),
-		assembler: bundle.New(q).WithDirectiveSources(repo, resolver).WithAuthority(repo.Authority),
-		cache:     newBundleCache(),
-		authority: repo.Authority,
-		resolver:  resolver,
-		auth:      auth,
-		embedder:  embedder,
-		now:       time.Now,
-		id:        randomID,
+		db:             q,
+		docs:           l1.New(q),
+		events:         l0.New(q),
+		graph:          l2.New(q),
+		assembler:      bundle.New(q).WithDirectiveSources(repo, resolver).WithAuthority(repo.Authority),
+		cache:          newBundleCache(),
+		authority:      repo.Authority,
+		resolver:       resolver,
+		auth:           auth,
+		embedder:       embedder,
+		sessionSources: sessionSources,
+		now:            time.Now,
+		id:             randomID,
 	}, nil
 }
 
@@ -159,6 +172,8 @@ var calls = []call{
 		schema(`{"id":{"type":"string"}}`, "id")}, getL1},
 	{Tool{"get_l0", "One L0 event by id.",
 		schema(`{"id":{"type":"string"}}`, "id")}, getL0},
+	{Tool{"get_session", "Follow an assertion event id to the agent session and its ordered events and served bundle audit events.",
+		schema(`{"assertion":{"type":"string"}}`, "assertion")}, getSession},
 	{Tool{"search", "Hybrid retrieval over L1: full text and embeddings, fused by rank. Returns documents, not answers.",
 		schema(`{"query":{"type":"string"},"scope":{"type":"string","description":"an entity id to search within"},"limit":{"type":"integer"}}`, "query")}, search},
 	{Tool{"assert", "Propose a position on an existing topic, citing the L1 documents it rests on. Only an agent of class worker or above may; the stance is appended by the assertion worker, ranks as class agent and does not ratify on its own under the default authority policy. Returns the id of the L0 assertion event; repeating a request returns the same id and writes nothing more.",
@@ -189,6 +204,13 @@ func (c *Calls) Call(ctx context.Context, caller Caller, name string, args json.
 	reader, err := c.readerFor(caller)
 	if err != nil {
 		return nil, err
+	}
+	caller.SessionSource = ""
+	if caller.Session != "" {
+		caller.SessionSource, err = c.sessionSource(ctx, caller, reader, caller.Session, "")
+		if err != nil {
+			return nil, err
+		}
 	}
 	if len(bytes.TrimSpace(args)) == 0 {
 		args = json.RawMessage(`{}`)
@@ -313,18 +335,20 @@ func getBundle(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, r
 // by its digest rather than copied: L0 would otherwise hold every bundle ever
 // served, and the digest is enough to tell two apart.
 type AuditRecord struct {
-	Call      string        `json:"call"`
-	Principal string        `json:"principal"`
-	Agent     string        `json:"agent,omitempty"`
-	Scope     string        `json:"scope"`
-	Bundle    string        `json:"bundle"`
-	Report    bundle.Report `json:"report"`
+	Call          string        `json:"call"`
+	Principal     string        `json:"principal"`
+	Agent         string        `json:"agent,omitempty"`
+	Session       string        `json:"session,omitempty"`
+	SessionSource string        `json:"session_source,omitempty"`
+	Scope         string        `json:"scope"`
+	Bundle        string        `json:"bundle"`
+	Report        bundle.Report `json:"report"`
 }
 
 func (c *Calls) audit(ctx context.Context, caller Caller, scope string, body []byte, report bundle.Report) error {
 	sum := sha256.Sum256(body)
 	record, err := json.Marshal(AuditRecord{
-		Call: "get_bundle", Principal: caller.Principal, Agent: caller.Agent, Scope: scope,
+		Call: "get_bundle", Principal: caller.Principal, Agent: caller.Agent, Session: caller.Session, SessionSource: caller.SessionSource, Scope: scope,
 		Bundle: "sha256:" + hex.EncodeToString(sum[:]), Report: report,
 	})
 	if err != nil {
@@ -353,8 +377,8 @@ func (c *Calls) audit(ctx context.Context, caller Caller, scope string, body []b
 		// Who was served what is itself something to keep from the people who
 		// were not. The entry names the principal in Hearsay's own source, which
 		// no configured identity is in and so no reader's audience holds: the
-		// record is readable by nobody through the API yet, the person it was
-		// served for included. Failing closed until audit reads are built.
+		// get_l0 does not serve this record; get_session returns it only after
+		// checking the linked session and assertion. Unlinked audits stay closed.
 		ACL: connector.ACL{{Kind: connector.ACLIdentity, Source: AuditSource, NativeID: caller.Principal}},
 	}
 	appended, err := c.events.Append(ctx, ev)
@@ -650,7 +674,7 @@ func assertStance(ctx context.Context, c *Calls, caller Caller, reader l1.Reader
 		return nil, errUnreadable
 	}
 
-	as := l2.Assertion{Topic: topic.ID, Position: position, Evidence: evidence, Agent: caller.Agent, Principal: caller.Principal}
+	as := l2.Assertion{Topic: topic.ID, Position: position, Evidence: evidence, Agent: caller.Agent, Principal: caller.Principal, Session: caller.Session, SessionSource: caller.SessionSource}
 	native, err := json.Marshal(as)
 	if err != nil {
 		return nil, fmt.Errorf("encoding an assertion: %w", err)
@@ -675,8 +699,8 @@ func assertStance(ctx context.Context, c *Calls, caller Caller, reader l1.Reader
 		// Who may read the stance is decided on every read from all of its
 		// evidence as it is then, which an access list written once cannot
 		// say: it would neither be the intersection of several documents' lists
-		// nor follow a re-sync (ADR-0013). So the event fails closed, as an
-		// audit event does, and the stance is the way to read the position.
+		// nor follow a re-sync (ADR-0013). So get_l0 fails closed. A linked
+		// assertion id can lead to get_session after current evidence checks.
 		ACL: connector.ACL{{Kind: connector.ACLIdentity, Source: AuditSource, NativeID: caller.Principal}},
 	}
 	id := connector.EventID(AuditSource, nativeID)
