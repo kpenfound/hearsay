@@ -92,20 +92,20 @@ const watchCursorVersion = "w1:"
 // encodeWatchCursor is a feed position as the opaque cursor `watch` serves. It
 // is never empty, the beginning of the feed included: an empty cursor is a
 // consumer starting from now.
-func encodeWatchCursor(c l0.Cursor) string {
-	return base64.RawURLEncoding.EncodeToString([]byte(watchCursorVersion + c.String()))
+func encodeWatchCursor(m l0.Mark) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(watchCursorVersion + m.String()))
 }
 
-func decodeWatchCursor(s string) (l0.Cursor, error) {
+func decodeWatchCursor(s string) (l0.Mark, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(s)
 	if err != nil {
-		return l0.Cursor{}, err
+		return l0.Mark{}, err
 	}
 	position, ok := strings.CutPrefix(string(raw), watchCursorVersion)
 	if !ok {
-		return l0.Cursor{}, errors.New("not a watch cursor")
+		return l0.Mark{}, errors.New("not a watch cursor")
 	}
-	return l0.ParseCursor(position)
+	return l0.ParseMark(position)
 }
 
 // watch is `watch(scope, filter, after?)` (docs/design.md#read-and-assert-api):
@@ -126,6 +126,9 @@ func decodeWatchCursor(s string) (l0.Cursor, error) {
 // distillation left out of every document — a tombstone, a revision a later
 // one replaced — is passed without a notification.
 //
+// Without `after` a watch starts from now: what had committed before the call
+// is not new, even where the feed has not reached it yet (l0.Store.Now).
+//
 // What the caller may not see is passed the same way as what is not on the
 // scope: the cursor moves over it, and the response carries no position of any
 // event, so there is no gap to see. The cursor is opaque.
@@ -144,10 +147,12 @@ func watch(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, raw j
 	if err := required("scope", args.Scope); err != nil {
 		return nil, err
 	}
-	var from l0.Cursor
+	// Without a cursor, from now: what had committed before the call is not
+	// new, even where the feed has not reached it yet (l0.Store.Now).
+	var from l0.Mark
 	var err error
 	if args.After == "" {
-		from, err = c.events.Head(ctx)
+		from, err = c.events.Now(ctx)
 	} else if from, err = decodeWatchCursor(args.After); err != nil {
 		return nil, fail(http.StatusBadRequest, "after is not a cursor a watch returned")
 	}
@@ -168,12 +173,13 @@ func watch(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, raw j
 		}
 	}
 
+	deadline := time.Now().Add(c.watchWait)
 	wait := time.NewTimer(c.watchWait)
 	defer wait.Stop()
 	poll := time.NewTicker(c.watchPoll)
 	defer poll.Stop()
 	for {
-		notes, next, err := c.scan(ctx, reader, on, args.Filter, from)
+		notes, next, err := c.scan(ctx, reader, on, args.Filter, from, deadline)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, errCancelled
@@ -200,15 +206,16 @@ func watch(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, raw j
 // left to read it.
 var errCancelled = &Error{Status: http.StatusServiceUnavailable, Message: "the watch was cancelled"}
 
-// scan reads the feed after a cursor and returns the notifications it holds
-// for this reader, and how far it got: to the end of the feed, to the first
-// event still waiting on its distillation, or to the last of
-// [MaxNotifications]. Every read is a statement on the pool; nothing holds a
+// scan reads the feed after a mark and returns the notifications it holds for
+// this reader, and how far it got: to the end of the feed, to the first event
+// still waiting on its distillation, or to the last of [MaxNotifications] — or,
+// on a feed long enough that reading it outlasts the wait, as far as it read by
+// the deadline. Every read is a statement on the pool; nothing holds a
 // connection between them.
-func (c *Calls) scan(ctx context.Context, reader l1.Reader, on map[string]bool, filter WatchFilter, from l0.Cursor) ([]Notification, l0.Cursor, error) {
+func (c *Calls) scan(ctx context.Context, reader l1.Reader, on map[string]bool, filter WatchFilter, from l0.Mark, deadline time.Time) ([]Notification, l0.Mark, error) {
 	notes := []Notification{}
 	for {
-		changes, err := c.events.Changes(ctx, from, l0.Filter{}, l0.MaxLimit)
+		changes, err := c.events.Changes(ctx, from.From, l0.Filter{}, l0.MaxLimit)
 		if err != nil {
 			return nil, from, err
 		}
@@ -221,7 +228,7 @@ func (c *Calls) scan(ctx context.Context, reader l1.Reader, on map[string]bool, 
 		ids, targets := []string{}, []string{}
 		for _, change := range changes {
 			ev := change.Event
-			if !c.mayNotify(reader, filter, ev) {
+			if from.Committed(change.Cursor) || !c.mayNotify(reader, filter, ev) {
 				continue
 			}
 			target, ok, err := distiller.TargetOf(ctx, ev, c.events)
@@ -260,7 +267,7 @@ func (c *Calls) scan(ctx context.Context, reader l1.Reader, on map[string]bool, 
 				// Not distilled yet: wait here rather than pass it.
 				return notes, from, nil
 			}
-			from = change.Cursor
+			from = from.Past(change.Cursor)
 			if !candidate {
 				continue
 			}
@@ -271,7 +278,7 @@ func (c *Calls) scan(ctx context.Context, reader l1.Reader, on map[string]bool, 
 				}
 			}
 		}
-		if len(notes) > 0 || len(changes) < l0.MaxLimit {
+		if len(changes) < l0.MaxLimit || !time.Now().Before(deadline) {
 			return notes, from, nil
 		}
 	}

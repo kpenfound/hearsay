@@ -2,6 +2,7 @@ package l0
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -67,4 +68,68 @@ func (c Cursor) Compare(other Cursor) int {
 	default:
 		return 1
 	}
+}
+
+// Mark is a moment on the change feed, as [Store.Now] takes it: the cursor to
+// read the feed from, and the transactions after it that had already committed
+// at that moment, whose events a reader passes over. It is opaque to whoever
+// holds it, as a [Cursor] is, and the zero value is the beginning of the feed.
+type Mark struct {
+	// From is where the feed is read from.
+	From Cursor
+	// committed are transactions after From that had committed at the mark,
+	// in order.
+	committed []uint64
+}
+
+// Committed reports whether the event at c had committed when the mark was
+// taken, and so is not new to a reader who started at the mark.
+func (m Mark) Committed(c Cursor) bool {
+	_, found := slices.BinarySearch(m.committed, c.xact)
+	return found
+}
+
+// Past is the mark once its reader has read the feed to c: the feed is read
+// from c, and the committed transactions wholly behind it are forgotten, which
+// they all are once the reader has passed the last of them.
+func (m Mark) Past(c Cursor) Mark {
+	i, _ := slices.BinarySearch(m.committed, c.xact)
+	return Mark{From: c, committed: slices.Clone(m.committed[i:])}
+}
+
+// String is the mark's wire form: its cursor's, then `+` and the committed
+// transactions, comma-separated, when it lists any.
+func (m Mark) String() string {
+	if len(m.committed) == 0 {
+		return m.From.String()
+	}
+	ids := make([]string, len(m.committed))
+	for i, x := range m.committed {
+		ids[i] = strconv.FormatUint(x, 10)
+	}
+	return m.From.String() + "+" + strings.Join(ids, ",")
+}
+
+// ParseMark reads back what [Mark.String] wrote.
+func ParseMark(s string) (Mark, error) {
+	cursor, list, listed := strings.Cut(s, "+")
+	from, err := ParseCursor(cursor)
+	if err != nil {
+		return Mark{}, err
+	}
+	m := Mark{From: from}
+	if !listed {
+		return m, nil
+	}
+	for _, x := range strings.Split(list, ",") {
+		id, err := strconv.ParseUint(x, 10, 64)
+		if err != nil || id < from.xact || len(m.committed) > 0 && id <= m.committed[len(m.committed)-1] {
+			return Mark{}, fmt.Errorf("mark %q: transaction %q is before the cursor or not after the one before it", s, x)
+		}
+		m.committed = append(m.committed, id)
+	}
+	if len(m.committed) > MaxMarkCommitted {
+		return Mark{}, fmt.Errorf("mark %q: lists more than %d transactions", s, MaxMarkCommitted)
+	}
+	return m, nil
 }

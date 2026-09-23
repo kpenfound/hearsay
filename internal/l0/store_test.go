@@ -162,3 +162,50 @@ func TestCursorsCompareInFeedOrder(t *testing.T) {
 		})
 	}
 }
+
+func TestMarksRoundTripAndPassWhatHadCommitted(t *testing.T) {
+	parse := func(s string) l0.Cursor {
+		t.Helper()
+		c, err := l0.ParseCursor(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	m, err := l0.ParseMark("100.3+104,107")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.String(); got != "100.3+104,107" {
+		t.Errorf("String() = %q, want it back", got)
+	}
+	for _, tt := range []struct {
+		at   string
+		want bool
+	}{{"101.0", false}, {"104.0", true}, {"104.9", true}, {"105.2", false}, {"107.1", true}, {"108.0", false}} {
+		if got := m.Committed(parse(tt.at)); got != tt.want {
+			t.Errorf("Committed(%s) = %v, want %v", tt.at, got, tt.want)
+		}
+	}
+	for _, tt := range []struct{ at, want string }{
+		{"101.0", "101.0+104,107"},
+		{"104.2", "104.2+104,107"},
+		{"105.0", "105.0+107"},
+		{"108.0", "108.0"},
+	} {
+		if got := m.Past(parse(tt.at)).String(); got != tt.want {
+			t.Errorf("Past(%s) = %q, want %q", tt.at, got, tt.want)
+		}
+	}
+	if got := m.String(); got != "100.3+104,107" {
+		t.Errorf("Past changed the mark it was called on: %q", got)
+	}
+	for _, bad := range []string{"100.3+", "100.3+99", "100.3+104,104", "100.3+107,104", "100.3+x", "+"} {
+		if _, err := l0.ParseMark(bad); err == nil {
+			t.Errorf("ParseMark(%q) = no error, want one", bad)
+		}
+	}
+	if m, err := l0.ParseMark(""); err != nil || m.String() != "" {
+		t.Errorf("ParseMark(\"\") = %q, %v; want the beginning of the feed", m.String(), err)
+	}
+}

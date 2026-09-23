@@ -112,6 +112,12 @@ func newWatchWorld(t *testing.T) *watchWorld {
 // notification may carry.
 func (w *watchWorld) emit(t *testing.T, source, artifact string, kind connector.Kind, acl connector.ACL) string {
 	t.Helper()
+	return w.emitIn(t, w.events, source, artifact, kind, acl)
+}
+
+// emitIn is emit in a transaction of the caller's.
+func (w *watchWorld) emitIn(t *testing.T, events *l0.Store, source, artifact string, kind connector.Kind, acl connector.ACL) string {
+	t.Helper()
 	w.hour++
 	ev := connector.Event{
 		Source: source, NativeID: artifact, Kind: kind, Time: day.Add(time.Duration(w.hour) * time.Hour),
@@ -122,7 +128,7 @@ func (w *watchWorld) emit(t *testing.T, source, artifact string, kind connector.
 		},
 		ACL: acl,
 	}
-	if _, err := w.events.Append(t.Context(), ev); err != nil {
+	if _, err := events.Append(t.Context(), ev); err != nil {
 		t.Fatalf("Append(%s) = %v", artifact, err)
 	}
 	return connector.EventID(source, artifact)
@@ -146,11 +152,40 @@ func (w *watchWorld) distil(t *testing.T, source, artifact string, scope []strin
 	return doc.ID
 }
 
-// pumped moves the distiller's cursor to the end of the feed: it has read
-// everything there is.
+// settled waits until the feed serves everything this database has
+// committed. The feed holds back behind any transaction open in the cluster,
+// and the other packages' tests share the cluster, so without this a test
+// would race them.
+func (w *watchWorld) settled(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var behind int
+		if err := w.pool.QueryRow(t.Context(),
+			`SELECT count(*) FROM l0_events WHERE xact_id >= pg_snapshot_xmin(pg_current_snapshot())`).Scan(&behind); err != nil {
+			t.Fatal(err)
+		}
+		if behind == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the feed is still %d events behind after 30s", behind)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// pumped waits for the feed to settle and moves the distiller's cursor to its
+// end: it has read everything there is.
 func (w *watchWorld) pumped(t *testing.T) {
 	t.Helper()
-	head, err := w.events.Head(t.Context())
+	w.settled(t)
+	var last string
+	if err := w.pool.QueryRow(t.Context(),
+		`SELECT coalesce((SELECT xact_id::text || '.' || seq FROM l0_events ORDER BY xact_id DESC, seq DESC LIMIT 1), '')`).Scan(&last); err != nil {
+		t.Fatal(err)
+	}
+	head, err := l0.ParseCursor(last)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,6 +275,33 @@ func TestWatchDeliversAnEventOnceItIsDistilled(t *testing.T) {
 	}
 }
 
+// A watch from now passes over what had committed before it, even where an
+// open transaction holds the feed short of it, and delivers what that
+// transaction writes once it commits: the event was not there at the start.
+func TestAWatchFromNowPassesWhatHadCommittedBehindAnOpenTransaction(t *testing.T) {
+	w := newWatchWorld(t)
+	tx, err := w.pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	late := w.emitIn(t, l0.New(tx), w.src, "acme/w#1", connector.KindIssue, openACL)
+	before := w.emit(t, w.src, "acme/w#2", connector.KindIssue, openACL)
+	start := w.watch(t, kyle, map[string]any{"scope": w.repo})
+	if len(start.Notifications) != 0 {
+		t.Fatalf("a watch from now returned %v", start.Notifications)
+	}
+	if err := tx.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	w.distil(t, w.src, "acme/w#1", []string{w.repo}, openACL, late)
+	w.distil(t, w.src, "acme/w#2", []string{w.repo}, openACL, before)
+	w.pumped(t)
+	if got := eventsOf(w.watch(t, kyle, map[string]any{"scope": w.repo, "after": start.Cursor}).Notifications); !slices.Equal(got, []string{late}) {
+		t.Errorf("got %v, want %v alone: %s had committed before the watch began", got, []string{late}, before)
+	}
+}
+
 // Reading on from the cursor each watch returns delivers every event on the
 // scope once, in feed order, whatever the feed holds between them and however
 // many watches it takes.
@@ -260,7 +322,17 @@ func TestWatchResumesFromItsCursorWithoutDuplicatesOrGaps(t *testing.T) {
 		}
 		w.pumped(t)
 	}
-	add(api.MaxNotifications + 5)
+	// A page of the feed's worth of events nobody distilled, so that the
+	// first page read holds some notifications but fewer than a batch.
+	filler := func(n int) {
+		t.Helper()
+		for range n {
+			w.emit(t, w.src, fmt.Sprintf("acme/other#%d", w.hour+1), connector.KindIssue, openACL)
+		}
+	}
+	add(api.MaxNotifications / 2)
+	filler(l0.MaxLimit)
+	add(api.MaxNotifications/2 + 5)
 	var got []string
 	cursor := start.Cursor
 	for _, size := range []int{api.MaxNotifications, 5, 0} {
