@@ -174,7 +174,7 @@ func TestDocsExampleIsTheConfigurationItDescribes(t *testing.T) {
 	if src.Refresh.String() != "15m0s" {
 		t.Errorf("drive refresh = %v, want 15m", src.Refresh)
 	}
-	if got, want := string(src.Settings), `{"recursive":true}`; got != want {
+	if got, want := string(src.Settings), `{"meeting_transcript_label_id":"1PublishedLabelId","transcript_candidate_folder_ids":["1MeetingsFolderId"]}`; got != want {
 		t.Errorf("drive settings = %s, want %s", got, want)
 	}
 	if got, want := src.Secrets["credentials"], "HEARSAY_DRIVE_CREDENTIALS"; got != want {

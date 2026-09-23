@@ -147,6 +147,47 @@ failures; a REST error or 429 retries the same page. Keep the bot's View Channel
 Read Message History, and private-thread access after changing a channel's
 visibility, or the re-sync cannot read the artifacts it must re-emit.
 
+### Google Drive source
+
+Create a Google Cloud service account, enable the Drive API, and place its JSON
+key in the environment variable named by `secrets.credentials`. Share each
+configured folder and file with that account. The connector requests the
+`https://www.googleapis.com/auth/drive.readonly` scope. It needs permission to
+list files, read text content, list file labels and sharing permissions. Native
+Google Docs also require owner, organizer, file organizer or writer access to
+list revisions, since Drive does not return `headRevisionId` for them. Grant
+access to each document rather than relying on a parent listing alone.
+
+```yaml
+sources:
+  - id: drive
+    type: drive
+    containers: [engineering-folder-id, meetings-folder-id]
+    settings:
+      transcript_candidate_folder_ids: [meetings-folder-id]
+      meeting_transcript_label_id: label-id-from-drive
+    secrets:
+      credentials: HEARSAY_DRIVE_CREDENTIALS
+```
+
+`containers` is an explicit list of direct parent folder IDs. It is not
+recursive and `*` is refused. The transcript candidate IDs must be members of
+`containers`; the remaining folders contain general documents. The two folder
+sets cannot overlap. Create a Drive label with the recommended title
+**Hearsay Meeting Transcript**, publish it, and copy its stable ID into this
+source's `meeting_transcript_label_id`. The title is never used for matching.
+Apply that label directly to a file to opt it in. Candidate folder files with
+no exact label or unreadable labels are skipped and never become documents.
+
+Backfill reads one page per call. The runtime stores the folder and Drive page
+token in Postgres and resumes after restart. It reads UTF-8 plain text and
+Markdown files and exports native Google Docs as plain text. Files without a
+head revision ID (or, for native Docs, an accessible revisions list), an author
+for a document, or readable sharing permissions are skipped. `webViewLink`
+becomes the source URL. If a file has a `calendar_attendee_emails` Drive
+property containing comma-separated email addresses, those become attendee
+identity hints. Live Drive change sync is handled separately.
+
 ## `scopes/`
 
 A scope is a named bundle of sources: what is *relevant* to a piece of work.
@@ -608,10 +649,11 @@ sources:
     type: drive
     containers:
       - 1AbCdEfGhIjKlMnOpQrStUvWxYz # the Engineering folder
+      - 1MeetingsFolderId # transcript candidate folder
     refresh: 15m
     settings:
-      # Whatever the Drive connector documents; Hearsay passes it through.
-      recursive: true
+      transcript_candidate_folder_ids: [1MeetingsFolderId]
+      meeting_transcript_label_id: 1PublishedLabelId
     secrets:
       credentials: HEARSAY_DRIVE_CREDENTIALS
 
@@ -748,10 +790,11 @@ id: drive
 type: drive
 containers:
   - 1AbCdEfGhIjKlMnOpQrStUvWxYz # the Engineering folder
+  - 1MeetingsFolderId # transcript candidate folder
 refresh: 15m
 settings:
-  # Whatever the Drive connector documents; Hearsay passes it through.
-  recursive: true
+  transcript_candidate_folder_ids: [1MeetingsFolderId]
+  meeting_transcript_label_id: 1PublishedLabelId
 secrets:
   credentials: HEARSAY_DRIVE_CREDENTIALS
 ```

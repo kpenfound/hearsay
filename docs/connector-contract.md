@@ -532,7 +532,7 @@ health status.
 from the same `SourceConfig` as the allowlist, because that is what runs in
 production, and assert on what the recorder received.
 
-## The three connectors this was checked against
+## Connector examples
 
 Written before the connectors, and checked on paper against the GitHub (v0.2.0),
 Discord (v0.3.0) and Drive (v0.4.0) work.
@@ -661,28 +661,37 @@ else.
 |---|---|---|---|---|
 | Document | `document` | `<file id>` | `<file id>@<head revision id>` | folder `<folder id>` |
 | Meeting transcript | `transcript` | `<file id>` | `<file id>@<head revision id>` | folder |
-| Comment on a document | `message` | `<file id>:comment:<comment id>` | `…@<modified time>` | folder |
+| Comment on a document (future work) | `message` | `<file id>:comment:<comment id>` | `…@<modified time>` | folder |
 
-Drive's revision ids are what the contract's revision token was designed for, and
-a document edited ten times is ten L0 events with one artifact id. Change
-notifications are a `Pusher`, with a `Poller` fallback for the folders Drive will
-not watch — a connector implementing both is why the ingest modes are separate
-interfaces rather than a mode field. ACL comes from the file's permissions:
+The initial Drive connector implements bounded `Backfiller` calls only. It walks
+one page of one explicitly configured folder per call. The source `containers`
+are direct parent folder IDs; there is no recursive expansion. Candidate
+transcript folders are separately listed in
+`settings.transcript_candidate_folder_ids` and must also be in `containers`.
+The remaining folders contain general documents. Candidate files are emitted
+only when a directly applied label has the exact published ID configured in
+`settings.meeting_transcript_label_id`; the human title does not participate.
+Missing, different, duplicate or unreadable label metadata skips the file
+without document fallback. Transient API failures retry the page.
+
+The head revision ID is the content token. Drive returns `headRevisionId` for
+binary files; for native Google Docs the connector takes the last ID in the
+revisions list, which requires writer or owner access. A document edited ten
+times can therefore have ten L0 events with one artifact id. ACL comes from
+the file's current permissions:
 `domain` sharing maps to `public`, a group permission to `group`, a per-person
 share to `identity`. A transcript's author is often the meeting bot rather than a
 person, which is why `transcript` does not require one; attendees go in
 `participants` with role `attendee`.
 
-Drive is the source where the ACL moves most and the composed token earns its
-keep: sharing a document changes the permission list and not the head revision
-id, so the token is `<head revision id>+perm:<permission list etag>`, and the
-re-share lands as a new revision with the same content and a new `acl`.
+The backfill uses the content head revision ID exactly, as issue #98 requires.
+Permission-only changes and live sync are the subsequent Drive change work
+(#99); those will need a distinct permission revision token when the ACL moves
+without a content edit.
 
-Two things Drive needs that the contract deliberately leaves to the connector: a
-file that moves between folders changes container, and the connector emits the
-next revision under the new container rather than rewriting history; and a file
-in a folder that is not allowlisted is dropped by the gate, so a connector
-watching a whole drive is safe by construction.
+Files whose direct parent is not configured are ignored before reaching the
+gate, which also enforces the source allowlist. Folder moves, deletions and
+label removal are handled by #99.
 
 ## Changing this contract
 
