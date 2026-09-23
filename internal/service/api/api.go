@@ -1,8 +1,8 @@
 // Package api serves the read and assert API over MCP and HTTP: bundle
-// assembly, the handles a consumer follows, the audit trail, and `assert`, the
-// one write, through which an agent proposes a stance as an L0 `assertion`
-// event. Reads are structured lookups, and nothing here asks a model to
-// generate anything: the one model call a read makes is `search` embedding the
+// assembly, the handles a consumer follows, `watch`, the audit trail, and
+// `assert`, the one write, through which an agent proposes a stance as an L0
+// `assertion` event. Reads are structured lookups, and nothing here asks a
+// model to generate anything: the one model call a read makes is `search` embedding the
 // query it was given, on the `embed` tier (internal/l1).
 //
 // Both interfaces are thin over one call layer, [Calls]: a call takes the
@@ -29,8 +29,17 @@
 // Each bundle's audit record names the agent's class and counts what reach
 // withheld apart from what the access lists did.
 //
-// The watch call of docs/design.md#read-and-assert-api is later work, and so
-// are a bundle's conflicts.
+// `watch` is how a consumer learns something changed without polling bundles:
+// a long poll with an opaque cursor over the L0 change feed, returning the
+// events on a scope once they are distilled, as handles with no content. It
+// keeps no state between calls, so it is an ordinary call over both interfaces
+// like the rest. A person may watch, and an agent of class orchestrator or
+// above. What it delivers is filtered by the access lists and the reach as
+// every read is, and what it withholds leaves no trace: the cursor passes it
+// and nothing in the response carries a position. Hearsay's own audit events,
+// and whatever is never distilled, never notify. A waiting watch holds no
+// database connection, and ends when its request is cancelled or the server
+// stops.
 package api
 
 import (
@@ -120,6 +129,9 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 		// through the shutdown grace period.
 		BaseContext: func(net.Listener) context.Context { return context.WithoutCancel(ctx) },
 	}
+	// A waiting watch returns what it has rather than outlast the grace
+	// period.
+	server.RegisterOnShutdown(calls.stopWatches)
 	log.InfoContext(ctx, "api started", "listen", listener.Addr().String(), "config_digest", cfg.Repo.Digest,
 		"embedding", embedder != nil)
 

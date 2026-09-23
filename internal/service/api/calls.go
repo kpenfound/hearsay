@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -101,6 +102,12 @@ type Calls struct {
 	// The clock is also an assertion event's time.
 	now func() time.Time
 	id  func() string
+	// watchWait and watchPoll are how long a watch waits and how often it
+	// reads the feed meanwhile (WithWatch); stopping is closed when the server
+	// stops, and ends every wait.
+	watchWait, watchPoll time.Duration
+	stopping             chan struct{}
+	stopOnce             sync.Once
 }
 
 // DB is what the call layer runs on: a pool, in whose transactions `assert`
@@ -137,6 +144,9 @@ func NewCalls(q DB, repo config.Repo, embedder l1.Embedder) (*Calls, error) {
 		embedder:  embedder,
 		now:       time.Now,
 		id:        randomID,
+		watchWait: DefaultWatchWait,
+		watchPoll: DefaultWatchPoll,
+		stopping:  make(chan struct{}),
 	}, nil
 }
 
@@ -165,6 +175,8 @@ var calls = []call{
 		schema(`{"id":{"type":"string"}}`, "id")}, getL0},
 	{Tool{"search", "Hybrid retrieval over L1: full text and embeddings, fused by rank. Returns documents, not answers.",
 		schema(`{"query":{"type":"string"},"scope":{"type":"string","description":"an entity id to search within"},"limit":{"type":"integer"}}`, "query")}, search},
+	{Tool{"watch", "Long-poll for new events on a scope: the L0 events after the cursor whose L1 documents are about the scope or an entity under it, oldest first, once they are distilled. A notification is an event id, kind, source, time and document id, and no content. With none to return it waits up to 25 seconds and returns an empty list. Pass the returned cursor as after next time; omit after to start from now. An agent needs class orchestrator or above.",
+		schema(`{"scope":{"type":"string","description":"the entity id to watch"},"filter":{"type":"object","properties":{"kinds":{"type":"array","items":{"type":"string"}},"sources":{"type":"array","items":{"type":"string"}}},"additionalProperties":false,"description":"only these event kinds and sources; an empty list is every one"},"after":{"type":"string","description":"the cursor the previous watch returned"}}`, "scope")}, watch},
 	{Tool{"assert", "Propose a position on an existing topic, citing the L1 documents it rests on. Only an agent of class worker or above may; the stance is appended by the assertion worker, ranks as class agent and does not ratify on its own under the default authority policy. Returns the id of the L0 assertion event; repeating a request returns the same id and writes nothing more.",
 		schema(`{"topic":{"type":"string","description":"an existing topic id, from a bundle's topic_id"},"position":{"type":"string","description":"the position, at most 2000 bytes"},"evidence":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":32,"description":"L1 document ids the position rests on; the caller must be able to read every one"}}`, "topic", "position", "evidence")}, assertStance},
 }
