@@ -728,7 +728,7 @@ func TestMCPSpeaksTheProtocol(t *testing.T) {
 	for _, tool := range tools {
 		names = append(names, tool.(map[string]any)["name"].(string))
 	}
-	if strings.Join(names, ",") != "get_bundle,resolve,stance_history,get_l1,get_l0,search,assert" {
+	if strings.Join(names, ",") != "get_bundle,resolve,stance_history,get_l1,get_l0,search,watch,assert" {
 		t.Errorf("tools = %v", names)
 	}
 	if e := rpc(`{"jsonrpc":"2.0","id":3,"method":"resources/list"}`)["error"]; e == nil {

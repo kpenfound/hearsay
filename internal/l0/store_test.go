@@ -131,3 +131,81 @@ func TestListRefusesAnArtifactWithoutASource(t *testing.T) {
 		t.Fatal("List(artifact without source) = nil, want an error")
 	}
 }
+
+func TestCursorsCompareInFeedOrder(t *testing.T) {
+	parse := func(s string) l0.Cursor {
+		t.Helper()
+		c, err := l0.ParseCursor(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	tests := []struct {
+		name string
+		a, b string
+		want int
+	}{
+		{name: "the same position", a: "1234.7", b: "1234.7", want: 0},
+		{name: "an earlier row of one transaction", a: "1234.6", b: "1234.7", want: -1},
+		{name: "a later row of one transaction", a: "1234.8", b: "1234.7", want: 1},
+		{name: "an earlier transaction, whatever its sequence", a: "1233.9", b: "1234.0", want: -1},
+		{name: "a later transaction, whatever its sequence", a: "1235.0", b: "1234.9", want: 1},
+		{name: "the beginning is before everything", a: "", b: "1.0", want: -1},
+		{name: "the beginning is itself", a: "", b: "", want: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parse(tt.a).Compare(parse(tt.b)); got != tt.want {
+				t.Errorf("Compare(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMarksRoundTripAndPassWhatHadCommitted(t *testing.T) {
+	parse := func(s string) l0.Cursor {
+		t.Helper()
+		c, err := l0.ParseCursor(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	m, err := l0.ParseMark("100.3+104,107")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.String(); got != "100.3+104,107" {
+		t.Errorf("String() = %q, want it back", got)
+	}
+	for _, tt := range []struct {
+		at   string
+		want bool
+	}{{"101.0", false}, {"104.0", true}, {"104.9", true}, {"105.2", false}, {"107.1", true}, {"108.0", false}} {
+		if got := m.Committed(parse(tt.at)); got != tt.want {
+			t.Errorf("Committed(%s) = %v, want %v", tt.at, got, tt.want)
+		}
+	}
+	for _, tt := range []struct{ at, want string }{
+		{"101.0", "101.0+104,107"},
+		{"104.2", "104.2+104,107"},
+		{"105.0", "105.0+107"},
+		{"108.0", "108.0"},
+	} {
+		if got := m.Past(parse(tt.at)).String(); got != tt.want {
+			t.Errorf("Past(%s) = %q, want %q", tt.at, got, tt.want)
+		}
+	}
+	if got := m.String(); got != "100.3+104,107" {
+		t.Errorf("Past changed the mark it was called on: %q", got)
+	}
+	for _, bad := range []string{"100.3+", "100.3+99", "100.3+104,104", "100.3+107,104", "100.3+x", "+"} {
+		if _, err := l0.ParseMark(bad); err == nil {
+			t.Errorf("ParseMark(%q) = no error, want one", bad)
+		}
+	}
+	if m, err := l0.ParseMark(""); err != nil || m.String() != "" {
+		t.Errorf("ParseMark(\"\") = %q, %v; want the beginning of the feed", m.String(), err)
+	}
+}

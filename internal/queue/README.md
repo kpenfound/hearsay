@@ -35,7 +35,8 @@ err = worker.Run(ctx)   // returns nil when ctx is cancelled
 
 `queue.Client` is what the worker is built on — `Claim`, `Complete`, `Fail`,
 `Heartbeat`, `Reclaim`, `Purge`, `List` and `Stats` — and is also how an
-operator reads a kind's depth or its failures. Every `Config` field may be left
+operator reads a kind's depth or its failures. `Unfinished` tells a reader of what
+jobs write which targets still have work to land. Every `Config` field may be left
 zero; the defaults are the ones the constants document.
 
 ## Things to know before changing it

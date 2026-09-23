@@ -531,8 +531,8 @@ const (
 )
 
 // List returns this kind's jobs in one state, oldest first. It is how a failed
-// job stays queryable, and the only read of the queue tables anything outside
-// this package gets.
+// job stays queryable. It and [Unfinished] are the only reads of the queue
+// tables anything outside this package gets.
 func (c *Client) List(ctx context.Context, state State, limit int) ([]Job, error) {
 	if !state.Valid() {
 		return nil, fmt.Errorf("%w: %q is not a job state", ErrInvalidJob, state)
@@ -546,6 +546,36 @@ func (c *Client) List(ctx context.Context, state State, limit int) ([]Job, error
 		return nil, fmt.Errorf("listing %s %s jobs: %w", state, c.cfg.Kind.Name, err)
 	}
 	return jobs, nil
+}
+
+// Unfinished is which of these targets have a job of this kind that is still
+// to run or running: work on them that has not landed yet. A target whose job
+// is done or has failed for good, or that never had one, is not in the result.
+//
+// It is how a reader of what the jobs write tells "not written yet" from "not
+// going to be": `watch` holds its place at an event whose distill job is
+// unfinished rather than passing it.
+func Unfinished(ctx context.Context, q Querier, kind Kind, targets []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	if len(targets) == 0 {
+		return out, nil
+	}
+	if err := kind.Validate(); err != nil {
+		return nil, err
+	}
+	var unfinished []string
+	err := q.QueryRow(ctx, `
+SELECT coalesce(array_agg(DISTINCT target_id), '{}')
+  FROM queue_job
+ WHERE kind = $1 AND target_id = ANY($2::text[]) AND state IN ('pending', 'running')`,
+		kind.Name, targets).Scan(&unfinished)
+	if err != nil {
+		return nil, fmt.Errorf("reading unfinished %s jobs: %w", kind.Name, err)
+	}
+	for _, target := range unfinished {
+		out[target] = true
+	}
+	return out, nil
 }
 
 // Limit is how many jobs a listing with this limit actually returns: the
