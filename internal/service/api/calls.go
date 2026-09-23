@@ -368,9 +368,8 @@ type EntityMatch struct {
 	Paths   []string `json:"paths_matched,omitempty"`
 }
 
-// resolve reads the entity map, which carries no access list: it is
-// configuration and the tracker item ids documents point at.
-func resolve(ctx context.Context, c *Calls, _ Caller, _ l1.Reader, raw json.RawMessage) (any, error) {
+// resolve reads configured names and learned names whose evidence the reader may inspect.
+func resolve(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json.RawMessage) (any, error) {
 	var args struct {
 		Text string `json:"text"`
 	}
@@ -380,7 +379,7 @@ func resolve(ctx context.Context, c *Calls, _ Caller, _ l1.Reader, raw json.RawM
 	if err := required("text", args.Text); err != nil {
 		return nil, err
 	}
-	matches, err := c.graph.Resolve(ctx, args.Text)
+	matches, err := c.graph.ResolveFor(ctx, reader, args.Text)
 	if err != nil {
 		return nil, err
 	}

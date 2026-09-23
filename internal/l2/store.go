@@ -157,7 +157,8 @@ func (s *Store) Entities(ctx context.Context) ([]Entity, error) {
 	return out, nil
 }
 
-// Resolve is [Resolve] over every stored entity: design.md's resolve(text).
+// Resolve is [Resolve] over every stored entity and confirmed learned name.
+// It is intended for internal work with no reader-specific access boundary.
 func (s *Store) Resolve(ctx context.Context, text string) ([]Match, error) {
 	entities, err := s.Entities(ctx)
 	if err != nil {
@@ -167,6 +168,30 @@ func (s *Store) Resolve(ctx context.Context, text string) ([]Match, error) {
 	if err != nil {
 		return nil, err
 	}
+	return resolveConfirmed(entities, confirmed, text), nil
+}
+
+// ResolveFor limits learned names to candidates whose current evidence the
+// reader may inspect. A hidden candidate does not influence ambiguity either.
+func (s *Store) ResolveFor(ctx context.Context, reader l1.Reader, text string) ([]Match, error) {
+	entities, err := s.Entities(ctx)
+	if err != nil {
+		return nil, err
+	}
+	candidates, err := s.AliasCandidates(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	confirmed := map[string][]string{}
+	for _, c := range candidates {
+		if c.State == "confirmed" && reader.Allows(c.ACL) {
+			confirmed[c.EntityID] = append(confirmed[c.EntityID], c.Name)
+		}
+	}
+	return resolveConfirmed(entities, confirmed, text), nil
+}
+
+func resolveConfirmed(entities []Entity, confirmed map[string][]string, text string) []Match {
 	matches := Resolve(WithConfirmedAliases(entities, confirmed), text)
 	original := map[string]Entity{}
 	for _, e := range entities {
@@ -175,7 +200,7 @@ func (s *Store) Resolve(ctx context.Context, text string) ([]Match, error) {
 	for i := range matches {
 		matches[i].Entity = original[matches[i].Entity.ID]
 	}
-	return matches, nil
+	return matches
 }
 
 type scanner interface {

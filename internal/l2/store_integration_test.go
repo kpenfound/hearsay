@@ -891,4 +891,20 @@ func TestAliasDecisionAndRejectedVote(t *testing.T) {
 	if err != nil || c.State != "rejected" || c.Votes != 1 {
 		t.Fatalf("rejected candidate = %+v, %v", c, err)
 	}
+	private := connector.ACL{{Kind: connector.ACLIdentity, Source: src, NativeID: "u1"}}
+	secretDoc := putDoc(t, pool, src, "secret", private, nil)
+	if err := store.VoteAlias(ctx, entity, src+" secret", secretDoc, pr, private, public); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetAliasState(ctx, entity, src+" secret", "confirmed"); err != nil {
+		t.Fatal(err)
+	}
+	outsider := l1.Reader{Effective: principal.Effective{Human: "outsider"}}
+	if got, err := store.ResolveFor(ctx, outsider, src+" secret"); err != nil || len(got) != 0 {
+		t.Fatalf("outsider resolve = %+v, %v", got, err)
+	}
+	insider := l1.Reader{Effective: principal.Effective{Human: "insider"}, Audience: private}
+	if got, err := store.ResolveFor(ctx, insider, src+" secret"); err != nil || len(got) != 1 || got[0].Entity.ID != entity {
+		t.Fatalf("insider resolve = %+v, %v", got, err)
+	}
 }
