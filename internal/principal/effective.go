@@ -14,10 +14,7 @@ var ErrCannotAct = errors.New("principal cannot act")
 // Grant is what one principal may see and do: the scopes it is granted, and
 // the rights it holds within them.
 //
-// Nothing configures a grant yet. Enforcement lands in v0.2.0 and v0.6.0
-// (#6), and this is the model those build on, which is why [AgentRead] and
-// [HumanRead] take grants rather than deriving them from a principal: a
-// default invented here would be a permission nobody granted.
+// Scopes are configured per principal. Rights are capped by the agent's class.
 type Grant struct {
 	// Scopes are the scope ids the principal may read from.
 	Scopes Scopes
@@ -41,7 +38,7 @@ func (g Grant) Intersect(other Grant) Grant {
 // nothing rather than a grant to everything.
 type Scopes struct {
 	// All grants every scope, present and future. It is what a person's own
-	// grant looks like before per-principal grants are configurable.
+	// grant looks like when no scopes are specified.
 	All bool
 	// IDs are the scope ids granted when All is false. It is ignored when All
 	// is set.
