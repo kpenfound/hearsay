@@ -452,12 +452,27 @@ walk up this hierarchy, and a cycle makes it a walk with no end. An alias may
 only mean one thing — an alias that resolves to two entities resolves to
 neither.
 
+`part_of` here outranks every other source of the hierarchy
+([ADR-0016](adr/0016-entity-hierarchy-sources-are-ranked-and-replace.md)):
+configuration, then tracker hierarchy, then repository structure. An entity
+with `part_of` set has exactly those parents; they replace, and are never added
+to, what a lower source says. An entity without it takes its tracker's parent
+where it has one, and otherwise the nearest entity in its repository whose path
+patterns contain all of its own: `engine/server/**` is part of the entity with
+`engine/**`. Only a `dir/**` pattern contains anything, patterns are compared
+and never expanded into files, and an entity under no other is part of its
+repository's project, `code:<owner>/<repo>`, where that entity exists. A
+derived edge that would close a cycle with a higher-ranked one is dropped and
+logged. This file is how a person restructures the hierarchy, and nothing
+inferred overrides it.
+
 `codeowners` records where to import ownership from. The assertion worker
 imports it when it seeds entities at startup: the last rule covering each path
 pattern's directory names the owners, for the entity and its descendants, and an
 owner the identity mapping does not resolve is left out. Owners configured here
 win. The worker also seeds a project for every repository an entry's `repo:`
-names, and a module for each directory at its root (not the dot-directories).
+names, and a module for each directory at its root (not the dot-directories),
+nested into the hierarchy as above.
 
 It reads a GitHub repository through the source's REST API with the source's
 `token` — the webhook secret is not needed — so the assertion worker's

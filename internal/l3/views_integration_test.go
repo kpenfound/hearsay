@@ -707,3 +707,50 @@ func TestAnAnchorIsNotRepeatedInRecent(t *testing.T) {
 		t.Errorf("last_activity = %q, want the spec's: an anchor's activity is still the scope's", b.Recent.LastActivity)
 	}
 }
+
+// Issue #119: an entity nobody configured a parent for inherits through the
+// parent its path patterns imply, once seeding has stored it.
+func TestAStanceIsInheritedThroughADerivedParent(t *testing.T) {
+	pool := newPool(t)
+	ctx := t.Context()
+	graph := l2.New(pool)
+	src := newSource()
+	engine, server := "code:"+src+":engine", "code:"+src+":engine/server"
+	repo := config.SourceRef{Source: src, Project: src}
+	seeded, err := l2.Seed(ctx, config.Repo{Code: []config.CodeEntity{
+		{ID: engine, Type: config.TypeModule, PathPatterns: []string{"engine/**"}, Repo: repo},
+		{ID: server, Type: config.TypeService, PathPatterns: []string{"engine/server/**"}, Repo: repo},
+	}}, nil)
+	if err != nil {
+		t.Fatalf("Seed() = %v", err)
+	}
+	// Written one by one: ReplaceSeeded would delete every other test's
+	// seeded entities in the shared database.
+	for _, e := range seeded {
+		if err := graph.PutEntity(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	opener := putDoc(t, pool, src, "x", l1.KindIssue, 0, engine, public)
+	tp := l2.Topic{ID: l2.TopicID(src, opener, 0, "engine schema"), Scope: src, Name: "engine schema",
+		About: []string{engine}, ACL: public, OpenedBy: opener}
+	if _, err := graph.OpenTopic(ctx, tp); err != nil {
+		t.Fatal(err)
+	}
+	at := day.Add(time.Hour)
+	if _, _, err := graph.AppendStance(ctx, l2.Stance{
+		ID: l2.StanceID(tp.ID, opener, "migrate in place", at, l2.TierInferred), TopicID: tp.ID, Position: "migrate in place",
+		StatedAt: at, Evidence: []string{opener}, Tier: l2.TierInferred, ACL: public,
+	}, at); err != nil {
+		t.Fatal(err)
+	}
+
+	got, withheld, err := l3.New(pool).CurrentStances(ctx, sam, server, nil)
+	if err != nil {
+		t.Fatalf("CurrentStances() = %v", err)
+	}
+	if len(got) != 1 || withheld != 0 || got[0].Topic.ID != tp.ID || !got[0].Inherited || got[0].Stance.Position != "migrate in place" {
+		t.Errorf("CurrentStances(%s) = %+v with %d withheld, want the engine's stance, inherited", server, got, withheld)
+	}
+}

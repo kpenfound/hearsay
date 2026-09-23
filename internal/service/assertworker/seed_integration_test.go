@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -229,4 +230,38 @@ func TestStartupSeedingFromGitHubFailures(t *testing.T) {
 			t.Fatalf("SeedEntities() = %v, want an error containing %q", err, want)
 		}
 	})
+}
+
+// Issue #119: startup stores the hierarchy the sources merge to — a configured
+// entity with no part_of is part of the directory the layout seeded above it.
+func TestStartupStoresTheDerivedHierarchy(t *testing.T) {
+	pool := scratchPool(t)
+	gh := newRecordedGitHub(t)
+	cfg := seedConfig()
+	cfg.Code = append(cfg.Code, config.CodeEntity{
+		ID: "code:acme/api:cmd/hearsay", Type: config.TypeModule, Name: "hearsay",
+		PathPatterns: []string{"cmd/hearsay/**"}, Repo: cfg.Code[0].Repo,
+	})
+
+	if _, err := assertworker.SeedEntities(t.Context(), pool, cfg, gh.readers(t)); err != nil {
+		t.Fatalf("SeedEntities() = %v", err)
+	}
+	entities, err := l2.New(pool).Entities(t.Context())
+	if err != nil {
+		t.Fatalf("Entities() = %v", err)
+	}
+	got := map[string][]string{}
+	for _, e := range entities {
+		got[e.ID] = e.PartOf
+	}
+	want := map[string][]string{
+		"code:acme/api":             {},
+		"code:acme/api:cmd":         {"code:acme/api"},
+		"code:acme/api:cmd/hearsay": {"code:acme/api:cmd"},
+		"code:acme/api:docs":        {"code:acme/api"},
+		"code:acme/api:engine":      {"code:acme/api"},
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("stored part_of %v, want %v", got, want)
+	}
 }

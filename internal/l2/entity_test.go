@@ -131,8 +131,9 @@ func TestSeedFromARepository(t *testing.T) {
 		{"code:acme/api:engine", l2.TypeModule, l2.OriginConfig, []string{"kyle"}, []string{"code:acme/api"}, []string{"engine/**"}},
 		{"code:acme/api:engine/client", l2.TypeModule, l2.OriginConfig, []string{"robin"}, []string{"code:acme/api:engine"}, []string{"engine/client/**"}},
 		{"code:acme/api:engine/server", l2.TypeService, l2.OriginConfig, []string{"sam"}, []string{"code:acme/api:engine"}, []string{"engine/server/**"}},
-		// Not under the entity that names the file, so not seeded from it.
-		{"code:acme/api:queue", l2.TypeModule, l2.OriginConfig, nil, nil, []string{"internal/queue/**"}},
+		// Not under the entity that names the file, so not seeded from it; and
+		// under no other entity's patterns, so part of the repository's project.
+		{"code:acme/api:queue", l2.TypeModule, l2.OriginConfig, nil, []string{"code:acme/api"}, []string{"internal/queue/**"}},
 	}
 	if s := summarize(got); !sameSummaries(s, want) {
 		t.Errorf("Seed() =\n%+v\nwant\n%+v", s, want)
@@ -190,7 +191,7 @@ func TestSeedSkipsAMissingCodeOwnersFile(t *testing.T) {
 		{"code:acme/api:engine", l2.TypeModule, l2.OriginConfig, nil, []string{"code:acme/api"}, []string{"engine/**"}},
 		{"code:acme/api:engine/client", l2.TypeModule, l2.OriginConfig, []string{"robin"}, []string{"code:acme/api:engine"}, []string{"engine/client/**"}},
 		{"code:acme/api:engine/server", l2.TypeService, l2.OriginConfig, nil, []string{"code:acme/api:engine"}, []string{"engine/server/**"}},
-		{"code:acme/api:queue", l2.TypeModule, l2.OriginConfig, nil, nil, []string{"internal/queue/**"}},
+		{"code:acme/api:queue", l2.TypeModule, l2.OriginConfig, nil, []string{"code:acme/api"}, []string{"internal/queue/**"}},
 	}
 	if s := summarize(got); !sameSummaries(s, want) {
 		t.Errorf("Seed() =\n%+v\nwant\n%+v", s, want)
@@ -218,5 +219,81 @@ func TestSeedSkipsARepositoryNoReaderSupports(t *testing.T) {
 	}
 	if want := `"msg":"no repository reader for this source: its layout and CODEOWNERS files are not imported"`; !strings.Contains(log.String(), want) {
 		t.Errorf("log = %s, want %s", log, want)
+	}
+}
+
+// Issue #119: seeding ranks the hierarchy's sources. `code/`'s part_of stands
+// where it sets any; everywhere else an entity is part of the nearest entity
+// its path patterns lie under, configured or seeded from the layout; and the
+// derived edge that would close a cycle with configuration is dropped.
+func TestSeedDerivesTheHierarchyFromPathPatterns(t *testing.T) {
+	api := config.SourceRef{Source: "github-acme", Project: "acme/api"}
+	repo := config.Repo{Code: []config.CodeEntity{
+		{ID: "code:acme/api:engine", Type: config.TypeModule, PathPatterns: []string{"engine/**"}, Repo: api},
+		{ID: "code:acme/api:engine/server/write", Type: config.TypeModule,
+			PathPatterns: []string{"engine/server/write/**"}, Repo: api},
+		{ID: "code:acme/api:engine/server", Type: config.TypeService, PathPatterns: []string{"engine/server/**"}, Repo: api},
+		// Configured: replaces, not joins, the engine the patterns imply.
+		{ID: "code:acme/api:engine/client", Type: config.TypeModule,
+			PathPatterns: []string{"engine/client/**"}, PartOf: []string{"code:acme/api:queue"}, Repo: api},
+		{ID: "code:acme/api:queue", Type: config.TypeModule, PathPatterns: []string{"internal/queue/**"}, Repo: api},
+		// Under a directory nobody configured.
+		{ID: "code:acme/api:lib/x", Type: config.TypeModule, PathPatterns: []string{"lib/x/**"}, Repo: api},
+		// A person put tools under tools/gen; the patterns say the opposite.
+		{ID: "code:acme/api:tools", Type: config.TypeModule,
+			PathPatterns: []string{"tools/**"}, PartOf: []string{"code:acme/api:tools/gen"}, Repo: api},
+		{ID: "code:acme/api:tools/gen", Type: config.TypeModule, PathPatterns: []string{"tools/gen/**"}, Repo: api},
+	}}
+	parents := func(entities []l2.Entity) map[string][]string {
+		out := map[string][]string{}
+		for _, e := range entities {
+			out[e.ID] = e.PartOf
+		}
+		return out
+	}
+
+	ctx, log := seedLog(t)
+	got, err := l2.Seed(ctx, repo, &fakeRepos{top: map[string][]string{"acme/api": {"engine", "lib", "tools", "internal"}}})
+	if err != nil {
+		t.Fatalf("Seed() = %v", err)
+	}
+	want := map[string][]string{
+		"code:acme/api":                     nil,
+		"code:acme/api:engine":              {"code:acme/api"},
+		"code:acme/api:engine/client":       {"code:acme/api:queue"},
+		"code:acme/api:engine/server":       {"code:acme/api:engine"},
+		"code:acme/api:engine/server/write": {"code:acme/api:engine/server"},
+		"code:acme/api:internal":            {"code:acme/api"},
+		"code:acme/api:lib":                 {"code:acme/api"},
+		"code:acme/api:lib/x":               {"code:acme/api:lib"},
+		"code:acme/api:queue":               {"code:acme/api:internal"},
+		"code:acme/api:tools":               {"code:acme/api:tools/gen"},
+		"code:acme/api:tools/gen":           nil,
+	}
+	if p := parents(got); fmt.Sprint(p) != fmt.Sprint(want) {
+		t.Errorf("Seed() part_of =\n%v\nwant\n%v", p, want)
+	}
+	if d := droppedIn(t, log.String()); fmt.Sprint(d) != fmt.Sprint([]dropped{{"code:acme/api:tools/gen", "code:acme/api:tools", "repo_structure"}}) {
+		t.Errorf("logged dropped edges %v, want tools/gen's edge to tools", d)
+	}
+
+	// Nesting reads patterns, not the repository: without a reader there is no
+	// project or layout, and the configured entities nest all the same.
+	alone, err := l2.Seed(t.Context(), repo, nil)
+	if err != nil {
+		t.Fatalf("Seed() = %v", err)
+	}
+	wantAlone := map[string][]string{
+		"code:acme/api:engine":              nil,
+		"code:acme/api:engine/client":       {"code:acme/api:queue"},
+		"code:acme/api:engine/server":       {"code:acme/api:engine"},
+		"code:acme/api:engine/server/write": {"code:acme/api:engine/server"},
+		"code:acme/api:lib/x":               nil,
+		"code:acme/api:queue":               nil,
+		"code:acme/api:tools":               {"code:acme/api:tools/gen"},
+		"code:acme/api:tools/gen":           nil,
+	}
+	if p := parents(alone); fmt.Sprint(p) != fmt.Sprint(wantAlone) {
+		t.Errorf("Seed() without a reader part_of =\n%v\nwant\n%v", p, wantAlone)
 	}
 }

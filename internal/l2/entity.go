@@ -112,20 +112,27 @@ type RepoReader interface {
 
 // Seed is the entity map a configuration describes: every `code/` entry, a
 // project and a module per top-level directory of every repository those
-// entries name, and owners imported from each entry's CODEOWNERS file.
+// entries name, the hierarchy between them, and owners imported from each
+// entry's CODEOWNERS file.
 //
 // Configuration wins every disagreement. A top-level directory whose id `code/`
-// already declares is not seeded a second time, and an entity with owners
-// configured keeps them rather than taking the file's. With a nil reader only
+// already declares is not seeded a second time, an entity with owners
+// configured keeps them rather than taking the file's, and an entity with
+// `part_of` configured keeps its parents rather than taking the ones its path
+// patterns imply ([MergeHierarchy], [NestByPattern]). With a nil reader only
 // the `code/` entries are returned, because the other two sources need a
 // repository to read; a repository the reader does not support is seeded the
 // same way, and a CODEOWNERS file that is not there imports nobody. Both are
 // logged and skipped. Anything else the reader fails with fails the seed.
+// Nesting by path pattern needs no reader, so it is done either way.
 //
 // The result is sorted by id and depends only on its inputs, so seeding twice
 // writes nothing new.
 func Seed(ctx context.Context, repo config.Repo, reader RepoReader) ([]Entity, error) {
 	byID := map[string]*Entity{}
+	// The repository each entity is in, for nesting by path pattern.
+	repoOf := map[string]config.SourceRef{}
+	configured := Parents{}
 	for _, c := range repo.Code {
 		byID[c.ID] = &Entity{
 			ID:           c.ID,
@@ -133,12 +140,14 @@ func Seed(ctx context.Context, repo config.Repo, reader RepoReader) ([]Entity, e
 			Name:         c.Name,
 			Aliases:      slices.Clone(c.Aliases),
 			PathPatterns: slices.Clone(c.PathPatterns),
-			PartOf:       slices.Clone(c.PartOf),
 			Owners:       slices.Clone(c.Owners),
 			Origin:       OriginConfig,
 		}
+		repoOf[c.ID] = c.Repo
+		configured[c.ID] = slices.Clone(c.PartOf)
 	}
 	if reader == nil {
+		hierarchy(ctx, byID, repoOf, configured)
 		return sorted(byID), nil
 	}
 
@@ -158,6 +167,7 @@ func Seed(ctx context.Context, repo config.Repo, reader RepoReader) ([]Entity, e
 		project := "code:" + ref.Project
 		if _, ok := byID[project]; !ok {
 			byID[project] = &Entity{ID: project, Type: TypeProject, Name: ref.Project, Origin: OriginRepoStructure}
+			repoOf[project] = ref
 		}
 		for _, dir := range dirs {
 			dir = strings.Trim(dir, "/")
@@ -174,11 +184,13 @@ func Seed(ctx context.Context, repo config.Repo, reader RepoReader) ([]Entity, e
 			byID[id] = &Entity{
 				ID: id, Type: TypeModule, Name: dir,
 				PathPatterns: []string{dir + "/**"},
-				PartOf:       []string{project},
 				Origin:       OriginRepoStructure,
 			}
+			repoOf[id] = ref
 		}
 	}
+	// The owners below follow the hierarchy, so it is settled first.
+	hierarchy(ctx, byID, repoOf, configured)
 
 	resolver, err := repo.Resolver()
 	if err != nil {
@@ -231,9 +243,23 @@ func repositories(code []config.CodeEntity) []config.SourceRef {
 	return refs
 }
 
-// descendants is the entity and everything whose part_of chain reaches it. The
-// loader refuses a cycle in `code/`, and seeded entities only point at a
-// project, so the walk ends; the visited set is what keeps it ending anyway.
+// hierarchy sets every entity's part_of: `code/`'s where it sets any, and
+// otherwise what the entities' path patterns imply within their repository
+// (ADR-0016). Seeding has no tracker hierarchy to read yet.
+func hierarchy(ctx context.Context, byID map[string]*Entity, repoOf map[string]config.SourceRef, configured Parents) {
+	located := make([]Located, 0, len(byID))
+	for _, id := range sortedKeys(byID) {
+		located = append(located, Located{ID: id, Repo: repoOf[id], PathPatterns: byID[id].PathPatterns})
+	}
+	merged := MergeHierarchy(ctx, HierarchyInputs{Config: configured, RepoStructure: NestByPattern(located)})
+	for id, e := range byID {
+		e.PartOf = merged[id]
+	}
+}
+
+// descendants is the entity and everything whose part_of chain reaches it.
+// [MergeHierarchy] drops every edge that would close a cycle, so the walk
+// ends; the visited set is what keeps it ending anyway.
 func descendants(byID map[string]*Entity, root string) []*Entity {
 	visited := map[string]bool{}
 	var out []*Entity
