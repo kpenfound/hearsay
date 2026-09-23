@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/l1"
@@ -410,7 +411,7 @@ func embeddedDoc(t *testing.T, pool *pgxpool.Pool, src, native string, vector []
 	t.Helper()
 	when := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)
 	doc := l1.Document{
-		ID: l1.DocID(src, native), Kind: l1.KindIssue,
+		ID: l1.DocID(src, native), Kind: l1.KindIssue, ArtifactClass: config.ArtifactIssue,
 		Source: l1.Source{System: src, NativeID: native},
 		L0Refs: []string{"evt:" + src + ":" + native}, Time: l1.Times{Created: when, Updated: when, LastActivity: when},
 		ACL: public, Text: "text of " + native, RawText: "raw " + native,

@@ -44,6 +44,7 @@ A common envelope plus a per-kind body. Every L1 doc is one row in one table.
 ```yaml
 id: l1:discord:thread:123456789012345678
 kind: chat_thread | chat_burst | meeting_segment | pr | issue | commit | wiki_section | agent_turn
+artifact_class: merged_pr | spec | meeting | issue | pull_request | commit | chat_thread | dm | agent
 source: { system, native_id, url }
 l0_refs: [event ids]                  # provenance, required
 time: { created, updated, last_activity }

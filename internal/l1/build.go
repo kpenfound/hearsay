@@ -81,6 +81,10 @@ func build(in Input, kind Kind, artifact string, window bool) (Document, error) 
 	}
 
 	root := in.Root
+	class, err := ClassFor(kind, root)
+	if err != nil {
+		return Document{}, err
+	}
 	children := slices.Clone(in.Children)
 	for i, child := range children {
 		if child.Source != root.Source {
@@ -105,8 +109,9 @@ func build(in Input, kind Kind, artifact string, window bool) (Document, error) 
 	}
 
 	doc := Document{
-		ID:   DocID(root.Source, artifact),
-		Kind: kind,
+		ID:            DocID(root.Source, artifact),
+		Kind:          kind,
+		ArtifactClass: class,
 		Source: Source{
 			System:   root.Source,
 			NativeID: artifact,

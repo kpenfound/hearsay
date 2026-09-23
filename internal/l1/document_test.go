@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/l1"
 )
@@ -115,8 +116,8 @@ func TestOutcomeKinds(t *testing.T) {
 func TestValidate(t *testing.T) {
 	good := func() l1.Document {
 		return l1.Document{
-			ID:      "l1:github-acme:acme/api#12",
-			Kind:    l1.KindIssue,
+			ID:   "l1:github-acme:acme/api#12",
+			Kind: l1.KindIssue, ArtifactClass: config.ArtifactIssue,
 			Source:  l1.Source{System: "github-acme", NativeID: "acme/api#12"},
 			L0Refs:  []string{"evt:github-acme:acme%2Fapi%2312"},
 			Time:    l1.Times{Created: day, Updated: day, LastActivity: day},
@@ -135,6 +136,8 @@ func TestValidate(t *testing.T) {
 		with func(*l1.Document)
 		want string
 	}{
+		{"no artifact class", func(d *l1.Document) { d.ArtifactClass = "" }, "artifact_class"},
+		{"invalid artifact class", func(d *l1.Document) { d.ArtifactClass = "alien" }, "artifact_class"},
 		{"no kind", func(d *l1.Document) { d.Kind = "" }, "kind"},
 		{"a kind this build does not distil", func(d *l1.Document) { d.Kind = "slack_thread" }, "kind"},
 		{"an id that is not derived", func(d *l1.Document) { d.ID = "l1:github-acme:something-else" }, "id"},

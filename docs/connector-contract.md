@@ -136,7 +136,7 @@ about it. Everything else the connector wants to keep goes in `native`.
 |---|---|---|---|
 | `artifact` | string | yes | The source's **stable** id for the thing this event is about, with no revision in it. Every revision of an artifact, and any tombstone for it, carries the same value. |
 | `base_kind` | string | on extension kinds | The core kind an extension kind behaves like. Must be empty on a core kind. |
-| `container` | object | yes | `{kind, native_id, name?}` — the repository, channel or folder the artifact lives in. |
+| `container` | object | yes | `{kind, native_id, name?}` — the repository, channel, direct message or folder the artifact lives in. |
 | `url` | string | where one exists | The permalink a human would follow. |
 | `title` | string | where one exists | The artifact's own title: an issue title, a document name, a thread name. |
 | `text` | string | where there is any | What a human reads in the source, as plain text or markdown, with the source's markup left alone. This is the distiller's input. |
@@ -148,12 +148,12 @@ about it. Everything else the connector wants to keep goes in `native`.
 | `thread` | artifact id | where there is a thread | The root of the conversation, which is what the distiller assembles a thread from. On a two-level source it equals `parent`. |
 | `revision` | object | exactly when `native_id` is `artifact@<token>` | `{token, edited_at?}`: `token` is that token, and `edited_at` is when *this revision* came about, which is what orders an artifact's revisions — see idempotency below. |
 | `target` | artifact id | on tombstones only | The artifact the tombstone retracts. |
-| `native` | any JSON | no | The source's own object, verbatim. Nothing above L0 reads it, and nothing the fields above ask for may be hidden in it. |
+| `native` | any JSON | no | The source's own object, verbatim. L1 reads pull-request merge state here for its artifact class; nothing the fields above ask for may be hidden in it. |
 
 `parent`, `thread` and `target` reference **artifact ids**, never native ids: a
 comment hangs off an issue, not off one revision of it.
 
-Container kinds are `repository`, `channel`, `folder` and `workspace`; a source
+Container kinds are `repository`, `channel`, `dm`, `folder` and `workspace`; a source
 with a container of another sort may use another lowercase word. `workspace`
 means the source itself, for a source with no smaller boundary. The container's
 `native_id` must be the source's stable id — a repository's full name, a channel

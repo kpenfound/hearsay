@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/l1"
@@ -51,8 +52,8 @@ func newSource(t *testing.T) string {
 func storedDoc(t *testing.T, src, artifact string, with func(*l1.Document)) l1.Document {
 	t.Helper()
 	doc := l1.Document{
-		ID:     l1.DocID(src, artifact),
-		Kind:   l1.KindPR,
+		ID:   l1.DocID(src, artifact),
+		Kind: l1.KindPR, ArtifactClass: config.ArtifactPullRequest,
 		Source: l1.Source{System: src, NativeID: artifact, URL: "https://github.com/" + artifact},
 		L0Refs: []string{connector.EventID(src, artifact)},
 		Time:   l1.Times{Created: day, Updated: day, LastActivity: day},
@@ -81,6 +82,29 @@ func storedDoc(t *testing.T, src, artifact string, with func(*l1.Document)) l1.D
 
 // The acceptance criterion, at the level of one row: writing the same document
 // twice writes it once, and the second write does not touch the row.
+func TestChangingArtifactClassUpdatesRow(t *testing.T) {
+	store := l1.New(newPool(t))
+	doc := storedDoc(t, newSource(t), "acme/api#class", nil)
+	seenMerged := false
+	for _, class := range []config.ArtifactClass{config.ArtifactPullRequest, config.ArtifactMergedPR, config.ArtifactMergedPR} {
+		doc.ArtifactClass = class
+		changed, err := store.Put(t.Context(), doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if changed != (class != config.ArtifactMergedPR || !seenMerged) {
+			t.Errorf("Put(%s) changed = %v", class, changed)
+		}
+		got, err := store.Get(t.Context(), doc.ID)
+		if err != nil || got.ArtifactClass != class {
+			t.Errorf("Get() class = %q, %v; want %q", got.ArtifactClass, err, class)
+		}
+		if class == config.ArtifactMergedPR {
+			seenMerged = true
+		}
+	}
+}
+
 func TestPutIsIdempotent(t *testing.T) {
 	store := l1.New(newPool(t))
 	src := newSource(t)
@@ -254,10 +278,10 @@ func TestPutRefusesADocumentTheLayerRefuses(t *testing.T) {
 func TestTheTableRefusesWhatTheLayerRefuses(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
-	insert := `INSERT INTO l1_docs (id, kind, source, source_native_id, source_url, l0_refs,
+	insert := `INSERT INTO l1_docs (id, kind, artifact_class, source, source_native_id, source_url, l0_refs,
 		created_at, updated_at, last_activity_at, participants, scope, refs, acl,
 		text, raw_text, body, outcome_kind)
-		VALUES ($1, 'pr', $2, $3, '', $4, $5, $5, $5, '[]'::jsonb, '{}', '[]'::jsonb, $6::jsonb,
+		VALUES ($1, 'pr', 'pull_request', $2, $3, '', $4, $5, $5, $5, '[]'::jsonb, '{}', '[]'::jsonb, $6::jsonb,
 		        'text', 'raw', $7::jsonb, $8)`
 
 	tests := []struct {

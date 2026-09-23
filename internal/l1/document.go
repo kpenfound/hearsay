@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 )
 
@@ -220,6 +221,8 @@ type Document struct {
 	ID string `json:"id"`
 	// Kind is what sort of document this is.
 	Kind Kind `json:"kind"`
+	// ArtifactClass records the authority class of the source artifact.
+	ArtifactClass config.ArtifactClass `json:"artifact_class"`
 	// Source is the artifact this document distils.
 	Source Source `json:"source"`
 	// L0Refs are the event ids this document was built from, in the order the
@@ -304,6 +307,8 @@ func (d Document) Validate() error {
 	switch {
 	case !d.Kind.Valid():
 		return fmt.Errorf("%w: kind %q is not one this build distils", ErrInvalidDocument, d.Kind)
+	case !d.ArtifactClass.Valid():
+		return fmt.Errorf("%w: artifact_class %q is not valid", ErrInvalidDocument, d.ArtifactClass)
 	case !connector.ValidSourceID(d.Source.System):
 		return fmt.Errorf("%w: source.system %q is not a source id", ErrInvalidDocument, d.Source.System)
 	case d.Source.NativeID == "":

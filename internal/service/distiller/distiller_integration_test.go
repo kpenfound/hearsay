@@ -138,6 +138,46 @@ func TestDistillingTwiceProducesIdenticalRows(t *testing.T) {
 	}
 }
 
+func TestPRMergeRefreshesArtifactClass(t *testing.T) {
+	pool := newPool(t)
+	src := newSource(t)
+	events := fixtureEvents(src)
+	ingest(t, pool, events)
+	d := newDistiller(t, pool, src)
+	id := l1.DocID(src, repo+"#31")
+	first, err := d.Distill(t.Context(), id)
+	if err != nil || !first.Written {
+		t.Fatalf("initial Distill = %+v, %v", first, err)
+	}
+	store := l1.New(pool)
+	before, err := store.Get(t.Context(), id)
+	if err != nil || before.ArtifactClass != config.ArtifactPullRequest {
+		t.Fatalf("initial class = %q, %v", before.ArtifactClass, err)
+	}
+	var changed connector.Event
+	for _, ev := range events {
+		if ev.Kind == connector.KindPullRequest {
+			changed = ev
+			break
+		}
+	}
+	changed = revised(changed, "2026-09-09T19:00:00Z", at(7))
+	changed.Payload.Native = []byte(`{"state":"closed","merged_at":"2026-09-09T19:00:00Z"}`)
+	ingest(t, pool, []connector.Event{changed})
+	second, err := d.Distill(t.Context(), id)
+	if err != nil || !second.Written {
+		t.Fatalf("merged Distill = %+v, %v", second, err)
+	}
+	merged, err := store.Get(t.Context(), id)
+	if err != nil || merged.ArtifactClass != config.ArtifactMergedPR {
+		t.Fatalf("merged class = %q, %v", merged.ArtifactClass, err)
+	}
+	third, err := d.Distill(t.Context(), id)
+	if err != nil || third.Written {
+		t.Fatalf("repeat Distill = %+v, %v", third, err)
+	}
+}
+
 // The document the distiller wrote is embedded, by the tier the configuration
 // names, once — and with no such tier the document is written anyway and search
 // finds it by its words alone.

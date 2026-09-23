@@ -10,6 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kpenfound/hearsay/internal/config"
 )
 
 // Limits on how much one read returns.
@@ -59,7 +61,7 @@ type Stored struct {
 }
 
 // docColumns is a document as columns, in the order scanDoc reads them.
-const docColumns = `id, kind, source, source_native_id, source_url, l0_refs,
+const docColumns = `id, kind, artifact_class, source, source_native_id, source_url, l0_refs,
 	created_at, updated_at, last_activity_at, participants, scope, refs, acl,
 	text, raw_text, body, outcome_kind, distilled_at`
 
@@ -80,9 +82,10 @@ const docColumns = `id, kind, source, source_native_id, source_url, l0_refs,
 // `text` changes.
 const putSQL = `
 INSERT INTO l1_docs (` + docColumns + `)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, now())
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, now())
 ON CONFLICT (id) DO UPDATE SET
     kind = excluded.kind,
+    artifact_class = excluded.artifact_class,
     source = excluded.source,
     source_native_id = excluded.source_native_id,
     source_url = excluded.source_url,
@@ -105,12 +108,12 @@ ON CONFLICT (id) DO UPDATE SET
     -- l1.Store.Embed looks for and what the full-text half is unaffected by.
     embedding = CASE WHEN l1_docs.text IS DISTINCT FROM excluded.text THEN NULL ELSE l1_docs.embedding END,
     distilled_at = now()
-WHERE (l1_docs.kind, l1_docs.source, l1_docs.source_native_id, l1_docs.source_url,
+WHERE (l1_docs.kind, l1_docs.artifact_class, l1_docs.source, l1_docs.source_native_id, l1_docs.source_url,
        l1_docs.l0_refs, l1_docs.created_at, l1_docs.updated_at, l1_docs.last_activity_at,
        l1_docs.participants, l1_docs.scope, l1_docs.refs, l1_docs.acl,
        l1_docs.text, l1_docs.raw_text, l1_docs.body, l1_docs.outcome_kind)
    IS DISTINCT FROM
-      (excluded.kind, excluded.source, excluded.source_native_id, excluded.source_url,
+      (excluded.kind, excluded.artifact_class, excluded.source, excluded.source_native_id, excluded.source_url,
        excluded.l0_refs, excluded.created_at, excluded.updated_at, excluded.last_activity_at,
        excluded.participants, excluded.scope, excluded.refs, excluded.acl,
        excluded.text, excluded.raw_text, excluded.body, excluded.outcome_kind)
@@ -132,7 +135,7 @@ func (s *Store) Put(ctx context.Context, doc Document) (bool, error) {
 	}
 	var distilledAt time.Time
 	err = s.db.QueryRow(ctx, putSQL,
-		doc.ID, string(doc.Kind), doc.Source.System, doc.Source.NativeID, doc.Source.URL,
+		doc.ID, string(doc.Kind), string(doc.ArtifactClass), doc.Source.System, doc.Source.NativeID, doc.Source.URL,
 		doc.L0Refs, doc.Time.Created, doc.Time.Updated, doc.Time.LastActivity,
 		row.participants, orEmpty(doc.Scope), row.references, row.acl,
 		doc.Text, doc.RawText, row.body, string(doc.Body.OutcomeKind),
@@ -327,18 +330,19 @@ func scanDoc(s scanner) (Stored, error) {
 // search, which returns the ranks a document was found at — has to scan the
 // document's columns and its own in one call.
 type docScan struct {
-	doc          Stored
-	kind         string
-	outcome      string
-	participants []byte
-	references   []byte
-	acl          []byte
-	body         []byte
+	doc           Stored
+	kind          string
+	artifactClass string
+	outcome       string
+	participants  []byte
+	references    []byte
+	acl           []byte
+	body          []byte
 }
 
 // dests is where each of [docColumns] is read into, in that order.
 func (d *docScan) dests() []any {
-	return []any{&d.doc.ID, &d.kind, &d.doc.Source.System, &d.doc.Source.NativeID, &d.doc.Source.URL,
+	return []any{&d.doc.ID, &d.kind, &d.artifactClass, &d.doc.Source.System, &d.doc.Source.NativeID, &d.doc.Source.URL,
 		&d.doc.L0Refs, &d.doc.Time.Created, &d.doc.Time.Updated, &d.doc.Time.LastActivity,
 		&d.participants, &d.doc.Scope, &d.references, &d.acl,
 		&d.doc.Text, &d.doc.RawText, &d.body, &d.outcome, &d.doc.DistilledAt}
@@ -354,6 +358,7 @@ func (d *docScan) dests() []any {
 func (d *docScan) done() (Stored, error) {
 	doc := d.doc
 	doc.Kind = Kind(d.kind)
+	doc.ArtifactClass = config.ArtifactClass(d.artifactClass)
 	doc.Time.Created = doc.Time.Created.UTC()
 	doc.Time.Updated = doc.Time.Updated.UTC()
 	doc.Time.LastActivity = doc.Time.LastActivity.UTC()
