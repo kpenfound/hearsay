@@ -50,6 +50,26 @@ var (
 // (internal/db.Connect).
 func New(q Querier) *Store { return &Store{db: q} }
 
+// PRsByReference finds current pull request documents with the native key a
+// structured PR reference names. A repository may be mirrored by several
+// sources, so all matching documents are returned.
+func (s *Store) PRsByReference(ctx context.Context, id string) ([]Stored, error) {
+	rows, err := s.db.Query(ctx, `SELECT `+docColumns+` FROM l1_docs WHERE kind = 'pr' AND source_native_id = $1 ORDER BY id`, id)
+	if err != nil {
+		return nil, fmt.Errorf("finding pull request %s: %w", id, err)
+	}
+	defer rows.Close()
+	out := []Stored{}
+	for rows.Next() {
+		doc, err := scanDoc(rows)
+		if err != nil {
+			return nil, fmt.Errorf("finding pull request %s: %w", id, err)
+		}
+		out = append(out, doc)
+	}
+	return out, rows.Err()
+}
+
 // Stored is a document as the table holds it.
 type Stored struct {
 	Document

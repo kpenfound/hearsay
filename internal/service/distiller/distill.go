@@ -489,6 +489,9 @@ func (d *Distiller) writeDocument(ctx context.Context, result Result, source, ar
 		}
 		if written {
 			result.Written = true
+			if err := d.voteAliases(ctx, tx, doc); err != nil {
+				return err
+			}
 			result.Asserting, err = l2.EnqueueAssertion(ctx, tx, d.repo, doc, container)
 			if err != nil {
 				return err
@@ -542,6 +545,43 @@ func (d *Distiller) writeDocument(ctx context.Context, result Result, source, ar
 		}
 	}
 	return result, nil
+}
+
+// voteAliases uses the existing distill result and structured references. A
+// PR's leading system reference is the most specific touched code entity.
+func (d *Distiller) voteAliases(ctx context.Context, tx pgx.Tx, doc l1.Document) error {
+	if doc.Kind != l1.KindChatThread || len(doc.Body.CodeNames) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, ref := range doc.References {
+		if ref.Type != l1.RefPR {
+			continue
+		}
+		prs, err := l1.New(tx).PRsByReference(ctx, ref.ID)
+		if err != nil {
+			return err
+		}
+		for _, pr := range prs {
+			for _, touched := range pr.References {
+				if touched.Type != l1.RefSystem {
+					continue
+				}
+				for _, name := range doc.Body.CodeNames {
+					key := touched.ID + "\x00" + l2.NormalizeAlias(name)
+					if seen[key] {
+						continue
+					}
+					seen[key] = true
+					if err := l2.New(tx).VoteAlias(ctx, touched.ID, name, doc.ID, pr.ID, doc.ACL, pr.ACL); err != nil {
+						return err
+					}
+				}
+				break
+			}
+		}
+	}
+	return nil
 }
 
 // embed gives a document the vector its text asks for, where there is a tier to

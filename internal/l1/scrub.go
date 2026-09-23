@@ -147,6 +147,9 @@ func scrubBody(b Body) (Body, []string) {
 	b.Question = scrub(b.Question)
 	b.Outcome = scrub(b.Outcome)
 	b.Change = scrub(b.Change)
+	for i, name := range b.CodeNames {
+		b.CodeNames[i] = scrub(name)
+	}
 	for i, q := range b.OpenQuestions {
 		b.OpenQuestions[i] = scrub(q)
 	}
