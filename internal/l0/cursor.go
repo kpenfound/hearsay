@@ -55,3 +55,16 @@ func ParseCursor(s string) (Cursor, error) {
 	}
 	return Cursor{xact: x, seq: n}, nil
 }
+
+// Compare orders two cursors as the feed does: -1 when c is before other, 0
+// when they are the same position, and 1 when c is after it.
+func (c Cursor) Compare(other Cursor) int {
+	switch {
+	case c.xact < other.xact || c.xact == other.xact && c.seq < other.seq:
+		return -1
+	case c == other:
+		return 0
+	default:
+		return 1
+	}
+}

@@ -100,6 +100,51 @@ func (s *Store) Guards(ctx context.Context, ids []string) (map[string]Guard, err
 	return out, nil
 }
 
+// Holder is a document built from an L0 event, with the [Guard] that decides
+// who may read it.
+type Holder struct {
+	ID string
+	Guard
+}
+
+// Holders is, by event id, every document these L0 events are in: the ones
+// whose l0_refs name them, ordered by document id. An event no document
+// names — not distilled yet, never distilled, or a revision a later one
+// replaced — has no entry. What the reader may see is the caller's to decide.
+func (s *Store) Holders(ctx context.Context, events []string) (map[string][]Holder, error) {
+	out := map[string][]Holder{}
+	if len(events) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(ctx, `
+SELECT ev.id, d.id, d.acl, d.scope
+  FROM unnest($1::text[]) AS ev(id)
+  JOIN l1_docs d ON d.l0_refs @> ARRAY[ev.id]
+ ORDER BY ev.id, d.id`, events)
+	if err != nil {
+		return nil, fmt.Errorf("reading the documents built from %d events: %w", len(events), err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			event string
+			h     Holder
+			raw   []byte
+		)
+		if err := rows.Scan(&event, &h.ID, &raw, &h.Scope); err != nil {
+			return nil, fmt.Errorf("reading the documents built from %d events: %w", len(events), err)
+		}
+		if err := json.Unmarshal(raw, &h.ACL); err != nil {
+			return nil, fmt.Errorf("decoding the access list of %s: %w", h.ID, err)
+		}
+		out[event] = append(out[event], h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading the documents built from %d events: %w", len(events), err)
+	}
+	return out, nil
+}
+
 // artifactScopesSQL is the scope of every document built from any revision of
 // one artifact: its own document, a conversation's that holds it, or a
 // section's of it.

@@ -131,3 +131,34 @@ func TestListRefusesAnArtifactWithoutASource(t *testing.T) {
 		t.Fatal("List(artifact without source) = nil, want an error")
 	}
 }
+
+func TestCursorsCompareInFeedOrder(t *testing.T) {
+	parse := func(s string) l0.Cursor {
+		t.Helper()
+		c, err := l0.ParseCursor(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	tests := []struct {
+		name string
+		a, b string
+		want int
+	}{
+		{name: "the same position", a: "1234.7", b: "1234.7", want: 0},
+		{name: "an earlier row of one transaction", a: "1234.6", b: "1234.7", want: -1},
+		{name: "a later row of one transaction", a: "1234.8", b: "1234.7", want: 1},
+		{name: "an earlier transaction, whatever its sequence", a: "1233.9", b: "1234.0", want: -1},
+		{name: "a later transaction, whatever its sequence", a: "1235.0", b: "1234.9", want: 1},
+		{name: "the beginning is before everything", a: "", b: "1.0", want: -1},
+		{name: "the beginning is itself", a: "", b: "", want: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parse(tt.a).Compare(parse(tt.b)); got != tt.want {
+				t.Errorf("Compare(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.want)
+			}
+		})
+	}
+}

@@ -658,7 +658,7 @@ type Change struct {
 }
 
 // Changes is the change feed: the events that arrived after a cursor, oldest
-// first, for the distiller to consume and for `watch` later. The filter narrows
+// first, for the distiller to consume and for `watch`. The filter narrows
 // what comes back and nothing else — a cursor is a position in the whole feed,
 // so the same one means the same place whatever a reader is watching.
 //
@@ -720,6 +720,36 @@ SELECT e.xact_id::text, e.seq, e.ingested_at, ` + eventColumns + `
 		return nil, fmt.Errorf("reading the change feed: %w", err)
 	}
 	return changes, nil
+}
+
+// Head is the position of the last event on the change feed: reading
+// [Store.Changes] from it returns only events that were not on the feed yet.
+// It is the beginning of the feed while the feed is empty.
+//
+// Like the feed, it counts only transactions that have finished, so an event
+// still being written is after the head and not before it.
+func (s *Store) Head(ctx context.Context) (Cursor, error) {
+	var (
+		xact string
+		seq  int64
+	)
+	err := s.db.QueryRow(ctx, `
+SELECT e.xact_id::text, e.seq
+  FROM l0_events e
+ WHERE e.xact_id < pg_snapshot_xmin(pg_current_snapshot())
+ ORDER BY e.xact_id DESC, e.seq DESC
+ LIMIT 1`).Scan(&xact, &seq)
+	if isNoRows(err) {
+		return Cursor{}, nil
+	}
+	if err != nil {
+		return Cursor{}, fmt.Errorf("reading the head of the change feed: %w", err)
+	}
+	head, err := cursorOf(xact, seq)
+	if err != nil {
+		return Cursor{}, fmt.Errorf("reading the head of the change feed: %w", err)
+	}
+	return head, nil
 }
 
 // row is one event as columns.
