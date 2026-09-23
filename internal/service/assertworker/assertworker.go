@@ -6,9 +6,10 @@
 //
 // The distiller enqueues an `assert` job in the transaction that writes a
 // document whose outcome enters the pipeline; this package claims them. At
-// startup it seeds the entity map from configuration and enqueues every such
-// document it has not read yet, so documents written before it was deployed,
-// and jobs that ran out of attempts, are picked up by a restart.
+// startup it seeds the entity map from configuration and the repositories it
+// names ([Repos]), and enqueues every such document it has not read yet, so
+// documents written before it was deployed, and jobs that ran out of attempts,
+// are picked up by a restart.
 //
 // What a topic and a stance are is internal/l2's. What this package owns is the
 // prompt, the schema an answer has to satisfy, and the loop.
@@ -43,9 +44,9 @@ type Deps struct {
 	// be stopped.
 	LLM llm.Registry
 	// Repos reads CODEOWNERS files and the top level of the repositories
-	// `code/` names, for seeding. Nil seeds from `code/` alone, which is what
-	// every process in this build does: nothing implements it against a live
-	// source until the GitHub connector does (#8).
+	// `code/` names, for seeding; the binary hands it [Repos] with a reader per
+	// GitHub source those entries name. Nil seeds from `code/` alone, and says
+	// so when an entry names a CODEOWNERS file.
 	Repos l2.RepoReader
 }
 

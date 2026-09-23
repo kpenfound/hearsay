@@ -17,6 +17,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector/github"
 	"github.com/kpenfound/hearsay/internal/connector/obsidian"
 	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/llm/providers"
 	"github.com/kpenfound/hearsay/internal/service"
@@ -226,9 +227,9 @@ func runDistiller(ctx context.Context, args []string, stdout, stderr io.Writer) 
 // dependencies — Postgres, and the model tiers the configuration names — and
 // refuses without them for the same reasons.
 //
-// It is given no repository reader, so entities are seeded from `code/`
-// configuration alone: nothing in this binary reads a CODEOWNERS file or a
-// repository's layout from a live source until the GitHub connector does.
+// It is also given a repository reader for every GitHub source `code/` names
+// ([repoReaders]), which is how CODEOWNERS files and repository layout reach
+// the entity map.
 func runAssertWorker(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, cfg, configPath := newFlagSet(assertworker.Name, stderr)
 	resolveDatabase := databaseFlag(fs, cfg)
@@ -258,7 +259,52 @@ func runAssertWorker(ctx context.Context, args []string, stdout, stderr io.Write
 	if err != nil {
 		return err
 	}
-	return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry})
+	repos, err := repoReaders(cfg.Repo, os.LookupEnv)
+	if err != nil {
+		return err
+	}
+	return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry, Repos: repos})
+}
+
+// repoReaders builds the reader entity seeding reads repositories through: one
+// per GitHub source a `code/` entry's `repo:` names, with the credentials that
+// source is configured with. Only the token is resolved — the webhook secret is
+// the connectors service's — and a token that is not in the environment is a
+// startup failure, as it is for the connector.
+//
+// With no such source it returns nil, and the worker seeds from `code/` alone.
+// A repository in a source of another type is seeded from configuration too,
+// and logged ([l2.Seed]).
+func repoReaders(repo config.Repo, lookup func(string) (string, bool)) (l2.RepoReader, error) {
+	readers := assertworker.Repos{}
+	for _, c := range repo.Code {
+		id := c.Repo.Source
+		if _, done := readers[id]; done || id == "" {
+			continue
+		}
+		src, ok := repo.Source(id)
+		if !ok || src.Type != github.Type {
+			continue
+		}
+		if env, ok := src.Secrets[github.SecretToken]; ok {
+			src.Secrets = map[string]string{github.SecretToken: env}
+		} else {
+			src.Secrets = nil
+		}
+		resolved, err := connector.ResolveSecrets(src, lookup)
+		if err != nil {
+			return nil, err
+		}
+		reader, err := github.NewReader(resolved)
+		if err != nil {
+			return nil, fmt.Errorf("source %q: %w", id, err)
+		}
+		readers[id] = reader
+	}
+	if len(readers) == 0 {
+		return nil, nil
+	}
+	return readers, nil
 }
 
 // runAPI runs the read API. It reads L0, L1 and L2 and writes an audit event per
@@ -465,6 +511,10 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	if err != nil {
 		return err
 	}
+	repos, err := repoReaders(cfg.Repo, os.LookupEnv)
+	if err != nil {
+		return err
+	}
 
 	return service.RunAll(ctx, map[string]service.RunFunc{
 		connectors.Name: func(ctx context.Context) error {
@@ -474,7 +524,7 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 			return distiller.Run(ctx, cfg, distiller.Deps{Pool: pool, LLM: registry})
 		},
 		assertworker.Name: func(ctx context.Context) error {
-			return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry})
+			return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry, Repos: repos})
 		},
 		api.Name: func(ctx context.Context) error {
 			return api.Run(ctx, cfg, api.Deps{Pool: pool, LLM: registry, Listen: *apiListen})

@@ -456,9 +456,18 @@ neither.
 imports it when it seeds entities at startup: the last rule covering each path
 pattern's directory names the owners, for the entity and its descendants, and an
 owner the identity mapping does not resolve is left out. Owners configured here
-win. Reading the file needs a repository reader, which the GitHub connector will
-provide; until then the worker seeds from this directory alone and logs a
-warning for every entry that names a file.
+win. The worker also seeds a project for every repository an entry's `repo:`
+names, and a module for each directory at its root (not the dot-directories).
+
+It reads a GitHub repository through the source's REST API with the source's
+`token` — the webhook secret is not needed — so the assertion worker's
+environment carries that variable too, and a token that is not set is a startup
+failure. It reads the repository's metadata, the names of its root directories
+on the default branch, and the named file, and nothing else. A `codeowners` file
+that is not there is logged and skipped; a repository the token cannot read
+stops startup. A repository in a source of another type is seeded from this
+directory alone, with a warning, as is every entry when the worker has no
+configuration to read repositories with.
 
 ## `authority/`
 

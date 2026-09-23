@@ -53,6 +53,16 @@
 //     keeping the position (ADR-0013). A delivery that never arrived, or
 //     failed, is caught by the runtime's startup check, which asks
 //     [Connector.Public] about every repository L0 still serves as public.
+//
+// # Reading repositories for the entity map
+//
+// [Reader] is not part of the connector: the assertion worker builds one per
+// GitHub source a `code/` entry names, from the same source configuration, and
+// seeds entities from a repository's root directories and its CODEOWNERS file
+// (docs/config.md#code). It needs the token and not the webhook secret. It reads
+// the repository's metadata, the root listing through the contents API — names
+// and types, no content — and the files it is asked for, on the default branch,
+// and keeps none of it.
 package github
 
 import (
@@ -127,43 +137,67 @@ func Factory(_ context.Context, src connector.SourceConfig) (connector.Connector
 // New builds the connector for a source, refusing a configuration it could only
 // fail on later.
 func New(src connector.SourceConfig) (*Connector, error) {
-	var settings Settings
-	if err := src.DecodeSettings(&settings); err != nil {
-		return nil, err
-	}
-
-	repos, err := repositories(src.Containers)
+	sc, err := parseSource(src)
 	if err != nil {
 		return nil, err
 	}
-	since, err := parseSince(settings.Since)
-	if err != nil {
-		return nil, err
-	}
-	base, err := parseAPIURL(settings.APIURL)
-	if err != nil {
-		return nil, err
-	}
-
-	for name := range src.Secrets {
-		if name != SecretToken && name != SecretWebhook {
-			return nil, fmt.Errorf("secret %q is not one the github connector reads: it reads %q and %q", name, SecretToken, SecretWebhook)
-		}
-	}
-	token, secret := src.Secrets[SecretToken], src.Secrets[SecretWebhook]
-	if token == "" {
-		return nil, fmt.Errorf("secret %q is required: it is the credential REST calls are made with", SecretToken)
-	}
+	secret := src.Secrets[SecretWebhook]
 	if secret == "" {
 		return nil, fmt.Errorf("secret %q is required: a webhook delivery that cannot be verified is refused", SecretWebhook)
 	}
 
 	return &Connector{
 		source: src.ID,
-		repos:  repos,
-		since:  since,
+		repos:  sc.repos,
+		since:  sc.since,
 		secret: []byte(secret),
-		api:    &client{base: base, token: token, http: &http.Client{Timeout: requestTimeout}},
+		api:    sc.api,
+	}, nil
+}
+
+// sourceConfig is what the connector and the [Reader] both take from a source:
+// the repositories, the start date, and a client for the configured API with
+// the token.
+type sourceConfig struct {
+	repos []string
+	since time.Time
+	api   *client
+}
+
+// parseSource checks the settings, the containers and the token. The webhook
+// secret is the connector's alone, and is checked by [New].
+func parseSource(src connector.SourceConfig) (sourceConfig, error) {
+	var settings Settings
+	if err := src.DecodeSettings(&settings); err != nil {
+		return sourceConfig{}, err
+	}
+
+	repos, err := repositories(src.Containers)
+	if err != nil {
+		return sourceConfig{}, err
+	}
+	since, err := parseSince(settings.Since)
+	if err != nil {
+		return sourceConfig{}, err
+	}
+	base, err := parseAPIURL(settings.APIURL)
+	if err != nil {
+		return sourceConfig{}, err
+	}
+
+	for name := range src.Secrets {
+		if name != SecretToken && name != SecretWebhook {
+			return sourceConfig{}, fmt.Errorf("secret %q is not one the github connector reads: it reads %q and %q", name, SecretToken, SecretWebhook)
+		}
+	}
+	token := src.Secrets[SecretToken]
+	if token == "" {
+		return sourceConfig{}, fmt.Errorf("secret %q is required: it is the credential REST calls are made with", SecretToken)
+	}
+	return sourceConfig{
+		repos: repos,
+		since: since,
+		api:   &client{base: base, token: token, http: &http.Client{Timeout: requestTimeout}},
 	}, nil
 }
 

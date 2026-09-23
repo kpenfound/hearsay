@@ -67,6 +67,17 @@ func (c *client) get(ctx context.Context, rel string, v any) (bool, error) {
 	return hasNext(resp.Header.Get("Link")), nil
 }
 
+// repository reads a repository's metadata. Every walk, visibility check and
+// read of a repository starts here, so a repository the token cannot see fails
+// the same way whichever of them asked.
+func (c *client) repository(ctx context.Context, fullName string) (repository, error) {
+	var repo repository
+	if _, err := c.get(ctx, repoPath(fullName), &repo); err != nil {
+		return repository{}, fmt.Errorf("reading repository %s: %w", fullName, err)
+	}
+	return repo, nil
+}
+
 // hasNext reports whether a Link header names a rel="next" page.
 func hasNext(header string) bool {
 	for part := range strings.SplitSeq(header, ",") {

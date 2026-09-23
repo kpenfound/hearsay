@@ -1,0 +1,130 @@
+[
+  {
+    "name": ".github",
+    "path": ".github",
+    "sha": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+    "size": 0,
+    "url": "https://api.github.com/repos/acme/api/contents/.github?ref=main",
+    "html_url": "https://github.com/acme/api/tree/main/.github",
+    "git_url": "https://api.github.com/repos/acme/api/git/trees/4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+    "download_url": null,
+    "type": "dir",
+    "_links": {
+      "self": "https://api.github.com/repos/acme/api/contents/.github?ref=main",
+      "git": "https://api.github.com/repos/acme/api/git/trees/4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+      "html": "https://github.com/acme/api/tree/main/.github"
+    }
+  },
+  {
+    "name": "cmd",
+    "path": "cmd",
+    "sha": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+    "size": 0,
+    "url": "https://api.github.com/repos/acme/api/contents/cmd?ref=main",
+    "html_url": "https://github.com/acme/api/tree/main/cmd",
+    "git_url": "https://api.github.com/repos/acme/api/git/trees/4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+    "download_url": null,
+    "type": "dir",
+    "_links": {
+      "self": "https://api.github.com/repos/acme/api/contents/cmd?ref=main",
+      "git": "https://api.github.com/repos/acme/api/git/trees/4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+      "html": "https://github.com/acme/api/tree/main/cmd"
+    }
+  },
+  {
+    "name": "docs",
+    "path": "docs",
+    "sha": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+    "size": 0,
+    "url": "https://api.github.com/repos/acme/api/contents/docs?ref=main",
+    "html_url": "https://github.com/acme/api/tree/main/docs",
+    "git_url": "https://api.github.com/repos/acme/api/git/trees/4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+    "download_url": null,
+    "type": "dir",
+    "_links": {
+      "self": "https://api.github.com/repos/acme/api/contents/docs?ref=main",
+      "git": "https://api.github.com/repos/acme/api/git/trees/4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+      "html": "https://github.com/acme/api/tree/main/docs"
+    }
+  },
+  {
+    "name": "engine",
+    "path": "engine",
+    "sha": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+    "size": 0,
+    "url": "https://api.github.com/repos/acme/api/contents/engine?ref=main",
+    "html_url": "https://github.com/acme/api/tree/main/engine",
+    "git_url": "https://api.github.com/repos/acme/api/git/trees/4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+    "download_url": null,
+    "type": "dir",
+    "_links": {
+      "self": "https://api.github.com/repos/acme/api/contents/engine?ref=main",
+      "git": "https://api.github.com/repos/acme/api/git/trees/4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+      "html": "https://github.com/acme/api/tree/main/engine"
+    }
+  },
+  {
+    "name": "go.mod",
+    "path": "go.mod",
+    "sha": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+    "size": 412,
+    "url": "https://api.github.com/repos/acme/api/contents/go.mod?ref=main",
+    "html_url": "https://github.com/acme/api/blob/main/go.mod",
+    "git_url": "https://api.github.com/repos/acme/api/git/blobs/e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+    "download_url": "https://raw.githubusercontent.com/acme/api/main/go.mod",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/acme/api/contents/go.mod?ref=main",
+      "git": "https://api.github.com/repos/acme/api/git/blobs/e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "html": "https://github.com/acme/api/blob/main/go.mod"
+    }
+  },
+  {
+    "name": "main.go",
+    "path": "main.go",
+    "sha": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+    "size": 1873,
+    "url": "https://api.github.com/repos/acme/api/contents/main.go?ref=main",
+    "html_url": "https://github.com/acme/api/blob/main/main.go",
+    "git_url": "https://api.github.com/repos/acme/api/git/blobs/e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+    "download_url": "https://raw.githubusercontent.com/acme/api/main/main.go",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/acme/api/contents/main.go?ref=main",
+      "git": "https://api.github.com/repos/acme/api/git/blobs/e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "html": "https://github.com/acme/api/blob/main/main.go"
+    }
+  },
+  {
+    "name": "README.md",
+    "path": "README.md",
+    "sha": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+    "size": 2210,
+    "url": "https://api.github.com/repos/acme/api/contents/README.md?ref=main",
+    "html_url": "https://github.com/acme/api/blob/main/README.md",
+    "git_url": "https://api.github.com/repos/acme/api/git/blobs/e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+    "download_url": "https://raw.githubusercontent.com/acme/api/main/README.md",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/acme/api/contents/README.md?ref=main",
+      "git": "https://api.github.com/repos/acme/api/git/blobs/e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "html": "https://github.com/acme/api/blob/main/README.md"
+    }
+  },
+  {
+    "name": "vendor-lib",
+    "path": "vendor-lib",
+    "sha": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+    "size": 0,
+    "url": "https://api.github.com/repos/acme/api/contents/vendor-lib?ref=main",
+    "html_url": "https://github.com/acme/api/blob/main/vendor-lib",
+    "git_url": "https://api.github.com/repos/acme/api/git/blobs/e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+    "download_url": null,
+    "type": "submodule",
+    "_links": {
+      "self": "https://api.github.com/repos/acme/api/contents/vendor-lib?ref=main",
+      "git": "https://api.github.com/repos/acme/api/git/blobs/e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "html": "https://github.com/acme/api/blob/main/vendor-lib"
+    }
+  }
+]

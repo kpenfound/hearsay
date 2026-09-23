@@ -5,10 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"slices"
 	"strings"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
 // ErrInvalid is wrapped by everything this package refuses to store, so a
@@ -95,13 +97,16 @@ func (e Entity) Validate() error {
 // names of the directories at its root. Hearsay holds no code, so this is the
 // whole of what it ever reads from one (docs/design.md#entities).
 //
-// Nothing in this build implements it against a live source — the GitHub
-// connector will (#8) — so a process without one seeds from `code/`
-// configuration alone and says so.
+// The assertion worker's reader dispatches by source to the GitHub
+// connector's (internal/connector/github); a process without one seeds from
+// `code/` configuration alone and says so.
 type RepoReader interface {
-	// ReadFile returns a file's content at HEAD.
+	// ReadFile returns a file's content at HEAD. A file that is not there is an
+	// error wrapping [fs.ErrNotExist].
 	ReadFile(ctx context.Context, repo config.SourceRef, path string) ([]byte, error)
-	// TopLevel returns the names of the directories at the root, at HEAD.
+	// TopLevel returns the names of the directories at the root, at HEAD. A
+	// repository in a source the reader has no way to read is an error wrapping
+	// [errors.ErrUnsupported].
 	TopLevel(ctx context.Context, repo config.SourceRef) ([]string, error)
 }
 
@@ -113,7 +118,9 @@ type RepoReader interface {
 // already declares is not seeded a second time, and an entity with owners
 // configured keeps them rather than taking the file's. With a nil reader only
 // the `code/` entries are returned, because the other two sources need a
-// repository to read.
+// repository to read; a repository the reader does not support is seeded the
+// same way, and a CODEOWNERS file that is not there imports nobody. Both are
+// logged and skipped. Anything else the reader fails with fails the seed.
 //
 // The result is sorted by id and depends only on its inputs, so seeding twice
 // writes nothing new.
@@ -135,8 +142,16 @@ func Seed(ctx context.Context, repo config.Repo, reader RepoReader) ([]Entity, e
 		return sorted(byID), nil
 	}
 
+	log := telemetry.Logger(ctx)
+	unsupported := map[config.SourceRef]bool{}
 	for _, ref := range repositories(repo.Code) {
 		dirs, err := reader.TopLevel(ctx, ref)
+		if errors.Is(err, errors.ErrUnsupported) {
+			log.WarnContext(ctx, "no repository reader for this source: its layout and CODEOWNERS files are not imported",
+				"source", ref.Source, "repo", ref.Project)
+			unsupported[ref] = true
+			continue
+		}
 		if err != nil {
 			return nil, fmt.Errorf("reading the top level of %s in %s: %w", ref.Project, ref.Source, err)
 		}
@@ -170,10 +185,15 @@ func Seed(ctx context.Context, repo config.Repo, reader RepoReader) ([]Entity, e
 		return nil, fmt.Errorf("building the identity resolver: %w", err)
 	}
 	for _, c := range repo.Code {
-		if c.CodeOwners == "" || c.Repo.Source == "" {
+		if c.CodeOwners == "" || c.Repo.Source == "" || unsupported[c.Repo] {
 			continue
 		}
 		content, err := reader.ReadFile(ctx, c.Repo, c.CodeOwners)
+		if errors.Is(err, fs.ErrNotExist) {
+			log.WarnContext(ctx, "CODEOWNERS file not found: no owners imported from it",
+				"entity", c.ID, "source", c.Repo.Source, "repo", c.Repo.Project, "path", c.CodeOwners)
+			continue
+		}
 		if err != nil {
 			return nil, fmt.Errorf("reading %s for %s: %w", c.CodeOwners, c.ID, err)
 		}

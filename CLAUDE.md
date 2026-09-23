@@ -107,8 +107,10 @@ The assertion worker is not a stub. The distiller enqueues a serialized `assert`
 job, keyed by scope, in the transaction that writes a document whose outcome is
 decided, proposed or resolved; the worker reads it with the `assert` tier,
 matches topics by reference overlap and then embedding similarity, and appends
-stances in `internal/l2`. At startup it seeds entities from `code/` and enqueues
-every such document it has not read. It needs Postgres and refuses without it.
+stances in `internal/l2`. At startup it seeds entities from `code/`, and from
+the root directories and CODEOWNERS files of the GitHub repositories `code/`
+names (`github.Reader`, with the source's token), and enqueues every such
+document it has not read. It needs Postgres and refuses without it.
 
 Migrations are `go run ./cmd/hearsay migrate up|status|up-to <n>|down`, or
 `dagger api call hearsay migrate --database-url=...` against a database. They are
