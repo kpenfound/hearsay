@@ -10,10 +10,10 @@ func SetPageSize(n int) (restore func()) {
 	return func() { perPage = old }
 }
 
-// SetPushReadTimeout sets how long a push delivery's REST read may take, and
-// returns what restores it.
-func SetPushReadTimeout(d time.Duration) (restore func()) {
-	old := pushReadTimeout
-	pushReadTimeout = d
-	return func() { pushReadTimeout = old }
+// SetReadTimeout sets how long a delivery's REST reads may take, and returns
+// what restores it.
+func SetReadTimeout(d time.Duration) (restore func()) {
+	old := readTimeout
+	readTimeout = d
+	return func() { readTimeout = old }
 }

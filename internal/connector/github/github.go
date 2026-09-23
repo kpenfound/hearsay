@@ -46,12 +46,20 @@
 //     the sub-issue again with its new parent or none. Its revision token
 //     names the parent, because GitHub does not promise to move `updated_at`
 //     when only the parent changes.
+//   - A pull request's event carries the paths it touches, read from its files
+//     list — names only, never the patch the list also carries — by the
+//     backfill and again on every pull_request delivery, which does not carry
+//     them. The read stops at [connector.MaxPaths] and the event says it was
+//     truncated. The paths are part of the revision token, because they are
+//     read separately from the pull request's `updated_at`.
 //   - A re-sync ignores `since`, and a push reads its commits in one REST call
-//     inside GitHub's ten-second delivery timeout.
+//     inside GitHub's ten-second delivery timeout; a pull_request delivery's
+//     read of its files is held to the same timeout.
 //   - Revision tokens compose as the contract says: the content token alone for
 //     a public repository, `<content token>+perm:private` for a private one, and
 //     `perm:private` alone for commits, which have no content token. The content
-//     token is `updated_at`, except for a review, which has none and is hashed
+//     token is `updated_at` — with the parent of a sub-issue and the paths of a
+//     pull request after it — except for a review, which has none and is hashed
 //     from its state and body (ADR-0012). A repository going private is
 //     re-synced: every artifact is emitted again under the private token and ACL.
 //     `repository.privatized` records the re-sync with the runtime before the

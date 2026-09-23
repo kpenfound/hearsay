@@ -325,9 +325,52 @@ type pullNative struct {
 	Base     gitRef     `json:"base"`
 }
 
-func (v view) pullEvent(p pull) (connector.Event, error) {
+// changedFile is one entry of a pull request's files list, as far as the
+// connector reads it: the names. The entry also carries the patch, which is
+// never decoded.
+type changedFile struct {
+	Filename string `json:"filename"`
+	// PreviousFilename is the name a renamed file had.
+	PreviousFilename string `json:"previous_filename"`
+}
+
+// touched is what a pull request's files say it touched, in the shape
+// payload.paths takes: every name, and every name a renamed file had.
+type touched struct {
+	paths     []string
+	truncated bool
+}
+
+// pathsToken is the part of a pull request's content token that names what it
+// touches: `paths:` and the first 16 hex digits of the SHA-256 of every path
+// followed by a newline, then `truncated` where the list was cut. A path has
+// no control character in it (connector.BoundPaths), so the encoding is
+// unambiguous. It is empty for a pull request that touches nothing.
+func pathsToken(t touched) string {
+	if len(t.paths) == 0 {
+		return ""
+	}
+	h := sha256.New()
+	for _, p := range t.paths {
+		h.Write([]byte(p + "\n"))
+	}
+	if t.truncated {
+		h.Write([]byte("truncated"))
+	}
+	return "paths:" + hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// pullEvent is a pull request and the paths it touches. Its content token is
+// its updated_at, and `<updated_at>+paths:<hash>` where it touches any: the
+// files list is read separately from the pull request, and two observations
+// that differ in it must not share a native id (docs/connector-contract.md).
+func (v view) pullEvent(p pull, t touched) (connector.Event, error) {
 	artifact := issueArtifact(v.repo, p.Number)
-	ev, err := v.event(connector.KindPullRequest, artifact, stamp(p.UpdatedAt), p.CreatedAt, p.UpdatedAt.UTC(), pullNative{
+	token := stamp(p.UpdatedAt)
+	if pt := pathsToken(t); pt != "" {
+		token += "+" + pt
+	}
+	ev, err := v.event(connector.KindPullRequest, artifact, token, p.CreatedAt, p.UpdatedAt.UTC(), pullNative{
 		Number: p.Number, State: p.State, Draft: p.Draft, Labels: labelNames(p.Labels),
 		ClosedAt: utc(p.ClosedAt), MergedAt: utc(p.MergedAt), Head: p.Head, Base: p.Base,
 	})
@@ -338,6 +381,7 @@ func (v view) pullEvent(p pull) (connector.Event, error) {
 	ev.Payload.Title = p.Title
 	ev.Payload.Text = p.Body
 	ev.Payload.Author = v.identity(p.User)
+	ev.Payload.Paths, ev.Payload.PathsTruncated = t.paths, t.truncated
 	return ev, nil
 }
 

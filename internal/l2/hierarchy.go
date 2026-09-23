@@ -209,6 +209,6 @@ func subtree(pattern string) (string, bool) {
 
 // under reports whether every path a pattern matches is inside a directory.
 func under(pattern, dir string) bool {
-	prefix := staticPrefix(pattern)
+	prefix := config.StaticPrefix(pattern)
 	return prefix == dir || strings.HasPrefix(prefix, dir+"/")
 }

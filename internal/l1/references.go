@@ -44,7 +44,8 @@ const (
 	// resolved itself. The id is the principal id, never a handle.
 	RefPerson RefType = "person"
 	// RefSystem is a code entity from `code/` configuration, matched on its
-	// name and its aliases. The id is the entity id.
+	// name and its aliases, or on its path patterns against the paths a change
+	// touches. The id is the entity id.
 	RefSystem RefType = "system"
 	// RefURL is a link that is none of the above, normalised.
 	RefURL RefType = "url"
@@ -96,11 +97,18 @@ var (
 // References extracts everything a document points at, from the events it is
 // built from, with no model in the loop: links, @-mentions resolved through the
 // principal resolver, short cross-references read against the artifact's own
-// container, and the code entities `code/` configuration names.
+// container, the code entities `code/` configuration names, and the code
+// entities whose path patterns match a path an event says it touches.
 //
 // It is deterministic and total — the same events, resolver and configuration
 // always produce the same list, sorted and deduplicated — which is what lets L2
-// join on it and what makes re-distilling an artifact cost nothing here.
+// join on it and what makes re-distilling an artifact cost nothing here. The
+// list is sorted by type, then id, except that the code entities a change
+// touches come first among the `system` references, most specific first (see
+// [touchedSystems]).
+//
+// The paths themselves are matched and dropped: a document records which
+// entities a change touched, never the files.
 //
 // An @-mention that does not resolve to a principal produces no reference: no
 // placeholder principal id is minted, and the sighting is recorded by the
@@ -113,9 +121,16 @@ func References(events []connector.Event, resolver *principal.Resolver, code []c
 		}
 	}
 	aliases := systemAliases(code)
+	touched := map[string]int{}
 
 	for _, ev := range events {
 		container := ev.Payload.Container.NativeID
+		for id, depth := range touchedSystems(ev, code) {
+			add(RefSystem, id)
+			if held, ok := touched[id]; !ok || depth > held {
+				touched[id] = depth
+			}
+		}
 		for _, link := range ev.Payload.Links {
 			t, id := classifyLink(link)
 			add(t, id)
@@ -160,7 +175,40 @@ func References(events []connector.Event, resolver *principal.Resolver, code []c
 		}
 	}
 
-	return collapse(seen)
+	return collapse(seen, touched)
+}
+
+// touchedSystems is every code entity whose path patterns match a path the
+// event says it touches, with how specific the match is: the number of
+// directories in the matched pattern's fixed prefix, so `engine/server/**` is
+// 2, `engine/**` is 1 and `**/*.go` is 0, and an entity matched more than once
+// counts its most specific match. Only entities located in the repository the
+// event is in are matched, because a pattern means nothing in another.
+//
+// Patterns are matched, never expanded into files (docs/config.md#code).
+func touchedSystems(ev connector.Event, code []config.CodeEntity) map[string]int {
+	if len(ev.Payload.Paths) == 0 {
+		return nil
+	}
+	out := map[string]int{}
+	for _, e := range code {
+		if e.Repo.Source != ev.Source || !strings.EqualFold(e.Repo.Project, ev.Payload.Container.NativeID) {
+			continue
+		}
+		for _, pattern := range e.PathPatterns {
+			if !slices.ContainsFunc(ev.Payload.Paths, func(path string) bool { return config.MatchPath(pattern, path) }) {
+				continue
+			}
+			depth := 0
+			if prefix := config.StaticPrefix(pattern); prefix != "" {
+				depth = strings.Count(prefix, "/") + 1
+			}
+			if held, ok := out[e.ID]; !ok || depth > held {
+				out[e.ID] = depth
+			}
+		}
+	}
+	return out
 }
 
 // collapse turns the set into the sorted list a document carries, dropping a
@@ -168,7 +216,13 @@ func References(events []connector.Event, resolver *principal.Resolver, code []c
 // pull request: `#31` and a link to `/pull/31` in one conversation are one
 // reference, and keeping both would make the vaguer one look like a second
 // thing.
-func collapse(seen map[Reference]bool) []Reference {
+//
+// The list is sorted by type and then id, with one exception: the code
+// entities a change touched lead the `system` references, deepest match first
+// and then by id, so the first is the most specific entity the change is in —
+// `engine/server` before `engine` — which is what a reader asking "what did
+// this change" wants, and which the sort by id alone would not give.
+func collapse(seen map[Reference]bool, touched map[string]int) []Reference {
 	spelled := map[string]bool{}
 	for ref := range seen {
 		if ref.Type == RefIssue || ref.Type == RefPR {
@@ -186,12 +240,26 @@ func collapse(seen map[Reference]bool) []Reference {
 		if c := cmp.Compare(a.Type, b.Type); c != 0 {
 			return c
 		}
+		if a.Type == RefSystem {
+			if c := cmp.Compare(specificity(touched, b.ID), specificity(touched, a.ID)); c != 0 {
+				return c
+			}
+		}
 		return cmp.Compare(a.ID, b.ID)
 	})
 	if len(refs) > MaxReferences {
 		refs = refs[:MaxReferences]
 	}
 	return refs
+}
+
+// specificity is how specific a change's match of an entity was, and -1 for an
+// entity no change touched, which sorts it after every one that one did.
+func specificity(touched map[string]int, id string) int {
+	if depth, ok := touched[id]; ok {
+		return depth
+	}
+	return -1
 }
 
 // classifyLink types one URL. A link to an issue, a pull request or a commit

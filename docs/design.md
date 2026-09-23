@@ -70,7 +70,7 @@ body:
 
 Design points:
 
-- `references` come from link parsing, @-mention resolution, and known system names, not from the LLM. They are the join key for L2 topic matching and cost nothing to recompute.
+- `references` come from link parsing, @-mention resolution, known system names, and the paths a change touches matched against code entities' path patterns (most specific entity first), not from the LLM. The paths stay in L0; a document keeps the entities, not the files. They are the join key for L2 topic matching and cost nothing to recompute.
 - `outcome_kind` is the L2 trigger. Only docs marked `decided`, `proposed`, or `resolved` enter the assertion pipeline.
 - Meetings are segmented per topic. One meeting produces several `meeting_segment` L1 docs, each with one `outcome`. The segmentation call selects numbered transcript line ranges; repeated ranges for one topic combine into one document. Stable topic labels anchor IDs across edits. Each segment carries its transcript event provenance, inherited ACL and attendee roles, while typed references are extracted from that topic’s source lines without model output. Removed topics are retracted when the transcript changes or disappears.
 - A markdown document is partitioned at headings, including nested headings. The material before the first heading (or the whole page without headings) is an intro section. Each section is independently distilled as `wiki_section`; unchanged sections may retain provenance to an earlier L0 revision that contains the same text. A changed source ACL refreshes every current section.

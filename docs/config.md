@@ -459,7 +459,11 @@ Hearsay holds no code: an entity is vocabulary, path patterns and ownership.
 ```
 
 Path patterns rather than file lists, because a refactor should not invalidate
-the map. `part_of` may not form a cycle: stances inherited from ancestors are a
+the map. A pull request's document references every entity in its
+repository whose `path_patterns` match a path the pull request touches, most
+specific first; the paths come from the pull request's event
+([connector contract](connector-contract.md#payload)) and are matched, never
+stored above L0. `part_of` may not form a cycle: stances inherited from ancestors are a
 walk up this hierarchy, and a cycle makes it a walk with no end. An alias may
 only mean one thing — an alias that resolves to two entities resolves to
 neither.

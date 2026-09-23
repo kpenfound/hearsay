@@ -241,8 +241,9 @@ type Document struct {
 	Scope []string `json:"scope,omitempty"`
 	// References are what the document points at, extracted deterministically
 	// and never by a model: links, @-mentions resolved through the principal
-	// resolver, and the code entities `code/` configuration names. They are the
-	// join key L2 matches topics on, and they cost nothing to recompute.
+	// resolver, the code entities `code/` configuration names, and the ones
+	// whose path patterns match a path a change touches. They are the join key
+	// L2 matches topics on, and they cost nothing to recompute.
 	References []Reference `json:"references,omitempty"`
 	// ACL is who may read the document, inherited from the events it is built
 	// from and re-synced whenever they change, because a re-synced access list

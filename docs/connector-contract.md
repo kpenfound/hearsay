@@ -148,6 +148,8 @@ about it. Everything else the connector wants to keep goes in `native`.
 | `parent` | artifact id | where there is a parent | The thing this one hangs off: the issue a comment is on, the message a reply answers. |
 | `thread` | artifact id | where there is a thread | The root of the conversation, which is what the distiller assembles a thread from. On a two-level source it equals `parent`. |
 | `part_of` | artifact id | where the source has a hierarchy of items | The item this one is part of in the source's own hierarchy: a sub-issue's parent issue. It is not a conversation — nothing is assembled from it — and it may name an artifact in another container of the same source. An item with no parent leaves it out. |
+| `paths` | array of strings | where the artifact is a change to files | The repository paths the change touches — a pull request's changed files, and the name a renamed file had — relative to the repository root. Sorted, without duplicates, at most 300 (`connector.MaxPaths`). Names only: never a diff, a patch or file content. |
+| `paths_truncated` | boolean | when `paths` was cut | The change touched more paths than `paths` holds. |
 | `revision` | object | exactly when `native_id` is `artifact@<token>` | `{token, edited_at?}`: `token` is that token, and `edited_at` is when *this revision* came about, which is what orders an artifact's revisions — see idempotency below. |
 | `target` | artifact id | on tombstones only | The artifact the tombstone retracts. |
 | `native` | any JSON | no | The source's own object, verbatim. L1 reads pull-request merge state here for its artifact class; nothing the fields above ask for may be hidden in it. |
@@ -159,6 +161,17 @@ native ids: a comment hangs off an issue, not off one revision of it.
 moved to another parent, or taken out of one, is a new revision, and the
 current revision's `part_of` is where the item sits now. L2 reads it for the
 tracker hierarchy ([ADR-0016](adr/0016-entity-hierarchy-sources-are-ranked-and-replace.md)).
+
+`paths` is what L1 links a change to code entities by: the document references
+every entity in `code/` whose path patterns match one of them, in the
+repository the change is in. It is bounded so that a revision of a change that
+touched ten thousand files is not ten thousand names in L0. A connector puts the
+list in shape with `connector.BoundPaths`, which sorts it, drops duplicates and
+anything validation refuses, and keeps the first 300 of that order, so what is
+kept does not depend on the order the source listed the files in; a connector
+that stops reading the source's list early sets `paths_truncated` too. Like
+`part_of`, the list is part of what an observation says: a push that changes
+what a pull request touches is a new revision with the new list.
 
 Container kinds are `repository`, `channel`, `dm`, `folder` and `workspace`; a source
 with a container of another sort may use another lowercase word. `workspace`
@@ -245,6 +258,9 @@ in the connector rather than something to retry:
     equals it.
 14. `payload.revision.edited_at`, where set, is not earlier than `time`.
 15. `payload.part_of`, where set, is not the event's own `artifact`.
+16. `payload.paths` holds at most 300 paths, each non-empty, not starting with
+    `/` and with no control character, sorted in byte order without duplicates;
+    `payload.paths_truncated` is set only alongside a non-empty `paths`.
 
 ## Idempotency, edits and deletions
 
@@ -598,7 +614,7 @@ Discord (v0.3.0), Drive (v0.4.0) and Obsidian (v0.4.0) work.
 |---|---|---|---|---|
 | Issue | `issue` | `acme/api#12` | `acme/api#12@<updated_at>`, or `…@<updated_at>+parent:<parent artifact>` for a sub-issue | repository `acme/api` |
 | Issue or PR comment | `message` | `acme/api#12:comment:998` | `…@<updated_at>` | repository |
-| Pull request | `pull_request` | `acme/api#31` | `…@<updated_at>` | repository |
+| Pull request | `pull_request` | `acme/api#31` | `…@<updated_at>`, or `…@<updated_at>+paths:<hash of its paths>` where it touches any | repository |
 | Review | `review` | `acme/api#31:review:77` | `…@<hash of state and body>` ([ADR-0012](adr/0012-a-github-review-is-versioned-by-a-hash-of-its-content.md)) | repository |
 | Review comment | `review_comment` | `acme/api#31:comment:88` | `…@<updated_at>` | repository |
 | Commit on the default branch | `commit` | `acme/api@<sha>` | same — a commit's content does not change | repository |
@@ -625,6 +641,18 @@ only the parent changes, so a sub-issue's content token names its parent as
 well — `2026-09-09T12:00:00Z+parent:acme/api#10` — and moving it, or taking it
 out, is a new revision rather than a native id that comes back with different
 content.
+
+A pull request carries the paths it touches in `paths`, read from its files list
+(`GET /repos/{repo}/pulls/{n}/files`), which gives each file's name and, for a
+rename, the name it had — and a patch, which the connector never decodes. A
+`pull_request` delivery carries no file list, so every delivery reads it again:
+a push to the branch (`synchronize`) moves `updated_at` and changes the paths
+together. The read stops once it holds 300 paths, three pages at GitHub's
+largest page size, and sets `paths_truncated` where GitHub had more. The files
+list is read separately from the pull request, so its content token names the
+paths as well: `2026-09-09T12:00:00Z+paths:` and the first 16 hex digits of the
+SHA-256 of every path followed by a newline, then `truncated` where the list was
+cut. A backfill and a delivery that read the same list emit the same event.
 
 Every native id with an `@` carries `payload.revision.token` equal to the part
 after it, so an issue at `acme/api#12@2026-09-09T12:00:00Z` has that timestamp as

@@ -63,6 +63,11 @@ read path asks a model to generate anything.
   path, an entity name in a directory — so links are matched first and the rest
   of the text is read with them blanked out. An `@`-mention also has to start a
   word, or it fires on the domain of an email address.
+- **A change's paths are matched, not kept.** A pull request's L0 event
+  carries the paths it touches (bounded by the contract); [References] links
+  the document to every `code/` entity in that repository whose path patterns
+  match one, most specific first, and nothing downstream sees the file list.
+  Only configured entities with a `repo:` are matched.
 - **`outcome_kind` is the L2 trigger and is on every document.** The five values
   are the design's, the column carries a CHECK over exactly them, and
   `OutcomeKind.Asserts` is the one place that says which of them the assertion

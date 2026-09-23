@@ -1,6 +1,7 @@
 package l1_test
 
 import (
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -161,6 +162,51 @@ func TestBuild(t *testing.T) {
 // Where the source gives no time for an edit, the revision still exists and the
 // document says the artifact was last edited when it happened: there is nothing
 // else to say, and a zero time would be a time before the artifact.
+// A pull request's document is linked to the code entities its paths fall
+// under, in its references and its scope, and keeps no path: the list L0 holds
+// stops at L0.
+func TestBuildLinksAChangeToTheCodeItTouchesAndKeepsNoPaths(t *testing.T) {
+	root, children := pullRequest()
+	root.Payload.Paths = []string{"engine/server/lock.go", "engine/server/write_test.go"}
+	cfg := testRepo
+	cfg.Code = pathCode
+
+	doc, err := l1.Build(l1.Input{Root: root, Children: children, Resolver: testPrincipals(t), Repo: cfg})
+	if err != nil {
+		t.Fatalf("Build() = %v, want no error", err)
+	}
+	var systems []string
+	for _, ref := range doc.References {
+		if ref.Type == l1.RefSystem {
+			systems = append(systems, ref.ID)
+		}
+	}
+	// The title says "engine", which is Engine's name as well as a directory
+	// the change is in, and the review names the queue, which the change does
+	// not touch: it follows every entity the change does.
+	wantSystems := []string{"code:acme/api:engine/server", "code:acme/api:engine", "code:acme/api:golang", "code:acme/api:queue"}
+	if !slices.Equal(systems, wantSystems) {
+		t.Errorf("system references = %v\nwant %v", systems, wantSystems)
+	}
+	for _, id := range wantSystems {
+		if !slices.Contains(doc.Scope, id) {
+			t.Errorf("Scope = %v, want it to hold %s", doc.Scope, id)
+		}
+	}
+	if slices.Contains(doc.Scope, "code:acme/api:engine/client") {
+		t.Errorf("Scope = %v holds the sibling the change did not touch", doc.Scope)
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range root.Payload.Paths {
+		if strings.Contains(string(raw), path) {
+			t.Errorf("the document holds the path %s: %s", path, raw)
+		}
+	}
+}
+
 func TestBuildWithARevisionThatCarriesNoEditTime(t *testing.T) {
 	root, _ := pullRequest()
 	root.Payload.Revision.EditedAt = time.Time{}

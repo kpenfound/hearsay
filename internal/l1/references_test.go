@@ -1,6 +1,7 @@
 package l1_test
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -206,6 +207,90 @@ func TestReferences(t *testing.T) {
 			// to the row already stored.
 			again := l1.References([]connector.Event{ev}, resolver, testCode)
 			assertRefs(t, again, tt.want)
+		})
+	}
+}
+
+// pathCode is `code/` with path patterns: a directory, two directories inside
+// it, a pattern that is no directory, the same directory in another
+// repository, and an entity located nowhere.
+var pathCode = []config.CodeEntity{{
+	ID: "code:acme/api:engine", Name: "Engine", PathPatterns: []string{"engine/**"},
+	Repo: config.SourceRef{Source: source, Project: repo},
+}, {
+	ID: "code:acme/api:engine/server", Name: "Engine server", PathPatterns: []string{"engine/server/**"},
+	Repo: config.SourceRef{Source: source, Project: repo},
+}, {
+	ID: "code:acme/api:engine/client", Name: "Engine client", PathPatterns: []string{"engine/client/**"},
+	Repo: config.SourceRef{Source: source, Project: repo},
+}, {
+	ID: "code:acme/api:golang", Name: "Go sources", PathPatterns: []string{"**/*.go"},
+	Repo: config.SourceRef{Source: source, Project: repo},
+}, {
+	ID: "code:acme/other:engine/server", Name: "Other server", PathPatterns: []string{"engine/server/**"},
+	Repo: config.SourceRef{Source: source, Project: "acme/other"},
+}, {
+	ID: "code:acme/api:queue", Name: "queue", PathPatterns: []string{"queue/**"},
+}}
+
+// A change references every code entity in its repository whose patterns
+// match a path it touches, most specific first, and nothing a pattern in
+// another repository, or a sibling directory, would say.
+func TestReferencesOfTheCodeAChangeTouches(t *testing.T) {
+	tests := []struct {
+		name      string
+		container string
+		text      string
+		paths     []string
+		want      []string
+	}{{
+		name:  "a file in engine/server is in it and in engine, and not in engine/client",
+		paths: []string{"engine/server/x.go"},
+		want:  []string{"code:acme/api:engine/server", "code:acme/api:engine", "code:acme/api:golang"},
+	}, {
+		name:  "each entity once, at its most specific match",
+		paths: []string{"engine/client/a.go", "engine/client/b.go", "engine/README.md"},
+		want:  []string{"code:acme/api:engine/client", "code:acme/api:engine", "code:acme/api:golang"},
+	}, {
+		name:  "an entity only the text names follows the ones the change touches",
+		text:  "Also the queue.",
+		paths: []string{"engine/README.md"},
+		want:  []string{"code:acme/api:engine", "code:acme/api:queue"},
+	}, {
+		name:  "an entity the text names and the change touches is ordered as touched",
+		text:  "The engine client.",
+		paths: []string{"engine/client/a.md", "engine/server/b.md"},
+		want:  []string{"code:acme/api:engine/client", "code:acme/api:engine/server", "code:acme/api:engine"},
+	}, {
+		name:      "the same path in another repository is that repository's entity",
+		container: "acme/other",
+		paths:     []string{"engine/server/x.md"},
+		want:      []string{"code:acme/other:engine/server"},
+	}, {
+		name:  "an entity located in no repository is matched by no path",
+		paths: []string{"queue/x.md"},
+		want:  nil,
+	}, {
+		name:  "a path under no pattern",
+		paths: []string{"docs/README.md"},
+		want:  nil,
+	}}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ev := revised(event(connector.KindPullRequest, repo+"#31", at(0), who("u1", "kpenfound"), "A change", tt.text), "2026-09-09T14:00:00Z", at(1))
+			if tt.container != "" {
+				ev.Payload.Container = connector.Container{Kind: connector.ContainerRepository, NativeID: tt.container}
+			}
+			ev.Payload.Paths = tt.paths
+			var got []string
+			for _, ref := range l1.References([]connector.Event{ev}, nil, pathCode) {
+				if ref.Type == l1.RefSystem {
+					got = append(got, ref.ID)
+				}
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("system references = %v\nwant %v", got, tt.want)
+			}
 		})
 	}
 }
