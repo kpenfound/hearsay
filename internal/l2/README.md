@@ -95,9 +95,14 @@ corrupt.
   source that sets any parent for an entity replaces the others' parents, and
   an edge closing a cycle is dropped from the lower rank and logged. Repository
   structure is [NestByPattern], which compares path patterns and never expands
-  them, so it reads no repository. Both are pure; seeding calls them.
+  them, so it reads no repository. Both are pure; seeding calls them. Tracker
+  hierarchy is what L0's issues are `part_of` now ([PlacementOf]); between
+  seedings the assertion worker places each item again as its issue changes
+  ([Store.Place]), which re-merges the tracker's edges under one advisory lock
+  rather than under a scope's serial key, because an edge can cross scopes.
 - **Nothing unresolved is invented.** A tracker item is an entity only where a
-  scope's tracker maps its repository; a CODEOWNERS owner is a principal only
+  scope's tracker maps its repository, and a parent in a repository no tracker
+  maps is no edge; a CODEOWNERS owner is a principal only
   where the identity mapping resolves it.
 - **`resolve` hides path-like words from alias matching.** An alias is not
   matched inside `engine/server/write.go` or a link, and an alias shaped like a

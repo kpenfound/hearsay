@@ -1478,6 +1478,8 @@ func TestWebhookRefusesWhatItCannotRead(t *testing.T) {
 	}{
 		{"not JSON", "issues", `{"action":`},
 		{"an issues event with no issue", "issues", `{"action":"opened",` + repo + `}`},
+		{"a sub_issues event with no sub-issue", "sub_issues", `{"action":"parent_issue_added","parent_issue":{"url":"https://api.github.com/repos/acme/api/issues/10","number":10},` + repo + `}`},
+		{"a sub-issue whose parent url names no issue", "sub_issues", `{"action":"parent_issue_added","parent_issue":{"url":"https://api.github.com/repos/acme/api","number":10},"sub_issue":{"url":"https://api.github.com/repos/acme/api/issues/12","repository_url":"https://api.github.com/repos/acme/api","number":12,"title":"x","created_at":"2026-09-01T00:00:00Z","updated_at":"2026-09-01T00:00:00Z"},` + repo + `}`},
 		{"a comment with no issue url", "issue_comment", `{"action":"created","comment":{"id":1,"body":"x","issue_url":"https://api.github.com/repos/acme/api/issues/"},` + repo + `}`},
 		{"a deleted review comment with no pull request url", "pull_request_review_comment", `{"action":"deleted","comment":{"id":1},` + repo + `}`},
 		{"a review with no pull request", "pull_request_review", `{"action":"submitted","review":{"id":1,"state":"approved","submitted_at":"2026-09-01T00:00:00Z"},` + repo + `}`},
@@ -1826,6 +1828,137 @@ func TestResyncRefusesAForeignCursor(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if _, err := c.Resync(t.Context(), &connector.Recorder{}, tt.container, tt.cursor); err == nil {
 				t.Errorf("Resync(%s, %s) = no error, want one", tt.container, tt.cursor)
+			}
+		})
+	}
+}
+
+// hierarchyList is the issues list of acme/api with sub-issues in it: #11 is a
+// sub-issue of #10, #14 of an issue in acme/web, and #12 of nothing yet.
+func hierarchyList(t *testing.T) []map[string]any {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("testdata", "api", "issues-hierarchy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var items []map[string]any
+	if err := json.Unmarshal(raw, &items); err != nil {
+		t.Fatal(err)
+	}
+	return items
+}
+
+// Issue #120: a sub-issue is part_of its parent, from the backfill and from
+// every sub_issues delivery after it — added, moved to another parent, taken
+// out — and each of those is a new revision.
+func TestASubIssueIsPartOfItsParent(t *testing.T) {
+	gh := newFakeGitHub(t)
+	gh.setList("/repos/acme/api/issues", hierarchyList(t))
+	src := newSource(t, gh, sourceID, nil)
+	c := newConnector(t, src)
+	backfilled := &connector.Recorder{}
+	backfillAll(t, c, gateFor(src, c, backfilled))
+
+	type want struct{ nativeID, partOf string }
+	var got []want
+	for _, ev := range backfilled.Events() {
+		if ev.Kind == connector.KindIssue {
+			got = append(got, want{ev.NativeID, ev.Payload.PartOf})
+		}
+	}
+	wantBackfill := []want{
+		{"acme/api#10@2026-09-10T08:00:00Z", ""},
+		{"acme/api#11@2026-09-10T09:00:00Z+parent:acme/api#10", "acme/api#10"},
+		{"acme/api#12@2026-09-10T10:00:00Z", ""},
+		{"acme/api#14@2026-09-10T11:00:00Z+parent:acme/web#7", "acme/web#7"},
+	}
+	if !slices.Equal(got, wantBackfill) {
+		t.Fatalf("backfilled issues = %v, want %v", got, wantBackfill)
+	}
+
+	live := &connector.Recorder{}
+	h := c.Handler(gateFor(src, c, live))
+	tests := []struct {
+		name, event, file string
+		// edit changes the recorded delivery before it is sent.
+		edit func([]byte) []byte
+		// want is the one event the delivery emits; nil is none.
+		want *want
+	}{
+		{
+			name: "an edit to a sub-issue is the backfilled event", event: "issues", file: "issues.edited.sub_issue",
+			want: &wantBackfill[1],
+		},
+		{
+			name: "a parent added", event: "sub_issues", file: "sub_issues.parent_issue_added",
+			want: &want{"acme/api#12@2026-09-12T09:00:00Z+parent:acme/api#10", "acme/api#10"},
+		},
+		{
+			name: "the same relationship delivered to the parent's repository", event: "sub_issues", file: "sub_issues.sub_issue_added",
+			want: &want{"acme/api#12@2026-09-12T09:00:00Z+parent:acme/api#10", "acme/api#10"},
+		},
+		{
+			name: "moved to another parent", event: "sub_issues", file: "sub_issues.parent_issue_added.reparent",
+			want: &want{"acme/api#11@2026-09-13T10:00:00Z+parent:acme/api#12", "acme/api#12"},
+		},
+		{
+			name: "the old parent's removal, after the move, keeps the new parent", event: "sub_issues", file: "sub_issues.parent_issue_removed.reparent",
+			want: &want{"acme/api#11@2026-09-13T10:00:00Z+parent:acme/api#12", "acme/api#12"},
+		},
+		{
+			name: "a parent removed", event: "sub_issues", file: "sub_issues.parent_issue_removed",
+			want: &want{"acme/api#12@2026-09-14T08:00:00Z", ""},
+		},
+		{
+			name: "a removal whose sub-issue still names the parent removed", event: "sub_issues", file: "sub_issues.parent_issue_removed",
+			edit: func(body []byte) []byte {
+				return bytes.Replace(body, []byte(`"number": 12,`), []byte(`"number": 12, "parent_issue_url": "https://api.github.com/repos/acme/api/issues/10",`), 1)
+			},
+			want: &want{"acme/api#12@2026-09-14T08:00:00Z", ""},
+		},
+		{
+			name: "a sub-issue in another repository is that repository's delivery", event: "sub_issues", file: "sub_issues.sub_issue_added.other_repository",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := len(live.Events())
+			body := hook(t, tt.file)
+			if tt.edit != nil {
+				body = tt.edit(body)
+			}
+			code := deliver(t, h, tt.event, body)
+			events := live.Events()[before:]
+			if tt.want == nil {
+				if code != http.StatusNoContent || len(events) != 0 {
+					t.Errorf("status = %d with events %v, want 204 and none", code, nativeIDs(events))
+				}
+				return
+			}
+			if code != http.StatusAccepted || len(events) != 1 {
+				t.Fatalf("status = %d with events %v, want 202 and one", code, nativeIDs(events))
+			}
+			ev := events[0]
+			if g := (want{ev.NativeID, ev.Payload.PartOf}); g != *tt.want {
+				t.Errorf("event = %v, want %v", g, *tt.want)
+			}
+			token := strings.TrimPrefix(ev.NativeID, ev.Payload.Artifact+"@")
+			if ev.Payload.Revision == nil || ev.Payload.Revision.Token != token {
+				t.Errorf("revision = %+v, want token %s", ev.Payload.Revision, token)
+			}
+			if ev.Payload.Parent != "" || ev.Payload.Thread != "" {
+				t.Errorf("parent, thread = %q, %q; want neither: a parent issue is not a conversation", ev.Payload.Parent, ev.Payload.Thread)
+			}
+			if tt.file == "issues.edited.sub_issue" {
+				var same connector.Event
+				for _, b := range backfilled.Events() {
+					if b.ID == ev.ID {
+						same = b
+					}
+				}
+				if a, b := asJSON(t, ev), asJSON(t, same); a != b {
+					t.Errorf("webhook event differs from the backfilled one:\n%s\nwant\n%s", a, b)
+				}
 			}
 		})
 	}

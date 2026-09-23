@@ -91,18 +91,29 @@ ON CONFLICT (id) DO NOTHING`,
 // ReplaceSeeded makes the seeded entities exactly these: it writes every one of
 // them and deletes a `config` or `repo_structure` row that is no longer among
 // them, which is what removing an entry from `code/` means. A `reference` row
-// is never deleted here — a document pointed at it. Run it in a transaction.
+// is never deleted here — a document pointed at it. The only `reference` rows
+// seeding produces are the tracker items the tracker places, and a tracker
+// item that is not among them is placed nowhere: its part_of is cleared, which
+// is what a tracker no scope maps any more means. Run it in a transaction.
 func (s *Store) ReplaceSeeded(ctx context.Context, entities []Entity) error {
+	if _, err := s.db.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, hierarchyLock); err != nil {
+		return fmt.Errorf("locking the tracker hierarchy: %w", err)
+	}
 	ids := make([]string, 0, len(entities))
 	for _, e := range entities {
-		if e.Origin == OriginReference {
-			return fmt.Errorf("%w: entity %s has origin %s, which seeding never produces", ErrInvalid, e.ID, e.Origin)
+		if e.Origin == OriginReference && e.Type != TypeTrackerItem {
+			return fmt.Errorf("%w: entity %s has origin %s, which seeding only produces for a tracker item", ErrInvalid, e.ID, e.Origin)
 		}
 		ids = append(ids, e.ID)
 	}
 	if _, err := s.db.Exec(ctx,
 		`DELETE FROM l2_entities WHERE origin IN ('config', 'repo_structure') AND NOT (id = ANY($1))`, ids); err != nil {
 		return fmt.Errorf("removing entities configuration no longer names: %w", err)
+	}
+	if _, err := s.db.Exec(ctx, `
+UPDATE l2_entities SET part_of = '{}', updated_at = now()
+WHERE type = $2 AND part_of <> '{}' AND NOT (id = ANY($1))`, ids, string(TypeTrackerItem)); err != nil {
+		return fmt.Errorf("removing tracker hierarchy the tracker no longer places: %w", err)
 	}
 	for _, e := range entities {
 		if err := s.PutEntity(ctx, e); err != nil {

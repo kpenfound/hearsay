@@ -138,6 +138,12 @@ type Payload struct {
 	// same value as Parent.
 	Thread string `json:"thread,omitempty"`
 
+	// PartOf is the artifact id of the item this one is part of in the source's
+	// own hierarchy of items: a sub-issue's parent issue. It is not a
+	// conversation — nothing is assembled from it, and it may name an artifact
+	// in another container of the same source.
+	PartOf string `json:"part_of,omitempty"`
+
 	// Revision describes one observation of an artifact that can change. It is
 	// set exactly when NativeID is `Artifact@<token>`, and its Token is that
 	// token: validation holds the two to each other.
@@ -503,6 +509,8 @@ func (p Payload) validate(e Event) error {
 		return fmt.Errorf("%w: a tombstone's payload.artifact is its own, not payload.target %q", ErrInvalidEvent, p.Target)
 	case !tombstone && p.Target != "":
 		return fmt.Errorf("%w: payload.target is set on kind %q, which is not a tombstone", ErrInvalidEvent, e.Kind)
+	case p.PartOf == p.Artifact:
+		return fmt.Errorf("%w: payload.part_of is the artifact itself, %q", ErrInvalidEvent, p.PartOf)
 	}
 	return p.validateRevision(e)
 }

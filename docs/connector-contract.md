@@ -147,12 +147,18 @@ about it. Everything else the connector wants to keep goes in `native`.
 | `links` | array of strings | where the source gives them | URLs the artifact carries, verbatim. L1 turns them into typed references; a connector does not. |
 | `parent` | artifact id | where there is a parent | The thing this one hangs off: the issue a comment is on, the message a reply answers. |
 | `thread` | artifact id | where there is a thread | The root of the conversation, which is what the distiller assembles a thread from. On a two-level source it equals `parent`. |
+| `part_of` | artifact id | where the source has a hierarchy of items | The item this one is part of in the source's own hierarchy: a sub-issue's parent issue. It is not a conversation — nothing is assembled from it — and it may name an artifact in another container of the same source. An item with no parent leaves it out. |
 | `revision` | object | exactly when `native_id` is `artifact@<token>` | `{token, edited_at?}`: `token` is that token, and `edited_at` is when *this revision* came about, which is what orders an artifact's revisions — see idempotency below. |
 | `target` | artifact id | on tombstones only | The artifact the tombstone retracts. |
 | `native` | any JSON | no | The source's own object, verbatim. L1 reads pull-request merge state here for its artifact class; nothing the fields above ask for may be hidden in it. |
 
-`parent`, `thread` and `target` reference **artifact ids**, never native ids: a
-comment hangs off an issue, not off one revision of it.
+`parent`, `thread`, `part_of` and `target` reference **artifact ids**, never
+native ids: a comment hangs off an issue, not off one revision of it.
+
+`part_of` is part of what an observation says, like any other field: an item
+moved to another parent, or taken out of one, is a new revision, and the
+current revision's `part_of` is where the item sits now. L2 reads it for the
+tracker hierarchy ([ADR-0016](adr/0016-entity-hierarchy-sources-are-ranked-and-replace.md)).
 
 Container kinds are `repository`, `channel`, `dm`, `folder` and `workspace`; a source
 with a container of another sort may use another lowercase word. `workspace`
@@ -238,6 +244,7 @@ in the connector rather than something to retry:
     `artifact@<token>`, `token` is non-empty, and `payload.revision.token`
     equals it.
 14. `payload.revision.edited_at`, where set, is not earlier than `time`.
+15. `payload.part_of`, where set, is not the event's own `artifact`.
 
 ## Idempotency, edits and deletions
 
@@ -589,7 +596,7 @@ Discord (v0.3.0), Drive (v0.4.0) and Obsidian (v0.4.0) work.
 
 | Artifact | kind | artifact id | native_id | container |
 |---|---|---|---|---|
-| Issue | `issue` | `acme/api#12` | `acme/api#12@<updated_at>` | repository `acme/api` |
+| Issue | `issue` | `acme/api#12` | `acme/api#12@<updated_at>`, or `…@<updated_at>+parent:<parent artifact>` for a sub-issue | repository `acme/api` |
 | Issue or PR comment | `message` | `acme/api#12:comment:998` | `…@<updated_at>` | repository |
 | Pull request | `pull_request` | `acme/api#31` | `…@<updated_at>` | repository |
 | Review | `review` | `acme/api#31:review:77` | `…@<hash of state and body>` ([ADR-0012](adr/0012-a-github-review-is-versioned-by-a-hash-of-its-content.md)) | repository |
@@ -607,6 +614,17 @@ list endpoints with the page cursor; `repository.privatized` is a
 repository, with no start date. Deleting a comment sends
 `issue_comment.deleted`, which is a `tombstone` with artifact
 `acme/api#12:comment:998:tombstone` and `target` the comment's artifact id.
+
+A sub-issue is `part_of` its parent issue, `acme/api#10` or an issue in another
+repository, read from the `parent_issue_url` the REST lists and the webhooks
+both carry. A `sub_issues` delivery (`parent_issue_added`, `parent_issue_removed`
+and their `sub_issue_*` mirrors) emits the sub-issue again, with the parent it
+was added to or with none; the delivery about a sub-issue in another repository
+is left to that repository's. GitHub does not promise to move `updated_at` when
+only the parent changes, so a sub-issue's content token names its parent as
+well — `2026-09-09T12:00:00Z+parent:acme/api#10` — and moving it, or taking it
+out, is a new revision rather than a native id that comes back with different
+content.
 
 Every native id with an `@` carries `payload.revision.token` equal to the part
 after it, so an issue at `acme/api#12@2026-09-09T12:00:00Z` has that timestamp as

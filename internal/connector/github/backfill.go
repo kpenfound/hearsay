@@ -219,7 +219,7 @@ func (c *Connector) page(ctx context.Context, sink connector.Sink, pos position,
 	if err != nil {
 		return 0, nil, err
 	}
-	v := view{source: c.source, repo: pos.Repo, private: repo.Private}
+	v := c.view(pos.Repo, repo.Private)
 
 	var (
 		n    int

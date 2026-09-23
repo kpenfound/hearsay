@@ -92,7 +92,7 @@ func sameSummaries(a, b []entitySummary) bool {
 }
 
 func TestSeedFromConfigurationAlone(t *testing.T) {
-	got, err := l2.Seed(t.Context(), seedRepo(), nil)
+	got, err := l2.Seed(t.Context(), seedRepo(), nil, nil)
 	if err != nil {
 		t.Fatalf("Seed() = %v", err)
 	}
@@ -115,7 +115,7 @@ func TestSeedFromARepository(t *testing.T) {
 		files: map[string]string{"acme/api:.github/CODEOWNERS": codeowners},
 		top:   map[string][]string{"acme/api": {"engine", "cmd", ".github", "docs/"}},
 	}
-	got, err := l2.Seed(t.Context(), seedRepo(), reader)
+	got, err := l2.Seed(t.Context(), seedRepo(), reader, nil)
 	if err != nil {
 		t.Fatalf("Seed() = %v", err)
 	}
@@ -142,7 +142,7 @@ func TestSeedFromARepository(t *testing.T) {
 		t.Errorf("Seed() read %q, want the one CODEOWNERS file configuration names", reader.reads)
 	}
 
-	again, err := l2.Seed(t.Context(), seedRepo(), reader)
+	again, err := l2.Seed(t.Context(), seedRepo(), reader, nil)
 	if err != nil || !sameSummaries(summarize(again), summarize(got)) {
 		t.Errorf("Seed() a second time = %+v, %v, want the same entities", summarize(again), err)
 	}
@@ -150,12 +150,12 @@ func TestSeedFromARepository(t *testing.T) {
 
 func TestSeedFailsWhenTheRepositoryCannotBeRead(t *testing.T) {
 	boom := errors.New("rate limited")
-	if _, err := l2.Seed(t.Context(), seedRepo(), &fakeRepos{err: boom}); !errors.Is(err, boom) {
+	if _, err := l2.Seed(t.Context(), seedRepo(), &fakeRepos{err: boom}, nil); !errors.Is(err, boom) {
 		t.Errorf("Seed() = %v, want the reader's error", err)
 	}
 	unreadable := &fakeRepos{top: map[string][]string{"acme/api": {"engine"}}}
 	denied := errors.New("403 Forbidden")
-	if _, err := l2.Seed(t.Context(), seedRepo(), &readErr{unreadable, denied}); !errors.Is(err, denied) {
+	if _, err := l2.Seed(t.Context(), seedRepo(), &readErr{unreadable, denied}, nil); !errors.Is(err, denied) {
 		t.Errorf("Seed() with the CODEOWNERS file unreadable = %v, want the reader's error", err)
 	}
 }
@@ -180,7 +180,7 @@ func seedLog(t *testing.T) (context.Context, *bytes.Buffer) {
 func TestSeedSkipsAMissingCodeOwnersFile(t *testing.T) {
 	ctx, log := seedLog(t)
 	reader := &fakeRepos{top: map[string][]string{"acme/api": {"engine", "cmd"}}}
-	got, err := l2.Seed(ctx, seedRepo(), reader)
+	got, err := l2.Seed(ctx, seedRepo(), reader, nil)
 	if err != nil {
 		t.Fatalf("Seed() with the CODEOWNERS file missing = %v, want it skipped", err)
 	}
@@ -206,11 +206,11 @@ func TestSeedSkipsAMissingCodeOwnersFile(t *testing.T) {
 func TestSeedSkipsARepositoryNoReaderSupports(t *testing.T) {
 	ctx, log := seedLog(t)
 	reader := &fakeRepos{unsupported: []string{"github-acme"}}
-	got, err := l2.Seed(ctx, seedRepo(), reader)
+	got, err := l2.Seed(ctx, seedRepo(), reader, nil)
 	if err != nil {
 		t.Fatalf("Seed() = %v, want the repository seeded from configuration", err)
 	}
-	alone, err := l2.Seed(t.Context(), seedRepo(), nil)
+	alone, err := l2.Seed(t.Context(), seedRepo(), nil, nil)
 	if err != nil || !sameSummaries(summarize(got), summarize(alone)) {
 		t.Errorf("Seed() = %+v, want what configuration alone seeds, %+v (%v)", summarize(got), summarize(alone), err)
 	}
@@ -253,7 +253,7 @@ func TestSeedDerivesTheHierarchyFromPathPatterns(t *testing.T) {
 	}
 
 	ctx, log := seedLog(t)
-	got, err := l2.Seed(ctx, repo, &fakeRepos{top: map[string][]string{"acme/api": {"engine", "lib", "tools", "internal"}}})
+	got, err := l2.Seed(ctx, repo, &fakeRepos{top: map[string][]string{"acme/api": {"engine", "lib", "tools", "internal"}}}, nil)
 	if err != nil {
 		t.Fatalf("Seed() = %v", err)
 	}
@@ -279,7 +279,7 @@ func TestSeedDerivesTheHierarchyFromPathPatterns(t *testing.T) {
 
 	// Nesting reads patterns, not the repository: without a reader there is no
 	// project or layout, and the configured entities nest all the same.
-	alone, err := l2.Seed(t.Context(), repo, nil)
+	alone, err := l2.Seed(t.Context(), repo, nil, nil)
 	if err != nil {
 		t.Fatalf("Seed() = %v", err)
 	}

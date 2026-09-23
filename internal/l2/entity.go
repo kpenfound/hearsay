@@ -45,8 +45,10 @@ func (t EntityType) Valid() bool {
 }
 
 // Origin is where an entity came from. A re-seed replaces what it seeded — the
-// `config` and `repo_structure` rows — and never touches a `reference` row,
-// which the assertion worker created because a document pointed at it.
+// `config` and `repo_structure` rows — and never deletes a `reference` row,
+// which the assertion worker created because a document pointed at it or the
+// tracker placed it under a parent. What it writes of one is a tracker item's
+// place in the tracker's hierarchy.
 type Origin string
 
 // The origins.
@@ -112,14 +114,16 @@ type RepoReader interface {
 
 // Seed is the entity map a configuration describes: every `code/` entry, a
 // project and a module per top-level directory of every repository those
-// entries name, the hierarchy between them, and owners imported from each
-// entry's CODEOWNERS file.
+// entries name, the tracker items the tracker places under a parent
+// ([PlacementOf]), the hierarchy between them all, and owners imported from
+// each entry's CODEOWNERS file.
 //
 // Configuration wins every disagreement. A top-level directory whose id `code/`
 // already declares is not seeded a second time, an entity with owners
 // configured keeps them rather than taking the file's, and an entity with
 // `part_of` configured keeps its parents rather than taking the ones its path
-// patterns imply ([MergeHierarchy], [NestByPattern]). With a nil reader only
+// patterns imply or the tracker says ([MergeHierarchy], [NestByPattern]). A
+// placement with no parent adds nothing. With a nil reader only
 // the `code/` entries are returned, because the other two sources need a
 // repository to read; a repository the reader does not support is seeded the
 // same way, and a CODEOWNERS file that is not there imports nobody. Both are
@@ -128,11 +132,11 @@ type RepoReader interface {
 //
 // The result is sorted by id and depends only on its inputs, so seeding twice
 // writes nothing new.
-func Seed(ctx context.Context, repo config.Repo, reader RepoReader) ([]Entity, error) {
+func Seed(ctx context.Context, repo config.Repo, reader RepoReader, tracker []Placement) ([]Entity, error) {
 	byID := map[string]*Entity{}
 	// The repository each entity is in, for nesting by path pattern.
 	repoOf := map[string]config.SourceRef{}
-	configured := Parents{}
+	configured := Configured(repo)
 	for _, c := range repo.Code {
 		byID[c.ID] = &Entity{
 			ID:           c.ID,
@@ -144,10 +148,21 @@ func Seed(ctx context.Context, repo config.Repo, reader RepoReader) ([]Entity, e
 			Origin:       OriginConfig,
 		}
 		repoOf[c.ID] = c.Repo
-		configured[c.ID] = slices.Clone(c.PartOf)
+	}
+	placed := Parents{}
+	for _, p := range tracker {
+		if len(p.Parents) == 0 {
+			continue
+		}
+		for _, e := range append([]Entity{p.Item}, p.Parents...) {
+			if _, ok := byID[e.ID]; !ok {
+				byID[e.ID] = &e
+			}
+		}
+		placed[p.Item.ID] = p.ParentIDs()
 	}
 	if reader == nil {
-		hierarchy(ctx, byID, repoOf, configured)
+		hierarchy(ctx, byID, repoOf, configured, placed)
 		return sorted(byID), nil
 	}
 
@@ -190,7 +205,7 @@ func Seed(ctx context.Context, repo config.Repo, reader RepoReader) ([]Entity, e
 		}
 	}
 	// The owners below follow the hierarchy, so it is settled first.
-	hierarchy(ctx, byID, repoOf, configured)
+	hierarchy(ctx, byID, repoOf, configured, placed)
 
 	resolver, err := repo.Resolver()
 	if err != nil {
@@ -243,15 +258,15 @@ func repositories(code []config.CodeEntity) []config.SourceRef {
 	return refs
 }
 
-// hierarchy sets every entity's part_of: `code/`'s where it sets any, and
-// otherwise what the entities' path patterns imply within their repository
-// (ADR-0016). Seeding has no tracker hierarchy to read yet.
-func hierarchy(ctx context.Context, byID map[string]*Entity, repoOf map[string]config.SourceRef, configured Parents) {
+// hierarchy sets every entity's part_of: `code/`'s where it sets any, then the
+// tracker's, and otherwise what the entities' path patterns imply within their
+// repository (ADR-0016).
+func hierarchy(ctx context.Context, byID map[string]*Entity, repoOf map[string]config.SourceRef, configured, tracker Parents) {
 	located := make([]Located, 0, len(byID))
 	for _, id := range sortedKeys(byID) {
 		located = append(located, Located{ID: id, Repo: repoOf[id], PathPatterns: byID[id].PathPatterns})
 	}
-	merged := MergeHierarchy(ctx, HierarchyInputs{Config: configured, RepoStructure: NestByPattern(located)})
+	merged := MergeHierarchy(ctx, HierarchyInputs{Config: configured, Tracker: tracker, RepoStructure: NestByPattern(located)})
 	for id, e := range byID {
 		e.PartOf = merged[id]
 	}

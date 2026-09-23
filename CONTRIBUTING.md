@@ -429,9 +429,12 @@ overlap first, embedding similarity second, and only topics everyone who may
 read the document may read — and appends a stance to one or opens a new one. At
 startup it seeds `l2_entities` from `code/`, and from the root directories and
 CODEOWNERS files of the GitHub repositories `code/` names (read with the
-source's token, which the worker's environment must carry), and enqueues every
-such document it has not read, which is what picks up documents written before
-it was deployed.
+source's token, which the worker's environment must carry), and from the
+tracker hierarchy L0 holds: an issue `part_of` its parent, in a repository a
+scope's tracker maps. It enqueues every such document it has not read, which is
+what picks up documents written before it was deployed. Between startups it
+follows the L0 change feed (consumer `assert-worker:hierarchy`) and places each
+tracker item again when its issue changes, with no model call.
 
 The API's `assert` call enqueues the same kind of job, in the transaction that
 writes an agent's L0 `assertion` event, under the scope of the topic it names;

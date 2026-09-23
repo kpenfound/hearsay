@@ -1,0 +1,88 @@
+{
+  "action": "parent_issue_removed",
+  "parent_issue_id": 4010,
+  "parent_issue": {
+    "url": "https://api.github.com/repos/acme/api/issues/10",
+    "repository_url": "https://api.github.com/repos/acme/api",
+    "html_url": "https://github.com/acme/api/issues/10",
+    "id": 4010,
+    "node_id": "I_kwDOAAAAAc4AAA010",
+    "number": 10,
+    "title": "Health checks",
+    "user": {
+      "login": "kpenfound",
+      "id": 1,
+      "node_id": "MDQ6VXNlcjE=",
+      "type": "User",
+      "site_admin": false
+    },
+    "labels": [],
+    "state": "open",
+    "locked": false,
+    "comments": 0,
+    "created_at": "2026-09-01T08:00:00Z",
+    "updated_at": "2026-09-13T10:00:00Z",
+    "closed_at": null,
+    "author_association": "OWNER",
+    "sub_issues_summary": {
+      "total": 1,
+      "completed": 0,
+      "percent_completed": 0
+    },
+    "body": "Everything /health needs before the launch."
+  },
+  "parent_issue_repo": {
+    "id": 42,
+    "node_id": "R_kgDOAAAAKg",
+    "name": "api",
+    "full_name": "acme/api",
+    "private": false,
+    "default_branch": "main"
+  },
+  "sub_issue_id": 4011,
+  "sub_issue": {
+    "url": "https://api.github.com/repos/acme/api/issues/11",
+    "repository_url": "https://api.github.com/repos/acme/api",
+    "html_url": "https://github.com/acme/api/issues/11",
+    "id": 4011,
+    "node_id": "I_kwDOAAAAAc4AAA011",
+    "number": 11,
+    "title": "Check the database from /health",
+    "user": {
+      "login": "robinok",
+      "id": 2,
+      "node_id": "MDQ6VXNlcjI=",
+      "type": "User",
+      "site_admin": false
+    },
+    "labels": [],
+    "state": "open",
+    "locked": false,
+    "comments": 0,
+    "created_at": "2026-09-02T08:00:00Z",
+    "updated_at": "2026-09-13T10:00:00Z",
+    "closed_at": null,
+    "author_association": "OWNER",
+    "sub_issues_summary": {
+      "total": 0,
+      "completed": 0,
+      "percent_completed": 0
+    },
+    "parent_issue_url": "https://api.github.com/repos/acme/api/issues/12",
+    "body": "Ping the pool, do not open a connection."
+  },
+  "repository": {
+    "id": 42,
+    "node_id": "R_kgDOAAAAKg",
+    "name": "api",
+    "full_name": "acme/api",
+    "private": false,
+    "default_branch": "main"
+  },
+  "sender": {
+    "login": "kpenfound",
+    "id": 1,
+    "node_id": "MDQ6VXNlcjE=",
+    "type": "User"
+  }
+}
