@@ -12,6 +12,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/connector/agent"
 	"github.com/kpenfound/hearsay/internal/connector/discord"
 	"github.com/kpenfound/hearsay/internal/connector/drive"
 	"github.com/kpenfound/hearsay/internal/connector/github"
@@ -20,6 +21,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/llm/providers"
+	"github.com/kpenfound/hearsay/internal/principal"
 	"github.com/kpenfound/hearsay/internal/service"
 	"github.com/kpenfound/hearsay/internal/service/api"
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
@@ -418,7 +420,7 @@ func runConnectors(ctx context.Context, args []string, stdout, stderr io.Writer)
 	return connectors.Run(ctx, cfg, connectors.Deps{
 		Sources:  sources,
 		Pool:     pool,
-		Registry: connectorRegistry(),
+		Registry: connectorRegistry(cfg.Repo.Principals),
 		Listen:   *listen,
 	})
 }
@@ -446,9 +448,11 @@ func checkListen(addr string) error {
 // wiring rather than from whatever happened to be linked in
 // (docs/connector-contract.md).
 //
-// It holds the GitHub, Discord, Drive and Obsidian connectors. A source of any other type
-// is a startup failure, as is a source whose connector rejects its config.
-func connectorRegistry() *connector.Registry {
+// It holds the GitHub, Discord, Drive, Obsidian and agent session connectors. A
+// source of any other type is a startup failure, as is a source whose connector
+// rejects its config. The agent session connector authenticates agents by the
+// tokens their principals name, so it is built from the principals.
+func connectorRegistry(principals []principal.Principal) *connector.Registry {
 	registry := connector.NewRegistry()
 	// Register fails only for an empty type, a nil factory or a type claimed
 	// twice, which a fixed list cannot be; TestConnectorRegistry pins the list.
@@ -456,6 +460,7 @@ func connectorRegistry() *connector.Registry {
 	_ = registry.Register(discord.Type, discord.Factory)
 	_ = registry.Register(drive.Type, drive.Factory)
 	_ = registry.Register(obsidian.Type, obsidian.Factory)
+	_ = registry.Register(agent.Type, agent.NewFactory(principals, os.LookupEnv))
 	return registry
 }
 
@@ -520,7 +525,7 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 
 	return service.RunAll(ctx, map[string]service.RunFunc{
 		connectors.Name: func(ctx context.Context) error {
-			return connectors.Run(ctx, cfg, connectors.Deps{Pool: pool, Registry: connectorRegistry(), Listen: *listen})
+			return connectors.Run(ctx, cfg, connectors.Deps{Pool: pool, Registry: connectorRegistry(cfg.Repo.Principals), Listen: *listen})
 		},
 		distiller.Name: func(ctx context.Context) error {
 			return distiller.Run(ctx, cfg, distiller.Deps{Pool: pool, LLM: registry})

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -202,7 +203,7 @@ type Hidden interface {
 }
 
 // TargetOf is the document an event belongs to, and false for an event that
-// belongs to none.
+// belongs to none: an agent session event (see distilled) belongs to none.
 //
 // An artifact that makes a document of its own is its own target. Everything
 // else — a comment, a review, a reply — is part of the conversation it hangs
@@ -243,8 +244,25 @@ func TargetOf(ctx context.Context, ev connector.Event, hidden Hidden) (string, b
 	return target, ok, nil
 }
 
+// undistilled are the kinds that belong to no document. An agent's session,
+// its turns and its tool calls are provenance — what an agent was doing when
+// it said something — rather than team knowledge, and distilling every tool
+// call would flood L1 (#22).
+var undistilled = []connector.Kind{connector.KindAgentSession, connector.KindAgentTurn, connector.KindToolCall}
+
+// distilled reports whether an event's kind, or the core kind an extension
+// kind behaves like, is one the distiller makes documents from. Whatever the
+// event says about the conversation it is part of, an agent session event is
+// not.
+func distilled(ev connector.Event) bool {
+	return !slices.Contains(undistilled, ev.Kind) && !slices.Contains(undistilled, ev.Payload.BaseKind)
+}
+
 // targetOf is the document an event that is not a tombstone belongs to.
 func targetOf(ev connector.Event) (string, bool) {
+	if !distilled(ev) {
+		return "", false
+	}
 	if ev.Kind == connector.KindDocument || ev.Payload.BaseKind == connector.KindDocument || ev.Kind == connector.KindTranscript || ev.Payload.BaseKind == connector.KindTranscript {
 		return l1.DocID(ev.Source, ev.Payload.Artifact), true
 	}

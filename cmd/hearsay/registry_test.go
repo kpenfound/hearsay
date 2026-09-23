@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/principal"
 )
 
 // TestConnectorRegistry pins what this binary can ingest: a type registered
@@ -37,14 +38,25 @@ func TestConnectorRegistry(t *testing.T) {
 			src:  connector.SourceConfig{ID: "notes", Type: "obsidian", Containers: []string{"notes"}, Settings: json.RawMessage(`{"root":"/missing-vault","owner":{"source":"notes","kind":"user","native_id":"owner"}}`)},
 		},
 		{
+			name: "agent is registered",
+			src:  connector.SourceConfig{ID: "sessions", Type: "agent", Containers: []string{"*"}},
+		},
+		{
 			name:        "anything else is not",
 			src:         connector.SourceConfig{ID: "unknown", Type: "unknown", Containers: []string{"1"}},
 			wantUnknown: true,
 		},
 	}
+	// The agent session connector reads its agents' tokens from the
+	// environment when it is built.
+	t.Setenv("HEARSAY_TEST_SHED_TOKEN", "shed-token")
+	principals := []principal.Principal{
+		{ID: "kyle", Kind: principal.KindHuman},
+		{ID: "shed", Kind: principal.KindAgent, Class: principal.ClassWorker, TokenEnv: "HEARSAY_TEST_SHED_TOKEN"},
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c, err := connectorRegistry().New(t.Context(), tt.src)
+			c, err := connectorRegistry(principals).New(t.Context(), tt.src)
 			if got := errors.Is(err, connector.ErrUnknownType); got != tt.wantUnknown {
 				t.Fatalf("New(%q) = %v, want unknown type %v", tt.src.Type, err, tt.wantUnknown)
 			}
