@@ -13,6 +13,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/l1"
 )
 
 // Querier is what a Store runs its statements on: a pgx pool, or a transaction
@@ -228,13 +229,22 @@ func (s *Store) Topics(ctx context.Context, scope string) ([]Topic, error) {
 	return s.topics(ctx, `SELECT `+topicColumns+` FROM l2_topics t WHERE t.scope = $1 ORDER BY t.created_at, t.id`, scope)
 }
 
-// readableBy is the predicate that offers a topic to a document: everyone who
-// may read the document may read the topic. That holds for a public topic, and
-// for one whose access list carries every grant the document's does — an entry
-// is compared on kind, source and native id, never the label, as in
-// internal/l1. It is what keeps the name of a private topic out of a prompt
-// about a public document, and out of the stance that prompt produces.
-const readableBy = `(t.acl @> '[{"kind":"public"}]'::jsonb OR t.acl @> %s::jsonb)`
+// readableBy is the predicate, over an access-list column, that everyone who
+// may read a document may read what carries it: the list is public, or it
+// carries every grant the document's does — an entry is compared on kind,
+// source and native id, never the label, as in internal/l1.
+func readableBy(column, readers string) string {
+	return fmt.Sprintf(`(%[1]s @> '[{"kind":"public"}]'::jsonb OR %[1]s @> %[2]s::jsonb)`, column, readers)
+}
+
+// topicReadableBy is readableBy for a topic: the document that opened it is
+// still in L1, and its access list *now* is readable by everyone who may read
+// the document being asserted. The access list the topic was written with is
+// not consulted ([Access]). It is what keeps the name of a private topic out of
+// a prompt about a public document, and out of the stance that prompt produces.
+func topicReadableBy(readers string) string {
+	return `EXISTS (SELECT 1 FROM l1_docs o WHERE o.id = t.opened_by AND ` + readableBy("o.acl", readers) + `)`
+}
 
 // TopicsByJoinKeys is the first half of topic matching: the topics in one scope
 // that share a join key with a document and that its readers may read, most
@@ -245,7 +255,7 @@ func (s *Store) TopicsByJoinKeys(ctx context.Context, scope string, keys []strin
 	}
 	return s.topics(ctx, `
 SELECT `+topicColumns+` FROM l2_topics t
-WHERE t.scope = $1 AND t.join_keys && $2::text[] AND `+fmt.Sprintf(readableBy, "$3")+`
+WHERE t.scope = $1 AND t.join_keys && $2::text[] AND `+topicReadableBy("$3")+`
 ORDER BY cardinality(ARRAY(SELECT unnest(t.join_keys) INTERSECT SELECT unnest($2::text[]))) DESC, t.created_at, t.id
 LIMIT $4`, scope, keys, aclJSON(readers), limit)
 }
@@ -265,11 +275,31 @@ JOIN l2_stances s ON s.topic_id = t.id
 JOIN l1_docs d ON d.id = s.evidence[1]
 CROSS JOIN (SELECT embedding FROM l1_docs WHERE id = $2 AND embedding IS NOT NULL) q
 WHERE t.scope = $1 AND d.id <> $2 AND d.embedding IS NOT NULL
-  AND NOT (t.id = ANY($5::text[])) AND `+fmt.Sprintf(readableBy, "$6")+`
+  AND NOT (t.id = ANY($5::text[])) AND `+topicReadableBy("$6")+`
 GROUP BY t.id
 HAVING min(d.embedding <=> q.embedding) <= $3
 ORDER BY min(d.embedding <=> q.embedding), t.id
 LIMIT $4`, scope, docID, maxDistance, limit, orEmpty(exclude), aclJSON(readers))
+}
+
+// EvidenceReadableBy reports whether everyone who may read a document may read
+// every piece of this evidence now: each is still in L1 and its access list is
+// readable by the document's readers, the way a topic is offered to it. It is
+// what decides whether a topic's current position may be shown in a prompt
+// about that document.
+func (s *Store) EvidenceReadableBy(ctx context.Context, evidence []string, readers connector.ACL) (bool, error) {
+	if len(evidence) == 0 {
+		return false, nil
+	}
+	var readable bool
+	err := s.db.QueryRow(ctx, `
+SELECT count(DISTINCT d.id) = cardinality(ARRAY(SELECT DISTINCT unnest($1::text[])))
+FROM l1_docs d
+WHERE d.id = ANY($1::text[]) AND `+readableBy("d.acl", "$2"), evidence, aclJSON(readers)).Scan(&readable)
+	if err != nil {
+		return false, fmt.Errorf("reading whether %d documents are readable: %w", len(evidence), err)
+	}
+	return readable, nil
 }
 
 func (s *Store) topics(ctx context.Context, sql string, args ...any) ([]Topic, error) {
@@ -468,7 +498,7 @@ func (s *Store) Evidence(ctx context.Context, docIDs []string) (map[string]Evide
 	return out, nil
 }
 
-// Assessment is a topic, its history and where it stands.
+// Assessment is a topic, its history and where it stands for one reader.
 type Assessment struct {
 	Topic   Topic
 	History []Stance
@@ -476,16 +506,26 @@ type Assessment struct {
 	// stance stands nowhere.
 	Standing Standing
 	Stands   bool
+	// Access is what the topic's opening document and its stances' evidence
+	// allow now. The caller decides with it what the reader sees: the topic,
+	// the current stance and each stance in the history.
+	Access Access
 }
 
-// Assess computes where each topic stands ([Stand]) from what the database
-// holds now: every stance on it, the artifact class and source of their
-// evidence as L1 holds it, and the policy authority puts in force for the
-// topic's scope. It is what every read serves, so a change to the policy takes
+// Assess computes where each topic stands for a reader ([Stand]) from what the
+// database holds now: every stance on it, the artifact class and source of
+// their evidence as L1 holds it, the policy authority puts in force for the
+// topic's scope, and what that evidence allows the reader now ([Access]). It is
+// what every read serves, so a change to the policy or to an access list takes
 // effect on the next read. The assessments are in the order of the topics.
 //
+// The current stance is the topic's, whoever reads it; only a stance the
+// reader may read can make the topic contested for them. Whether they may read
+// the topic and its current stance at all is the caller's to check, with
+// [Assessment.Access].
+//
 // Nothing records a person's ratification before v0.8.0, so none is passed.
-func (s *Store) Assess(ctx context.Context, authority config.Authority, topics []Topic) ([]Assessment, error) {
+func (s *Store) Assess(ctx context.Context, authority config.Authority, reader l1.Reader, topics []Topic) ([]Assessment, error) {
 	ids := make([]string, len(topics))
 	for i, t := range topics {
 		ids[i] = t.ID
@@ -504,11 +544,20 @@ func (s *Store) Assess(ctx context.Context, authority config.Authority, topics [
 	if err != nil {
 		return nil, err
 	}
+	var stances []Stance
+	for _, history := range histories {
+		stances = append(stances, history...)
+	}
+	access, err := s.Access(ctx, topics, stances)
+	if err != nil {
+		return nil, err
+	}
+	readable := func(st Stance) bool { return access.Stance(reader, st) }
 	out := make([]Assessment, len(topics))
 	for i, t := range topics {
 		history := histories[t.ID]
-		standing, ok := Stand(TierInputs{History: history, Evidence: evidence, Policy: authority.ForScope(t.Scope)})
-		out[i] = Assessment{Topic: t, History: history, Standing: standing, Stands: ok}
+		standing, ok := Stand(TierInputs{History: history, Evidence: evidence, Policy: authority.ForScope(t.Scope), Readable: readable})
+		out[i] = Assessment{Topic: t, History: history, Standing: standing, Stands: ok, Access: access}
 	}
 	return out, nil
 }

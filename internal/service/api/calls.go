@@ -417,27 +417,33 @@ func stanceHistory(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, ra
 	if err := required("topic", args.Topic); err != nil {
 		return nil, err
 	}
+	// Who may read the topic and each stance is what their documents allow
+	// now (l2.Access), not what they allowed when the worker read them, so a
+	// superseded or retired stance goes with its evidence too.
 	topic, err := c.graph.Topic(ctx, args.Topic)
-	if errors.Is(err, l2.ErrNotFound) || err == nil && !reader.Allows(topic.ACL) {
-		// One answer for both, so a topic somebody may not read is not
-		// distinguishable from one that does not exist. Handles fail closed.
+	if errors.Is(err, l2.ErrNotFound) {
 		return nil, fail(http.StatusNotFound, "no topic %q", args.Topic)
 	}
 	if err != nil {
 		return nil, err
 	}
-	assessed, err := c.graph.Assess(ctx, c.authority, []l2.Topic{topic})
+	assessed, err := c.graph.Assess(ctx, c.authority, reader, []l2.Topic{topic})
 	if err != nil {
 		return nil, err
 	}
 	a := assessed[0]
+	if !a.Access.Topic(reader, topic) {
+		// One answer for both, so a topic somebody may not read is not
+		// distinguishable from one that does not exist. Handles fail closed.
+		return nil, fail(http.StatusNotFound, "no topic %q", args.Topic)
+	}
 	visible := map[string]bool{}
 	out := History{Topic: topic.Name, ID: topic.ID, Stances: []StanceRecord{}}
-	if a.Stands && reader.Allows(a.Standing.Current.ACL) {
+	if a.Stands && a.Access.Stance(reader, a.Standing.Current) {
 		out.Current, out.Tier = a.Standing.Current.ID, string(a.Standing.Tier)
 	}
 	for _, st := range a.History {
-		if !reader.Allows(st.ACL) {
+		if !a.Access.Stance(reader, st) {
 			continue
 		}
 		visible[st.ID] = true

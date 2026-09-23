@@ -156,8 +156,16 @@ func (a *Asserter) Assert(ctx context.Context, docID, scope string) (Result, err
 			return Result{}, err
 		}
 		candidates[i] = Candidate{Name: t.Name}
+		// The topic is offered, and its position only where everyone who may
+		// read this document may read all of that position's evidence now.
 		if current, ok := l2.Current(history); ok {
-			candidates[i].Current = current.Position
+			readable, err := graph.EvidenceReadableBy(ctx, current.Evidence, doc.ACL)
+			if err != nil {
+				return Result{}, err
+			}
+			if readable {
+				candidates[i].Current = current.Position
+			}
 		}
 	}
 
@@ -184,6 +192,9 @@ func (a *Asserter) Assert(ctx context.Context, docID, scope string) (Result, err
 				continue
 			}
 			var topicID string
+			// shown is whether the model was shown a position to judge this
+			// one against; a position withheld from it was not.
+			shown := false
 			if as.Topic == NewTopic {
 				if name == "" {
 					continue
@@ -213,13 +224,14 @@ func (a *Asserter) Assert(ctx context.Context, docID, scope string) (Result, err
 					return fmt.Errorf("asserting %s: the %s answer names topic %q, which was not offered", docID, llm.TierAssert, as.Topic)
 				}
 				topicID = topics[at].ID
+				shown = candidates[at].Current != ""
 			}
 			if err := w.ExtendTopic(ctx, topicID, about, keys); err != nil {
 				return err
 			}
 			tier := l2.RecordedTier(a.repo.Authority.ForScope(scope), doc)
 			judgement := l2.JudgementUnknown
-			if as.Judgement != nil {
+			if as.Judgement != nil && shown {
 				judgement = *as.Judgement
 			}
 			_, written, err := w.AppendStance(ctx, l2.Stance{
@@ -251,7 +263,8 @@ func (a *Asserter) Assert(ctx context.Context, docID, scope string) (Result, err
 
 // candidates is the topics a document may be continuing: reference overlap
 // first, then embedding similarity for what is left of the budget, each only
-// among topics everyone who may read the document may read.
+// among topics everyone who may read the document may read — which the
+// topic's opening document decides, as it is in L1 now.
 func (a *Asserter) candidates(ctx context.Context, graph *l2.Store, scope string, doc l1.Document, keys []string) ([]l2.Topic, error) {
 	byKeys, err := graph.TopicsByJoinKeys(ctx, scope, keys, doc.ACL, MaxCandidates)
 	if err != nil {

@@ -35,6 +35,10 @@ type TierInputs struct {
 	// Ratified is the stances a person ratified by hand. Nothing records one
 	// before v0.8.0, so every caller passes nothing.
 	Ratified []string
+	// Readable reports whether the reader the topic is assessed for may read
+	// a stance ([Access.Stance]). Only a stance they may read can make the
+	// topic contested for them. Nil counts every stance.
+	Readable func(Stance) bool
 }
 
 // Standing is where a topic stands under a policy: the stance it is at and the
@@ -56,7 +60,11 @@ type Standing struct {
 //   - The current stance is the one among them whose evidence ranks highest
 //     under the policy; the most recently stated wins a tie.
 //   - The topic is contested where another stance compared disagrees with the
-//     current one and the current one does not strictly outrank it.
+//     current one, the current one does not strictly outrank it, and the
+//     reader may read it ([TierInputs.Readable]): a stance hidden from them
+//     does not contest anything for them. The current stance is chosen from
+//     every stance, readable or not; one the reader may not read is withheld
+//     from them by the caller, not replaced by an older one.
 //   - Otherwise it is ratified where the current stance's evidence ratifies on
 //     its own under `ratified_by.artifacts` and `ratified_by.sources`, or a
 //     person ratified that stance; and inferred where it is not.
@@ -100,6 +108,9 @@ func Stand(in TierInputs) (Standing, bool) {
 	paths := newSupersession(in.History)
 	for _, other := range compared {
 		if other.ID == current.ID {
+			continue
+		}
+		if in.Readable != nil && !in.Readable(other) {
 			continue
 		}
 		if rank, _ := in.rank(other); currentRank <= rank && paths.disagree(current.ID, other.ID) {

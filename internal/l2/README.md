@@ -27,8 +27,9 @@ corrupt.
 - **The tier a read serves is computed, never stored** ([Stand], `tier.go`).
   It is a pure function of the topic's live stances, the artifact class and
   source of their evidence as L1 holds it now, their recorded `changes` /
-  `restates` judgements and the scope's authority policy, so a policy change
-  takes effect on the next read. The `tier` on a row is `RecordedTier`: what the
+  `restates` judgements, the scope's authority policy and which stances the
+  reader may read ([Access]), so a policy change takes effect on the next read.
+  A stance the reader may not read never makes the topic contested for them. The `tier` on a row is `RecordedTier`: what the
   stance's own document carried under the policy when it was written. It is part
   of the stance's id and nothing serves it as the topic's tier. `contested` is
   only ever computed.
@@ -62,11 +63,21 @@ corrupt.
   position, document version and tier. The primary key skips a retry of the
   same reading, while a new version or tier records another stance even if the
   position is worded the same way.
+- **Who may read a topic or a stance is decided from L1 as it is now**
+  ([Access]): a topic by the document that opened it, a stance by every piece
+  of its evidence, each still in L1 and readable. The `acl` written on a topic
+  or a stance is what its first document allowed when the worker read it; a
+  second piece of evidence, an ACL re-sync (ADR-0013) or a retraction is not in
+  it, so no read authorizes on it. A document that is gone fails closed.
 - **A topic is only offered to a document everyone who may read it may read the
-  topic too** (`readableBy`): a public topic, or one whose access list carries
-  every grant of the document's, compared without labels. Otherwise a private
-  topic's name reaches a prompt about a public document and the stance it
-  produces.
+  topic too** (`topicReadableBy`): its opening document's current access list
+  is public, or carries every grant of the document's, compared without labels.
+  Otherwise a private topic's name reaches a prompt about a public document and
+  the stance it produces. Its current position is shown only where every piece
+  of that position's evidence passes the same test
+  ([Store.EvidenceReadableBy]); otherwise the topic is offered with no position
+  recorded, and a stance the document adds to it records no judgement, since
+  nothing was shown to judge against.
 - **Join keys leave out people and code entities.** Everybody's documents name
   the same people and systems, and a key everything shares joins everything.
 - **Nothing unresolved is invented.** A tracker item is an entity only where a

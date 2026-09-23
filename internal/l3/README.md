@@ -18,11 +18,18 @@ L2 it is not an L3 view — it is an L2 fact and belongs in `internal/l2`.
   takes one of their places in `recent`.
 - **A topic's current stance and tier are computed** under the policy in force
   for its scope (`l2.Store.Assess`, `l2.Stand`): the highest-ranked evidence
-  among live stances within the contested window, most recent on a tie. They
-  are computed from every stance on the topic, not from the ones the reader
-  may read. When the reader may not read the current stance, the topic is left
-  out and counted — an older stance they may read is not current, and offering
-  it as current would be wrong in a way they could not see.
+  among live stances within the contested window, most recent on a tie. The
+  current stance is chosen from every stance on the topic, not from the ones
+  the reader may read. When the reader may not read the topic or its current
+  stance, the topic is left out and counted — an older stance they may read is
+  not current, and offering it as current would be wrong in a way they could
+  not see. A stance the reader may not read does not make the topic contested
+  for them.
+- **Whether a reader may read a topic or a stance is what its documents allow
+  now** (`l2.Access`): the topic's opening document, and every piece of the
+  stance's evidence. The access lists stored on topics and stances record the
+  moment they were written and authorize nothing; a document re-synced private
+  or retracted since takes what was derived from it with it.
 - **A stance is an entity's own only when its topic's `about` names that entity
   itself.** Every other topic reached — through a related entity (for a tracker
   item, the code entities its own document is about) or through an ancestor of

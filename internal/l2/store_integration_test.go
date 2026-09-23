@@ -20,6 +20,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
+	"github.com/kpenfound/hearsay/internal/principal"
 )
 
 func newPool(t *testing.T) *pgxpool.Pool {
@@ -370,7 +371,7 @@ func TestTopicsAreOnlyOfferedToDocumentsTheirReadersMayRead(t *testing.T) {
 	scope := unique()
 	group := connector.ACLEntry{Kind: connector.ACLGroup, Source: "github-acme", NativeID: "acme/api", Label: "acme/api collaborators"}
 	other := connector.ACLEntry{Kind: connector.ACLGroup, Source: "github-acme", NativeID: "acme/secret"}
-	openTopic(t, store, scope, connector.ACL{group}, "item:acme/api#12")
+	openTopicFrom(t, pool, scope, "acme/api#12", connector.ACL{group}, "item:acme/api#12")
 
 	tests := []struct {
 		name    string
@@ -400,26 +401,163 @@ func TestTopicsAreOnlyOfferedToDocumentsTheirReadersMayRead(t *testing.T) {
 	}
 
 	// A public topic is offered to everyone, most shared keys first.
-	more := l2.Topic{ID: "topic:" + unique(), Scope: scope, Name: "two keys",
-		JoinKeys: []string{"item:acme/api#12", "item:acme/api#31"}, ACL: public, OpenedBy: "l1:s:x"}
-	if _, err := store.OpenTopic(ctx, more); err != nil {
-		t.Fatalf("OpenTopic() = %v", err)
-	}
+	more := openTopicFrom(t, pool, scope, "acme/api#31", public, "item:acme/api#12", "item:acme/api#31")
 	got, err := store.TopicsByJoinKeys(ctx, scope, []string{"item:acme/api#12", "item:acme/api#31"}, connector.ACL{group}, 5)
 	if err != nil || len(got) != 2 || got[0].ID != more.ID {
 		t.Errorf("TopicsByJoinKeys(two keys) = %+v, %v, want both, the one sharing two keys first", got, err)
 	}
 }
 
-// embeddedDoc writes an L1 document with a vector of its own.
+// Issue #114: who a topic is offered to is its opening document's access list
+// now, not the one the topic was written with.
+func TestATopicIsOfferedByItsOpeningDocumentAsItIsNow(t *testing.T) {
+	pool := newPool(t)
+	store := l2.New(pool)
+	ctx := t.Context()
+	group := connector.ACL{{Kind: connector.ACLGroup, Source: "github-acme", NativeID: "acme/api"}}
+	offered := func(scope string, readers connector.ACL) int {
+		t.Helper()
+		got, err := store.TopicsByJoinKeys(ctx, scope, []string{"item:acme/api#12"}, readers, 5)
+		if err != nil {
+			t.Fatalf("TopicsByJoinKeys() = %v", err)
+		}
+		return len(got)
+	}
+
+	narrowed := unique()
+	topic := openTopicFrom(t, pool, narrowed, "acme/api#12", public, "item:acme/api#12")
+	if n := offered(narrowed, public); n != 1 {
+		t.Fatalf("a public topic was offered to %d public documents' readers, want 1", n)
+	}
+	putDoc(t, pool, narrowed, "acme/api#12", group, nil)
+	if n := offered(narrowed, public); n != 0 {
+		t.Errorf("a topic whose document went private is still offered to a public document")
+	}
+	if n := offered(narrowed, group); n != 1 {
+		t.Errorf("a topic whose document went private is not offered to its own readers")
+	}
+	if kept, err := store.Topic(ctx, topic.ID); err != nil || len(kept.ACL) != 1 || kept.ACL[0].Kind != connector.ACLPublic {
+		t.Errorf("Topic() = %+v, %v, want the access list it was written with kept as it was", kept, err)
+	}
+
+	retracted := unique()
+	topic = openTopicFrom(t, pool, retracted, "acme/api#12", public, "item:acme/api#12")
+	if _, err := l1.New(pool).Delete(ctx, topic.OpenedBy); err != nil {
+		t.Fatal(err)
+	}
+	if n := offered(retracted, public); n != 0 {
+		t.Errorf("a topic whose document was retracted is still offered")
+	}
+}
+
+// Issue #114: a position is shown to a document only where everyone who may
+// read the document may read every piece of the position's evidence now.
+func TestEvidenceIsReadableOnlyWhenEveryPieceIs(t *testing.T) {
+	pool := newPool(t)
+	store := l2.New(pool)
+	ctx := t.Context()
+	src := unique()
+	group := connector.ACL{{Kind: connector.ACLGroup, Source: "github-acme", NativeID: "acme/api", Label: "collaborators"}}
+	other := connector.ACL{{Kind: connector.ACLGroup, Source: "github-acme", NativeID: "acme/secret"}}
+	open := putDoc(t, pool, src, "open", public, nil)
+	shared := putDoc(t, pool, src, "shared", group, nil)
+	secret := putDoc(t, pool, src, "secret", other, nil)
+	resynced := putDoc(t, pool, src, "resynced", public, nil)
+	putDoc(t, pool, src, "resynced", other, nil)
+
+	tests := []struct {
+		name     string
+		evidence []string
+		readers  connector.ACL
+		want     bool
+	}{
+		{"one public document", []string{open}, public, true},
+		{"public and the readers' own grant", []string{open, shared}, group, true},
+		{"the same document twice", []string{shared, shared}, group, true},
+		{"one piece under another grant", []string{open, secret}, group, false},
+		{"a private piece for public readers", []string{open, shared}, public, false},
+		{"a piece re-synced private", []string{open, resynced}, public, false},
+		{"a piece that is not in L1", []string{open, "l1:" + src + ":gone"}, public, false},
+		{"no evidence", nil, public, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := store.EvidenceReadableBy(ctx, tt.evidence, tt.readers)
+			if err != nil || got != tt.want {
+				t.Errorf("EvidenceReadableBy(%v) = %v, %v, want %v", tt.evidence, got, err, tt.want)
+			}
+		})
+	}
+}
+
+// Issue #114: [l2.Access] decides from L1 as it is now, and fails closed on a
+// document it cannot find.
+func TestAccessIsTheEvidenceAsItIsNow(t *testing.T) {
+	pool := newPool(t)
+	store := l2.New(pool)
+	ctx := t.Context()
+	src := unique()
+	kyleOnly := connector.ACL{{Kind: connector.ACLIdentity, Source: "gh", NativeID: "kyle-node"}}
+	kyle := l1.Reader{
+		Effective: principal.Effective{Human: "kyle", Grant: principal.Grant{Scopes: principal.AllScopes()}},
+		Audience:  []connector.ACLEntry{{Kind: connector.ACLIdentity, Source: "gh", NativeID: "kyle-node"}},
+	}
+	sam := l1.Reader{Effective: principal.Effective{Human: "sam", Grant: principal.Grant{Scopes: principal.AllScopes()}}}
+	open := putDoc(t, pool, src, "open", public, nil)
+	private := putDoc(t, pool, src, "private", kyleOnly, nil)
+	narrowed := putDoc(t, pool, src, "narrowed", public, nil)
+	putDoc(t, pool, src, "narrowed", kyleOnly, nil)
+	gone := "l1:" + src + ":gone"
+
+	topic := func(opener string) l2.Topic { return l2.Topic{ID: "topic:" + opener, OpenedBy: opener, ACL: public} }
+	stance := func(evidence ...string) l2.Stance { return l2.Stance{ID: "stance", Evidence: evidence, ACL: public} }
+	topics := []l2.Topic{topic(open), topic(narrowed), topic(gone)}
+	stances := []l2.Stance{stance(open, private), stance(narrowed), stance(gone)}
+	access, err := store.Access(ctx, topics, stances)
+	if err != nil {
+		t.Fatalf("Access() = %v", err)
+	}
+
+	for _, tc := range []struct {
+		name      string
+		readable  func(l1.Reader) bool
+		kyle, sam bool
+	}{
+		{"a topic opened by a public document", func(r l1.Reader) bool { return access.Topic(r, topics[0]) }, true, true},
+		{"a topic whose document went private", func(r l1.Reader) bool { return access.Topic(r, topics[1]) }, true, false},
+		{"a topic whose document is gone", func(r l1.Reader) bool { return access.Topic(r, topics[2]) }, false, false},
+		{"a stance on public and private evidence", func(r l1.Reader) bool { return access.Stance(r, stances[0]) }, true, false},
+		{"a stance whose evidence went private", func(r l1.Reader) bool { return access.Stance(r, stances[1]) }, true, false},
+		{"a stance whose evidence is gone", func(r l1.Reader) bool { return access.Stance(r, stances[2]) }, false, false},
+		{"a stance with no evidence", func(r l1.Reader) bool { return access.Stance(r, stance()) }, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.readable(kyle); got != tc.kyle {
+				t.Errorf("kyle may read = %v, want %v", got, tc.kyle)
+			}
+			if got := tc.readable(sam); got != tc.sam {
+				t.Errorf("sam may read = %v, want %v", got, tc.sam)
+			}
+		})
+	}
+}
+
+// embeddedDoc writes a public L1 document with a vector of its own.
 func embeddedDoc(t *testing.T, pool *pgxpool.Pool, src, native string, vector []float32) string {
+	t.Helper()
+	return putDoc(t, pool, src, native, public, vector)
+}
+
+// putDoc writes an L1 document with this access list, and a vector where there
+// is one. Writing it again with another list is what an ACL re-sync does.
+func putDoc(t *testing.T, pool *pgxpool.Pool, src, native string, acl connector.ACL, vector []float32) string {
 	t.Helper()
 	when := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)
 	doc := l1.Document{
 		ID: l1.DocID(src, native), Kind: l1.KindIssue, ArtifactClass: config.ArtifactIssue,
 		Source: l1.Source{System: src, NativeID: native},
 		L0Refs: []string{"evt:" + src + ":" + native}, Time: l1.Times{Created: when, Updated: when, LastActivity: when},
-		ACL: public, Text: "text of " + native, RawText: "raw " + native,
+		ACL: acl, Text: "text of " + native, RawText: "raw " + native,
 		Body: l1.Body{Summary: "s", OutcomeKind: l1.OutcomeDecided},
 	}
 	store := l1.New(pool)
@@ -432,6 +570,21 @@ func embeddedDoc(t *testing.T, pool *pgxpool.Pool, src, native string, vector []
 		}
 	}
 	return doc.ID
+}
+
+// openTopicFrom opens a topic from an L1 document written with this access
+// list, which is what decides who the topic is offered to.
+func openTopicFrom(t *testing.T, pool *pgxpool.Pool, scope, native string, acl connector.ACL, keys ...string) l2.Topic {
+	t.Helper()
+	opener := putDoc(t, pool, scope, native, acl, nil)
+	topic := l2.Topic{
+		ID: l2.TopicID(scope, opener, 0, "the lock"), Scope: scope, Name: "the lock",
+		JoinKeys: keys, ACL: acl, OpenedBy: opener,
+	}
+	if opened, err := l2.New(pool).OpenTopic(t.Context(), topic); err != nil || !opened {
+		t.Fatalf("OpenTopic() = %v, %v", opened, err)
+	}
+	return topic
 }
 
 func unit(values ...float32) []float32 {
@@ -452,7 +605,7 @@ func TestTopicsBySimilarityReadTheEvidenceVectors(t *testing.T) {
 	far := embeddedDoc(t, pool, src, "acme/api#3", unit(0, 1))
 	bare := embeddedDoc(t, pool, src, "acme/api#4", nil)
 
-	topic := openTopic(t, store, scope, public)
+	topic := openTopicFrom(t, pool, scope, "opener", public)
 	if _, _, err := store.AppendStance(ctx, stance(topic, evidence, "a position", 1), time.Date(2026, 9, 9, 1, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("AppendStance() = %v", err)
 	}

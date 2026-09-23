@@ -2,6 +2,7 @@ package l1
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -48,6 +49,41 @@ func (r Reader) MayRead(doc Document) bool {
 		return true
 	}
 	return slices.ContainsFunc(doc.Scope, scopes.Has)
+}
+
+// ACLs is the current access list of every one of these documents the table
+// still holds, by id. A document that was never stored, or that left L1 because
+// its artifact was retracted, has no entry, and whoever reads the map fails
+// closed on it: what derives from a document is readable no longer than the
+// document is.
+func (s *Store) ACLs(ctx context.Context, ids []string) (map[string]connector.ACL, error) {
+	out := make(map[string]connector.ACL, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(ctx, `SELECT id, acl FROM l1_docs WHERE id = ANY($1::text[])`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("reading the access lists of %d documents: %w", len(ids), err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			id  string
+			raw []byte
+			acl connector.ACL
+		)
+		if err := rows.Scan(&id, &raw); err != nil {
+			return nil, fmt.Errorf("reading the access lists of %d documents: %w", len(ids), err)
+		}
+		if err := json.Unmarshal(raw, &acl); err != nil {
+			return nil, fmt.Errorf("decoding the access list of %s: %w", id, err)
+		}
+		out[id] = acl
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading the access lists of %d documents: %w", len(ids), err)
+	}
+	return out, nil
 }
 
 // ListFor is [Store.List] for a reader: only the documents they may read, filtered

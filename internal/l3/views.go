@@ -98,12 +98,18 @@ ORDER BY t.id`
 // so is every topic one of them opened. Counting those as the item's own would
 // make every topic in the repository a stance of every item in it.
 //
-// Where a topic stands — its current stance and tier — is computed from every
-// stance on it under the policy in force for its scope ([l2.Store.Assess]),
-// not from what the reader may read: the current stance is the topic's, and a
-// bundle that offered another in its place would be wrong in a way the reader
-// could not see. A topic the reader may not read, or whose current stance they
-// may not read, is left out and counted in the second result.
+// Where a topic stands — its current stance and tier — is computed under the
+// policy in force for its scope ([l2.Store.Assess]). The current stance is
+// chosen from every stance on the topic, not from what the reader may read: it
+// is the topic's, and a bundle that offered an older one in its place would be
+// wrong in a way the reader could not see. A topic the reader may not read, or
+// whose current stance they may not read, is left out and counted in the second
+// result. A stance they may not read does not make the topic contested for them.
+//
+// Who may read is decided from L1 as it is now ([l2.Access]): a topic by the
+// document that opened it, a stance by every piece of its evidence. A document
+// re-synced private, or retracted, since the worker read it takes what it
+// derived with it.
 func (v *Views) CurrentStances(ctx context.Context, reader l1.Reader, own string, related []string) ([]CurrentStance, int, error) {
 	if own == "" {
 		return []CurrentStance{}, 0, nil
@@ -113,7 +119,7 @@ func (v *Views) CurrentStances(ctx context.Context, reader l1.Reader, own string
 	if err != nil {
 		return nil, 0, err
 	}
-	assessed, err := v.graph.Assess(ctx, v.authority, topics)
+	assessed, err := v.graph.Assess(ctx, v.authority, reader, topics)
 	if err != nil {
 		return nil, 0, fmt.Errorf("reading current stances: %w", err)
 	}
@@ -124,13 +130,13 @@ func (v *Views) CurrentStances(ctx context.Context, reader l1.Reader, own string
 			continue
 		}
 		current := a.Standing.Current
-		if !reader.Allows(a.Topic.ACL) || !reader.Allows(current.ACL) {
+		if !a.Access.Topic(reader, a.Topic) || !a.Access.Stance(reader, current) {
 			withheld++
 			continue
 		}
 		c := CurrentStance{Topic: a.Topic, Stance: current, Tier: a.Standing.Tier, Inherited: !slices.Contains(a.Topic.About, own)}
 		for _, st := range a.History {
-			if st.ID == current.Supersedes && reader.Allows(st.ACL) {
+			if st.ID == current.Supersedes && a.Access.Stance(reader, st) {
 				c.Supersedes = st.Position
 			}
 		}

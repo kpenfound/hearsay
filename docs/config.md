@@ -538,7 +538,10 @@ record and never served as the topic's tier.
   `ranking` is current; the most recent wins a tie. A merged PR stays current
   over a later chat thread until it falls outside the window.
 - **Contested.** Another stance in the window disagrees with the current one,
-  and the current one does not strictly outrank it. Disagreement is what the
+  the current one does not strictly outrank it, and the reader may read it: a
+  stance withheld from a reader by its evidence's access lists does not contest
+  anything for them. A reader who may not read the current stance is not served
+  the topic at all. Disagreement is what the
   assertion worker recorded — a stance that *changes* the position it followed,
   as opposed to one that *restates* it — never a comparison of the words.
 - **Ratified.** Not contested, and the current stance's evidence is a class in

@@ -1,6 +1,7 @@
 package l2_test
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -42,8 +43,10 @@ func TestStand(t *testing.T) {
 		history  []l2.Stance
 		policy   config.Policy
 		ratified []string
-		want     string
-		tier     l2.Tier
+		// hidden is the stances the reader may not read.
+		hidden []string
+		want   string
+		tier   l2.Tier
 	}{
 		{name: "no stance", policy: def},
 		{
@@ -222,10 +225,33 @@ func TestStand(t *testing.T) {
 			history: []l2.Stance{st("a", "chat", days(0), "", ""), st("b", "retracted", days(1), "a", l2.JudgementChanges)},
 			policy:  def, want: "a", tier: l2.TierInferred,
 		},
+		{
+			name:    "a change the reader may not read does not contest for them",
+			history: []l2.Stance{st("a", "issue1", days(0), "", ""), st("b", "issue2", days(1), "a", l2.JudgementChanges)},
+			policy:  def, hidden: []string{"a"}, want: "b", tier: l2.TierInferred,
+		},
+		{
+			name: "a hidden stance hides only itself from the contest",
+			history: []l2.Stance{
+				st("a", "issue1", days(0), "", ""),
+				st("late", "issue3", days(0.5), "a", l2.JudgementChanges),
+				st("b", "issue2", days(1), "a", l2.JudgementRestates),
+			},
+			policy: def, hidden: []string{"a"}, want: "b", tier: l2.TierContested,
+		},
+		{
+			name:    "a hidden current stance is still current",
+			history: []l2.Stance{st("a", "chat", days(0), "", ""), st("b", "issue1", days(1), "a", l2.JudgementChanges)},
+			policy:  def, hidden: []string{"b"}, want: "b", tier: l2.TierInferred,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ok := l2.Stand(l2.TierInputs{History: tt.history, Evidence: evidence, Policy: tt.policy, Ratified: tt.ratified})
+			var readable func(l2.Stance) bool
+			if tt.hidden != nil {
+				readable = func(st l2.Stance) bool { return !slices.Contains(tt.hidden, st.ID) }
+			}
+			got, ok := l2.Stand(l2.TierInputs{History: tt.history, Evidence: evidence, Policy: tt.policy, Ratified: tt.ratified, Readable: readable})
 			if ok != (tt.want != "") || got.Current.ID != tt.want || got.Tier != tt.tier {
 				t.Errorf("Stand() = %s at %q, %v; want %s at %q", got.Current.ID, got.Tier, ok, tt.want, tt.tier)
 			}
