@@ -93,7 +93,8 @@ consumer follows it with, over MCP and HTTP. The distiller is real, and so are
 the layers around it: `hearsay migrate` builds the schema, `hearsay l0` reads what
 has been ingested, `hearsay distiller` turns those events into L1 documents, and
 `hearsay assert-worker` turns the documents that decided, proposed or resolved
-something into L2 topics and stances.
+something into L2 topics and stances, and appends the stances agents write
+through the API's `assert` call.
 `hearsay connectors` is real too — it hosts, polls and backfills the connectors
 configuration names. GitHub (`type: github`) ingests issues, pull requests,
 reviews, comments and commits by webhook and backfill. Discord (`type: discord`)

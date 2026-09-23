@@ -60,9 +60,19 @@ corrupt.
   document read, compared for equality and never ordered, so a restart makes no
   model call. Topic and stance ids are derived from what produced them, and the
   store refuses a stance id that is not [StanceID] of its topic, document,
-  position, document version and tier. The primary key skips a retry of the
-  same reading, while a new version or tier records another stance even if the
-  position is worded the same way.
+  position, document version and tier (for an asserted stance,
+  [AssertionStanceID] of its topic and event). The primary key skips a retry of
+  the same reading, while a new version or tier records another stance even if
+  the position is worded the same way.
+- **An asserted stance is read from an event, not from what it cites.** A
+  stance an agent writes through the API's `assert` call records its L0
+  `assertion` event (`Stance.Assertion`); its evidence is the documents the
+  agent cited. Its origin is the event, so a later reading of a cited document
+  neither retires it nor supersedes it as its own (`RetiredSQL`,
+  `predecessorSQL`); its id is [AssertionStanceID] of topic and event; and
+  [Stand] ranks it as class `agent` from the event's source
+  ([AssertedEvidence]), whatever it cites — citing a merged pull request does
+  not lend an agent a merged pull request's authority.
 - **Who may read a topic or a stance is decided from L1 as it is now**
   ([Access]): a topic by the document that opened it, a stance by every piece
   of its evidence, each still in L1 and readable. The `acl` written on a topic

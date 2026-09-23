@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/kpenfound/hearsay/internal/bundle"
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
@@ -21,13 +23,15 @@ import (
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/principal"
+	"github.com/kpenfound/hearsay/internal/queue"
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
-// AuditSource is the source id the audit events this service writes carry. It
-// is Hearsay itself rather than a connector (docs/connector-contract.md), so no
-// ingest allowlist names it and no connector may emit under it.
-const AuditSource = "hearsay"
+// AuditSource is the source id the audit and assertion events this service
+// writes carry. It is Hearsay itself rather than a connector
+// (docs/connector-contract.md), so no ingest allowlist names it and no
+// connector may emit under it.
+const AuditSource = connector.SelfSource
 
 // Caller is the authenticated person a request is for and, if present, the
 // authenticated agent acting with that person's delegated credential.
@@ -76,11 +80,12 @@ type Tool struct {
 	InputSchema json.RawMessage `json:"inputSchema"`
 }
 
-// Calls is the read API, independent of the interface that serves it: a call
+// Calls is the API, independent of the interface that serves it: a call
 // takes a caller, a name and JSON arguments, and returns the bytes every
 // interface serves verbatim. That is what makes the same request over MCP and
 // HTTP byte-identical — there is one encoding, and it happens here.
 type Calls struct {
+	db        DB
 	docs      *l1.Store
 	events    *l0.Store
 	graph     *l2.Store
@@ -90,14 +95,22 @@ type Calls struct {
 	auth      *authenticator
 	embedder  l1.Embedder
 	// now and id are the clock and the audit event id, replaceable by a test.
+	// The clock is also an assertion event's time.
 	now func() time.Time
 	id  func() string
+}
+
+// DB is what the call layer runs on: a pool, in whose transactions `assert`
+// writes its event and the job that appends its stance together.
+type DB interface {
+	l2.Querier
+	Begin(ctx context.Context) (pgx.Tx, error)
 }
 
 // NewCalls builds the call layer over a database and a configuration. A nil
 // embedder is a deployment with no `embed` tier, whose search is full text
 // alone.
-func NewCalls(q l2.Querier, repo config.Repo, embedder l1.Embedder) (*Calls, error) {
+func NewCalls(q DB, repo config.Repo, embedder l1.Embedder) (*Calls, error) {
 	auth, err := newAuthenticator(repo.Principals)
 	if err != nil {
 		return nil, fmt.Errorf("configuring API authentication: %w", err)
@@ -107,6 +120,7 @@ func NewCalls(q l2.Querier, repo config.Repo, embedder l1.Embedder) (*Calls, err
 		return nil, fmt.Errorf("building the identity resolver: %w", err)
 	}
 	return &Calls{
+		db:        q,
 		docs:      l1.New(q),
 		events:    l0.New(q),
 		graph:     l2.New(q),
@@ -142,6 +156,8 @@ var calls = []call{
 		schema(`{"id":{"type":"string"}}`, "id")}, getL0},
 	{Tool{"search", "Hybrid retrieval over L1: full text and embeddings, fused by rank. Returns documents, not answers.",
 		schema(`{"query":{"type":"string"},"scope":{"type":"string","description":"an entity id to search within"},"limit":{"type":"integer"}}`, "query")}, search},
+	{Tool{"assert", "Propose a position on an existing topic, citing the L1 documents it rests on. Only an agent of class worker or above may; the stance is appended by the assertion worker, ranks as class agent and does not ratify on its own under the default authority policy. Returns the id of the L0 assertion event; repeating a request returns the same id and writes nothing more.",
+		schema(`{"topic":{"type":"string","description":"an existing topic id, from a bundle's topic_id"},"position":{"type":"string","description":"the position, at most 2000 bytes"},"evidence":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":32,"description":"L1 document ids the position rests on; the caller must be able to read every one"}}`, "topic", "position", "evidence")}, assertStance},
 }
 
 func schema(properties string, required ...string) json.RawMessage {
@@ -545,4 +561,144 @@ func search(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json.
 		out.Documents[i] = SearchHit{Document: h.Document, Score: h.Score}
 	}
 	return out, nil
+}
+
+// Asserted is what `assert` returns: the id of the L0 `assertion` event that
+// carries the request. The stance follows once the assertion worker appends
+// it, and `stance_history` then serves it.
+type Asserted struct {
+	ID string `json:"id"`
+}
+
+// errUnreadable is the one answer for a topic or a piece of evidence that does
+// not exist or that the caller may not read, whichever it is and whichever id:
+// handles fail closed, and a refusal that named the id would tell the caller
+// which private document exists.
+var errUnreadable = &Error{Status: http.StatusNotFound, Message: "the topic and the evidence are not all ones you may read"}
+
+// assertStance is `assert(topic, position, evidence)`
+// (docs/design.md#read-and-assert-api): an agent's stance, written as an L0
+// `assertion` event under source hearsay, with the assert job that appends it
+// to the topic enqueued in the same transaction under the topic's scope. No
+// model is called. The request is its own idempotency key: the event's native
+// id is derived from the agent, the person, the topic, the position and the
+// evidence, so a retry is the same event and the same stance.
+func assertStance(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, raw json.RawMessage) (any, error) {
+	if err := c.mayAssert(caller); err != nil {
+		return nil, err
+	}
+	var args struct {
+		Topic    string   `json:"topic"`
+		Position string   `json:"position"`
+		Evidence []string `json:"evidence"`
+	}
+	if err := decode(raw, &args); err != nil {
+		return nil, err
+	}
+	if err := required("topic", args.Topic); err != nil {
+		return nil, err
+	}
+	// Cleaned the way the assertion worker cleans a model's positions.
+	position, _ := l1.Scrub(strings.TrimSpace(args.Position))
+	position = strings.TrimSpace(position)
+	if err := required("position", position); err != nil {
+		return nil, err
+	}
+	if len(position) > l2.MaxPosition {
+		return nil, fail(http.StatusBadRequest, "position is %d bytes, and a position is at most %d", len(position), l2.MaxPosition)
+	}
+	evidence := l2.SortedEvidence(args.Evidence)
+	if len(evidence) == 0 {
+		return nil, fail(http.StatusBadRequest, "evidence is required: cite at least one L1 document id")
+	}
+	if len(evidence) > l2.MaxAssertionEvidence {
+		return nil, fail(http.StatusBadRequest, "evidence cites %d documents, and an assertion cites at most %d", len(evidence), l2.MaxAssertionEvidence)
+	}
+	for _, id := range evidence {
+		if strings.TrimSpace(id) == "" {
+			return nil, fail(http.StatusBadRequest, "an evidence id is empty")
+		}
+	}
+
+	topic, err := c.graph.Topic(ctx, args.Topic)
+	if errors.Is(err, l2.ErrNotFound) {
+		return nil, errUnreadable
+	}
+	if err != nil {
+		return nil, err
+	}
+	// The same test every read of the stance will make (l2.Access): the topic
+	// by its opening document, and the stance by every document it cites, as
+	// L1 holds them now. A document that is not there fails it.
+	proposed := l2.Stance{Evidence: evidence}
+	access, err := c.graph.Access(ctx, []l2.Topic{topic}, []l2.Stance{proposed})
+	if err != nil {
+		return nil, err
+	}
+	if !access.Topic(reader, topic) || !access.Stance(reader, proposed) {
+		return nil, errUnreadable
+	}
+
+	as := l2.Assertion{Topic: topic.ID, Position: position, Evidence: evidence, Agent: caller.Agent, Principal: caller.Principal}
+	native, err := json.Marshal(as)
+	if err != nil {
+		return nil, fmt.Errorf("encoding an assertion: %w", err)
+	}
+	agent := connector.Identity{Source: AuditSource, Kind: connector.IdentityAgent, NativeID: caller.Agent}
+	person := connector.Identity{Source: AuditSource, Kind: connector.IdentityUser, NativeID: caller.Principal}
+	nativeID := as.NativeID()
+	ev := connector.Event{
+		Source:   AuditSource,
+		NativeID: nativeID,
+		Kind:     connector.KindAssertion,
+		Time:     c.now().UTC(),
+		Payload: connector.Payload{
+			Artifact:  nativeID,
+			Container: connector.Container{Kind: connector.ContainerWorkspace, NativeID: "api"},
+			Text:      position,
+			Author:    &agent,
+			// The agent asserted; the person is who it acted for.
+			Participants: []connector.Participant{{Identity: person, Role: connector.RoleAuthor}},
+			Native:       native,
+		},
+		// Who may read the stance is decided on every read from all of its
+		// evidence as it is then, which an access list written once cannot
+		// say: it would neither be the intersection of several documents' lists
+		// nor follow a re-sync (ADR-0013). So the event fails closed, as an
+		// audit event does, and the stance is the way to read the position.
+		ACL: connector.ACL{{Kind: connector.ACLIdentity, Source: AuditSource, NativeID: caller.Principal}},
+	}
+	id := connector.EventID(AuditSource, nativeID)
+	err = pgx.BeginFunc(ctx, c.db, func(tx pgx.Tx) error {
+		// A retry is the same event at a later time, which L0 refuses as a
+		// rewrite and keeps the first of. The job is asked for again: it
+		// collapses into a pending one, and writes nothing where the stance is
+		// already there.
+		if _, err := l0.New(tx).Append(ctx, ev); err != nil && !errors.Is(err, l0.ErrRewrite) {
+			return fmt.Errorf("writing an assertion event: %w", err)
+		}
+		_, err := queue.Enqueue(ctx, tx, queue.Request{Kind: l2.AssertKind(), TargetID: id, SerialKey: topic.Scope})
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	telemetry.Logger(ctx).DebugContext(ctx, "assertion written", "l0_id", id, "topic", topic.ID,
+		"principal", caller.Principal, "agent", caller.Agent, "evidence", len(evidence))
+	return Asserted{ID: id}, nil
+}
+
+// mayAssert refuses a caller that is not an agent whose class may assert:
+// people take positions in their own tools, and an observer writes nothing
+// (docs/design.md#access-control). Nothing configures a grant's rights yet
+// (readerFor), so the agent's class is the whole of what it may write.
+func (c *Calls) mayAssert(caller Caller) error {
+	if caller.Agent == "" {
+		return fail(http.StatusForbidden, "assert is for agents: name the agent acting for you in the %s header", AgentHeader)
+	}
+	agent, ok := c.resolver.Principal(caller.Agent)
+	if !ok || !agent.Class.Rights().Write.Has(principal.WriteAssert) {
+		return fail(http.StatusForbidden, "agent %q is of class %q, which may not assert", caller.Agent, agent.Class)
+	}
+	return nil
 }

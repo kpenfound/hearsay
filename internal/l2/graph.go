@@ -102,8 +102,14 @@ type Stance struct {
 	// StatedAt is when the evidence says the position was taken.
 	StatedAt time.Time
 	// Evidence is the L1 document ids the stance rests on. The first is the
-	// document it was read from.
+	// document it was read from, unless Assertion is set.
 	Evidence []string
+	// Assertion is the L0 `assertion` event the stance was read from, for a
+	// stance an agent wrote through the API's `assert` call, and empty for one
+	// the assertion worker read from a document. Its evidence is what the agent
+	// cited, none of which it was read from, and its authority is its own
+	// ([AssertedEvidence]) rather than that of what it cites.
+	Assertion string
 	// Supersedes is the stance this one replaced on its topic, empty for the
 	// first.
 	Supersedes string
@@ -146,7 +152,21 @@ func (s Stance) Validate() error {
 			return fmt.Errorf("%w: stance %s: evidence[%d] is empty", ErrInvalid, s.ID, i)
 		}
 	}
+	if s.Assertion != "" {
+		if _, _, err := connector.ParseEventID(s.Assertion); err != nil {
+			return fmt.Errorf("%w: stance %s: assertion: %w", ErrInvalid, s.ID, err)
+		}
+	}
 	return nil
+}
+
+// origin is what a stance was read from: its assertion event, or its first
+// piece of evidence. One origin holds at most one live stance per topic.
+func (s Stance) origin() string {
+	if s.Assertion != "" {
+		return s.Assertion
+	}
+	return s.Evidence[0]
 }
 
 // Current is the head of a topic's supersession chain, given its history in
@@ -167,15 +187,15 @@ func Current(history []Stance) (Stance, bool) {
 }
 
 // retiredIn is the stances in a history that a later reading of their own
-// document replaced.
+// origin replaced.
 func retiredIn(history []Stance) map[string]bool {
 	from := make(map[string]string, len(history))
 	for _, st := range history {
-		from[st.ID] = st.Evidence[0]
+		from[st.ID] = st.origin()
 	}
 	retired := map[string]bool{}
 	for _, st := range history {
-		if st.Supersedes != "" && from[st.Supersedes] == st.Evidence[0] {
+		if st.Supersedes != "" && from[st.Supersedes] == st.origin() {
 			retired[st.Supersedes] = true
 		}
 	}
@@ -194,6 +214,14 @@ func TopicID(scope, docID string, index int, name string) string {
 // match an earlier reading; a retry of the same reading gets the same id.
 func StanceID(topicID, docID, position string, distilledAt time.Time, tier Tier) string {
 	return "stance:" + digest(topicID, docID, position, distilledAt.UTC().Format(time.RFC3339Nano), string(tier))
+}
+
+// AssertionStanceID identifies the stance an `assertion` event writes on its
+// topic. The event id already names everything the agent said — its native id
+// is [Assertion.NativeID] — so a retry of the same request, and a job run
+// twice, get the same id.
+func AssertionStanceID(topicID, eventID string) string {
+	return "stance:" + digest("assertion", topicID, eventID)
 }
 
 // digest is a short hex id over parts that cannot run into each other: each is

@@ -307,8 +307,9 @@ func repoReaders(repo config.Repo, lookup func(string) (string, bool)) (l2.RepoR
 	return readers, nil
 }
 
-// runAPI runs the read API. It reads L0, L1 and L2 and writes an audit event per
-// bundle, so it needs Postgres and refuses without it; the model tiers are
+// runAPI runs the read and assert API. It reads L0, L1 and L2, writes an audit
+// event per bundle and an assertion event and its assert job per `assert`, so
+// it needs Postgres and refuses without it; the model tiers are
 // built only for search's `embed` tier, and search runs on full text without
 // one.
 func runAPI(ctx context.Context, args []string, stdout, stderr io.Writer) error {

@@ -107,7 +107,9 @@ The assertion worker is not a stub. The distiller enqueues a serialized `assert`
 job, keyed by scope, in the transaction that writes a document whose outcome is
 decided, proposed or resolved; the worker reads it with the `assert` tier,
 matches topics by reference overlap and then embedding similarity, and appends
-stances in `internal/l2`. At startup it seeds entities from `code/`, and from
+stances in `internal/l2`. An `assert` job whose target is an L0 `assertion`
+event, which the API enqueues, is an agent's stance and is appended with no
+model call. At startup it seeds entities from `code/`, and from
 the root directories and CODEOWNERS files of the GitHub repositories `code/`
 names (`github.Reader`, with the source's token), and enqueues every such
 document it has not read. It needs Postgres and refuses without it.
@@ -127,14 +129,17 @@ environment variable: a URL on a command line puts its password in the process
 list.
 
 The API is not a stub. It serves `get_bundle`, `resolve`, `stance_history`,
-`get_l1`, `get_l0` and `search` as `POST /v1/<call>` and as MCP tools at `/mcp`,
+`get_l1`, `get_l0`, `search` and `assert` as `POST /v1/<call>` and as MCP tools at `/mcp`,
 from one call layer whose bytes both interfaces serve verbatim, on `--listen`
 (default `:8080`; `hearsay all` takes `--api-listen`). The caller is named by
 `Hearsay-Principal` and authenticated by a bearer token; the agent acting for
 them is named by `Hearsay-Agent` and must supply its own token (ADR-0014).
 Every read is filtered by that principal's
 access lists, and every bundle served is an L0 `audit` event under source
-`hearsay`. The bundle is `internal/bundle`, over the views in `internal/l3`. It
+`hearsay`. `assert` is an agent's write: only an agent of class `worker` or
+above may call it, and it writes an L0 `assertion` event under source `hearsay`
+and enqueues the `assert` job that appends its stance under the topic's scope,
+with no model call. The bundle is `internal/bundle`, over the views in `internal/l3`. It
 needs Postgres and refuses without it.
 
 `hearsay l0 list|get <id>|count|tail` inspects the event store — what a source

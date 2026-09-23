@@ -125,8 +125,15 @@ func Stand(in TierInputs) (Standing, bool) {
 
 // rank is a stance's authority under the policy: that of its highest-ranked
 // evidence document, the first listed on a tie, and that document's evidence.
-// A stance none of whose evidence is known ranks 0 and names no evidence.
+// A stance none of whose evidence is known ranks 0 and names no evidence. A
+// stance an agent asserted ranks as its own evidence, class `agent`
+// ([AssertedEvidence]), whatever it cites.
 func (in TierInputs) rank(st Stance) (int, Evidence) {
+	if st.Assertion != "" {
+		by := AssertedEvidence(st.Assertion)
+		rank, _ := in.Policy.Rank(by.Class)
+		return rank, by
+	}
 	best, by := -1, Evidence{}
 	for _, id := range st.Evidence {
 		ev, ok := in.Evidence[id]

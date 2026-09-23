@@ -5,7 +5,10 @@
 // queue's serial_key is what enforces that (ADR-0007).
 //
 // The distiller enqueues an `assert` job in the transaction that writes a
-// document whose outcome enters the pipeline; this package claims them. At
+// document whose outcome enters the pipeline, and the API one in the
+// transaction that writes an agent's L0 `assertion` event, keyed by its topic's
+// scope; this package claims them. An assertion becomes a stance with no model
+// call. At
 // startup it seeds the entity map from configuration and the repositories it
 // names ([Repos]), and enqueues every such document it has not read yet, so
 // documents written before it was deployed, and jobs that ran out of attempts,
@@ -124,8 +127,9 @@ func SeedEntities(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, rea
 }
 
 // Sweep enqueues an assert job for every document whose outcome enters the
-// pipeline and whose current version has not been read, and returns how many it
-// asked for. It is what makes a restart pick up documents written before the
+// pipeline and whose current version has not been read, and for every
+// `assertion` event no stance was appended from, and returns how many it asked
+// for. It is what makes a restart pick up documents written before the
 // worker was deployed and jobs that failed for good. A pending job for a
 // document collapses the enqueue (ADR-0007), so sweeping twice costs a
 // statement per document and no model call.
@@ -151,6 +155,42 @@ func Sweep(ctx context.Context, pool *pgxpool.Pool, repo config.Repo) (int, erro
 			TargetID:  doc.ID,
 			SerialKey: l2.ScopeKey(repo, root.Source, root.Payload.Container.NativeID),
 		})
+		if err != nil {
+			return enqueued, err
+		}
+		enqueued++
+	}
+	assertions, err := sweepAssertions(ctx, pool)
+	return enqueued + assertions, err
+}
+
+// sweepAssertions enqueues a job for every `assertion` event no stance was
+// appended from, under its topic's scope.
+func sweepAssertions(ctx context.Context, pool *pgxpool.Pool) (int, error) {
+	graph := l2.New(pool)
+	ids, err := graph.UnappendedAssertions(ctx)
+	if err != nil {
+		return 0, err
+	}
+	events := l0.New(pool)
+	enqueued := 0
+	for _, id := range ids {
+		ev, err := events.Get(ctx, id)
+		if errors.Is(err, l0.ErrNotFound) || errors.Is(err, l0.ErrRetracted) {
+			continue
+		}
+		if err != nil {
+			return enqueued, err
+		}
+		as, err := l2.AssertionOf(ev)
+		if err != nil {
+			return enqueued, err
+		}
+		topic, err := graph.Topic(ctx, as.Topic)
+		if err != nil {
+			return enqueued, err
+		}
+		_, err = queue.Enqueue(ctx, pool, queue.Request{Kind: l2.AssertKind(), TargetID: id, SerialKey: topic.Scope})
 		if err != nil {
 			return enqueued, err
 		}

@@ -333,6 +333,70 @@ func TestANewReadingOfADocumentRetiresItsOwnStance(t *testing.T) {
 	}
 }
 
+// A stance an agent asserted cites a document without having been read from
+// it: a later reading of that document replaces the document's own stance and
+// leaves the agent's alone, and the assertion is written once however often it
+// is appended.
+func TestAnAssertedStanceIsNotTheDocumentItCites(t *testing.T) {
+	pool := newPool(t)
+	store := l2.New(pool)
+	ctx := t.Context()
+	topic := openTopic(t, store, unique(), public)
+	add := func(st l2.Stance) (l2.Stance, bool) {
+		t.Helper()
+		stored, written, err := store.AppendStance(ctx, st, st.StatedAt)
+		if err != nil {
+			t.Fatalf("AppendStance(%s) = %v", st.Position, err)
+		}
+		return stored, written
+	}
+	event := connector.EventID(connector.SelfSource, "assertion:"+unique())
+	asserted := func(position string, hour int) l2.Stance {
+		st := stance(topic, "l1:s:issue", position, hour)
+		st.ID, st.Assertion, st.Author = l2.AssertionStanceID(topic.ID, event), event, "shed"
+		st.Evidence = []string{"l1:s:issue", "l1:s:pr"}
+		return st
+	}
+
+	read, _ := add(stance(topic, "l1:s:issue", "move the lock into the queue", 1))
+	agent, written := add(asserted("the engine should take the lock", 2))
+	if !written || agent.Assertion != event || agent.Supersedes != read.ID || !slices.Equal(agent.Evidence, []string{"l1:s:issue", "l1:s:pr"}) {
+		t.Fatalf("the asserted stance = %+v, written %v, want it written after the issue's with its event and evidence", agent, written)
+	}
+	if again, written := add(asserted("the engine should take the lock", 2)); written || again.ID != agent.ID {
+		t.Errorf("appending the assertion again = %+v, written %v, want the stored stance and nothing written", again, written)
+	}
+	if from, err := store.StancesFrom(ctx, "l1:s:issue"); err != nil || slices.ContainsFunc(from, func(st l2.Stance) bool { return st.ID == agent.ID }) {
+		t.Errorf("StancesFrom(issue) = %+v, %v, want the issue's own stances only", from, err)
+	}
+
+	// The issue read again replaces its own stance, not the agent's.
+	reread, _ := add(stance(topic, "l1:s:issue", "the queue should hold the lock", 3))
+	if reread.Supersedes != read.ID {
+		t.Errorf("the issue's new reading supersedes %q, want its own earlier stance %q", reread.Supersedes, read.ID)
+	}
+	history, err := store.StanceHistory(ctx, topic.ID)
+	if err != nil {
+		t.Fatalf("StanceHistory() = %v", err)
+	}
+	standing, ok := l2.Stand(l2.TierInputs{History: history, Policy: config.DefaultPolicy()})
+	if !ok {
+		t.Fatal("Stand() found no live stance")
+	}
+	// Two live stances: the agent's and the issue's new reading. Neither has
+	// evidence L1 holds here, so the agent's class is what ranks it — above a
+	// document L1 does not hold.
+	if standing.Current.ID != agent.ID || standing.Tier != l2.TierInferred {
+		t.Errorf("Stand() = %s at %s, want the agent's stance, inferred: it is live and ranks as an agent", standing.Current.ID, standing.Tier)
+	}
+
+	forged := asserted("the engine should take the lock", 2)
+	forged.ID = l2.StanceID(topic.ID, "l1:s:issue", forged.Position, forged.StatedAt, forged.Tier)
+	if _, _, err := store.AppendStance(ctx, forged, forged.StatedAt); !errors.Is(err, l2.ErrInvalid) {
+		t.Errorf("AppendStance(an asserted stance with a document's id) = %v, want ErrInvalid", err)
+	}
+}
+
 func TestReturningToAnEarlierPositionWritesANewStance(t *testing.T) {
 	pool := newPool(t)
 	store := l2.New(pool)

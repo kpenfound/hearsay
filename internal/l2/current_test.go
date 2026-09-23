@@ -32,6 +32,15 @@ func TestCurrent(t *testing.T) {
 			history: []l2.Stance{st("late", "d2", "b"), st("b", "d1", "")},
 			want:    "b",
 		},
+		{
+			// It cites the document but was not read from it.
+			name: "superseded by an assertion citing its document is not retired",
+			history: []l2.Stance{
+				{ID: "asserted", Evidence: []string{"d1"}, Supersedes: "a", Assertion: "evt:hearsay:assertion:1"},
+				st("a", "d1", ""),
+			},
+			want: "a",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
