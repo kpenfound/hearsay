@@ -279,6 +279,9 @@ type Body struct {
 	// Change is what a change proposal does, on the kinds that propose one: a
 	// pull request and a commit.
 	Change string `json:"change,omitempty"`
+	// CodeNames are names a chat thread explicitly uses for code, extracted by
+	// the distill call. They are only proposals, never resolution aliases.
+	CodeNames []string `json:"code_names,omitempty"`
 }
 
 // DocID is the id of the document for a source-native artifact or stable

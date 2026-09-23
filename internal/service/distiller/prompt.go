@@ -79,6 +79,7 @@ Set outcome_kind to none. Do not repeat the containing thread's conclusion.`,
 - question: the main question, if one was asked. Empty otherwise.
 - outcome: only what participants explicitly decided or resolved. Empty for a routine exchange.
 - open_questions: questions the conversation leaves unanswered, one per entry.
+- code_names: short names participants explicitly use for code in this thread, without guessing what they refer to. Empty if none.
 
 A routine exchange has outcome_kind none. Do not turn a suggestion into a decision.`,
 	l1.KindIssue: `This is a tracker issue and the conversation on it.
@@ -127,6 +128,7 @@ type answer struct {
 	OutcomeKind   string   `json:"outcome_kind"`
 	OpenQuestions []string `json:"open_questions,omitempty"`
 	Change        string   `json:"change,omitempty"`
+	CodeNames     []string `json:"code_names,omitempty"`
 }
 
 // body turns an answer into the document body.
@@ -142,6 +144,7 @@ func (a answer) body() (l1.Body, error) {
 		OutcomeKind:   kind,
 		OpenQuestions: a.OpenQuestions,
 		Change:        a.Change,
+		CodeNames:     a.CodeNames,
 	}, nil
 }
 
@@ -192,6 +195,9 @@ func schemaFor(kind l1.Kind) *llm.Schema {
 			Type:        "string",
 			Description: "The question the issue is asking, in one sentence. Empty when it reports rather than asks.",
 			MaxLength:   maxQuestion,
+		}
+		if kind == l1.KindChatThread {
+			properties["code_names"] = schemaNode{Type: "array", Description: "Short names explicitly used for code in this conversation; do not infer them.", MaxItems: 8, Items: &schemaNode{Type: "string", MinLength: 1, MaxLength: 100}}
 		}
 	case l1.KindPR, l1.KindCommit:
 		properties["change"] = schemaNode{
