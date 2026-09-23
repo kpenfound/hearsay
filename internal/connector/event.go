@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // The length limits, in bytes. They exist so that an event id can be a key in
@@ -28,6 +29,13 @@ const (
 	// cursor that belongs in the source.
 	MaxCursorLen = 4096
 )
+
+// MaxPaths is the most paths one event may carry in Payload.Paths. A change
+// that touched more is recorded as its first MaxPaths, with
+// Payload.PathsTruncated set: the list is what a document links to code
+// entities by, and a list that grows with the change would grow every revision
+// of it in L0 without bound.
+const MaxPaths = 300
 
 // ErrInvalidEvent is returned by [Event.Validate] and wrapped by every
 // validation failure, so a caller can tell a malformed event from an IO error
@@ -143,6 +151,18 @@ type Payload struct {
 	// conversation — nothing is assembled from it, and it may name an artifact
 	// in another container of the same source.
 	PartOf string `json:"part_of,omitempty"`
+
+	// Paths are the repository paths a change touches — a pull request's
+	// changed files, and where one was renamed, the name it had — relative to
+	// the repository root, sorted and without duplicates, and never more than
+	// [MaxPaths]. They are names only: never a diff, never file content. L1
+	// links the artifact to the code entities they fall under. [BoundPaths]
+	// puts a list in this shape.
+	Paths []string `json:"paths,omitempty"`
+
+	// PathsTruncated is set when the change touched more paths than Paths
+	// holds.
+	PathsTruncated bool `json:"paths_truncated,omitempty"`
 
 	// Revision describes one observation of an artifact that can change. It is
 	// set exactly when NativeID is `Artifact@<token>`, and its Token is that
@@ -512,7 +532,57 @@ func (p Payload) validate(e Event) error {
 	case p.PartOf == p.Artifact:
 		return fmt.Errorf("%w: payload.part_of is the artifact itself, %q", ErrInvalidEvent, p.PartOf)
 	}
+	if err := p.validatePaths(); err != nil {
+		return err
+	}
 	return p.validateRevision(e)
+}
+
+// validatePaths holds Payload.Paths to the shape [BoundPaths] makes: bounded,
+// sorted and unique, so that two observations of one change carry one list
+// whichever order the source listed it in.
+func (p Payload) validatePaths() error {
+	switch {
+	case len(p.Paths) > MaxPaths:
+		return fmt.Errorf("%w: payload.paths holds %d paths, the limit is %d", ErrInvalidEvent, len(p.Paths), MaxPaths)
+	case p.PathsTruncated && len(p.Paths) == 0:
+		return fmt.Errorf("%w: payload.paths_truncated is set and payload.paths is empty", ErrInvalidEvent)
+	}
+	for i, path := range p.Paths {
+		switch {
+		case path == "":
+			return fmt.Errorf("%w: payload.paths[%d] is empty", ErrInvalidEvent, i)
+		case strings.HasPrefix(path, "/"):
+			return fmt.Errorf("%w: payload.paths[%d] %q is not relative to the repository root", ErrInvalidEvent, i, path)
+		case strings.ContainsFunc(path, unicode.IsControl):
+			return fmt.Errorf("%w: payload.paths[%d] contains a control character", ErrInvalidEvent, i)
+		case i > 0 && path <= p.Paths[i-1]:
+			return fmt.Errorf("%w: payload.paths is not sorted without duplicates at [%d] %q", ErrInvalidEvent, i, path)
+		}
+	}
+	return nil
+}
+
+// BoundPaths puts the paths a change touched into the shape Payload.Paths
+// takes: sorted, without duplicates, and cut to the first [MaxPaths] of that
+// order. A path validation would refuse — empty, absolute, or with a control
+// character in it, which git allows and nothing downstream wants — is left
+// out rather than failing the event. It reports whether it cut any, so that a
+// connector which stopped reading the source's list early ORs that in and
+// sets Payload.PathsTruncated.
+//
+// The cut is made after sorting, so what survives depends on which paths were
+// read and not on the order the source listed them in.
+func BoundPaths(paths []string) ([]string, bool) {
+	out := slices.DeleteFunc(slices.Clone(paths), func(p string) bool {
+		return p == "" || strings.HasPrefix(p, "/") || strings.ContainsFunc(p, unicode.IsControl)
+	})
+	slices.Sort(out)
+	out = slices.Compact(out)
+	if len(out) > MaxPaths {
+		return out[:MaxPaths:MaxPaths], true
+	}
+	return out, false
 }
 
 // validateRevision holds the native id and payload.revision to each other. The

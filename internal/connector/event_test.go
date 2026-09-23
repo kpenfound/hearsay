@@ -3,6 +3,8 @@ package connector_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -174,6 +176,52 @@ func TestEventValidate(t *testing.T) {
 		{
 			name:    "an item part of itself",
 			mutate:  func(e *connector.Event) { e.Payload.PartOf = e.Payload.Artifact },
+			wantErr: true,
+		},
+		{
+			name:   "the paths a change touched",
+			mutate: func(e *connector.Event) { e.Payload.Paths = []string{"engine/client/x.go", "engine/server/x.go"} },
+		},
+		{
+			name: "as many paths as the bound, truncated",
+			mutate: func(e *connector.Event) {
+				e.Payload.Paths, _ = connector.BoundPaths(manyPaths(connector.MaxPaths + 1))
+				e.Payload.PathsTruncated = true
+			},
+		},
+		{
+			name:    "more paths than the bound",
+			mutate:  func(e *connector.Event) { e.Payload.Paths = manyPaths(connector.MaxPaths + 1) },
+			wantErr: true,
+		},
+		{
+			name:    "paths out of order",
+			mutate:  func(e *connector.Event) { e.Payload.Paths = []string{"engine/server/x.go", "engine/client/x.go"} },
+			wantErr: true,
+		},
+		{
+			name:    "a path twice",
+			mutate:  func(e *connector.Event) { e.Payload.Paths = []string{"a.go", "a.go"} },
+			wantErr: true,
+		},
+		{
+			name:    "an empty path",
+			mutate:  func(e *connector.Event) { e.Payload.Paths = []string{""} },
+			wantErr: true,
+		},
+		{
+			name:    "an absolute path",
+			mutate:  func(e *connector.Event) { e.Payload.Paths = []string{"/etc/passwd"} },
+			wantErr: true,
+		},
+		{
+			name:    "a path with a control character",
+			mutate:  func(e *connector.Event) { e.Payload.Paths = []string{"a\nb.go"} },
+			wantErr: true,
+		},
+		{
+			name:    "truncated with no paths",
+			mutate:  func(e *connector.Event) { e.Payload.PathsTruncated = true },
 			wantErr: true,
 		},
 		{
@@ -470,6 +518,52 @@ func TestEventValidate(t *testing.T) {
 			}
 			if err != nil {
 				t.Errorf("Validate() = %v, want no error", err)
+			}
+		})
+	}
+}
+
+// manyPaths is n distinct paths, in descending order.
+func manyPaths(n int) []string {
+	paths := make([]string, n)
+	for i := range paths {
+		paths[i] = fmt.Sprintf("dir/%04d.go", n-i)
+	}
+	return paths
+}
+
+func TestBoundPaths(t *testing.T) {
+	over := manyPaths(connector.MaxPaths + 5)
+	tests := []struct {
+		name          string
+		paths         []string
+		want          []string
+		wantTruncated bool
+	}{
+		{name: "nothing", paths: nil, want: []string{}},
+		{name: "sorted, without duplicates", paths: []string{"b.go", "a.go", "b.go"}, want: []string{"a.go", "b.go"}},
+		{name: "without what validation refuses", paths: []string{"", "/abs.go", "new\nline.go", "ok.go"}, want: []string{"ok.go"}},
+		{
+			name:  "duplicates do not count against the bound",
+			paths: append(manyPaths(connector.MaxPaths), manyPaths(connector.MaxPaths)...),
+			want:  slices.Sorted(slices.Values(manyPaths(connector.MaxPaths))),
+		},
+		{
+			name: "over the bound keeps the first of the sorted order", paths: over,
+			want: slices.Sorted(slices.Values(over))[:connector.MaxPaths], wantTruncated: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, truncated := connector.BoundPaths(tt.paths)
+			if !slices.Equal(got, tt.want) || truncated != tt.wantTruncated {
+				t.Errorf("BoundPaths() = %d paths %v, %v; want %d paths, %v", len(got), got[:min(len(got), 3)], truncated, len(tt.want), tt.wantTruncated)
+			}
+			// The order the source listed them in does not matter.
+			reversed := slices.Clone(tt.paths)
+			slices.Reverse(reversed)
+			if again, _ := connector.BoundPaths(reversed); !slices.Equal(again, got) {
+				t.Errorf("BoundPaths() of the reversed list differs")
 			}
 		})
 	}
