@@ -43,6 +43,7 @@ func Migrations() fs.FS {
 // [CheckSchema] and never migrate (ADR-0006).
 type Migrator struct {
 	provider *goose.Provider
+	db       *sql.DB
 }
 
 // NewMigrator connects to url and prepares the migrations. The caller closes
@@ -80,7 +81,7 @@ func NewMigrator(ctx context.Context, url string, log *slog.Logger) (*Migrator, 
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("reading the embedded migrations: %w", err), sqlDB.Close())
 	}
-	return &Migrator{provider: provider}, nil
+	return &Migrator{provider: provider, db: sqlDB}, nil
 }
 
 // Close releases the database connection.
@@ -107,14 +108,73 @@ type Status struct {
 
 // Up applies every pending migration.
 func (m *Migrator) Up(ctx context.Context) ([]Applied, error) {
+	if err := m.reconcileLegacy14(ctx, 16); err != nil {
+		return nil, fmt.Errorf("migrate up: %w", err)
+	}
 	results, err := m.provider.Up(ctx)
 	return applied(results), migrateErr("up", err)
 }
 
 // UpTo applies every pending migration no newer than version.
 func (m *Migrator) UpTo(ctx context.Context, version int64) ([]Applied, error) {
+	if version >= 15 {
+		if err := m.reconcileLegacy14(ctx, version); err != nil {
+			return nil, fmt.Errorf("migrate up-to: %w", err)
+		}
+	}
 	results, err := m.provider.UpTo(ctx, version)
 	return applied(results), migrateErr("up-to", err)
+}
+
+// One branch applied the stance migration as version 14. In the merged
+// history, 14 is artifact class and 15 is stance judgement. Goose records only
+// the version, so it cannot distinguish those databases. Mark 15 applied when
+// its column already exists; migration 16 then supplies artifact class. Use
+// goose's advisory lock so concurrent migrate jobs cannot race this decision.
+func (m *Migrator) reconcileLegacy14(ctx context.Context, target int64) error {
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("starting version 14 reconciliation: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, lock.DefaultLockID); err != nil {
+		return fmt.Errorf("locking version 14 reconciliation: %w", err)
+	}
+	var versionTableName sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT to_regclass('goose_db_version')::text`).Scan(&versionTableName); err != nil {
+		return fmt.Errorf("finding goose version table: %w", err)
+	}
+	if !versionTableName.Valid {
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing version 14 reconciliation: %w", err)
+		}
+		return nil
+	}
+	var version int64
+	err = tx.QueryRowContext(ctx, `SELECT coalesce(max(version_id), 0) FROM goose_db_version WHERE is_applied`).Scan(&version)
+	if err != nil {
+		return fmt.Errorf("reading version for reconciliation: %w", err)
+	}
+	if version == 14 {
+		var stance bool
+		err = tx.QueryRowContext(ctx, `SELECT
+			EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'l2_stances' AND column_name = 'judgement')`).Scan(&stance)
+		if err != nil {
+			return fmt.Errorf("inspecting version 14 schema: %w", err)
+		}
+		if stance {
+			if target < 16 {
+				return errors.New("legacy version 14 stance schema requires migrating through version 16")
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO goose_db_version (version_id, is_applied) VALUES (15, true)`); err != nil {
+				return fmt.Errorf("recording legacy stance migration as version 15: %w", err)
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing version 14 reconciliation: %w", err)
+	}
+	return nil
 }
 
 // Down rolls back the most recently applied migration, and only that one.
