@@ -433,7 +433,13 @@ source's token, which the worker's environment must carry), and enqueues every
 such document it has not read, which is what picks up documents written before
 it was deployed.
 
-Three rules to know before changing it:
+The API's `assert` call enqueues the same kind of job, in the transaction that
+writes an agent's L0 `assertion` event, under the scope of the topic it names;
+its target is the event. The worker appends that stance with no model call:
+class `agent`, authored by the agent, evidence the L1 documents it cites. At
+startup it also enqueues every `assertion` event no stance was appended from.
+
+Four rules to know before changing it:
 
 - **A stance is never overwritten.** A new one supersedes its own document's
   earlier stance on the topic where there is one — a re-distilled document
@@ -443,8 +449,12 @@ Three rules to know before changing it:
 - **Re-reading a document is idempotent twice over.** `l2_asserted` records
   which version (`distilled_at`) was read, so a restart makes no model call; and
   topic and stance ids are derived from what produced them — a stance's from its
-  topic, document and position — so a re-read that answers the same way writes
-  nothing.
+  topic, document and position, an asserted one's from its topic and event — so
+  a re-read that answers the same way writes nothing.
+- **An asserted stance was not read from what it cites.** Its origin is its
+  `assertion` event (`l2_stances.assertion`), not its first piece of evidence,
+  so a later reading of a cited document neither retires it nor is taken for
+  its own, and it ranks as class `agent` whatever it cites.
 - **No test calls a provider**, as for the distiller: the answers are written
   down in `fixtures_test.go` and `-record` writes them to `testdata/fixtures`.
 

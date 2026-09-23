@@ -1,8 +1,9 @@
-// Package api serves the read API over MCP and HTTP: bundle assembly, the
-// handles a consumer follows, and the audit trail. Reads are structured
-// lookups, and nothing here asks a model to generate anything: the one model
-// call a read makes is `search` embedding the query it was given, on the
-// `embed` tier (internal/l1).
+// Package api serves the read and assert API over MCP and HTTP: bundle
+// assembly, the handles a consumer follows, the audit trail, and `assert`, the
+// one write, through which an agent proposes a stance as an L0 `assertion`
+// event. Reads are structured lookups, and nothing here asks a model to
+// generate anything: the one model call a read makes is `search` embedding the
+// query it was given, on the `embed` tier (internal/l1).
 //
 // Both interfaces are thin over one call layer, [Calls]: a call takes the
 // caller, a name and JSON arguments, and returns the bytes that are served. HTTP
@@ -14,8 +15,8 @@
 // bearer token. When [AgentHeader] names an agent, that agent's token is also
 // required. Authentication precedes the shared call layer (ADR-0014).
 //
-// The assert and watch calls of docs/design.md#read-and-assert-api are later
-// work, and so are a bundle's conflicts.
+// The watch call of docs/design.md#read-and-assert-api is later work, and so
+// are a bundle's conflicts.
 package api
 
 import (

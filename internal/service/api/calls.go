@@ -80,7 +80,7 @@ type Tool struct {
 	InputSchema json.RawMessage `json:"inputSchema"`
 }
 
-// Calls is the read API, independent of the interface that serves it: a call
+// Calls is the API, independent of the interface that serves it: a call
 // takes a caller, a name and JSON arguments, and returns the bytes every
 // interface serves verbatim. That is what makes the same request over MCP and
 // HTTP byte-identical — there is one encoding, and it happens here.

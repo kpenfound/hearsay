@@ -16,6 +16,12 @@ func TestStand(t *testing.T) {
 	st := func(id, doc string, at time.Time, supersedes string, j l2.Judgement) l2.Stance {
 		return l2.Stance{ID: id, Evidence: []string{doc}, StatedAt: at, Supersedes: supersedes, Judgement: j}
 	}
+	// asserted is a stance an agent wrote through the API, citing a document.
+	asserted := func(id, doc string, at time.Time, supersedes string) l2.Stance {
+		s := st(id, doc, at, supersedes, "")
+		s.Assertion = "evt:hearsay:assertion:" + id
+		return s
+	}
 	evidence := map[string]l2.Evidence{
 		"pr":      {Class: config.ArtifactMergedPR, Source: "github"},
 		"mirror":  {Class: config.ArtifactMergedPR, Source: "mirror"},
@@ -35,6 +41,10 @@ func TestStand(t *testing.T) {
 	specsRatify.RatifiedBy.Artifacts = []config.ArtifactClass{config.ArtifactMergedPR, config.ArtifactSpec}
 	githubOnly := config.DefaultPolicy()
 	githubOnly.RatifiedBy.Sources = []string{"github"}
+	agentsRatify := config.DefaultPolicy()
+	agentsRatify.RatifiedBy.Artifacts = []config.ArtifactClass{config.ArtifactMergedPR, config.ArtifactAgent}
+	agentsFromElsewhere := agentsRatify
+	agentsFromElsewhere.RatifiedBy.Sources = []string{"github"}
 	shortWindow := config.DefaultPolicy()
 	shortWindow.ContestedWindow = 24 * time.Hour
 
@@ -179,6 +189,26 @@ func TestStand(t *testing.T) {
 				st("b", "meeting", days(1), "a", l2.JudgementChanges),
 			},
 			policy: def, want: "a", tier: l2.TierRatified,
+		},
+		{
+			name:    "an agent citing a merged pull request is an agent, and does not ratify",
+			history: []l2.Stance{asserted("a", "pr", days(0), "")},
+			policy:  def, want: "a", tier: l2.TierInferred,
+		},
+		{
+			name:    "an agent ranks last: a chat thread before it stays current",
+			history: []l2.Stance{st("a", "chat", days(0), "", ""), asserted("b", "pr", days(1), "a")},
+			policy:  def, want: "a", tier: l2.TierInferred,
+		},
+		{
+			name:    "an agent ratifies where the scope says agents do",
+			history: []l2.Stance{asserted("a", "chat", days(0), "")},
+			policy:  agentsRatify, want: "a", tier: l2.TierRatified,
+		},
+		{
+			name:    "an agent's source is hearsay, whatever it cites",
+			history: []l2.Stance{asserted("a", "pr", days(0), "")},
+			policy:  agentsFromElsewhere, want: "a", tier: l2.TierInferred,
 		},
 		{
 			name:    "a spec does not ratify by default",

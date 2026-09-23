@@ -78,6 +78,7 @@ func repo(src string) config.Repo {
 			{ID: "kyle", Kind: principal.KindHuman, TokenEnv: "HEARSAY_TEST_KYLE_TOKEN", Identities: []principal.Identity{{Source: src, NativeID: kyleNode, Handle: "kpenfound"}}},
 			{ID: "sam", Kind: principal.KindHuman, TokenEnv: "HEARSAY_TEST_SAM_TOKEN", Identities: []principal.Identity{{Source: src, NativeID: "MDQ6VXNlcjI=", Handle: "sam"}}},
 			{ID: "shed", Kind: principal.KindAgent, Class: principal.ClassWorker, TokenEnv: "HEARSAY_TEST_SHED_TOKEN", Identities: []principal.Identity{{Source: src, Handle: "shed[bot]"}}},
+			{ID: "peek", Kind: principal.KindAgent, Class: principal.ClassObserver, TokenEnv: "HEARSAY_TEST_PEEK_TOKEN", Identities: []principal.Identity{{Source: src, Handle: "peek[bot]"}}},
 			{ID: "channel_members", Kind: principal.KindTeam, Identities: []principal.Identity{{Source: src, NativeID: "private-channel"}}, Members: []string{"kyle"}},
 		},
 	}
@@ -88,6 +89,7 @@ func newWorld(t *testing.T) *world {
 	t.Setenv("HEARSAY_TEST_KYLE_TOKEN", "test-kyle-api-credential")
 	t.Setenv("HEARSAY_TEST_SAM_TOKEN", "test-sam-api-credential")
 	t.Setenv("HEARSAY_TEST_SHED_TOKEN", "test-shed-api-credential")
+	t.Setenv("HEARSAY_TEST_PEEK_TOKEN", "test-peek-api-credential")
 	pool := newPool(t)
 	w := &world{src: newSource(), pool: pool}
 	w.project = "acme/" + w.src
@@ -212,6 +214,8 @@ func (w *world) post(t *testing.T, path string, caller api.Caller, body string) 
 			req.Header.Set(api.AgentTokenHeader, "test-sam-api-credential")
 		case "shed":
 			req.Header.Set(api.AgentTokenHeader, "test-shed-api-credential")
+		case "peek":
+			req.Header.Set(api.AgentTokenHeader, "test-peek-api-credential")
 		}
 	}
 	resp, err := http.DefaultClient.Do(req)
@@ -724,7 +728,7 @@ func TestMCPSpeaksTheProtocol(t *testing.T) {
 	for _, tool := range tools {
 		names = append(names, tool.(map[string]any)["name"].(string))
 	}
-	if strings.Join(names, ",") != "get_bundle,resolve,stance_history,get_l1,get_l0,search" {
+	if strings.Join(names, ",") != "get_bundle,resolve,stance_history,get_l1,get_l0,search,assert" {
 		t.Errorf("tools = %v", names)
 	}
 	if e := rpc(`{"jsonrpc":"2.0","id":3,"method":"resources/list"}`)["error"]; e == nil {
