@@ -258,6 +258,15 @@ func (l *loader) buildPrincipals(r Repo) []principal.Principal {
 		if !kind.Valid() {
 			l.bad(a, "kind", "%q is not a principal kind: want one of %s", p.Kind, join(principal.Kinds()))
 		} else {
+			if kind == principal.KindTeam && p.Scopes != nil {
+				l.bad(a, "scopes", "a team cannot have scopes: only a human or agent acts")
+			}
+			if kind == principal.KindAgent && len(p.Scopes) == 0 {
+				l.bad(a, "scopes", "is required on agent %q: list its entity ids or %q", p.ID, AnyValue)
+			}
+			if kind != principal.KindTeam {
+				l.names(a, "scopes", p.Scopes, true, validGrantScope)
+			}
 			if p.TokenEnv != "" && !isEnvVarName(p.TokenEnv) {
 				l.bad(a, "token_env", "%q is not the name of an environment variable: config names a secret and the API supplies its value", p.TokenEnv)
 			}
@@ -299,6 +308,11 @@ func (l *loader) buildPrincipals(r Repo) []principal.Principal {
 			Identities: l.buildIdentities(r, a, p, identities),
 			Members:    slices.Clone(p.Members),
 		}
+		if kind == principal.KindHuman && p.Scopes == nil || slices.Equal(p.Scopes, []string{AnyValue}) {
+			built.Grant.Scopes = principal.AllScopes()
+		} else if kind != principal.KindTeam {
+			built.Grant.Scopes = principal.SomeScopes(p.Scopes...)
+		}
 		if keep {
 			out = append(out, built)
 		}
@@ -323,6 +337,23 @@ func (l *loader) buildPrincipals(r Repo) []principal.Principal {
 		})
 	}
 	return out
+}
+
+// validGrantScope checks an entity id's form without requiring that the
+// entity has arrived from L0 or appears in code configuration yet.
+func validGrantScope(id string) string {
+	valid := false
+	if code, ok := strings.CutPrefix(id, "code:"); ok {
+		valid = code != ""
+	} else if tracker, ok := strings.CutPrefix(id, "tracker:"); ok {
+		source, rest, hasSource := strings.Cut(tracker, ":")
+		project, item, hasItem := strings.Cut(rest, "#")
+		valid = hasSource && hasItem && connector.ValidSourceID(source) && project != "" && item != "" && !strings.Contains(item, "#")
+	}
+	if !valid || len(id) > maxEntityIDLen || strings.ContainsFunc(id, unicode.IsSpace) {
+		return fmt.Sprintf("%q is not an entity id: want code:<id> or tracker:<source>:<project>#<item>, at most %d bytes and no whitespace", id, maxEntityIDLen)
+	}
+	return ""
 }
 
 // buildIdentities validates one principal's identities and records them so that

@@ -210,9 +210,7 @@ func (c *Calls) Call(ctx context.Context, caller Caller, name string, args json.
 
 // readerFor is the effective principal a call runs as, and what it may read.
 //
-// Nothing configures a grant yet (docs/config.md#agent-classes), so every
-// principal is granted every scope and the access lists are what narrow a read;
-// an agent is held to its class and to the person it acts for by
+// An agent is held to its class and to the person it acts for by
 // [principal.AgentRead]. A caller the mapping does not hold is refused: a read
 // nobody is accountable for is not one Hearsay serves.
 func (c *Calls) readerFor(caller Caller) (l1.Reader, error) {
@@ -223,17 +221,16 @@ func (c *Calls) readerFor(caller Caller) (l1.Reader, error) {
 	if !ok {
 		return l1.Reader{}, fail(http.StatusForbidden, "%q is not a configured principal", caller.Principal)
 	}
-	grant := principal.Grant{Scopes: principal.AllScopes()}
 	var eff principal.Effective
 	var err error
 	if caller.Agent == "" {
-		eff, err = principal.HumanRead(human, grant)
+		eff, err = principal.HumanRead(human, human.Grant)
 	} else {
 		agent, found := c.resolver.Principal(caller.Agent)
 		if !found {
 			return l1.Reader{}, fail(http.StatusForbidden, "%q is not a configured principal", caller.Agent)
 		}
-		eff, err = principal.AgentRead(agent, human, grant, grant)
+		eff, err = principal.AgentRead(agent, human, agent.Grant, human.Grant)
 	}
 	if err != nil {
 		return l1.Reader{}, fail(http.StatusForbidden, "%s", err.Error())
@@ -525,9 +522,7 @@ func getL0(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json.R
 	case !reader.Allows(ev.ACL):
 		return nil, notFound
 	}
-	// An event carries no scope, so its access list is the whole filter. That
-	// is enough while every caller is granted every scope (readerFor); a
-	// scoped grant would reach an event through a document it may read.
+	// Reach filtering for events through their documents is added by #148.
 	return ev, nil
 }
 
@@ -689,8 +684,8 @@ func assertStance(ctx context.Context, c *Calls, caller Caller, reader l1.Reader
 
 // mayAssert refuses a caller that is not an agent whose class may assert:
 // people take positions in their own tools, and an observer writes nothing
-// (docs/design.md#access-control). Nothing configures a grant's rights yet
-// (readerFor), so the agent's class is the whole of what it may write.
+// (docs/design.md#access-control). Rights are not configured yet, so the
+// agent's class is the whole of what it may write.
 func (c *Calls) mayAssert(caller Caller) error {
 	if caller.Agent == "" {
 		return fail(http.StatusForbidden, "assert is for agents: name the agent acting for you in the %s header", AgentHeader)

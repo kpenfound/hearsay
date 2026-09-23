@@ -297,6 +297,7 @@ part of onboarding worth spending effort on.
   name: Kyle Penfound        # optional
   kind: human                # optional; human (the default), agent or team
   token_env: HEARSAY_KYLE_TOKEN # required when this person calls the API
+  scopes: ["*"]            # optional on a human; omitted means every scope
   identities:                # required on a human and an agent; at least one
     - source: github
       native_id: "MDQ6VXNlcjE="
@@ -308,6 +309,7 @@ part of onboarding worth spending effort on.
   kind: agent
   class: worker              # required on an agent: observer, worker, orchestrator, steward
   token_env: HEARSAY_SHED_TOKEN # required when this agent calls the API
+  scopes: [code:acme/api]  # required on an agent
   identities:
     - source: github
       handle: "shed-agent[bot]"
@@ -318,6 +320,14 @@ part of onboarding worth spending effort on.
 ```
 
 An identity needs a `native_id`, a `handle`, or both.
+
+`scopes` lists entity ids such as `code:acme/api` and
+`tracker:github:acme/api#1234`. `"*"` alone grants every scope. A grant covers
+the named entity and its `part_of` descendants. The id need not already appear
+in `code/` or the tracker: tracker entities arrive from L0. A human who omits
+`scopes` gets `"*"`; an agent must list its scopes (or `"*"`), including when
+upgrading an existing agent entry. An agent without the field fails config
+validation and service startup. Teams cannot have `scopes`.
 
 `token_env` names an environment variable holding a random, distinct API token.
 It is never the token value. The API resolves it when it starts and refuses to
@@ -436,8 +446,8 @@ everything the one before it may.
 An agent never gets more than the person it is acting for: a read runs as the
 intersection of the agent's grants and theirs. Ratifying and merging topics are
 human actions, and an agent does not get them from the steward class alone — the
-class exists so the door is there, closed. Which scopes a principal is granted
-is not configured here yet; enforcement lands in v0.2.0 and v0.6.0.
+class exists so the door is there, closed. Grants are configured with `scopes`
+on each human or agent; API reach enforcement follows in #148.
 
 ## `code/`
 
@@ -837,6 +847,7 @@ principals:
     kind: agent
     class: worker
     token_env: HEARSAY_SHED_TOKEN
+    scopes: [code:acme/api]
     identities:
       - source: github
         handle: shed-agent[bot]
@@ -992,6 +1003,7 @@ entities: [code:acme/api, code:acme/api:engine/server]
   kind: agent
   class: worker
   token_env: HEARSAY_SHED_TOKEN
+  scopes: [code:acme/api]
   identities:
     - source: github
       handle: shed-agent[bot]
@@ -1078,9 +1090,6 @@ Named deliberately, so that the absence is a decision rather than an oversight.
   groups; flattening them here keeps membership a list rather than a second
   hierarchy to walk and to check for cycles. Claim the group as an identity and
   let the source do the nesting.
-- **Per-principal grants.** Which scopes a principal may read is part of the
-  identity model but is not configured here yet: only the agent class ceiling
-  is. Enforcement, and the grants it reads, land in v0.2.0 and v0.6.0.
 - **Reload without a restart.** ADR-0009 has the reasons and what would have to
   be true first.
 - **Per-scope ACLs.** Access control is inherited from the source at ingest, not

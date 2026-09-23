@@ -75,10 +75,10 @@ const kyleNode = "MDQ6VXNlcjE="
 func repo(src string) config.Repo {
 	return config.Repo{
 		Principals: []principal.Principal{
-			{ID: "kyle", Kind: principal.KindHuman, TokenEnv: "HEARSAY_TEST_KYLE_TOKEN", Identities: []principal.Identity{{Source: src, NativeID: kyleNode, Handle: "kpenfound"}}},
-			{ID: "sam", Kind: principal.KindHuman, TokenEnv: "HEARSAY_TEST_SAM_TOKEN", Identities: []principal.Identity{{Source: src, NativeID: "MDQ6VXNlcjI=", Handle: "sam"}}},
-			{ID: "shed", Kind: principal.KindAgent, Class: principal.ClassWorker, TokenEnv: "HEARSAY_TEST_SHED_TOKEN", Identities: []principal.Identity{{Source: src, Handle: "shed[bot]"}}},
-			{ID: "peek", Kind: principal.KindAgent, Class: principal.ClassObserver, TokenEnv: "HEARSAY_TEST_PEEK_TOKEN", Identities: []principal.Identity{{Source: src, Handle: "peek[bot]"}}},
+			{ID: "kyle", Kind: principal.KindHuman, Grant: principal.Grant{Scopes: principal.AllScopes()}, TokenEnv: "HEARSAY_TEST_KYLE_TOKEN", Identities: []principal.Identity{{Source: src, NativeID: kyleNode, Handle: "kpenfound"}}},
+			{ID: "sam", Kind: principal.KindHuman, Grant: principal.Grant{Scopes: principal.AllScopes()}, TokenEnv: "HEARSAY_TEST_SAM_TOKEN", Identities: []principal.Identity{{Source: src, NativeID: "MDQ6VXNlcjI=", Handle: "sam"}}},
+			{ID: "shed", Kind: principal.KindAgent, Class: principal.ClassWorker, Grant: principal.Grant{Scopes: principal.AllScopes()}, TokenEnv: "HEARSAY_TEST_SHED_TOKEN", Identities: []principal.Identity{{Source: src, Handle: "shed[bot]"}}},
+			{ID: "peek", Kind: principal.KindAgent, Class: principal.ClassObserver, Grant: principal.Grant{Scopes: principal.AllScopes()}, TokenEnv: "HEARSAY_TEST_PEEK_TOKEN", Identities: []principal.Identity{{Source: src, Handle: "peek[bot]"}}},
 			{ID: "channel_members", Kind: principal.KindTeam, Identities: []principal.Identity{{Source: src, NativeID: "private-channel"}}, Members: []string{"kyle"}},
 		},
 	}
