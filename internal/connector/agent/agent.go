@@ -258,6 +258,10 @@ func validKey(s string) bool {
 	return true
 }
 
+// ValidSessionID reports whether an API session header names an artifact this
+// connector can emit. Both surfaces use the same grammar.
+func ValidSessionID(id string) bool { return validKey(id) }
+
 // event turns an authenticated agent's request into the event it means. The
 // request is the caller's, so what is wrong with it is an [errBadRequest].
 func (c *Connector) event(agent string, req Request) (connector.Event, error) {

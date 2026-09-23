@@ -134,21 +134,26 @@ environment variable: a URL on a command line puts its password in the process
 list.
 
 The API is not a stub. It serves `get_bundle`, `resolve`, `stance_history`,
-`get_l1`, `get_l0`, `search`, `watch` and `assert` as `POST /v1/<call>` and as MCP tools at `/mcp`,
+`get_l1`, `get_l0`, `get_session`, `search`, `watch` and `assert` as
+`POST /v1/<call>` and as MCP tools at `/mcp`,
 from one call layer whose bytes both interfaces serve verbatim, on `--listen`
 (default `:8080`; `hearsay all` takes `--api-listen`). The caller is named by
 `Hearsay-Principal` and authenticated by a bearer token; the agent acting for
 them is named by `Hearsay-Agent` and must supply its own token (ADR-0014).
+An agent can send `Hearsay-Session` to link bundle audits and assertions to a
+session artifact; `get_session` follows an assertion id to that trace (ADR-0017).
 Every call runs within the effective reach — the person's configured scopes
 and the agent's, intersected and capped by the agent's class — and every read
 is filtered by the person's access lists; every bundle served is an L0 `audit`
-event under source `hearsay`. `assert` is an agent's write: only an agent of class `worker` or
+event under source `hearsay`. `assert` is an agent's write: only an agent of
+class `worker` or
 above may call it, and it writes an L0 `assertion` event under source `hearsay`
 and enqueues the `assert` job that appends its stance under the topic's scope,
 with no model call. `watch` is a long poll with an opaque cursor over the L0
 change feed: it returns the events on a scope once they are distilled, as
 handles with no content, and waits up to 25 seconds when there are none; a
-person or an agent of class `orchestrator` or above may call it. The bundle is `internal/bundle`, over the views in `internal/l3`. It
+person or an agent of class `orchestrator` or above may call it. The bundle is
+`internal/bundle`, over the views in `internal/l3`. It
 needs Postgres and refuses without it.
 
 `hearsay l0 list|get <id>|count|tail` inspects the event store — what a source

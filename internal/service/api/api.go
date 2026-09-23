@@ -14,6 +14,8 @@
 // Both interfaces authenticate the person named in [PrincipalHeader] with a
 // bearer token. When [AgentHeader] names an agent, that agent's token is also
 // required. Authentication precedes the shared call layer (ADR-0014).
+// An authenticated agent may name its session in [SessionHeader]; the call
+// layer links audits and assertions to its artifact (ADR-0017).
 //
 // Every call runs within the caller's effective reach (docs/design.md#access-control):
 // the person's configured scopes and the agent's, each covering everything

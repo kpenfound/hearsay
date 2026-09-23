@@ -378,6 +378,13 @@ validation checks the name but does not require a token for every principal.
 For `POST /v1/<call>` and `POST /mcp`, send `Hearsay-Principal: <human id>` and
 `Authorization: Bearer <human token>`. An agent acting for the human must also
 send `Hearsay-Agent: <agent id>` and `Hearsay-Agent-Token: <agent token>`.
+An agent may also send `Hearsay-Session: <session id>` on any API call. The id
+is the session artifact id it posted to an `agent` source; the session must
+already have a start event for that agent and human. A direct human call with
+this header is refused. The header links bundle audits and assertions to the
+session; `get_session` follows an assertion event id to its ordered session
+events and bundle audit records. Session ids use the agent connector's
+1–128 byte grammar: letters, digits, `-`, `_`, `.` and `:`.
 The agent needs both credentials: possession of the person's token is the
 delegation to act for that person, and its own token identifies the agent.
 Missing or mismatched credentials are HTTP 401 before a call runs. Put TLS in

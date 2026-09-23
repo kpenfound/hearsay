@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/kpenfound/hearsay/internal/connector/agent"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
@@ -55,10 +56,10 @@ func newAuthenticator(principals []principal.Principal) (*authenticator, error) 
 // Calls. The human token grants access as that person; an agent token proves
 // which configured agent is acting with that person's delegated credential.
 func (a *authenticator) authenticate(h http.Header) (Caller, *Error) {
-	if len(h.Values(PrincipalHeader)) != 1 || len(h.Values(AgentHeader)) > 1 {
+	if len(h.Values(PrincipalHeader)) != 1 || len(h.Values(AgentHeader)) > 1 || len(h.Values(SessionHeader)) > 1 {
 		return Caller{}, fail(http.StatusUnauthorized, "ambiguous caller headers")
 	}
-	caller := Caller{Principal: strings.TrimSpace(h.Get(PrincipalHeader)), Agent: strings.TrimSpace(h.Get(AgentHeader))}
+	caller := Caller{Principal: strings.TrimSpace(h.Get(PrincipalHeader)), Agent: strings.TrimSpace(h.Get(AgentHeader)), Session: h.Get(SessionHeader)}
 	if caller.Principal == "" {
 		return Caller{}, fail(http.StatusUnauthorized, "name the person in the %s header", PrincipalHeader)
 	}
@@ -70,6 +71,14 @@ func (a *authenticator) authenticate(h http.Header) (Caller, *Error) {
 	}
 	if !validToken(h.Values(AuthorizationHeader), "Bearer ", a.tokens[caller.Principal]) {
 		return Caller{}, fail(http.StatusUnauthorized, "invalid credential for %s", PrincipalHeader)
+	}
+	if caller.Session != "" {
+		if caller.Agent == "" {
+			return Caller{}, fail(http.StatusForbidden, "%s requires %s", SessionHeader, AgentHeader)
+		}
+		if !agent.ValidSessionID(caller.Session) {
+			return Caller{}, fail(http.StatusBadRequest, "invalid %s", SessionHeader)
+		}
 	}
 	if caller.Agent == "" {
 		if len(h.Values(AgentTokenHeader)) != 0 {

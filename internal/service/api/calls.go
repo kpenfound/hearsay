@@ -20,6 +20,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/bundle"
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/connector/agent"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
@@ -39,12 +40,16 @@ const AuditSource = connector.SelfSource
 type Caller struct {
 	Principal string
 	Agent     string
+	Session   string
+	// SessionSource is resolved from the authenticated session artifact.
+	SessionSource string
 }
 
 // The headers a caller is named by. Names alone grant no access.
 const (
 	PrincipalHeader = "Hearsay-Principal"
 	AgentHeader     = "Hearsay-Agent"
+	SessionHeader   = "Hearsay-Session"
 )
 
 // Error is a call that did not succeed, with the HTTP status it is served as and
@@ -91,13 +96,14 @@ type Calls struct {
 	events *l0.Store
 	graph  *l2.Store
 	// reach is what a caller's reach is read from: the graph, but for a test.
-	reach     principal.Graph
-	authority config.Authority
-	assembler *bundle.Assembler
-	cache     *bundleCache
-	resolver  *principal.Resolver
-	auth      *authenticator
-	embedder  l1.Embedder
+	reach          principal.Graph
+	authority      config.Authority
+	assembler      *bundle.Assembler
+	cache          *bundleCache
+	resolver       *principal.Resolver
+	auth           *authenticator
+	embedder       l1.Embedder
+	sessionSources []string
 	// now and id are the clock and the audit event id, replaceable by a test.
 	// The clock is also an assertion event's time.
 	now func() time.Time
@@ -129,24 +135,31 @@ func NewCalls(q DB, repo config.Repo, embedder l1.Embedder) (*Calls, error) {
 	if err != nil {
 		return nil, fmt.Errorf("building the identity resolver: %w", err)
 	}
+	var sessionSources []string
+	for _, source := range repo.Sources {
+		if source.Type == agent.Type {
+			sessionSources = append(sessionSources, source.ID)
+		}
+	}
 	graph := l2.New(q)
 	return &Calls{
-		db:        q,
-		docs:      l1.New(q),
-		events:    l0.New(q),
-		graph:     graph,
-		reach:     graph,
-		assembler: bundle.New(q).WithDirectiveSources(repo, resolver).WithAuthority(repo.Authority),
-		cache:     newBundleCache(),
-		authority: repo.Authority,
-		resolver:  resolver,
-		auth:      auth,
-		embedder:  embedder,
-		now:       time.Now,
-		id:        randomID,
-		watchWait: DefaultWatchWait,
-		watchPoll: DefaultWatchPoll,
-		stopping:  make(chan struct{}),
+		db:             q,
+		docs:           l1.New(q),
+		events:         l0.New(q),
+		graph:          graph,
+		reach:          graph,
+		assembler:      bundle.New(q).WithDirectiveSources(repo, resolver).WithAuthority(repo.Authority),
+		cache:          newBundleCache(),
+		authority:      repo.Authority,
+		resolver:       resolver,
+		auth:           auth,
+		embedder:       embedder,
+		sessionSources: sessionSources,
+		now:            time.Now,
+		id:             randomID,
+		watchWait:      DefaultWatchWait,
+		watchPoll:      DefaultWatchPoll,
+		stopping:       make(chan struct{}),
 	}, nil
 }
 
@@ -173,6 +186,8 @@ var calls = []call{
 		schema(`{"id":{"type":"string"}}`, "id")}, getL1},
 	{Tool{"get_l0", "One L0 event by id.",
 		schema(`{"id":{"type":"string"}}`, "id")}, getL0},
+	{Tool{"get_session", "Follow an assertion event id to the agent session and its ordered events and served bundle audit events.",
+		schema(`{"assertion":{"type":"string"}}`, "assertion")}, getSession},
 	{Tool{"search", "Hybrid retrieval over L1: full text and embeddings, fused by rank. Returns documents, not answers.",
 		schema(`{"query":{"type":"string"},"scope":{"type":"string","description":"an entity id to search within"},"limit":{"type":"integer"}}`, "query")}, search},
 	{Tool{"watch", "Long-poll for new events on a scope: the L0 events after the cursor whose L1 documents are about the scope or an entity under it, oldest first, once they are distilled. A notification is an event id, kind, source, time and document id, and no content. With none to return it waits up to 25 seconds and returns an empty list. Pass the returned cursor as after next time; omit after to start from now. An agent needs class orchestrator or above.",
@@ -210,6 +225,13 @@ func (c *Calls) Call(ctx context.Context, caller Caller, name string, args json.
 		}
 		telemetry.Logger(ctx).ErrorContext(ctx, "composing a reach failed", "call", name, "principal", caller.Principal, "agent", caller.Agent, "error", err)
 		return nil, errInternal
+	}
+	caller.SessionSource = ""
+	if caller.Session != "" {
+		caller.SessionSource, err = c.sessionSource(ctx, caller, reader, caller.Session, "")
+		if err != nil {
+			return nil, err
+		}
 	}
 	if len(bytes.TrimSpace(args)) == 0 {
 		args = json.RawMessage(`{}`)
@@ -358,19 +380,21 @@ func getBundle(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, r
 // within. What that reach left out is Report.Reach, counted apart from what the
 // access lists withheld.
 type AuditRecord struct {
-	Call      string        `json:"call"`
-	Principal string        `json:"principal"`
-	Agent     string        `json:"agent,omitempty"`
-	Class     string        `json:"class,omitempty"`
-	Scope     string        `json:"scope"`
-	Bundle    string        `json:"bundle"`
-	Report    bundle.Report `json:"report"`
+	Call          string        `json:"call"`
+	Principal     string        `json:"principal"`
+	Agent         string        `json:"agent,omitempty"`
+	Class         string        `json:"class,omitempty"`
+	Session       string        `json:"session,omitempty"`
+	SessionSource string        `json:"session_source,omitempty"`
+	Scope         string        `json:"scope"`
+	Bundle        string        `json:"bundle"`
+	Report        bundle.Report `json:"report"`
 }
 
 func (c *Calls) audit(ctx context.Context, caller Caller, reader l1.Reader, scope string, body []byte, report bundle.Report) error {
 	sum := sha256.Sum256(body)
 	record, err := json.Marshal(AuditRecord{
-		Call: "get_bundle", Principal: caller.Principal, Agent: caller.Agent, Class: string(reader.Effective.Class), Scope: scope,
+		Call: "get_bundle", Principal: caller.Principal, Agent: caller.Agent, Class: string(reader.Effective.Class), Session: caller.Session, SessionSource: caller.SessionSource, Scope: scope,
 		Bundle: "sha256:" + hex.EncodeToString(sum[:]), Report: report,
 	})
 	if err != nil {
@@ -399,8 +423,8 @@ func (c *Calls) audit(ctx context.Context, caller Caller, reader l1.Reader, scop
 		// Who was served what is itself something to keep from the people who
 		// were not. The entry names the principal in Hearsay's own source, which
 		// no configured identity is in and so no reader's audience holds: the
-		// record is readable by nobody through the API yet, the person it was
-		// served for included. Failing closed until audit reads are built.
+		// get_l0 does not serve this record; get_session returns it only after
+		// checking the linked session and assertion. Unlinked audits stay closed.
 		ACL: connector.ACL{{Kind: connector.ACLIdentity, Source: AuditSource, NativeID: caller.Principal}},
 	}
 	appended, err := c.events.Append(ctx, ev)
@@ -710,7 +734,7 @@ func assertStance(ctx context.Context, c *Calls, caller Caller, reader l1.Reader
 		return nil, errUnreadable
 	}
 
-	as := l2.Assertion{Topic: topic.ID, Position: position, Evidence: evidence, Agent: caller.Agent, Principal: caller.Principal}
+	as := l2.Assertion{Topic: topic.ID, Position: position, Evidence: evidence, Agent: caller.Agent, Principal: caller.Principal, Session: caller.Session, SessionSource: caller.SessionSource}
 	native, err := json.Marshal(as)
 	if err != nil {
 		return nil, fmt.Errorf("encoding an assertion: %w", err)
@@ -735,8 +759,8 @@ func assertStance(ctx context.Context, c *Calls, caller Caller, reader l1.Reader
 		// Who may read the stance is decided on every read from all of its
 		// evidence as it is then, which an access list written once cannot
 		// say: it would neither be the intersection of several documents' lists
-		// nor follow a re-sync (ADR-0013). So the event fails closed, as an
-		// audit event does, and the stance is the way to read the position.
+		// nor follow a re-sync (ADR-0013). So get_l0 fails closed. A linked
+		// assertion id can lead to get_session after current evidence checks.
 		ACL: connector.ACL{{Kind: connector.ACLIdentity, Source: AuditSource, NativeID: caller.Principal}},
 	}
 	id := connector.EventID(AuditSource, nativeID)
