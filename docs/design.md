@@ -98,6 +98,8 @@ Code is an entity namespace, not a document corpus. What the agent cannot get fr
 
 Tracker items (issues, epics, change units) are entities of type `tracker_item`. Hearsay knows their id and what references them. It does not know their state machine.
 
+`part_of` edges come from three sources, ranked: `code/` configuration over tracker hierarchy over repository structure, where a code entity is part of the nearest entity whose path patterns contain its own. For each entity the highest-ranked source that sets any parent replaces the others' parents, and an edge that would close a cycle is dropped from the lower-ranked source. People restructure the hierarchy by editing `code/`, and nothing inferred overrides it ([ADR-0016](adr/0016-entity-hierarchy-sources-are-ranked-and-replace.md)).
+
 Aliases are learned by co-occurrence (a PR touching `engine/server/` linked from a thread that says "the engine" is one vote) and confirmed or rejected by humans. CODEOWNERS and repo structure seed the initial map.
 
 ### Topics and stances
@@ -298,4 +300,4 @@ Agent memory layers (Mem0, Zep/Graphiti, Letta, Cognee, Neo4j Agent Memory) pers
 
 ## Open questions
 
-- Entity hierarchy rules. `code/` seeds `part_of` edges by hand and the loader refuses a cycle in them ([config.md](config.md#code)); how they are built from repo structure and tracker hierarchy, and who may restructure them afterwards, is still open.
+- Entity hierarchy rules: settled by [ADR-0016](adr/0016-entity-hierarchy-sources-are-ranked-and-replace.md), and summarized under [Entities](#entities).

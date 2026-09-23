@@ -16,14 +16,14 @@ The format, numbering and supersession rules are in [ADR-0001](0001-record-archi
 | [0006](0006-schema-migrations-with-goose.md) | Schema migrations with goose, applied by `hearsay migrate` | accepted | 2026-09-08 |
 | [0007](0007-postgres-backed-job-queue.md) | Postgres-backed job queue with per-key serialization | accepted; at-least-once clause superseded by [0011](0011-a-retry-superseded-by-a-pending-job-is-done.md) for a retry or reclaim whose target is already pending | 2026-09-08 |
 | [0008](0008-observability-slog-and-opentelemetry.md) | Observability: `log/slog` and OpenTelemetry | accepted | 2026-09-08 |
-| [0009](0009-configuration-as-a-gitops-directory.md) | Configuration is a GitOps directory of YAML, read at startup | accepted; the directory list is six, with `llm/` for [0005](0005-llm-provider-abstraction-with-three-model-tiers.md)'s tiers ([config.md](../config.md)) | 2026-09-09 |
+| [0009](0009-configuration-as-a-gitops-directory.md) | Configuration is a GitOps directory of YAML, read at startup | accepted; the directory list is six, with `llm/` for [0005](0005-llm-provider-abstraction-with-three-model-tiers.md)'s tiers ([config.md](../config.md)); the hierarchy question it leaves open is answered by [0016](0016-entity-hierarchy-sources-are-ranked-and-replace.md) | 2026-09-09 |
 | [0010](0010-go-version-floor-tracks-the-current-release.md) | The Go version floor tracks the current release | accepted | 2026-09-09 |
 | [0011](0011-a-retry-superseded-by-a-pending-job-is-done.md) | A retry superseded by a pending job for its target is done, not requeued | accepted | 2026-09-14 |
 | [0012](0012-a-github-review-is-versioned-by-a-hash-of-its-content.md) | A GitHub review is versioned by a hash of its state and body | accepted | 2026-09-14 |
 | [0013](0013-acl-re-syncs-are-durable-and-driven-by-the-runtime.md) | ACL re-syncs are durable and driven by the runtime | accepted | 2026-09-15 |
 | [0014](0014-api-callers-use-per-principal-bearer-tokens.md) | API callers use per-principal bearer tokens | accepted | 2026-09-22 |
-
 | [0015](0015-runtime-owned-streams-for-client-dialed-sources.md) | Runtime-owned streams for client-dialed sources | accepted | 2026-09-22 |
+| [0016](0016-entity-hierarchy-sources-are-ranked-and-replace.md) | Entity hierarchy sources are ranked, and the highest replaces the rest | accepted | 2026-09-23 |
 
 ## Names other work depends on
 
