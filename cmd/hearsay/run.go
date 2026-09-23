@@ -13,6 +13,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/discord"
+	"github.com/kpenfound/hearsay/internal/connector/drive"
 	"github.com/kpenfound/hearsay/internal/connector/github"
 	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/llm"
@@ -396,15 +397,15 @@ func checkListen(addr string) error {
 // wiring rather than from whatever happened to be linked in
 // (docs/connector-contract.md).
 //
-// It holds the GitHub connector. A source of any other type is a startup
-// failure until its connector is built: a source that cannot start is a startup
-// failure and not a health status, so that is what an unknown type is here too.
+// It holds the GitHub, Discord and Drive connectors. A source of any other type
+// is a startup failure, as is a source whose connector rejects its config.
 func connectorRegistry() *connector.Registry {
 	registry := connector.NewRegistry()
 	// Register fails only for an empty type, a nil factory or a type claimed
 	// twice, which a fixed list cannot be; TestConnectorRegistry pins the list.
 	_ = registry.Register(github.Type, github.Factory)
 	_ = registry.Register(discord.Type, discord.Factory)
+	_ = registry.Register(drive.Type, drive.Factory)
 	return registry
 }
 
