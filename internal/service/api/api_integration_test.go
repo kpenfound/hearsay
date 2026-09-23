@@ -117,7 +117,7 @@ func newWorld(t *testing.T) *world {
 		}
 		at := day.Add(time.Duration(hour) * time.Hour)
 		doc := l1.Document{
-			ID: l1.DocID(w.src, artifact), Kind: kind,
+			ID: l1.DocID(w.src, artifact), Kind: kind, ArtifactClass: config.ArtifactIssue,
 			Source: l1.Source{System: w.src, NativeID: artifact},
 			L0Refs: []string{connector.EventID(w.src, artifact)},
 			Time:   l1.Times{Created: at, Updated: at, LastActivity: at},
@@ -291,6 +291,12 @@ func TestTheSameRequestIsByteIdenticalOverMCPAndHTTP(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			overHTTP := w.http(t, tc.caller, tc.call, tc.args)
+			if tc.call == "get_l1" {
+				var doc l1.Document
+				if err := json.Unmarshal(overHTTP, &doc); err != nil || doc.ArtifactClass != config.ArtifactIssue {
+					t.Errorf("get_l1 class = %q, %v; want issue", doc.ArtifactClass, err)
+				}
+			}
 			overMCP, isError := w.mcp(t, tc.caller, tc.call, tc.args)
 			if isError {
 				t.Fatalf("MCP says the call failed: %s", overMCP)
@@ -327,7 +333,7 @@ func TestABundleChangesOnlyWhenTheScopeDoes(t *testing.T) {
 	at := day.Add(5 * time.Hour)
 	artifact := w.project + "#15"
 	if _, err := docs.Put(t.Context(), l1.Document{
-		ID: l1.DocID(w.src, artifact), Kind: l1.KindPR, Source: l1.Source{System: w.src, NativeID: artifact},
+		ID: l1.DocID(w.src, artifact), Kind: l1.KindPR, ArtifactClass: config.ArtifactPullRequest, Source: l1.Source{System: w.src, NativeID: artifact},
 		L0Refs: []string{connector.EventID(w.src, artifact)}, Time: l1.Times{Created: at, Updated: at, LastActivity: at},
 		Scope: []string{w.scope}, ACL: connector.ACL{{Kind: connector.ACLPublic}},
 		Text: "a follow-up", RawText: "a follow-up", Body: l1.Body{Summary: "A follow-up to the lock move.", OutcomeKind: l1.OutcomeNone},

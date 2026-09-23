@@ -77,7 +77,7 @@ func BuildMeetingSegments(root connector.Event, spans []MeetingSpan, resolver *p
 			continue
 		}
 		doc := Document{
-			ID: DocID(root.Source, key), Kind: KindMeetingSegment,
+			ID: DocID(root.Source, key), Kind: KindMeetingSegment, ArtifactClass: config.ArtifactMeeting,
 			Source: Source{System: root.Source, NativeID: key, URL: root.Payload.URL},
 			L0Refs: []string{connector.EventID(root.Source, root.NativeID)},
 			Time:   timesOf(root, nil), Participants: participantsOf(root, nil, resolver),

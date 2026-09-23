@@ -141,10 +141,9 @@ func TrackerItems(repo config.Repo, doc l1.Document) []Entity {
 // for now a merged pull request is ratified and everything else is inferred
 // (docs/design.md#topics-and-stances).
 //
-// A document does not say "merged" in any structured field: the connector
-// contract gives a pull request no state. What it has is the distiller's
-// classification, whose `resolved` is "the work was finished — a merged change",
-// so a `pr` document that resolved is what this reads as a merged one.
+// TierFor still uses the distiller's outcome classification: a resolved `pr`
+// is treated as merged here. L1 now records source merge state separately in
+// artifact_class; policy-based tier calculation will consume it in #115.
 func TierFor(doc l1.Document) Tier {
 	if doc.Kind == l1.KindPR && doc.Body.OutcomeKind == l1.OutcomeResolved {
 		return TierRatified

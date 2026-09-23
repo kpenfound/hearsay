@@ -458,3 +458,43 @@ func TestWithBodyRefusesAnEmptyBody(t *testing.T) {
 		t.Fatal("WithBody(empty) = nil, want an error")
 	}
 }
+
+func TestBuildClassTracksSourceState(t *testing.T) {
+	root, _ := pullRequest()
+	for _, tt := range []struct {
+		name   string
+		native string
+		want   config.ArtifactClass
+	}{
+		{"open", `{"state":"open"}`, config.ArtifactPullRequest},
+		{"merged", `{"state":"closed","merged_at":"2026-09-09T18:00:00Z"}`, config.ArtifactMergedPR},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root.Payload.Native = []byte(tt.native)
+			doc, err := l1.Build(l1.Input{Root: root, Repo: testRepo})
+			if err != nil || doc.ArtifactClass != tt.want {
+				t.Errorf("Build class = %q, %v; want %q", doc.ArtifactClass, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildChatClassTracksContainer(t *testing.T) {
+	root := event(connector.KindThread, "thread-1", at(0), who("u1", "kpenfound"), "topic", "some discussion")
+	for _, tt := range []struct {
+		name      string
+		container connector.ContainerKind
+		want      config.ArtifactClass
+	}{
+		{"channel", connector.ContainerChannel, config.ArtifactChatThread},
+		{"direct message", "dm", config.ArtifactDM},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root.Payload.Container = connector.Container{Kind: tt.container, NativeID: "container-1"}
+			doc, err := l1.Build(l1.Input{Root: root, Repo: testRepo})
+			if err != nil || doc.ArtifactClass != tt.want {
+				t.Errorf("Build class = %q, %v; want %q", doc.ArtifactClass, err, tt.want)
+			}
+		})
+	}
+}

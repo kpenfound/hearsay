@@ -139,7 +139,7 @@ func TestMigrateUpAndDown(t *testing.T) {
 	// later is a line added at the top of this list; a migration that creates
 	// no table of its own — an index on an existing one — has no table here and
 	// is only checked for rolling back cleanly.
-	for i, table := range []string{"", "l0_resyncs", "l2_stances", "l0_backfill_cursors", "", "", "", "", "l0_feed_cursors", "l1_docs", "queue_job", "l0_events"} {
+	for i, table := range []string{"", "", "l0_resyncs", "l2_stances", "l0_backfill_cursors", "", "", "", "", "l0_feed_cursors", "l1_docs", "queue_job", "l0_events"} {
 		want := newest - int64(i) - 1
 		if _, err := migrator.Down(t.Context()); err != nil {
 			t.Fatalf("Down() = %v, want no error", err)
@@ -318,4 +318,74 @@ func format(statuses []db.Status) string {
 		fmt.Fprintf(&b, "%d:%v ", s.Version, s.Applied)
 	}
 	return b.String()
+}
+
+// Existing documents must acquire authority from their retained root events,
+// even when the model's outcome would suggest a different PR state.
+func TestArtifactClassBackfill(t *testing.T) {
+	url := scratchDatabase(t)
+	migrator, err := db.NewMigrator(t.Context(), url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = migrator.Close() }()
+	if _, err := migrator.UpTo(t.Context(), 13); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := db.Open(t.Context(), url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	cases := []struct{ kind, native, container, want string }{
+		{"pr", `{"merged_at":"2026-09-09T12:00:00Z","state":"closed"}`, "repository", "merged_pr"},
+		{"pr", `{"state":"closed"}`, "repository", "pull_request"},
+		{"chat_thread", `{}`, "dm", "dm"},
+		{"chat_burst", `{}`, "channel", "chat_thread"},
+		{"meeting_segment", `{}`, "folder", "meeting"},
+		{"wiki_section", `{}`, "folder", "spec"},
+	}
+	for i, tt := range cases {
+		artifact := fmt.Sprintf("artifact-%d", i)
+		eventID := "evt:backfill:" + artifact
+		payload := fmt.Sprintf(`{"artifact":%q,"container":{"kind":%q,"native_id":"x"},"native":%s}`, artifact, tt.container, tt.native)
+		if _, err := pool.Exec(t.Context(), `INSERT INTO l0_events (id, source, native_id, kind, artifact, occurred_at, payload, acl) VALUES ($1, 'backfill', $2, 'issue', $2, now(), $3::jsonb, '[{"kind":"public"}]'::jsonb)`, eventID, artifact, payload); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(t.Context(), `INSERT INTO l1_docs (id, kind, source, source_native_id, l0_refs, created_at, updated_at, last_activity_at, acl, text, raw_text, body, outcome_kind) VALUES ($1, $2, 'backfill', $3, ARRAY[$4], now(), now(), now(), '[{"kind":"public"}]'::jsonb, 'text', 'raw', '{"outcome_kind":"resolved"}'::jsonb, 'resolved')`, "l1:backfill:"+artifact, tt.kind, artifact, eventID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A missing provenance row makes the migration fail atomically. Supplying
+	// that retained event and retrying must backfill every row once.
+	if _, err := pool.Exec(t.Context(), `INSERT INTO l1_docs (id, kind, source, source_native_id, l0_refs, created_at, updated_at, last_activity_at, acl, text, raw_text, body, outcome_kind) VALUES ('l1:backfill:late-root', 'issue', 'backfill', 'late-root', ARRAY['evt:backfill:late-root'], now(), now(), now(), '[{"kind":"public"}]'::jsonb, 'text', 'raw', '{"outcome_kind":"none"}'::jsonb, 'none')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrator.UpTo(t.Context(), 14); err == nil {
+		t.Fatal("backfill accepted missing provenance")
+	}
+	if version, err := migrator.Version(t.Context()); err != nil || version != 13 {
+		t.Fatalf("version after failed backfill = %d, %v", version, err)
+	}
+	if _, err := pool.Exec(t.Context(), `INSERT INTO l0_events (id, source, native_id, kind, artifact, occurred_at, payload, acl) VALUES ('evt:backfill:late-root', 'backfill', 'late-root', 'issue', 'late-root', now(), '{"artifact":"late-root","container":{"kind":"repository","native_id":"x"}}'::jsonb, '[{"kind":"public"}]'::jsonb)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrator.UpTo(t.Context(), 14); err != nil {
+		t.Fatal(err)
+	}
+	if applied, err := migrator.Up(t.Context()); err != nil || len(applied) != 0 {
+		t.Errorf("second Up = %v, %v", applied, err)
+	}
+	for i, tt := range cases {
+		var got string
+		if err := pool.QueryRow(t.Context(), `SELECT artifact_class FROM l1_docs WHERE id = $1`, fmt.Sprintf("l1:backfill:artifact-%d", i)).Scan(&got); err != nil || got != tt.want {
+			t.Errorf("%d: class = %q, %v; want %q", i, got, err, tt.want)
+		}
+	}
+	if _, err := pool.Exec(t.Context(), `UPDATE l1_docs SET artifact_class = NULL WHERE id = 'l1:backfill:artifact-0'`); err == nil {
+		t.Error("NULL class accepted")
+	}
+	if _, err := pool.Exec(t.Context(), `UPDATE l1_docs SET artifact_class = 'unknown' WHERE id = 'l1:backfill:artifact-0'`); err == nil {
+		t.Error("unknown class accepted")
+	}
 }

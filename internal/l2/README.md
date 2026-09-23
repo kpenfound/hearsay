@@ -26,9 +26,9 @@ corrupt.
   because every job under one serial key runs alone (ADR-0007), and topics are
   only ever matched under the key they were opened under ([ScopeKey]). Matching
   across keys would need a different lock, not a different query.
-- **"Merged" is read from the distiller's classification.** The connector
-  contract gives a pull request no state, so [TierFor] reads a `pr` document
-  whose outcome is `resolved` as a merged one.
+- **TierFor still uses the distiller's outcome classification.** It reads a
+  resolved `pr` as merged. L1 now carries source merge state in
+  `artifact_class`; the policy-based calculation in #115 will consume it.
 - **A new reading of a document replaces that document's own stance.** A
   document that already holds a live stance on a topic — it was re-distilled,
   or re-run after a deletion — supersedes that stance, not whatever is newest

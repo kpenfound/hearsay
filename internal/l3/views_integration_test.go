@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/bundle"
+	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/l1"
@@ -62,7 +63,7 @@ func putDoc(t *testing.T, pool *pgxpool.Pool, src, artifact string, kind l1.Kind
 	t.Helper()
 	at := day.Add(time.Duration(hour) * time.Hour)
 	doc := l1.Document{
-		ID: l1.DocID(src, artifact), Kind: kind, Source: l1.Source{System: src, NativeID: artifact},
+		ID: l1.DocID(src, artifact), Kind: kind, ArtifactClass: config.ArtifactIssue, Source: l1.Source{System: src, NativeID: artifact},
 		L0Refs: []string{connector.EventID(src, artifact)}, Time: l1.Times{Created: at, Updated: at, LastActivity: at},
 		Scope: []string{scope}, ACL: acl, Text: artifact, RawText: artifact,
 		Body: l1.Body{Summary: artifact, OutcomeKind: l1.OutcomeNone, OpenQuestions: questions},

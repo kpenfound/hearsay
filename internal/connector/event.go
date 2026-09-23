@@ -96,7 +96,7 @@ type Payload struct {
 	// distiller handle a kind it has never heard of.
 	BaseKind Kind `json:"base_kind,omitempty"`
 
-	// Container is the repository, channel or folder the artifact lives in: the
+	// Container is the repository, channel, direct message or folder the artifact lives in: the
 	// unit the ingest allowlist names, and the unit a human thinks in when
 	// deciding what Hearsay may see.
 	Container Container `json:"container"`
@@ -147,9 +147,9 @@ type Payload struct {
 	// KindTombstone and empty everywhere else.
 	Target string `json:"target,omitempty"`
 
-	// Native is whatever else the connector wants to keep — the source's own
-	// object, verbatim. Nothing above L0 reads it, and a connector must not
-	// hide anything the fields above ask for in here.
+	// Native is the source's own object, verbatim. L1 reads a pull request's
+	// merge state here to assign its artifact class; a connector must not hide
+	// anything the common fields above ask for in here.
 	Native json.RawMessage `json:"native,omitempty"`
 }
 
@@ -173,7 +173,9 @@ type ContainerKind string
 const (
 	ContainerRepository ContainerKind = "repository"
 	ContainerChannel    ContainerKind = "channel"
-	ContainerFolder     ContainerKind = "folder"
+	// ContainerDM is a direct-message conversation explicitly allowlisted for ingest.
+	ContainerDM     ContainerKind = "dm"
+	ContainerFolder ContainerKind = "folder"
 	// ContainerWorkspace is the whole source, for a source with no smaller
 	// boundary — an agent's own session stream, for instance.
 	ContainerWorkspace ContainerKind = "workspace"

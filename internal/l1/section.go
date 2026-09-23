@@ -111,7 +111,7 @@ func BuildWikiSections(root connector.Event, resolver *principal.Resolver, repo 
 		refs := References([]connector.Event{view}, resolver, repo.Code)
 		raw, _ := Scrub(section.Text)
 		doc := Document{
-			ID: DocID(root.Source, section.Key), Kind: KindWikiSection,
+			ID: DocID(root.Source, section.Key), Kind: KindWikiSection, ArtifactClass: config.ArtifactSpec,
 			Source: Source{System: root.Source, NativeID: section.Key, URL: root.Payload.URL},
 			L0Refs: []string{connector.EventID(root.Source, root.NativeID)},
 			Time:   timesOf(root, nil), Participants: participantsOf(root, nil, resolver),
