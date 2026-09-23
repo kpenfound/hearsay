@@ -74,9 +74,9 @@ func TestBundleCacheFollowsCallInputsAndLayerWrites(t *testing.T) {
 	t.Setenv("CACHE_TEST_SAM", "sam-token")
 	t.Setenv("CACHE_TEST_SHED", "shed-token")
 	repo := config.Repo{Principals: []principal.Principal{
-		{ID: "kyle", Kind: principal.KindHuman, TokenEnv: "CACHE_TEST_KYLE"},
-		{ID: "sam", Kind: principal.KindHuman, TokenEnv: "CACHE_TEST_SAM"},
-		{ID: "shed", Kind: principal.KindAgent, Class: principal.ClassWorker, TokenEnv: "CACHE_TEST_SHED"},
+		{ID: "kyle", Kind: principal.KindHuman, Grant: principal.Grant{Scopes: principal.AllScopes()}, TokenEnv: "CACHE_TEST_KYLE"},
+		{ID: "sam", Kind: principal.KindHuman, Grant: principal.Grant{Scopes: principal.AllScopes()}, TokenEnv: "CACHE_TEST_SAM"},
+		{ID: "shed", Kind: principal.KindAgent, Class: principal.ClassWorker, Grant: principal.Grant{Scopes: principal.AllScopes()}, TokenEnv: "CACHE_TEST_SHED"},
 	}}
 	calls, err := NewCalls(pool, repo, nil)
 	if err != nil {
@@ -111,13 +111,13 @@ func TestBundleCacheFollowsCallInputsAndLayerWrites(t *testing.T) {
 	first := request(calls, kyle, scope, "")
 	entries(1)
 	beforeAudit := readRevision()
-	assembler := calls.assembler
-	calls.assembler = nil // A second assembly would panic: this call must use the cache.
 	second := request(calls, kyle, scope, "")
-	calls.assembler = assembler
 	entries(1)
 	if !bytes.Equal(first, second) || readRevision() != beforeAudit {
 		t.Fatal("cache hit changed bytes or advanced the non-audit watermark")
+	}
+	if &first[0] != &second[0] {
+		t.Fatal("second request did not reuse the cached encoding")
 	}
 	fresh, err := NewCalls(pool, repo, nil)
 	if err != nil {
