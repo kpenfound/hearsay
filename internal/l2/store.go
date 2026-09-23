@@ -354,16 +354,22 @@ func aclJSON(acl connector.ACL) string {
 
 // --- stances ---
 
-const stanceColumns = `id, topic_id, position, author, stated_at, evidence, coalesce(supersedes, ''), tier, acl, created_at, judgement`
+const stanceColumns = `id, topic_id, position, author, stated_at, evidence, coalesce(supersedes, ''), tier, acl, created_at, judgement, coalesce(assertion, '')`
 
 // RetiredSQL is the predicate, over a stance aliased `s`, that a later reading
-// of its own document replaced it: a stance from the same document on the same
-// topic supersedes it. A retired stance is never a topic's current one, and
-// never a predecessor again. It reads through the topic's index, not the whole
-// table. [Current] and [Stand] apply the same rule to a history already read.
+// of its own document replaced it: a stance from the same origin on the same
+// topic supersedes it. A stance an agent asserted cites documents but was not
+// read from them, so it neither retires nor is retired by their readings. A
+// retired stance is never a topic's current one, and never a predecessor
+// again. It reads through the topic's index, not the whole table. [Current] and
+// [Stand] apply the same rule to a history already read.
+//
+// A stance's origin is its assertion event, or its first piece of evidence
+// (Stance.origin): coalesce(assertion, evidence[1]).
 const RetiredSQL = `EXISTS (
     SELECT 1 FROM l2_stances n
-    WHERE n.topic_id = s.topic_id AND n.supersedes = s.id AND n.evidence[1] = s.evidence[1])`
+    WHERE n.topic_id = s.topic_id AND n.supersedes = s.id
+      AND coalesce(n.assertion, n.evidence[1]) = coalesce(s.assertion, s.evidence[1]))`
 
 // predecessorSQL is the stance a new one supersedes.
 //
@@ -380,17 +386,19 @@ const RetiredSQL = `EXISTS (
 // point at it. A stance is never overwritten.
 const predecessorSQL = `
 SELECT s.id FROM l2_stances s
-WHERE s.topic_id = $1 AND s.id <> $3 AND (s.evidence[1] = $4 OR s.stated_at <= $2)
+WHERE s.topic_id = $1 AND s.id <> $3 AND (coalesce(s.assertion, s.evidence[1]) = $4 OR s.stated_at <= $2)
   AND NOT ` + RetiredSQL + `
-ORDER BY s.evidence[1] = $4 DESC, s.stated_at DESC, s.created_at DESC, s.id DESC
+ORDER BY coalesce(s.assertion, s.evidence[1]) = $4 DESC, s.stated_at DESC, s.created_at DESC, s.id DESC
 LIMIT 1`
 
 // AppendStance adds a stance to its topic, superseding the one before it — its
 // own document's earlier stance on the topic where there is one — and returns
 // the stance as stored with whether this call wrote it. A stance's id is
 // derived from its topic, document, position, document version and tier
-// ([StanceID]). The same reading is not written twice and is returned as first
-// stored; a new reading can supersede it even when the position is unchanged.
+// ([StanceID]), or for an asserted stance from its topic and assertion event
+// ([AssertionStanceID]), where distilledAt is not used. The same reading is not
+// written twice and is returned as first stored; a new reading can supersede it
+// even when the position is unchanged.
 //
 // The predecessor is read and the row written in two statements, which is safe
 // only because one scope's writes are serialized (ADR-0007); the caller runs it
@@ -402,11 +410,16 @@ func (s *Store) AppendStance(ctx context.Context, st Stance, distilledAt time.Ti
 	if st.Supersedes != "" {
 		return Stance{}, false, fmt.Errorf("%w: stance %s names what it supersedes, which the store decides", ErrInvalid, st.ID)
 	}
-	if distilledAt.IsZero() || st.ID != StanceID(st.TopicID, st.Evidence[0], st.Position, distilledAt, st.Tier) {
+	switch {
+	case st.Assertion != "":
+		if st.ID != AssertionStanceID(st.TopicID, st.Assertion) {
+			return Stance{}, false, fmt.Errorf("%w: stance %s is not the id derived from its topic and assertion", ErrInvalid, st.ID)
+		}
+	case distilledAt.IsZero() || st.ID != StanceID(st.TopicID, st.Evidence[0], st.Position, distilledAt, st.Tier):
 		return Stance{}, false, fmt.Errorf("%w: stance %s is not the id derived from its topic, document, position, version and tier", ErrInvalid, st.ID)
 	}
 	var predecessor *string
-	err := s.db.QueryRow(ctx, predecessorSQL, st.TopicID, st.StatedAt, st.ID, st.Evidence[0]).Scan(&predecessor)
+	err := s.db.QueryRow(ctx, predecessorSQL, st.TopicID, st.StatedAt, st.ID, st.origin()).Scan(&predecessor)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return Stance{}, false, fmt.Errorf("finding what stance %s supersedes: %w", st.ID, err)
 	}
@@ -415,10 +428,10 @@ func (s *Store) AppendStance(ctx context.Context, st Stance, distilledAt time.Ti
 		return Stance{}, false, fmt.Errorf("encoding the acl of stance %s: %w", st.ID, err)
 	}
 	tag, err := s.db.Exec(ctx, `
-INSERT INTO l2_stances (id, topic_id, position, author, stated_at, evidence, supersedes, tier, acl, judgement)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+INSERT INTO l2_stances (id, topic_id, position, author, stated_at, evidence, supersedes, tier, acl, judgement, assertion)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''))
 ON CONFLICT (id) DO NOTHING`,
-		st.ID, st.TopicID, st.Position, st.Author, st.StatedAt, st.Evidence, predecessor, string(st.Tier), acl, nullableJudgement(st.Judgement))
+		st.ID, st.TopicID, st.Position, st.Author, st.StatedAt, st.Evidence, predecessor, string(st.Tier), acl, nullableJudgement(st.Judgement), st.Assertion)
 	if err != nil {
 		return Stance{}, false, fmt.Errorf("appending stance %s: %w", st.ID, err)
 	}
@@ -562,9 +575,10 @@ func (s *Store) Assess(ctx context.Context, authority config.Authority, reader l
 	return out, nil
 }
 
-// StancesFrom is every stance read from one document, oldest first.
+// StancesFrom is every stance read from one document, oldest first. A stance
+// an agent asserted citing it was not read from it, and is not among them.
 func (s *Store) StancesFrom(ctx context.Context, docID string) ([]Stance, error) {
-	return s.stances(ctx, `SELECT `+stanceColumns+` FROM l2_stances WHERE evidence[1] = $1
+	return s.stances(ctx, `SELECT `+stanceColumns+` FROM l2_stances WHERE evidence[1] = $1 AND assertion IS NULL
 ORDER BY stated_at, created_at, id`, docID)
 }
 
@@ -594,7 +608,7 @@ func scanStance(row scanner) (Stance, error) {
 	var judgement *string
 	var acl []byte
 	if err := row.Scan(&st.ID, &st.TopicID, &st.Position, &st.Author, &st.StatedAt, &st.Evidence,
-		&st.Supersedes, &tier, &acl, &st.CreatedAt, &judgement); err != nil {
+		&st.Supersedes, &tier, &acl, &st.CreatedAt, &judgement, &st.Assertion); err != nil {
 		return Stance{}, err
 	}
 	st.Tier = Tier(tier)

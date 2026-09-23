@@ -94,12 +94,23 @@ type Result struct {
 // scope it runs under, and it is the scope used — not one recomputed from a
 // configuration that may have changed since the job was enqueued — because it
 // is the key the queue is actually serializing on.
+//
+// A job whose target is an `assertion` event is an agent's stance, appended
+// with no model call ([AppendAssertion]).
 func (a *Asserter) Handle(ctx context.Context, job queue.Job) error {
+	log := telemetry.Logger(ctx)
+	if IsAssertion(job.TargetID) {
+		written, err := AppendAssertion(ctx, a.pool, a.repo.Authority, job.TargetID, job.SerialKey)
+		if err != nil {
+			return err
+		}
+		log.InfoContext(ctx, "assertion appended", "l0_id", job.TargetID, "scope", job.SerialKey, "written", written)
+		return nil
+	}
 	result, err := a.Assert(ctx, job.TargetID, job.SerialKey)
 	if err != nil {
 		return err
 	}
-	log := telemetry.Logger(ctx)
 	switch {
 	case result.Skipped:
 		log.DebugContext(ctx, "nothing to assert", "l1_id", result.DocID)

@@ -111,8 +111,9 @@ wherever the source has something that behaves like one.
 | `audit` | A bundle served: who asked, on whose behalf, what was filtered | yes | no |
 | `tombstone` | An artifact deleted at the source | no | no |
 
-`assertion` and `audit` are written by Hearsay itself rather than by a connector.
-They are in the vocabulary because they are L0 events like any other.
+`assertion` and `audit` are written by Hearsay itself rather than by a connector,
+under source `hearsay` (`connector.SelfSource`). They are in the vocabulary
+because they are L0 events like any other.
 
 **Extension kinds.** A source with something genuinely different emits
 `<vendor>.<name>` — two lowercase words separated by a dot, `figma.file_comment`,
