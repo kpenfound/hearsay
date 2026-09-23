@@ -235,7 +235,7 @@ func TestCurrentStancesAreTheHeadsTheReaderMayRead(t *testing.T) {
 	}
 	read := func(reader l1.Reader) ([]row, int) {
 		t.Helper()
-		got, withheld, err := l3.New(pool).CurrentStances(ctx, reader, child, []string{sibling})
+		got, withheld, _, err := l3.New(pool).CurrentStances(ctx, reader, child, []string{sibling})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -346,7 +346,7 @@ func TestStancesFollowEveryPieceOfTheirEvidenceNow(t *testing.T) {
 
 	read := func(reader l1.Reader) (map[string]string, int) {
 		t.Helper()
-		got, withheld, err := l3.New(pool).CurrentStances(ctx, reader, entity, nil)
+		got, withheld, _, err := l3.New(pool).CurrentStances(ctx, reader, entity, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -431,7 +431,7 @@ func TestAStanceAReaderMayNotReadDoesNotContestForThem(t *testing.T) {
 		{name: "sam reads only the newer", reader: sam, tier: l2.TierInferred},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			got, withheld, err := l3.New(pool).CurrentStances(ctx, tt.reader, entity, nil)
+			got, withheld, _, err := l3.New(pool).CurrentStances(ctx, tt.reader, entity, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -746,7 +746,7 @@ func TestAStanceIsInheritedThroughADerivedParent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, withheld, err := l3.New(pool).CurrentStances(ctx, sam, server, nil)
+	got, withheld, _, err := l3.New(pool).CurrentStances(ctx, sam, server, nil)
 	if err != nil {
 		t.Fatalf("CurrentStances() = %v", err)
 	}

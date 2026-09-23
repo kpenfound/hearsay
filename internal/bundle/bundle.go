@@ -147,11 +147,15 @@ type Question struct {
 }
 
 // Report is what assembling a bundle left out, for the audit record: how much
-// the reader was not allowed to see, and how much the budget dropped. Counts
-// only — which documents were withheld is what the reader may not learn.
+// the reader was not allowed to see, how much was outside their reach, and how
+// much the budget dropped. Counts only — which documents were withheld is what
+// the reader may not learn.
 type Report struct {
 	Withheld Withheld `json:"withheld"`
-	Trimmed  Trimmed  `json:"trimmed"`
+	// Reach is what the reader's reach left out, apart from what the access
+	// lists did: reach applies first, so nothing is counted twice.
+	Reach   Reach   `json:"reach"`
+	Trimmed Trimmed `json:"trimmed"`
 	// Tokens is the estimated size of the bundle served.
 	Tokens int `json:"tokens"`
 }
@@ -160,6 +164,19 @@ type Report struct {
 type Withheld struct {
 	Documents int `json:"documents"`
 	Stances   int `json:"stances"`
+}
+
+// Reach is what the reader's reach left out (docs/design.md#access-control).
+type Reach struct {
+	// Scope is set when the scope asked for is itself out of reach, and the
+	// bundle is the one an unknown scope gets. Documents then counts every
+	// document about it, whoever may read them.
+	Scope     bool `json:"scope,omitempty"`
+	Documents int  `json:"documents"`
+	Stances   int  `json:"stances"`
+	// Entities are the entities the scope's own document is about that are
+	// out of reach, and so neither listed nor followed for inherited stances.
+	Entities int `json:"entities"`
 }
 
 // Trimmed is what the budget dropped, per section.
@@ -222,9 +239,11 @@ func (a *Assembler) WithBudget(tokens int) *Assembler {
 }
 
 // Assemble builds the bundle for one entity and one reader. It is a structured
-// lookup and calls no model. A scope the reader was not granted gets a bundle
-// with nothing in it rather than an error: scopes filter for relevance, and a
-// refusal would say something about what is there.
+// lookup and calls no model. A scope outside the reader's reach gets the bundle
+// an unknown scope gets rather than an error: scopes filter for relevance, and
+// a refusal would say something about what is there. Inside it, the bundle
+// holds only the entities, documents and stances in reach ([l1.Reader.InReach]),
+// and the access lists filter what is left.
 func (a *Assembler) Assemble(ctx context.Context, reader l1.Reader, scope string) (Bundle, Report, error) {
 	return a.AssembleForEvent(ctx, reader, scope, "")
 }
@@ -233,9 +252,16 @@ func (a *Assembler) Assemble(ctx context.Context, reader l1.Reader, scope string
 func (a *Assembler) AssembleForEvent(ctx context.Context, reader l1.Reader, scope, eventID string) (Bundle, Report, error) {
 	in := Inputs{Scope: scope}
 	var report Report
-	if reader.Effective.Human != "" && reader.Effective.Grant.Scopes.Has(scope) {
+	if reader.Effective.Human != "" && !reader.InReach([]string{scope}) {
+		report.Reach.Scope = true
 		var err error
-		if in, report.Withheld, err = a.gather(ctx, reader, scope); err != nil {
+		if report.Reach.Documents, err = a.docs.About(ctx, scope); err != nil {
+			return Bundle{}, Report{}, err
+		}
+	}
+	if reader.InReach([]string{scope}) {
+		var err error
+		if in, report.Withheld, report.Reach, err = a.gather(ctx, reader, scope); err != nil {
 			return Bundle{}, Report{}, err
 		}
 		if eventID != "" {
@@ -267,48 +293,56 @@ func (a *Assembler) AssembleForEvent(ctx context.Context, reader l1.Reader, scop
 	return b, report, nil
 }
 
-func (a *Assembler) gather(ctx context.Context, reader l1.Reader, scope string) (Inputs, Withheld, error) {
+func (a *Assembler) gather(ctx context.Context, reader l1.Reader, scope string) (Inputs, Withheld, Reach, error) {
 	in := Inputs{Scope: scope}
 	var withheld Withheld
+	var reach Reach
 	direct := []string{scope}
 	subject, ok, err := a.views.Subject(ctx, reader, scope)
 	if err != nil {
-		return in, withheld, err
+		return in, withheld, reach, err
 	}
 	if ok {
 		in.Subject = &subject
 		for _, id := range subject.Scope {
-			if !slices.Contains(direct, id) {
-				direct = append(direct, id)
+			if slices.Contains(direct, id) {
+				continue
 			}
+			// An entity out of reach is neither listed nor followed: its
+			// topics are not the reader's to inherit.
+			if !reader.InReach([]string{id}) {
+				reach.Entities++
+				continue
+			}
+			direct = append(direct, id)
 		}
 	}
 	if in.Entities, err = a.views.Entities(ctx, direct); err != nil {
-		return in, withheld, err
+		return in, withheld, reach, err
 	}
 	in.Direct = direct
-	if in.Stances, withheld.Stances, err = a.views.CurrentStances(ctx, reader, scope, direct[1:]); err != nil {
-		return in, withheld, err
+	if in.Stances, withheld.Stances, reach.Stances, err = a.views.CurrentStances(ctx, reader, scope, direct[1:]); err != nil {
+		return in, withheld, reach, err
 	}
 	// Anchors before recent: an anchor is not activity, and is not repeated as
 	// it, and does not cost `recent` one of its places.
 	if in.Anchors, err = a.views.Anchors(ctx, reader, scope, AnchorCap); err != nil {
-		return in, withheld, err
+		return in, withheld, reach, err
 	}
 	anchors := make([]string, len(in.Anchors))
 	for i, anchor := range in.Anchors {
 		anchors[i] = anchor.Doc.ID
 	}
 	if in.Recent, err = a.views.Recent(ctx, reader, scope, RecentCap, anchors); err != nil {
-		return in, withheld, err
+		return in, withheld, reach, err
 	}
 	if in.Questions, err = a.views.OpenQuestions(ctx, reader, scope, QuestionDocuments); err != nil {
-		return in, withheld, err
+		return in, withheld, reach, err
 	}
 	if withheld.Documents, err = a.docs.Withheld(ctx, reader, scope); err != nil {
-		return in, withheld, err
+		return in, withheld, reach, err
 	}
-	return in, withheld, nil
+	return in, withheld, reach, nil
 }
 
 // directive reads the requested event only to identify its artifact, then reads
