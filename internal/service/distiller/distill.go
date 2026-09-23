@@ -241,11 +241,15 @@ func (d *Distiller) Distill(ctx context.Context, docID string) (Result, error) {
 		return Result{}, fmt.Errorf("%s has at least %d replies, which is more than one read returns", docID, l0.MaxLimit)
 	}
 
+	repo, err := d.referenceRepo(ctx)
+	if err != nil {
+		return Result{}, err
+	}
 	doc, err := l1.Build(l1.Input{
 		Root:     root,
 		Children: children,
 		Resolver: d.resolver,
-		Repo:     d.repo,
+		Repo:     repo,
 	})
 	if errors.Is(err, l1.ErrNotDistilled) {
 		result.Skipped = true
@@ -258,6 +262,56 @@ func (d *Distiller) Distill(ctx context.Context, docID string) (Result, error) {
 		return d.writeThread(ctx, result, source, artifact, root.Payload.Container.NativeID, doc, children)
 	}
 	return d.writeDocument(ctx, result, source, artifact, root.Payload.Container.NativeID, doc, nil)
+}
+
+// referenceRepo is the current vocabulary for extracting L1 references.
+// Decisions are read for each build so an operator's confirmation takes effect
+// on the next distillation without restarting the service.
+func (d *Distiller) referenceRepo(ctx context.Context) (config.Repo, error) {
+	confirmed, err := l2.New(d.pool).ConfirmedAliases(ctx)
+	if err != nil {
+		return config.Repo{}, err
+	}
+	repo := d.repo
+	repo.Code = slices.Clone(d.repo.Code)
+	owners := map[string]map[string]bool{}
+	learned := map[string]bool{}
+	add := func(id, name string) {
+		key := l2.NormalizeAlias(name)
+		if key == "" {
+			return
+		}
+		if owners[key] == nil {
+			owners[key] = map[string]bool{}
+		}
+		owners[key][id] = true
+	}
+	for _, e := range repo.Code {
+		add(e.ID, e.Name)
+		for _, name := range e.Aliases {
+			add(e.ID, name)
+		}
+		for _, name := range confirmed[e.ID] {
+			add(e.ID, name)
+			learned[l2.NormalizeAlias(name)] = true
+		}
+	}
+	for i := range repo.Code {
+		e := &repo.Code[i]
+		e.Aliases = slices.Clone(e.Aliases)
+		if learned[l2.NormalizeAlias(e.Name)] && len(owners[l2.NormalizeAlias(e.Name)]) > 1 {
+			e.Name = ""
+		}
+		e.Aliases = slices.DeleteFunc(e.Aliases, func(name string) bool {
+			return learned[l2.NormalizeAlias(name)] && len(owners[l2.NormalizeAlias(name)]) > 1
+		})
+		for _, name := range confirmed[e.ID] {
+			if len(owners[l2.NormalizeAlias(name)]) == 1 {
+				e.Aliases = append(e.Aliases, name)
+			}
+		}
+	}
+	return repo, nil
 }
 
 // chatWindow reads current revisions in one indexed container/time range.
@@ -278,7 +332,11 @@ func (d *Distiller) chatWindowMessages(ctx context.Context, source, key, contain
 			messages = append(messages, ev)
 		}
 	}
-	doc, err := l1.BuildChatWindow(key, messages, d.resolver, d.repo)
+	repo, err := d.referenceRepo(ctx)
+	if err != nil {
+		return l1.Document{}, nil, err
+	}
+	doc, err := l1.BuildChatWindow(key, messages, d.resolver, repo)
 	return doc, messages, err
 }
 
@@ -334,7 +392,11 @@ func (d *Distiller) deleteConversation(ctx context.Context, source, artifact, do
 // the entire derived set in one transaction. A failed call cannot leave half a
 // new page current or retract the prior version of an unchanged section.
 func (d *Distiller) distillWikiSections(ctx context.Context, result Result, root connector.Event) (Result, error) {
-	sections, err := l1.BuildWikiSections(root, d.resolver, d.repo)
+	repo, err := d.referenceRepo(ctx)
+	if err != nil {
+		return Result{}, err
+	}
+	sections, err := l1.BuildWikiSections(root, d.resolver, repo)
 	if err != nil {
 		return Result{}, fmt.Errorf("building sections of %s: %w", result.DocID, err)
 	}
@@ -421,7 +483,11 @@ func (d *Distiller) writeThread(ctx context.Context, result Result, source, arti
 			eligible = append(eligible, ev)
 		}
 	}
-	bursts, err := l1.BuildChatBursts(artifact, eligible, d.resolver, d.repo)
+	repo, err := d.referenceRepo(ctx)
+	if err != nil {
+		return Result{}, err
+	}
+	bursts, err := l1.BuildChatBursts(artifact, eligible, d.resolver, repo)
 	if err != nil {
 		return Result{}, err
 	}

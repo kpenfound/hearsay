@@ -17,11 +17,10 @@ corrupt.
 
 ## Things to know before changing it
 
-- **Alias candidates are proposals.** The distiller records one vote per chat
+- **Alias candidates require a decision.** The distiller records one vote per chat
   document when it links a PR that touched code and its existing model answer
   names that code. Candidates retain both documents as evidence and intersect
-  their current access lists on retrieval. Resolve uses only configured aliases;
-  confirmation and rejection are later work.
+  their current access lists on retrieval. Resolve uses configured and confirmed aliases; rejected candidates retain their row and accept no new votes.
 - **A pin is a record, not a foreign key.** `l2_pins` names an L1 document id
   and whoever pinned it; the document is derived and may be distilled again, so
   the pin outlives it, and a pin whose document is gone is not served. Nothing

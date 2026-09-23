@@ -67,7 +67,11 @@ func (d *Distiller) distillMeeting(ctx context.Context, result Result, root conn
 		}
 		spans = answer.Segments
 	}
-	segments, err := l1.BuildMeetingSegments(root, spans, d.resolver, d.repo)
+	repo, err := d.referenceRepo(ctx)
+	if err != nil {
+		return Result{}, err
+	}
+	segments, err := l1.BuildMeetingSegments(root, spans, d.resolver, repo)
 	if err != nil {
 		return Result{}, fmt.Errorf("building segments of %s: %w", result.DocID, err)
 	}

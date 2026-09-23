@@ -12,9 +12,14 @@ The one binary Hearsay ships. Each process is a subcommand of it (ADR-0003).
 | `hearsay config validate [path]` | Check a configuration repository. Prints every problem, with file and line. |
 | `hearsay migrate up\|status\|up-to <n>\|down` | Schema migrations, then exit. `down` refuses without `--i-know`. |
 | `hearsay l0 list\|get <id>\|count\|tail` | Inspect the L0 event store. Read-only. |
+| `hearsay aliases list\|confirm <entity> <name>\|reject <entity> <name>` | List candidates and decide their names as a configured human. |
 | `hearsay version` | Version, commit and build date. |
 
-`migrate`, `config` and `l0` take an action word, and flags go on either side of
+`hearsay aliases` requires `--config` and `--principal <human-id>`. Its list shows
+entity, name, state and vote count only where that human may read every current
+evidence document. Confirm and reject take the entity id and name shown by list.
+
+`migrate`, `config`, `l0` and `aliases` take an action word, and flags go on either side of
 it and after its argument: `hearsay l0 get <id> --database-url x` and
 `hearsay l0 --database-url x get <id>` are the same command. Each action reads
 its own flags — `l0 list` and `l0 tail` take `--source`, `--kind` and
@@ -30,7 +35,7 @@ and no arguments, and say so rather than ignoring what they were given. The
 
 `--database-url` points at Postgres, and also reads `HEARSAY_DATABASE_URL`,
 which is the one to prefer: a URL on a command line puts its password in the
-process list. It is on every subcommand that uses a database — `migrate`, `l0`,
+process list. It is on every subcommand that uses a database — `migrate`, `l0`, `aliases`,
 `all` and the four services — and every one of them refuses to start without
 it.
 

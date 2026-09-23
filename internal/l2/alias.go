@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
 	"slices"
 	"strings"
 
@@ -11,7 +12,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/l1"
 )
 
-// AliasCandidate is a proposed name. It is deliberately absent from Resolve.
+// AliasCandidate is a learned name and its decision. Only confirmed names resolve.
 // ACL is the intersection of every current evidence document's grants; an
 // empty ACL means no reader may see the proposal.
 type AliasCandidate struct {
@@ -46,6 +47,13 @@ func (s *Store) VoteAlias(ctx context.Context, entityID, name, docID, prDocID st
         ON CONFLICT (entity_id, alias) DO NOTHING`, entityID, alias, name, raw); err != nil {
 		return fmt.Errorf("creating alias candidate: %w", err)
 	}
+	var state string
+	if err := s.db.QueryRow(ctx, `SELECT state FROM l2_alias_candidates WHERE entity_id=$1 AND alias=$2 FOR UPDATE`, entityID, alias).Scan(&state); err != nil {
+		return fmt.Errorf("reading alias state: %w", err)
+	}
+	if state == "rejected" {
+		return nil
+	}
 	tag, err := s.db.Exec(ctx, `INSERT INTO l2_alias_votes(entity_id,alias,doc_id,pr_doc_id) VALUES ($1,$2,$3,$4)
         ON CONFLICT DO NOTHING`, entityID, alias, docID, prDocID)
 	if err != nil {
@@ -77,10 +85,17 @@ func (s *Store) VoteAlias(ctx context.Context, entityID, name, docID, prDocID st
 	return nil
 }
 
-// AliasCandidates returns proposals with current evidence restrictions folded
+// AliasCandidates returns candidates with current evidence restrictions folded
 // into their stored ACL. A missing or retracted evidence document closes access.
 func (s *Store) AliasCandidates(ctx context.Context, entityID string) ([]AliasCandidate, error) {
-	rows, err := s.db.Query(ctx, `SELECT alias,name,state,votes,evidence,acl FROM l2_alias_candidates WHERE entity_id=$1 ORDER BY alias`, entityID)
+	query := `SELECT entity_id,alias,name,state,votes,evidence,acl FROM l2_alias_candidates`
+	var args []any
+	if entityID != "" {
+		query += ` WHERE entity_id=$1`
+		args = append(args, entityID)
+	}
+	query += ` ORDER BY entity_id,alias`
+	rows, err := s.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing alias candidates: %w", err)
 	}
@@ -89,7 +104,7 @@ func (s *Store) AliasCandidates(ctx context.Context, entityID string) ([]AliasCa
 	for rows.Next() {
 		c := AliasCandidate{EntityID: entityID}
 		var raw []byte
-		if err := rows.Scan(&c.Alias, &c.Name, &c.State, &c.Votes, &c.Evidence, &raw); err != nil {
+		if err := rows.Scan(&c.EntityID, &c.Alias, &c.Name, &c.State, &c.Votes, &c.Evidence, &raw); err != nil {
 			return nil, fmt.Errorf("listing alias candidates: %w", err)
 		}
 		if err := json.Unmarshal(raw, &c.ACL); err != nil {
@@ -115,6 +130,62 @@ func (s *Store) AliasCandidates(ctx context.Context, entityID string) ([]AliasCa
 		}
 	}
 	return out, nil
+}
+
+// SetAliasState records an operator's decision. A rejected row is retained so
+// later votes cannot recreate its proposal.
+func (s *Store) SetAliasState(ctx context.Context, entityID, name, state string) error {
+	if state != "confirmed" && state != "rejected" {
+		return fmt.Errorf("%w: unknown alias state %q", ErrInvalid, state)
+	}
+	alias := NormalizeAlias(name)
+	if entityID == "" || alias == "" {
+		return fmt.Errorf("%w: missing alias identity", ErrInvalid)
+	}
+	tag, err := s.db.Exec(ctx, `UPDATE l2_alias_candidates SET state=$3 WHERE entity_id=$1 AND alias=$2 AND state='proposed'`, entityID, alias, state)
+	if err != nil {
+		return fmt.Errorf("setting alias state: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: proposed alias %s for %s", ErrNotFound, alias, entityID)
+	}
+	return nil
+}
+
+// ConfirmedAliases returns only learned names a person has confirmed. It is
+// used by resolution and by the distiller's reference extraction.
+func (s *Store) ConfirmedAliases(ctx context.Context) (map[string][]string, error) {
+	rows, err := s.db.Query(ctx, `SELECT entity_id,name FROM l2_alias_candidates WHERE state='confirmed' ORDER BY entity_id,alias`)
+	if err != nil {
+		return nil, fmt.Errorf("listing confirmed aliases: %w", err)
+	}
+	defer rows.Close()
+	out := map[string][]string{}
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, fmt.Errorf("listing confirmed aliases: %w", err)
+		}
+		out[id] = append(out[id], name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing confirmed aliases: %w", err)
+	}
+	return out, nil
+}
+
+// AliasCandidate returns one candidate, including its current evidence ACL.
+func (s *Store) AliasCandidate(ctx context.Context, entityID, name string) (AliasCandidate, error) {
+	candidates, err := s.AliasCandidates(ctx, entityID)
+	if err != nil {
+		return AliasCandidate{}, err
+	}
+	for _, c := range candidates {
+		if c.Alias == NormalizeAlias(name) {
+			return c, nil
+		}
+	}
+	return AliasCandidate{}, fmt.Errorf("%w: alias candidate", ErrNotFound)
 }
 
 func intersectAliasACL(a, b connector.ACL) connector.ACL {

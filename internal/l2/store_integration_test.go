@@ -836,3 +836,75 @@ func TestPinsPersistInPinOrderAndUnpin(t *testing.T) {
 		}
 	}
 }
+
+func TestAliasDecisionAndRejectedVote(t *testing.T) {
+	pool := newPool(t)
+	store := l2.New(pool)
+	ctx := t.Context()
+	src := unique()
+	entity := "code:" + src + ":engine"
+	if err := store.PutEntity(ctx, l2.Entity{ID: entity, Type: l2.TypeModule, Name: src + " core", Origin: l2.OriginConfig}); err != nil {
+		t.Fatal(err)
+	}
+	doc := putDoc(t, pool, src, "thread", public, nil)
+	pr := putDoc(t, pool, src, "pr", public, nil)
+	if err := store.VoteAlias(ctx, entity, src+" Room", doc, pr, public, public); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.Resolve(ctx, src+" room"); err != nil || len(got) != 0 {
+		t.Fatalf("proposed resolve = %+v, %v", got, err)
+	}
+	if err := store.SetAliasState(ctx, entity, src+" room", "confirmed"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.Resolve(ctx, src+" room"); err != nil || len(got) != 1 || got[0].Entity.ID != entity {
+		t.Fatalf("confirmed resolve = %+v, %v", got, err)
+	}
+	other := "code:" + src + ":other"
+	if err := store.PutEntity(ctx, l2.Entity{ID: other, Type: l2.TypeModule, Name: src + " other", Origin: l2.OriginConfig}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.VoteAlias(ctx, other, src+" Room", doc, pr, public, public); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetAliasState(ctx, other, src+" room", "confirmed"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.Resolve(ctx, src+" room"); err != nil || len(got) != 0 {
+		t.Fatalf("ambiguous resolve = %+v, %v", got, err)
+	}
+	rejected := "code:" + src + ":rejected"
+	if err := store.PutEntity(ctx, l2.Entity{ID: rejected, Type: l2.TypeModule, Name: src + " rejected", Origin: l2.OriginConfig}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.VoteAlias(ctx, rejected, src+" Old Name", doc, pr, public, public); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetAliasState(ctx, rejected, src+" old name", "rejected"); err != nil {
+		t.Fatal(err)
+	}
+	later := putDoc(t, pool, src, "later", public, nil)
+	if err := store.VoteAlias(ctx, rejected, src+" Old Name", later, pr, public, public); err != nil {
+		t.Fatal(err)
+	}
+	c, err := store.AliasCandidate(ctx, rejected, src+" old name")
+	if err != nil || c.State != "rejected" || c.Votes != 1 {
+		t.Fatalf("rejected candidate = %+v, %v", c, err)
+	}
+	private := connector.ACL{{Kind: connector.ACLIdentity, Source: src, NativeID: "u1"}}
+	secretDoc := putDoc(t, pool, src, "secret", private, nil)
+	if err := store.VoteAlias(ctx, entity, src+" secret", secretDoc, pr, private, public); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetAliasState(ctx, entity, src+" secret", "confirmed"); err != nil {
+		t.Fatal(err)
+	}
+	outsider := l1.Reader{Effective: principal.Effective{Human: "outsider"}}
+	if got, err := store.ResolveFor(ctx, outsider, src+" secret"); err != nil || len(got) != 0 {
+		t.Fatalf("outsider resolve = %+v, %v", got, err)
+	}
+	insider := l1.Reader{Effective: principal.Effective{Human: "insider"}, Audience: private}
+	if got, err := store.ResolveFor(ctx, insider, src+" secret"); err != nil || len(got) != 1 || got[0].Entity.ID != entity {
+		t.Fatalf("insider resolve = %+v, %v", got, err)
+	}
+}

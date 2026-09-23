@@ -92,6 +92,53 @@ func Resolve(entities []Entity, text string) []Match {
 	return out
 }
 
+// WithConfirmedAliases adds learned names to copies of the stored entities.
+// A learned name shared by distinct entities suppresses that spelling for both,
+// including a configured spelling on the other entity.
+func WithConfirmedAliases(entities []Entity, confirmed map[string][]string) []Entity {
+	out := make([]Entity, len(entities))
+	owners := map[string]map[string]bool{}
+	for i, e := range entities {
+		out[i] = e
+		out[i].Aliases = slices.Clone(e.Aliases)
+		for _, name := range append(append([]string{e.Name}, e.Aliases...), confirmed[e.ID]...) {
+			key := fold(name)
+			if key == "" {
+				continue
+			}
+			if owners[key] == nil {
+				owners[key] = map[string]bool{}
+			}
+			owners[key][e.ID] = true
+		}
+	}
+	for i := range out {
+		for _, name := range confirmed[out[i].ID] {
+			if len(owners[fold(name)]) == 1 {
+				out[i].Aliases = append(out[i].Aliases, name)
+			}
+		}
+		out[i].Aliases = slices.DeleteFunc(out[i].Aliases, func(name string) bool {
+			return len(owners[fold(name)]) > 1 && confirmedCollision(owners[fold(name)], confirmed, name)
+		})
+		if len(owners[fold(out[i].Name)]) > 1 && confirmedCollision(owners[fold(out[i].Name)], confirmed, out[i].Name) {
+			out[i].Name = ""
+		}
+	}
+	return out
+}
+
+func confirmedCollision(owners map[string]bool, confirmed map[string][]string, name string) bool {
+	for id := range owners {
+		for _, learned := range confirmed[id] {
+			if fold(learned) == fold(name) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // aliasOwners maps every folded name and alias to the entities that answer to
 // it, with the ambiguous ones already resolved or dropped.
 func aliasOwners(entities []Entity) map[string][]int {
