@@ -302,6 +302,19 @@ func (r *Recorder) CurrentArtifact(_ context.Context, source, artifact string) (
 	return current, found, nil
 }
 
+// LastRetraction implements RetractionReader for connector tests.
+func (r *Recorder) LastRetraction(_ context.Context, source, artifact string) (Event, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := len(r.events) - 1; i >= 0; i-- {
+		ev := r.events[i]
+		if ev.Source == source && ev.Kind == KindTombstone && ev.Payload.Target == artifact {
+			return ev, true, nil
+		}
+	}
+	return Event{}, false, nil
+}
+
 // CurrentArtifacts implements ArtifactReader for connector tests.
 func (r *Recorder) CurrentArtifacts(_ context.Context, source string) ([]Event, error) {
 	r.mu.Lock()

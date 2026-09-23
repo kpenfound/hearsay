@@ -108,6 +108,13 @@ type ArtifactReader interface {
 	CurrentArtifacts(ctx context.Context, source string) ([]Event, error)
 }
 
+// RetractionReader provides the event identity of the latest retraction so a
+// returning artifact can receive a fresh revision even with unchanged source
+// content and revision tokens.
+type RetractionReader interface {
+	LastRetraction(ctx context.Context, source, artifact string) (Event, bool, error)
+}
+
 // PollRequester asks the runtime to poll soon after a verified notification.
 // The ordinary poll cadence remains the recovery path if a notice is missed.
 type PollRequester interface{ RequestPoll() }

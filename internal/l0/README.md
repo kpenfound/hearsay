@@ -15,9 +15,10 @@ things about it are worth knowing before you use it:
   different content is a connector breaking the contract, and returns
   `ErrRewrite` rather than overwriting the row.
 - **A deletion is a tombstone.** A tombstone event names the artifact it
-  retracts, and from then on every read excludes every event of that artifact —
-  `Get` says `ErrRetracted`, `List` and `Changes` leave it out, `Counts` shows
-  the row still there. The tombstone itself stays on the feed, which is how a
+  retracts. Revisions ingested before it are hidden — `Get` says
+  `ErrRetracted`, `List` and `Changes` leave them out, and `Counts` shows
+  the rows still there. A later revision restores the artifact; replaying an
+  older tombstone cannot hide it. Tombstones stay on the feed, which is how a
   consumer learns to walk provenance forward. The one read past a tombstone is
   `Retracted`, which returns the hidden artifact's current revision so the
   distiller can tell which conversation it was part of; nothing serves what it

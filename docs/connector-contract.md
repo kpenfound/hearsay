@@ -367,6 +367,13 @@ and walks provenance forward. A connector has nothing to do with it.
 A tombstone carries the same ACL as the artifact it retracts, so that the
 retraction is visible to exactly the people the artifact was.
 
+L0 hides revisions ingested before a tombstone for their artifact. A later
+eligible revision with the same stable artifact id becomes current; the older
+revisions remain retracted history and the tombstone remains in the change
+feed. Replaying an existing tombstone keeps its original event id and ingest
+position, so it cannot hide that later revision. A later retraction requires a
+new tombstone event id. Event ids still reject changed payloads on replay.
+
 ## The ingest allowlist
 
 Default deny at L0 (design, access control, control point 1). What is not in L0
@@ -699,8 +706,8 @@ else.
 
 | Artifact | kind | artifact id | native_id | container |
 |---|---|---|---|---|
-| Document | `document` | `<file id>` | backfill: `<file id>@<head revision id>`; live: `<file id>@<head revision id>+perm:<permission version>` | folder `<folder id>` |
-| Meeting transcript | `transcript` | `<file id>` | backfill: `<file id>@<head revision id>`; live: `<file id>@<head revision id>+perm:<permission version>` | folder |
+| Document | `document` | `<file id>` | backfill: `<file id>@<head revision id>`; live: `<file id>@<head revision id>+perm:<observation version>` | folder `<folder id>` |
+| Meeting transcript | `transcript` | `<file id>` | backfill: `<file id>@<head revision id>`; live: `<file id>@<head revision id>+perm:<observation version>` | folder |
 | Comment on a document (future work) | `message` | `<file id>:comment:<comment id>` | `…@<modified time>` | folder |
 
 The initial Drive backfill implements bounded `Backfiller` calls. It walks
@@ -727,8 +734,9 @@ person, which is why `transcript` does not require one; attendees go in
 The backfill uses the content head revision ID exactly, as issue #98 requires.
 Ongoing sync consumes Drive's changes feed with a separate durable cursor.
 Every change re-fetches the file, its direct labels and current permissions.
-The live permission version hashes the normalized ACL, folder and metadata
-with the change observation token. An unchanged observation emits nothing.
+The live observation version hashes the normalized ACL, folder, metadata,
+document kind, change observation token and, on re-entry, the latest retraction
+event id. An unchanged observation emits nothing.
 This lets sharing-only changes and a public → private → public cycle produce
 distinct revisions. A new or expired change token triggers a full
 reconciliation of configured folders against L0; the token captured before
@@ -740,9 +748,13 @@ the same durable feed if notification delivery is unavailable or missed.
 Files whose direct parent is not configured are ignored before reaching the
 gate, which also enforces the source allowlist. Deletions, moves outside the
 allowlist, and meeting-label removal emit a tombstone under the former folder
-and ACL. L0 currently treats a tombstone as permanent for that file ID; a
-subsequent move back into scope requires a future revival contract or a new
-artifact identity.
+and ACL. Its native id includes the revision it retracts, making each cycle
+distinct and its replay idempotent. Change notifications, polling and recovery
+re-fetch the current file, so a stale removal notice cannot retract a file
+that is now eligible. A move back or exact label reapplication creates a fresh
+revision under the stable file id using current content and ACL. Until that
+revision is observed, the file stays retracted; unreadable, absent or wrong
+labels and out-of-folder files cannot restore it.
 
 ### Obsidian (issue #102)
 
