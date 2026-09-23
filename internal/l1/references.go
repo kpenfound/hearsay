@@ -373,10 +373,23 @@ type alias struct {
 // configured and both match at the same place.
 func systemAliases(code []config.CodeEntity) []alias {
 	aliases := make([]alias, 0, len(code)*2)
+	owners := map[string]map[string]bool{}
+	for _, e := range code {
+		for _, name := range append([]string{e.Name}, e.Aliases...) {
+			key := strings.ToLower(strings.TrimSpace(name))
+			if key == "" {
+				continue
+			}
+			if owners[key] == nil {
+				owners[key] = map[string]bool{}
+			}
+			owners[key][e.ID] = true
+		}
+	}
 	for _, e := range code {
 		for _, name := range append([]string{e.Name}, e.Aliases...) {
 			folded := strings.ToLower(strings.TrimSpace(name))
-			if folded == "" {
+			if folded == "" || len(owners[folded]) != 1 {
 				continue
 			}
 			aliases = append(aliases, alias{folded: folded, entity: e.ID})

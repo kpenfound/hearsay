@@ -110,3 +110,16 @@ func TestResolve(t *testing.T) {
 		})
 	}
 }
+
+func TestConfirmedAliasesResolveOnlyWhenUnambiguous(t *testing.T) {
+	entities := resolveFixture()
+	confirmed := map[string][]string{entities[0].ID: {"machinery bay"}}
+	matches := l2.Resolve(l2.WithConfirmedAliases(entities, confirmed), "machinery bay")
+	if len(matches) != 1 || matches[0].Entity.ID != entities[0].ID {
+		t.Fatalf("confirmed alias resolved to %+v", matches)
+	}
+	confirmed[entities[1].ID] = []string{"machinery bay"}
+	if matches := l2.Resolve(l2.WithConfirmedAliases(entities, confirmed), "machinery bay"); len(matches) != 0 {
+		t.Errorf("ambiguous confirmed alias resolved to %+v", matches)
+	}
+}

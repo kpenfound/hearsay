@@ -61,6 +61,20 @@ func TestThreadAliasVotesFromTouchedPR(t *testing.T) {
 		if err := fixtures.Add(llm.CompletionFixture{Tier: llm.TierDistill, Request: distiller.RequestFor(doc, budget.MaxTokens), Response: llm.Response{JSON: answer, StopReason: llm.StopEnd}}); err != nil {
 			t.Fatal(err)
 		}
+		withAlias := cfg.Repo
+		withAlias.Code = slices.Clone(cfg.Repo.Code)
+		withAlias.Code[0].Aliases = append(slices.Clone(withAlias.Code[0].Aliases), "Engine Room")
+		resolvedDoc, err := l1.BuildChatWindow(l1.ChatWindowKey(ev), []connector.Event{ev}, resolver, withAlias)
+		if err != nil {
+			t.Fatal(err)
+		}
+		oldRequest := distiller.RequestFor(doc, budget.MaxTokens)
+		newRequest := distiller.RequestFor(resolvedDoc, budget.MaxTokens)
+		if llm.FixtureKey(llm.TierDistill, oldRequest) != llm.FixtureKey(llm.TierDistill, newRequest) {
+			if err := fixtures.Add(llm.CompletionFixture{Tier: llm.TierDistill, Request: newRequest, Response: llm.Response{JSON: answer, StopReason: llm.StopEnd}}); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	registry, err := llm.NewFake(cfg.Repo.LLM, fixtures)
 	if err != nil {
@@ -101,6 +115,32 @@ func TestThreadAliasVotesFromTouchedPR(t *testing.T) {
 	}
 	if len(matches) != 0 {
 		t.Errorf("unconfirmed alias resolved: %+v", matches)
+	}
+	if err := graph.PutEntity(t.Context(), l2.Entity{ID: cfg.Repo.Code[0].ID, Type: l2.TypeModule, Name: cfg.Repo.Code[0].Name, Aliases: cfg.Repo.Code[0].Aliases, Origin: l2.OriginConfig}); err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.SetAliasState(t.Context(), cfg.Repo.Code[0].ID, "engine room", "confirmed"); err != nil {
+		t.Fatal(err)
+	}
+	matches, err = graph.Resolve(t.Context(), "engine room")
+	if err != nil || len(matches) != 1 || matches[0].Entity.ID != cfg.Repo.Code[0].ID {
+		t.Fatalf("confirmed alias resolution = %+v, %v", matches, err)
+	}
+	learned := cfg.Repo.Code[0]
+	learned.Aliases = append(slices.Clone(learned.Aliases), "Engine Room")
+	refs := l1.References([]connector.Event{messages[0]}, resolver, []config.CodeEntity{learned})
+	if !slices.Contains(refs, l1.Reference{Type: l1.RefSystem, ID: learned.ID}) {
+		t.Errorf("confirmed alias references = %+v", refs)
+	}
+	if _, err := d.Distill(t.Context(), l1.DocID(src, l1.ChatWindowKey(messages[0]))); err != nil {
+		t.Fatal(err)
+	}
+	rebuilt, err := l1.New(pool).Get(t.Context(), l1.DocID(src, l1.ChatWindowKey(messages[0])))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(rebuilt.References, l1.Reference{Type: l1.RefSystem, ID: learned.ID}) {
+		t.Errorf("re-distilled references = %+v", rebuilt.References)
 	}
 	// A later ACL resync can narrow evidence. Candidate reads must honor the
 	// current L1 grant as well as the snapshot taken when votes were cast.

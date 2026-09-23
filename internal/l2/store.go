@@ -163,7 +163,19 @@ func (s *Store) Resolve(ctx context.Context, text string) ([]Match, error) {
 	if err != nil {
 		return nil, err
 	}
-	return Resolve(entities, text), nil
+	confirmed, err := s.ConfirmedAliases(ctx)
+	if err != nil {
+		return nil, err
+	}
+	matches := Resolve(WithConfirmedAliases(entities, confirmed), text)
+	original := map[string]Entity{}
+	for _, e := range entities {
+		original[e.ID] = e
+	}
+	for i := range matches {
+		matches[i].Entity = original[matches[i].Entity.ID]
+	}
+	return matches, nil
 }
 
 type scanner interface {
