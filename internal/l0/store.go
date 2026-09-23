@@ -512,6 +512,40 @@ SELECT ` + eventColumns + `
 	return events, nil
 }
 
+// Documents returns the complete current document inventory of a source for
+// filesystem reconciliation. Unlike Current it is not capped at one page:
+// a capped inventory would mistake every omitted note for a deletion.
+func (s *Store) Documents(ctx context.Context, source string) ([]connector.Event, error) {
+	rows, err := s.db.Query(ctx, `
+SELECT `+eventColumns+` FROM (
+  SELECT DISTINCT ON (e.artifact) `+eventColumns+`, e.artifact, e.revision_edited_at, e.seq
+    FROM l0_events e
+   WHERE `+notRetractedSQL+` AND e.source = $1 AND e.kind = 'document'
+   ORDER BY e.artifact, e.revision_edited_at DESC NULLS LAST, e.seq DESC
+) AS e ORDER BY e.artifact`, source)
+	if err != nil {
+		return nil, fmt.Errorf("reading document inventory: %w", err)
+	}
+	defer rows.Close()
+	events := []connector.Event{}
+	for rows.Next() {
+		var ev connector.Event
+		var kind string
+		var payload, acl []byte
+		if err := rows.Scan(&ev.ID, &ev.Source, &ev.NativeID, &kind, &ev.Time, &payload, &acl); err != nil {
+			return nil, fmt.Errorf("reading document inventory: %w", err)
+		}
+		if err := decodeInto(&ev, kind, payload, acl); err != nil {
+			return nil, fmt.Errorf("reading document inventory: %w", err)
+		}
+		events = append(events, ev)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading document inventory: %w", err)
+	}
+	return events, nil
+}
+
 // Count is how many events one source holds of one kind.
 type Count struct {
 	Source string

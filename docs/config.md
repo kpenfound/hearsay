@@ -225,9 +225,10 @@ The connector reads Markdown as UTF-8 and stores its frontmatter in `native`.
 Vault-relative artifact paths percent-escape unsafe filename bytes (for example, a
 space becomes `%20`) to satisfy the L0 native-id contract.
 
-The initial backfill is paged and its cursor is stored in Postgres. Only the
-initial walk is implemented here; later changes and removals are handled by
-#103. ACL and owner changes start a new bounded backfill after restart and create
+The initial backfill is paged and its cursor is stored in Postgres. Polling on
+the source's refresh cadence adds edited notes and retracts notes that vanish,
+move, or leave the configured folders. It reads the existing L0 inventory so
+removals are still found after a process restart. ACL and owner changes start a new bounded backfill after restart and create
 new permission revisions. If an ACL is changed back to a prior value, set a new
 `permission_version` to prevent an earlier identical revision from deduplicating
 that transition.

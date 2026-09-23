@@ -106,6 +106,19 @@ func NewGate(sink Sink, source string, desc Descriptor, allow Allowlist) *Gate {
 // Emit validates the event, checks it against the allowlist, stamps its id and
 // passes it to the sink.
 func (g *Gate) Emit(ctx context.Context, ev Event) error {
+	return g.emit(ctx, ev, false)
+}
+
+// Retract passes a tombstone for a previously ingested path through the gate
+// even when that path's folder is no longer configured.
+func (g *Gate) Retract(ctx context.Context, ev Event) error {
+	if ev.Kind != KindTombstone {
+		return fmt.Errorf("retraction must be a tombstone, got %q", ev.Kind)
+	}
+	return g.emit(ctx, ev, true)
+}
+
+func (g *Gate) emit(ctx context.Context, ev Event, retraction bool) error {
 	if ev.Source != g.source {
 		return fmt.Errorf("%w: source %q, connector is configured for %q", ErrForeignSource, ev.Source, g.source)
 	}
@@ -115,7 +128,7 @@ func (g *Gate) Emit(ctx context.Context, ev Event) error {
 	if !g.kinds[ev.Kind] {
 		return fmt.Errorf("%w: %q", ErrUndeclaredKind, ev.Kind)
 	}
-	if !g.allow.Allows(ev.Source, ev.Payload.Container.NativeID) {
+	if !retraction && !g.allow.Allows(ev.Source, ev.Payload.Container.NativeID) {
 		g.dropped.Add(1)
 		// Debug, and ids only: a busy container that config excludes would
 		// otherwise fill the log, and payload text never goes above debug
@@ -130,6 +143,18 @@ func (g *Gate) Emit(ctx context.Context, ev Event) error {
 
 	ev.ID = EventID(ev.Source, ev.NativeID)
 	return g.sink.Emit(ctx, ev)
+}
+
+// Documents reads the durable inventory through the underlying L0 sink.
+func (g *Gate) Documents(ctx context.Context, source string) ([]Event, error) {
+	if source != g.source {
+		return nil, ErrForeignSource
+	}
+	reader, ok := g.sink.(DocumentInventory)
+	if !ok {
+		return nil, ErrNoDocumentInventory
+	}
+	return reader.Documents(ctx, source)
 }
 
 // RequestResync implements [ResyncRequester]: it records that a container owes
