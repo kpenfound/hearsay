@@ -9,10 +9,12 @@
 // transaction that writes an agent's L0 `assertion` event, keyed by its topic's
 // scope; this package claims them. An assertion becomes a stance with no model
 // call. At
-// startup it seeds the entity map from configuration and the repositories it
-// names ([Repos]), and enqueues every such document it has not read yet, so
-// documents written before it was deployed, and jobs that ran out of attempts,
-// are picked up by a restart.
+// startup it seeds the entity map from configuration, the repositories it
+// names ([Repos]) and the tracker hierarchy L0 holds ([Placements]), and
+// enqueues every such document it has not read yet, so documents written
+// before it was deployed, and jobs that ran out of attempts, are picked up by a
+// restart. Between startups the [Follower] keeps the tracker hierarchy in step
+// with the L0 change feed.
 //
 // What a topic and a stance are is internal/l2's. What this package owns is the
 // prompt, the schema an answer has to satisfy, and the loop.
@@ -22,6 +24,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -54,7 +57,8 @@ type Deps struct {
 }
 
 // Run seeds the entity map, enqueues what has not been read, and works the
-// queue until ctx is cancelled. It returns nil when it stops that way.
+// queue and follows the tracker hierarchy until ctx is cancelled. It returns
+// nil when it stops that way.
 func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 	if deps.Pool == nil {
 		return errors.New("the assertion worker needs a database: pass --database-url or set HEARSAY_DATABASE_URL")
@@ -81,8 +85,34 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 	if err != nil {
 		return err
 	}
+	follower := NewFollower(deps.Pool, cfg.Repo, 0, 0)
 	log.InfoContext(ctx, "assertion worker started", "config_digest", cfg.Repo.Digest, "swept", enqueued)
-	return worker.Run(ctx)
+
+	// The two loops stop together, as the distiller's do: the first to return
+	// stops the other.
+	ctx, stop := context.WithCancel(ctx)
+	defer stop()
+	loops := map[string]func(context.Context) error{
+		"worker":    worker.Run,
+		"hierarchy": follower.Run,
+	}
+	errs := make([]error, 0, len(loops))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for name, loop := range loops {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer stop()
+			if err := loop(ctx); err != nil {
+				mu.Lock()
+				errs = append(errs, fmt.Errorf("%s: %w", name, err))
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	return errors.Join(errs...)
 }
 
 // stopping turns a failure caused by the process being stopped into a clean
@@ -94,8 +124,9 @@ func stopping(ctx context.Context, err error) error {
 	return err
 }
 
-// SeedEntities writes the entity map configuration describes ([l2.Seed]) in one
-// transaction, and returns how many entities it holds.
+// SeedEntities writes the entity map configuration describes, with the tracker
+// hierarchy L0 holds now ([l2.Seed], [Placements]), in one transaction, and
+// returns how many entities it holds.
 //
 // A `code/` entry that names a CODEOWNERS file with no reader to read it is
 // said out loud: configuration asked for something this process cannot do, and
@@ -113,7 +144,11 @@ func SeedEntities(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, rea
 			log.WarnContext(ctx, "no repository reader: CODEOWNERS files and repository layout are not imported", "code_entities", unread)
 		}
 	}
-	entities, err := l2.Seed(ctx, repo, reader)
+	placements, err := Placements(ctx, pool, repo)
+	if err != nil {
+		return 0, err
+	}
+	entities, err := l2.Seed(ctx, repo, reader, placements)
 	if err != nil {
 		return 0, err
 	}

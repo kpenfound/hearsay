@@ -535,6 +535,44 @@ SELECT ` + eventColumns + `
 	return events, nil
 }
 
+// Placed is the current revision of every artifact in one container whose
+// current revision is `part_of` another: where the source's own hierarchy puts
+// its items now, which is what the tracker hierarchy is seeded from. An item
+// whose current revision names no parent is not in it, whatever an older one
+// named. Like [Store.Documents] it is not capped: a hierarchy read from one
+// page would lose every parent past it.
+func (s *Store) Placed(ctx context.Context, source, container string) ([]connector.Event, error) {
+	rows, err := s.db.Query(ctx, `
+SELECT `+eventColumns+` FROM (
+  SELECT DISTINCT ON (e.artifact) `+eventColumns+`, e.artifact, e.revision_edited_at, e.seq
+    FROM l0_events e
+   WHERE `+notRetractedSQL+` AND e.source = $1 AND e.payload->'container'->>'native_id' = $2
+     AND e.kind <> 'tombstone'
+   ORDER BY e.artifact, e.revision_edited_at DESC NULLS LAST, e.seq DESC
+) AS e WHERE e.payload->>'part_of' IS NOT NULL ORDER BY e.artifact`, source, container)
+	if err != nil {
+		return nil, fmt.Errorf("reading what %s places in %s: %w", source, container, err)
+	}
+	defer rows.Close()
+	events := []connector.Event{}
+	for rows.Next() {
+		var ev connector.Event
+		var kind string
+		var payload, acl []byte
+		if err := rows.Scan(&ev.ID, &ev.Source, &ev.NativeID, &kind, &ev.Time, &payload, &acl); err != nil {
+			return nil, fmt.Errorf("reading what %s places in %s: %w", source, container, err)
+		}
+		if err := decodeInto(&ev, kind, payload, acl); err != nil {
+			return nil, fmt.Errorf("reading what %s places in %s: %w", source, container, err)
+		}
+		events = append(events, ev)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading what %s places in %s: %w", source, container, err)
+	}
+	return events, nil
+}
+
 // Documents returns the complete current document inventory of a source for
 // filesystem reconciliation. Unlike Current it is not capped at one page:
 // a capped inventory would mistake every omitted note for a deletion.

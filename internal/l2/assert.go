@@ -3,7 +3,6 @@ package l2
 import (
 	"context"
 	"slices"
-	"strings"
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/l1"
@@ -118,19 +117,8 @@ func TrackerItems(repo config.Repo, doc l1.Document) []Entity {
 	}
 	byID := map[string]*Entity{}
 	for _, item := range items {
-		project, number, ok := strings.Cut(item, "#")
-		if !ok || project == "" || number == "" {
-			continue
-		}
-		for _, s := range repo.Scopes {
-			if s.Tracker.Source != doc.Source.System || s.Tracker.Project != project {
-				continue
-			}
-			id, ok := s.TrackerItemID(number)
-			if !ok {
-				continue
-			}
-			byID[id] = &Entity{ID: id, Type: TypeTrackerItem, Name: item, Aliases: []string{item}, Origin: OriginReference}
+		if e, ok := TrackerItem(repo, doc.Source.System, item); ok {
+			byID[e.ID] = &e
 		}
 	}
 	return sorted(byID)

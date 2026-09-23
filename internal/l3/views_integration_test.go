@@ -720,7 +720,7 @@ func TestAStanceIsInheritedThroughADerivedParent(t *testing.T) {
 	seeded, err := l2.Seed(ctx, config.Repo{Code: []config.CodeEntity{
 		{ID: engine, Type: config.TypeModule, PathPatterns: []string{"engine/**"}, Repo: repo},
 		{ID: server, Type: config.TypeService, PathPatterns: []string{"engine/server/**"}, Repo: repo},
-	}}, nil)
+	}}, nil, nil)
 	if err != nil {
 		t.Fatalf("Seed() = %v", err)
 	}
