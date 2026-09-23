@@ -15,7 +15,7 @@ them, the way it parses `sources/` into `connector.SourceConfig`. It imports
 `internal/connector`, for the identity hints an event carries, and nothing else
 of Hearsay's — keep it that way, because everything above L0 imports this.
 
-**Five things the code depends on and a reader would not guess:**
+**Six things the code depends on and a reader would not guess:**
 
 - **Matching is per source.** A handle in one source is no evidence about a
   handle in another. A person is listed once per source they appear in, and an
@@ -41,6 +41,13 @@ of Hearsay's — keep it that way, because everything above L0 imports this.
 - **A team never acts.** It owns things and stands in for a source's group. One
   of its members is who said something, so `AgentRead` and `HumanRead` refuse a
   team.
+- **Reach is expanded before it is intersected.** `Reach` walks each
+  principal's scopes down the entity hierarchy first, through a `Graph` this
+  package names and `internal/l2` implements, so a person granted a repository
+  and an agent granted a directory of it meet at the directory. Intersecting
+  the ids as written would give them nothing in common. The class caps what is
+  left, and a steward's own scopes are not consulted: it reaches what the person
+  does.
 
 The mapping is read-only once `NewResolver` returns and the record of what did
 not resolve is behind a mutex, so one resolver serves every connector at once.

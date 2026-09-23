@@ -658,7 +658,7 @@ type Change struct {
 }
 
 // Changes is the change feed: the events that arrived after a cursor, oldest
-// first, for the distiller to consume and for `watch` later. The filter narrows
+// first, for the distiller to consume and for `watch`. The filter narrows
 // what comes back and nothing else — a cursor is a position in the whole feed,
 // so the same one means the same place whatever a reader is watching.
 //
@@ -720,6 +720,60 @@ SELECT e.xact_id::text, e.seq, e.ingested_at, ` + eventColumns + `
 		return nil, fmt.Errorf("reading the change feed: %w", err)
 	}
 	return changes, nil
+}
+
+// MaxMarkCommitted is the most transactions a [Mark] lists as committed past
+// the feed's cutoff. A mark that would list more lists none, so a reader
+// starting from it may be handed events from just before it, and never
+// misses one after it.
+const MaxMarkCommitted = 256
+
+// Now is this moment on the change feed: a [Mark] a reader who wants only what
+// happens from here on reads from.
+//
+// The feed serves a transaction's events only once every transaction before it
+// has finished, so its head can lag what has committed: one transaction open
+// anywhere in the cluster holds it back. Now therefore starts at the head and
+// lists the transactions that have committed past it, which the reader passes
+// over without reading them as new. A transaction still in flight is not
+// listed, and its events are read as new when they commit. The head, the list
+// and what is in flight are read in one statement, so they agree.
+func (s *Store) Now(ctx context.Context) (Mark, error) {
+	var (
+		xact      *string
+		seq       *int64
+		committed []string
+	)
+	err := s.db.QueryRow(ctx, `
+WITH cut AS (SELECT pg_snapshot_xmin(pg_current_snapshot()) AS xmin),
+head AS (
+    SELECT e.xact_id, e.seq FROM l0_events e, cut
+     WHERE e.xact_id < cut.xmin
+     ORDER BY e.xact_id DESC, e.seq DESC
+     LIMIT 1)
+SELECT (SELECT xact_id::text FROM head), (SELECT seq FROM head),
+       ARRAY(SELECT d.x::text FROM (SELECT DISTINCT e.xact_id AS x FROM l0_events e, cut WHERE e.xact_id >= cut.xmin) d
+              ORDER BY d.x LIMIT $1)`, MaxMarkCommitted+1).Scan(&xact, &seq, &committed)
+	if err != nil {
+		return Mark{}, fmt.Errorf("reading the head of the change feed: %w", err)
+	}
+	var m Mark
+	if xact != nil && seq != nil {
+		if m.From, err = cursorOf(*xact, *seq); err != nil {
+			return Mark{}, fmt.Errorf("reading the head of the change feed: %w", err)
+		}
+	}
+	if len(committed) > MaxMarkCommitted {
+		return m, nil
+	}
+	for _, x := range committed {
+		id, err := strconv.ParseUint(x, 10, 64)
+		if err != nil {
+			return Mark{}, fmt.Errorf("reading the head of the change feed: transaction id %q: %w", x, err)
+		}
+		m.committed = append(m.committed, id)
+	}
+	return m, nil
 }
 
 // row is one event as columns.

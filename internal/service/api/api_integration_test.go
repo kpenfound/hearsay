@@ -732,7 +732,7 @@ func TestMCPSpeaksTheProtocol(t *testing.T) {
 	for _, tool := range tools {
 		names = append(names, tool.(map[string]any)["name"].(string))
 	}
-	if strings.Join(names, ",") != "get_bundle,resolve,stance_history,get_l1,get_l0,get_session,search,assert" {
+	if strings.Join(names, ",") != "get_bundle,resolve,stance_history,get_l1,get_l0,get_session,search,watch,assert" {
 		t.Errorf("tools = %v", names)
 	}
 	if e := rpc(`{"jsonrpc":"2.0","id":3,"method":"resources/list"}`)["error"]; e == nil {
@@ -986,7 +986,7 @@ func (w *world) standingOf(t *testing.T, calls *api.Calls, authority config.Auth
 		Effective: principal.Effective{Human: "kyle", Grant: principal.Grant{Scopes: principal.AllScopes()}},
 		Audience:  []connector.ACLEntry{{Kind: connector.ACLIdentity, Source: w.src, NativeID: kyleNode}},
 	}
-	current, _, err := l3.New(w.pool).WithAuthority(authority).CurrentStances(t.Context(), reader, w.scope, nil)
+	current, _, _, err := l3.New(w.pool).WithAuthority(authority).CurrentStances(t.Context(), reader, w.scope, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

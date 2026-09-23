@@ -1431,3 +1431,35 @@ func TestAFailOrReclaimThatLosesARaceToAnEnqueueIsSuperseded(t *testing.T) {
 		})
 	}
 }
+
+// A target is unfinished while its job is pending or running, and not once it
+// is done, nor for a target of another kind or with no job.
+func TestUnfinishedIsWhatIsPendingOrRunning(t *testing.T) {
+	kind := newKind(t, false)
+	other := newKind(t, false)
+	client := newClient(t, queue.Config{Kind: kind})
+	pool := newPool(t)
+
+	enqueue(t, pool, queue.Request{Kind: kind, TargetID: "done"})
+	done := claim(t, client)
+	if len(done) != 1 {
+		t.Fatalf("claimed %v, want one job", done)
+	}
+	if ok, err := client.Complete(t.Context(), done[0]); err != nil || !ok {
+		t.Fatalf("Complete = %v, %v", ok, err)
+	}
+	enqueue(t, pool, queue.Request{Kind: kind, TargetID: "running"})
+	if running := claim(t, client); len(running) != 1 {
+		t.Fatalf("claimed %v, want one job", running)
+	}
+	enqueue(t, pool, queue.Request{Kind: kind, TargetID: "pending"})
+	enqueue(t, pool, queue.Request{Kind: other, TargetID: "elsewhere"})
+
+	got, err := queue.Unfinished(t.Context(), pool, kind, []string{"running", "done", "pending", "elsewhere", "never"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || !got["running"] || !got["pending"] {
+		t.Errorf("Unfinished = %v, want running and pending alone", got)
+	}
+}

@@ -1,8 +1,8 @@
 // Package api serves the read and assert API over MCP and HTTP: bundle
-// assembly, the handles a consumer follows, the audit trail, and `assert`, the
-// one write, through which an agent proposes a stance as an L0 `assertion`
-// event. Reads are structured lookups, and nothing here asks a model to
-// generate anything: the one model call a read makes is `search` embedding the
+// assembly, the handles a consumer follows, `watch`, the audit trail, and
+// `assert`, the one write, through which an agent proposes a stance as an L0
+// `assertion` event. Reads are structured lookups, and nothing here asks a
+// model to generate anything: the one model call a read makes is `search` embedding the
 // query it was given, on the `embed` tier (internal/l1).
 //
 // Both interfaces are thin over one call layer, [Calls]: a call takes the
@@ -17,8 +17,31 @@
 // An authenticated agent may name its session in [SessionHeader]; the call
 // layer links audits and assertions to its artifact (ADR-0017).
 //
-// The watch call of docs/design.md#read-and-assert-api is later work, and so
-// are a bundle's conflicts.
+// Every call runs within the caller's effective reach (docs/design.md#access-control):
+// the person's configured scopes and the agent's, each covering everything
+// `part_of` it, intersected and capped by the agent's class. An observer reaches
+// its scopes; a worker or an orchestrator the code entities the pull requests
+// about them touch as well; a steward whatever the person reaches. A document
+// is in reach when it is about an entity in reach, an L0 event when a document
+// built from its artifact is, and a topic or a stance when what it rests on is;
+// `resolve` serves only entities in reach. What is out of reach is answered as
+// what does not exist — the same not-found body, and for `get_bundle` the
+// bundle an unknown scope gets — so handles fail closed. Reach narrows what is
+// relevant; the source access lists still decide what may be seen inside it.
+// Each bundle's audit record names the agent's class and counts what reach
+// withheld apart from what the access lists did.
+//
+// `watch` is how a consumer learns something changed without polling bundles:
+// a long poll with an opaque cursor over the L0 change feed, returning the
+// events on a scope once they are distilled, as handles with no content. It
+// keeps no state between calls, so it is an ordinary call over both interfaces
+// like the rest. A person may watch, and an agent of class orchestrator or
+// above. What it delivers is filtered by the access lists and the reach as
+// every read is, and what it withholds leaves no trace: the cursor passes it
+// and nothing in the response carries a position. Hearsay's own audit events,
+// and whatever is never distilled, never notify. A waiting watch holds no
+// database connection, and ends when its request is cancelled or the server
+// stops.
 package api
 
 import (
@@ -108,6 +131,9 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 		// through the shutdown grace period.
 		BaseContext: func(net.Listener) context.Context { return context.WithoutCancel(ctx) },
 	}
+	// A waiting watch returns what it has rather than outlast the grace
+	// period.
+	server.RegisterOnShutdown(calls.stopWatches)
 	log.InfoContext(ctx, "api started", "listen", listener.Addr().String(), "config_digest", cfg.Repo.Digest,
 		"embedding", embedder != nil)
 
