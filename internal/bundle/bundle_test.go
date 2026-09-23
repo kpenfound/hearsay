@@ -86,6 +86,74 @@ func tokens(t *testing.T, b bundle.Bundle) int {
 	return bundle.Tokens(body)
 }
 
+func TestDirectiveConflicts(t *testing.T) {
+	base := func() bundle.Inputs {
+		return bundle.Inputs{Scope: "tracker:gh:acme/api#12", Stances: []l3.CurrentStance{
+			current("beta", l2.TierInferred, 2), current("alpha", l2.TierRatified, 1),
+			current("delta", l2.TierContested, 3), current("gamma", l2.TierRatified, 4),
+		}}
+	}
+	tests := []struct {
+		name    string
+		setup   func(*bundle.Inputs)
+		budget  int
+		want    []string
+		trimmed bool
+	}{
+		{"no directive", func(*bundle.Inputs) {}, 10000, nil, false},
+		{"entity reference", func(in *bundle.Inputs) {
+			in.Directive = &bundle.Directive{Text: "do something", References: []l1.Reference{{Type: l1.RefSystem, ID: "code:engine"}}}
+			in.Stances[0].Topic.About = []string{"code:engine"}
+		}, 10000, []string{"topic:beta"}, false},
+		{"evidence reference", func(in *bundle.Inputs) {
+			in.Directive = &bundle.Directive{Text: "see acme/api#alpha", References: []l1.Reference{{Type: l1.RefIssue, ID: "acme/api#alpha"}}}
+		}, 10000, []string{"topic:alpha"}, false},
+		{"document URL reference", func(in *bundle.Inputs) {
+			in.Directive = &bundle.Directive{Text: "see the document", References: []l1.Reference{{Type: l1.RefURL, ID: "https://example.test/decision"}}}
+			in.EvidenceURLs = map[string]string{"l1:gh:acme/api#alpha": "https://example.test/decision"}
+		}, 10000, []string{"topic:alpha"}, false},
+		{"text match", func(in *bundle.Inputs) {
+			in.Directive = &bundle.Directive{Text: "Please review the position on beta before merging"}
+		}, 10000, []string{"topic:beta"}, false},
+		{"unreadable stance excluded upstream", func(in *bundle.Inputs) {
+			in.Directive = &bundle.Directive{Text: "the position on beta"}
+			in.Stances = in.Stances[1:]
+		}, 10000, nil, false},
+		{"budget trimmed stance", func(in *bundle.Inputs) {
+			in.Directive = &bundle.Directive{Text: "the position on beta"}
+		}, 1, []string{"topic:beta"}, true},
+		{"cap and tier order", func(in *bundle.Inputs) {
+			in.Directive = &bundle.Directive{Text: "all", References: []l1.Reference{{Type: l1.RefSystem, ID: "code:engine"}}}
+			for i := range in.Stances {
+				in.Stances[i].Topic.About = []string{"code:engine"}
+			}
+		}, 10000, []string{"topic:alpha", "topic:gamma", "topic:delta"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := base()
+			tt.setup(&in)
+			b, trimmed, _, err := bundle.Build(in, tt.budget)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.trimmed && trimmed.Stances == 0 {
+				t.Fatal("expected stance trim")
+			}
+			got := []string{}
+			for _, c := range b.Conflicts {
+				got = append(got, c.TopicID)
+				if c.Current == "" || c.Tier == "" || c.Stakes == "" {
+					t.Errorf("incomplete conflict: %+v", c)
+				}
+			}
+			if strings.Join(got, ",") != strings.Join(tt.want, ",") {
+				t.Errorf("conflicts = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildDropsFromTheBottom(t *testing.T) {
 	full, trimmed, _, err := bundle.Build(inputs(), 1<<20)
 	if err != nil {

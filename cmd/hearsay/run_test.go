@@ -564,6 +564,9 @@ func TestConfigValidate(t *testing.T) {
 		"sources/hearsay.yaml": "id: hearsay\ntype: github\ncontainers: [acme/api]\n",
 		"scopes/api.yaml":      "id: api\nsources: [github]\n",
 	})
+	agentWithoutScopes := maps.Clone(validConfig)
+	agentWithoutScopes["principals/agent.yaml"] = "id: shed\nkind: agent\nclass: worker\nidentities: [{source: github, handle: shed}]\n"
+	missingAgentGrant := writeConfig(t, agentWithoutScopes)
 
 	tests := []struct {
 		name       string
@@ -603,6 +606,11 @@ func TestConfigValidate(t *testing.T) {
 			name:    "an invalid configuration names the file, the line and the field",
 			args:    []string{"config", "validate", broken},
 			wantErr: `scopes/api.yaml:1: scope "api": sources[1].source: no source is configured with id "discord"`,
+		},
+		{
+			name:    "an agent needs a scope grant",
+			args:    []string{"config", "validate", missingAgentGrant},
+			wantErr: `principal "shed": scopes: is required`,
 		},
 		{
 			name:    "the reserved Hearsay source id is rejected",
@@ -655,6 +663,20 @@ func TestConfigValidate(t *testing.T) {
 func TestServicesLoadTheirConfiguration(t *testing.T) {
 	noDatabase(t)
 	valid := writeConfig(t, validConfig)
+	agentWithoutScopes := maps.Clone(validConfig)
+	agentWithoutScopes["principals/agent.yaml"] = "id: shed\nkind: agent\nclass: worker\nidentities: [{source: github, handle: shed}]\n"
+	missingAgentGrant := writeConfig(t, agentWithoutScopes)
+	for _, service := range []string{"api", "connectors", "distiller", "assert-worker"} {
+		t.Run(service+" rejects an agent without scopes", func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			err := run(ctx, []string{service, "--config", missingAgentGrant}, &stdout, &stderr)
+			if err == nil || !strings.Contains(err.Error(), `principal "shed": scopes: is required`) {
+				t.Fatalf("run(%s --config <agent without scopes>) = %v", service, err)
+			}
+		})
+	}
 
 	t.Run("a bad configuration stops the service starting", func(t *testing.T) {
 		broken := writeConfig(t, map[string]string{"sources/github.yaml": "id: github\n"})

@@ -53,6 +53,6 @@ subject to the `recent` cap; no code content, ever.
   record the pin gesture will write.
 - **Only a line with an id.** An entity has a `line` only when it is a document
   the reader may read, and then it carries that document's `l1`.
-- **Not built yet:** conflicts (always `[]`).
+- **Conflicts** come from a readable directive's references or text matching a readable current topic title or position. They are computed before budget trimming, capped at three, ordered by tier then topic id, and carry the current position, tier, and ratification stakes. Without a directive they are `[]`.
 
 See [docs/design.md](../../docs/design.md#the-context-bundle).

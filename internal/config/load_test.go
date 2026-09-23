@@ -256,7 +256,7 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 		},
 		{
 			name:  "an agent with no class",
-			files: with(map[string]string{"principals/p.yaml": "id: shed\nkind: agent\nidentities: [{source: github, handle: shed}]\n"}),
+			files: with(map[string]string{"principals/p.yaml": "id: shed\nkind: agent\nscopes: ['*']\nidentities: [{source: github, handle: shed}]\n"}),
 			want:  []string{`principal "shed": class: is required on an agent`},
 		},
 		{
@@ -276,7 +276,7 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 		},
 		{
 			name:  "an agent class that does not exist",
-			files: with(map[string]string{"principals/p.yaml": "id: shed\nkind: agent\nclass: superuser\nidentities: [{source: github, handle: shed}]\n"}),
+			files: with(map[string]string{"principals/p.yaml": "id: shed\nkind: agent\nclass: superuser\nscopes: ['*']\nidentities: [{source: github, handle: shed}]\n"}),
 			want:  []string{`principal "shed": class: "superuser" is not an agent class`},
 		},
 		{
@@ -574,7 +574,7 @@ func TestLoadPrincipalsAndResolver(t *testing.T) {
 			// case are two identities. A GitHub node id is base64: its case is
 			// meaning rather than spelling.
 			"- id: robin\n  identities: [{source: github, native_id: mdq6vxnlcje=}]\n" +
-			"- id: shed\n  kind: agent\n  class: worker\n  identities: [{source: github, handle: \"shed-agent[bot]\"}]\n" +
+			"- id: shed\n  kind: agent\n  class: worker\n  scopes: [code:acme/api]\n  identities: [{source: github, handle: \"shed-agent[bot]\"}]\n" +
 			"- id: api-team\n  kind: team\n  members: [kyle, shed]\n" +
 			// A team that claims a source's group needs no members: the group
 			// is the membership, and the source keeps it up to date.

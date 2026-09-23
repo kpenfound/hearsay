@@ -39,6 +39,8 @@ type Principal struct {
 	// TokenEnv names the environment variable holding this human's or agent's
 	// API bearer token. It is never the token itself. Teams cannot call the API.
 	TokenEnv string
+	// Grant is this human's or agent's configured reach. Teams do not act.
+	Grant Grant
 	// Identities are the source-native identities that are this principal: the
 	// mapping [Resolver] resolves an event's identity hints against.
 	Identities []Identity
