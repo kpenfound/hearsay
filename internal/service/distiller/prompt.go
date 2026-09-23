@@ -52,6 +52,13 @@ Never quote a credential, a token, a key or a personal email address, even if th
 // kindPrompts is what each kind of artifact is for, and what is worth keeping
 // from it.
 var kindPrompts = map[l1.Kind]string{
+	l1.KindWikiSection: `This is one section of a document or wiki page. The markdown heading and body are source text, including any frontmatter, tags, and wikilinks.
+
+- summary: preserve the facts and reasoning in this section only.
+- outcome: only a decision or resolution explicitly stated in this section. Do not carry conclusions from other sections.
+- open_questions: questions left unanswered in this section, one per entry.
+
+Use outcome_kind none for descriptive material. Classify a proposal or decision only when this section itself states it.`,
 	l1.KindChatBurst: `This is one author's contiguous tangent inside a longer chat conversation.
 
 - summary: preserve the distinct facts or reasoning in this tangent, using only these messages.

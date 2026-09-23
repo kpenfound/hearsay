@@ -25,14 +25,15 @@ var (
 	ErrNotFound = errors.New("no such l1 document")
 )
 
-// MaxDocIDLen also covers a channel-window key made from the longest
-// container id and a Unix timestamp. It remains below the queue target limit.
+// MaxDocIDLen covers a channel-window key or section key made from the longest
+// source-native ids. It remains below the queue target limit.
 const MaxDocIDLen = len("l1:") + connector.MaxSourceIDLen + len(":burst:chat:") + 2*connector.MaxNativeIDLen + len(":-9223372036854775808")
 
 // Kind is what an L1 document is. It is L1's own vocabulary rather than L0's:
 // several L0 kinds make one document (a pull request with its reviews and its
 // comments is one `pr`), and one L0 kind can make several (a meeting
-// transcript is one `meeting_segment` per topic, later).
+// transcript is one `meeting_segment` per topic, later, and a document has
+// one `wiki_section` per heading-bounded part.
 //
 // docs/design.md#l1-distilled-documents lists the whole vocabulary. The kinds
 // here are the ones this build distils; the rest arrive with the sources that
@@ -51,6 +52,8 @@ const (
 	KindChatThread Kind = "chat_thread"
 	// KindChatBurst is a gated single-author run within a long conversation.
 	KindChatBurst Kind = "chat_burst"
+	// KindWikiSection is one heading-bounded part of an L0 document.
+	KindWikiSection Kind = "wiki_section"
 )
 
 // rootKinds maps the L0 kind of an artifact that makes a document of its own to
@@ -66,12 +69,14 @@ var rootKinds = map[connector.Kind]Kind{
 
 // Kinds is every document kind this build produces, in the order they are
 // documented.
-func Kinds() []Kind { return []Kind{KindIssue, KindPR, KindCommit, KindChatThread, KindChatBurst} }
+func Kinds() []Kind {
+	return []Kind{KindIssue, KindPR, KindCommit, KindChatThread, KindChatBurst, KindWikiSection}
+}
 
 // Valid reports whether k is a kind this build produces.
 func (k Kind) Valid() bool {
 	switch k {
-	case KindIssue, KindPR, KindCommit, KindChatThread, KindChatBurst:
+	case KindIssue, KindPR, KindCommit, KindChatThread, KindChatBurst, KindWikiSection:
 		return true
 	}
 	return false
@@ -168,9 +173,9 @@ type Source struct {
 	// System is the configured source instance — `github-acme`, not `github` —
 	// which is the unit the ingest allowlist and the identity mapping work in.
 	System string `json:"system"`
-	// NativeID is the artifact id within that source: `acme/api#31`. It is the
-	// artifact, never one observation of it, so it does not move when the
-	// artifact is edited.
+	// NativeID is the artifact or derived section key within that source. It
+	// never names one observation, so a source edit preserves the identity of
+	// an unchanged artifact or section.
 	NativeID string `json:"native_id"`
 	// URL is the permalink, where the source gave one.
 	URL string `json:"url,omitempty"`
@@ -207,16 +212,16 @@ type Participant struct {
 // of one table, and it is derived — everything in it can be rebuilt from the
 // events [Document.L0Refs] names.
 type Document struct {
-	// ID is `l1:<source>:<artifact>` ([DocID]), so a document id can be read
-	// back to the artifact it distils without a lookup.
+	// ID is `l1:<source>:<key>` ([DocID]); a wiki section's key includes its
+	// source artifact and heading identity.
 	ID string `json:"id"`
 	// Kind is what sort of document this is.
 	Kind Kind `json:"kind"`
 	// Source is the artifact this document distils.
 	Source Source `json:"source"`
 	// L0Refs are the event ids this document was built from, in the order the
-	// document reads: the current revision of the artifact, then the current
-	// revision of each comment, review and reply on it. Provenance is required
+	// document reads. A wiki section can retain an earlier source revision
+	// containing identical text when a different section changes. Provenance is required
 	// — a document that names no events cannot be regenerated or followed back.
 	L0Refs []string `json:"l0_refs"`
 	// Time is when the artifact happened and when it last moved.

@@ -161,14 +161,14 @@ func (d *Distiller) Handle(ctx context.Context, job queue.Job) error {
 	switch {
 	case result.Skipped:
 		log.DebugContext(ctx, "nothing to distil", "l1_id", result.DocID)
-	case result.Deleted:
-		log.InfoContext(ctx, "document removed: its artifact was retracted at the source", "l1_id", result.DocID)
-	case result.Superseded:
-		log.InfoContext(ctx, "distillation dropped: the conversation moved while the model was answering",
-			"l1_id", result.DocID)
 	case result.Written:
 		log.InfoContext(ctx, "document distilled", "l1_id", result.DocID,
 			"redacted", result.Redacted, "embedded", result.Embedded, "asserting", result.Asserting)
+	case result.Deleted:
+		log.InfoContext(ctx, "derived document removed", "l1_id", result.DocID)
+	case result.Superseded:
+		log.InfoContext(ctx, "distillation dropped: the conversation moved while the model was answering",
+			"l1_id", result.DocID)
 	default:
 		log.DebugContext(ctx, "document unchanged", "l1_id", result.DocID, "embedded", result.Embedded)
 	}
@@ -212,6 +212,9 @@ func (d *Distiller) Distill(ctx context.Context, docID string) (Result, error) {
 		return result, nil
 	}
 	root := roots[0]
+	if root.Kind == connector.KindDocument || root.Payload.BaseKind == connector.KindDocument {
+		return d.distillWikiSections(ctx, result, root)
+	}
 	if _, ok := l1.KindFor(root); !ok {
 		// A job for something that is part of another artifact's document: a
 		// comment whose parent the source did not name, or a kind no L1 kind
@@ -306,12 +309,101 @@ func (d *Distiller) deleteConversation(ctx context.Context, source, artifact, do
 			return err
 		}
 		_, err = tx.Exec(ctx, `DELETE FROM l1_docs WHERE source = $1 AND kind = $2 AND left(source_native_id, length($3)) = $3`, source, l1.KindChatBurst, l1.BurstPrefix(artifact))
+		if err != nil {
+			return err
+		}
+		removed, err := tx.Exec(ctx, `DELETE FROM l1_docs WHERE source = $1 AND kind = $2 AND left(source_native_id, length($3)) = $3`, source, l1.KindWikiSection, l1.WikiSectionPrefix(artifact))
+		deleted = deleted || removed.RowsAffected() > 0
 		return err
 	})
 	if err != nil {
 		return false, fmt.Errorf("removing conversation %s: %w", docID, err)
 	}
 	return deleted, nil
+}
+
+// distillWikiSections models each bounded part independently, then reconciles
+// the entire derived set in one transaction. A failed call cannot leave half a
+// new page current or retract the prior version of an unchanged section.
+func (d *Distiller) distillWikiSections(ctx context.Context, result Result, root connector.Event) (Result, error) {
+	sections, err := l1.BuildWikiSections(root, d.resolver, d.repo)
+	if err != nil {
+		return Result{}, fmt.Errorf("building sections of %s: %w", result.DocID, err)
+	}
+	for i := range sections {
+		previous, err := d.docs.Get(ctx, sections[i].ID)
+		if err != nil && !errors.Is(err, l1.ErrNotFound) {
+			return Result{}, err
+		}
+		if err == nil && previous.Kind == l1.KindWikiSection && previous.RawText == sections[i].RawText {
+			if previous.Source.URL == sections[i].Source.URL && slices.Equal(previous.ACL, sections[i].ACL) &&
+				slices.Equal(previous.Participants, sections[i].Participants) && slices.Equal(previous.References, sections[i].References) && slices.Equal(previous.Scope, sections[i].Scope) {
+				// The prior L0 revision still proves this exact text, so an edit to
+				// another section need not rewrite this row or its outcome.
+				sections[i] = previous.Document
+				continue
+			}
+			sections[i], _, err = sections[i].WithBody(previous.Body)
+			if err != nil {
+				return Result{}, err
+			}
+			continue
+		}
+		body, err := d.distil(ctx, sections[i])
+		if err != nil {
+			return Result{}, err
+		}
+		sections[i], _, err = sections[i].WithBody(body)
+		if err != nil {
+			return Result{}, err
+		}
+	}
+	current, err := d.events.Current(ctx, l0.ListOptions{Filter: l0.Filter{Source: root.Source, Artifact: root.Payload.Artifact}, Limit: 1})
+	if err != nil {
+		return Result{}, fmt.Errorf("re-reading %s: %w", result.DocID, err)
+	}
+	if len(current) != 1 || current[0].NativeID != root.NativeID {
+		result.Superseded = true
+		return result, nil
+	}
+	ids := make([]string, len(sections))
+	for i, section := range sections {
+		ids[i] = section.ID
+	}
+	err = pgx.BeginFunc(ctx, d.pool, func(tx pgx.Tx) error {
+		removed, err := tx.Exec(ctx, `DELETE FROM l1_docs WHERE source = $1 AND kind = $2 AND left(source_native_id, length($3)) = $3 AND NOT (id = ANY($4))`, root.Source, l1.KindWikiSection, l1.WikiSectionPrefix(root.Payload.Artifact), ids)
+		if err != nil {
+			return fmt.Errorf("reconciling sections of %s: %w", result.DocID, err)
+		}
+		result.Deleted = removed.RowsAffected() > 0
+		for _, section := range sections {
+			written, err := l1.New(tx).Put(ctx, section)
+			if err != nil {
+				return err
+			}
+			result.Written = result.Written || written
+			if written {
+				asserting, err := l2.EnqueueAssertion(ctx, tx, d.repo, section, root.Payload.Container.NativeID)
+				if err != nil {
+					return err
+				}
+				result.Asserting = result.Asserting || asserting
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return Result{}, err
+	}
+	for _, section := range sections {
+		embedded, err := d.embed(ctx, section.ID)
+		if err != nil {
+			return Result{}, err
+		}
+		result.Embedded = result.Embedded || embedded
+	}
+	result.Skipped = len(sections) == 0 && !result.Deleted
+	return result, nil
 }
 
 func (d *Distiller) writeThread(ctx context.Context, result Result, source, artifact, container string, doc l1.Document, messages []connector.Event) (Result, error) {
