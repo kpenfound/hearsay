@@ -1,6 +1,7 @@
 package bundle
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -58,7 +59,7 @@ type Bundle struct {
 	Stances       []Stance   `json:"stances"`
 	Recent        Recent     `json:"recent"`
 	OpenQuestions []Question `json:"open_questions"`
-	Conflicts     []string   `json:"conflicts"`
+	Conflicts     []Conflict `json:"conflicts"`
 	Handles       []string   `json:"handles"`
 }
 
@@ -68,6 +69,16 @@ type Directive struct {
 	From string `json:"from"`
 	Via  string `json:"via"`
 	L0   string `json:"l0"`
+	// References are extracted from the current event, and never served.
+	References []l1.Reference `json:"-"`
+}
+
+// Conflict names a readable current position a directive bears on.
+type Conflict struct {
+	TopicID string `json:"topic_id"`
+	Current string `json:"current"`
+	Tier    string `json:"tier"`
+	Stakes  string `json:"stakes"`
 }
 
 // Scope is what the bundle is for.
@@ -231,6 +242,21 @@ func (a *Assembler) AssembleForEvent(ctx context.Context, reader l1.Reader, scop
 			if in.Directive, err = a.directive(ctx, reader, scope, eventID); err != nil {
 				return Bundle{}, Report{}, err
 			}
+			if in.Directive != nil && slices.ContainsFunc(in.Directive.References, func(ref l1.Reference) bool { return ref.Type == l1.RefURL }) {
+				in.EvidenceURLs = map[string]string{}
+				for _, current := range in.Stances {
+					for _, id := range current.Stance.Evidence {
+						if _, seen := in.EvidenceURLs[id]; seen {
+							continue
+						}
+						doc, err := a.docs.Get(ctx, id)
+						if err != nil {
+							return Bundle{}, Report{}, err
+						}
+						in.EvidenceURLs[id] = doc.Source.URL
+					}
+				}
+			}
 		}
 	}
 	b, trimmed, tokens, err := Build(in, a.budget)
@@ -355,7 +381,8 @@ func (a *Assembler) directive(ctx context.Context, reader l1.Reader, scope, id s
 	if ev.Payload.Thread != "" {
 		via += ":" + ev.Payload.Thread
 	}
-	return &Directive{Text: ev.Payload.Text, From: from, Via: via, L0: ev.ID}, nil
+	return &Directive{Text: ev.Payload.Text, From: from, Via: via, L0: ev.ID,
+		References: l1.References([]connector.Event{ev}, a.resolver, a.repo.Code)}, nil
 }
 
 // Inputs are what a bundle is built from, already filtered for its reader.
@@ -368,11 +395,13 @@ type Inputs struct {
 	// Entities are the ones of Direct the graph holds.
 	Entities []l2.Entity
 	// Subject is the document the scope is, where there is one.
-	Subject   *l1.Stored
-	Anchors   []l3.Anchor
-	Stances   []l3.CurrentStance
-	Recent    l3.Activity
-	Questions []l3.Question
+	Subject *l1.Stored
+	Anchors []l3.Anchor
+	Stances []l3.CurrentStance
+	// EvidenceURLs are the source permalinks of readable current evidence.
+	EvidenceURLs map[string]string
+	Recent       l3.Activity
+	Questions    []l3.Question
 }
 
 // Build lays inputs out as a bundle and holds it to a budget, dropping from the
@@ -400,7 +429,7 @@ func Build(in Inputs, budget int) (Bundle, Trimmed, int, error) {
 		Stances:       []Stance{},
 		Recent:        Recent{Items: []Item{}},
 		OpenQuestions: []Question{},
-		Conflicts:     []string{},
+		Conflicts:     []Conflict{},
 		Handles:       slices.Clone(Handles),
 	}
 	known := map[string]l2.Entity{}
@@ -434,6 +463,7 @@ func Build(in Inputs, budget int) (Bundle, Trimmed, int, error) {
 			Inherited:  c.Inherited,
 		})
 	}
+	b.Conflicts = conflicts(in.Directive, in.Stances, in.EvidenceURLs)
 	if !in.Recent.LastActivity.IsZero() {
 		b.Recent.LastActivity = stamp(in.Recent.LastActivity)
 	}
@@ -447,6 +477,79 @@ func Build(in Inputs, budget int) (Bundle, Trimmed, int, error) {
 	}
 
 	return trim(b, budget)
+}
+
+func conflicts(d *Directive, stances []l3.CurrentStance, evidenceURLs map[string]string) []Conflict {
+	out := []Conflict{}
+	if d == nil {
+		return out
+	}
+	for _, c := range stances {
+		if !bearsOn(d, c, evidenceURLs) {
+			continue
+		}
+		stakes := "not yet ratified"
+		if c.Tier == l2.TierRatified {
+			stakes = "departing from it needs ratification"
+		}
+		out = append(out, Conflict{TopicID: c.Topic.ID, Current: Line(c.Stance.Position), Tier: string(c.Tier), Stakes: stakes})
+	}
+	priority := func(t string) int {
+		switch l2.Tier(t) {
+		case l2.TierRatified:
+			return 0
+		case l2.TierContested:
+			return 1
+		default:
+			return 2
+		}
+	}
+	slices.SortFunc(out, func(a, b Conflict) int {
+		if n := cmp.Compare(priority(a.Tier), priority(b.Tier)); n != 0 {
+			return n
+		}
+		return cmp.Compare(a.TopicID, b.TopicID)
+	})
+	if len(out) > 3 {
+		out = out[:3]
+	}
+	return out
+}
+
+func bearsOn(d *Directive, c l3.CurrentStance, evidenceURLs map[string]string) bool {
+	for _, ref := range d.References {
+		if ref.Type == l1.RefSystem && slices.Contains(c.Topic.About, ref.ID) {
+			return true
+		}
+		if ref.Type != l1.RefIssue && ref.Type != l1.RefPR && ref.Type != l1.RefTrackerItem && ref.Type != l1.RefURL {
+			continue
+		}
+		if slices.Contains(c.Topic.About, ref.ID) || slices.Contains(c.Stance.Evidence, ref.ID) {
+			return true
+		}
+		// Tracker references name a source artifact; L1 evidence and L2
+		// tracker entities prefix it with their layer and source.
+		for _, evidence := range c.Stance.Evidence {
+			if ref.Type == l1.RefURL && evidenceURLs[evidence] == ref.ID {
+				return true
+			}
+			if strings.HasSuffix(evidence, ":"+ref.ID) {
+				return true
+			}
+		}
+		for _, entity := range c.Topic.About {
+			if strings.HasSuffix(entity, ":"+ref.ID) {
+				return true
+			}
+		}
+	}
+	return textMatch(d.Text, c.Topic.Name) || textMatch(d.Text, c.Stance.Position)
+}
+
+func textMatch(directive, phrase string) bool {
+	phrase = strings.Join(strings.Fields(strings.ToLower(phrase)), " ")
+	directive = strings.Join(strings.Fields(strings.ToLower(directive)), " ")
+	return phrase != "" && strings.Contains(directive, phrase)
 }
 
 // trim holds a laid-out bundle to its budget. The drop order is Build's, one

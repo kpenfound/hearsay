@@ -189,7 +189,7 @@ bundle:
     - { line: "who runs the migration in staging?", evidence: [l1:...] }
 
   conflicts:                   # computed, not retrieved
-    - "directive matches inferred stance 'hand-run'; not yet ratified"
+    - { topic_id: topic:migration-strategy, current: "hand-run migrations for this release", tier: inferred, stakes: "not yet ratified" }
 
   handles: { get_l1, get_l0, search, stance_history, resolve }
 ```
