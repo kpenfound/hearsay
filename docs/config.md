@@ -99,7 +99,7 @@ renamed afterwards ([connector contract](connector-contract.md#source-ids)).
 | Field | Meaning |
 |---|---|
 | `id` | The source id. It appears in every event id, so it is chosen once. |
-| `type` | The connector type: `github`, `discord`, `drive`, `obsidian`, or a third party's. |
+| `type` | The connector type: `github`, `discord`, `drive`, `obsidian`, `agent`, or a third party's. |
 | `containers` | The repositories, channels or folders this source may ingest, **by native id** — a repository full name, a channel id, a folder id, never a display name. This is control point 1 of [access control](design.md#access-control): default deny, so a container that is not listed is not ingested. `*` widens it to everything the credentials can see, and must then be the only entry. |
 | `refresh` | A duration (`30s`, `5m`, `1h`). The poll interval and base retry interval for a stream. Ignored by a connector that only receives pushes; the runtime applies its own floor and jitter — never more often than every 30 seconds, and each tick up to a tenth of the interval later than it is due. Without it, polls run every five minutes and failed streams retry from a 30-second base. |
 | `settings` | Opaque to Hearsay and passed to the connector, which rejects a field it does not have. What belongs here is documented by the connector. |
@@ -244,6 +244,45 @@ removals are still found after a process restart. ACL and owner changes start a 
 new permission revisions. If an ACL is changed back to a prior value, set a new
 `permission_version` to prevent an earlier identical revision from deduplicating
 that transition.
+
+### Agent session source
+
+Agents post their own session events to this source: the session starting and
+ending, its turns and its tool calls. Hearsay does not fetch anything for it.
+Each event is one `POST /hooks/<source id>` on the connectors service.
+[The connector contract](connector-contract.md#agent-sessions-issue-149) has one
+example request per kind.
+
+```yaml
+sources:
+  - id: agent-sessions
+    type: agent
+    containers: ["*"]        # or the ids of the agents that may post: [shed]
+```
+
+It takes no `settings` and no `secrets`. An agent authenticates with the API
+token its principal names in `token_env`, sent as `Authorization: Bearer
+<token>`, and the events are authored by that agent. The connectors service
+reads every agent's `token_env` when it starts. It refuses to start if a named
+variable is unset or empty, if two agents share a token, or if no agent has a
+`token_env`, because then nobody could post. `containers` are principal ids of
+kind `agent`, or `*`.
+
+A request names the person the session acts for in `on_behalf_of`. That person
+must be a configured `human`. The events' access list is that person and the
+agent, as `identity` entries in this source whose native ids are their
+principal ids. For a principal to read the events, and for their authorship to
+resolve, list that identity on the principal:
+
+```yaml
+- id: kyle
+  identities:
+    - source: agent-sessions
+      native_id: kyle
+```
+
+The distiller does not distil these events. They record what an agent did,
+and they are not team knowledge.
 
 ## `scopes/`
 

@@ -164,7 +164,7 @@ func (l *loader) buildSources() []connector.SourceConfig {
 
 		switch {
 		case src.Type == "":
-			l.bad(a, "type", "is required: it selects the connector, such as github, discord, drive or obsidian")
+			l.bad(a, "type", "is required: it selects the connector, such as github, discord, drive, obsidian or agent")
 		case !isName(src.Type):
 			l.bad(a, "type", "%q is not a connector type: lowercase letters, digits, - and _", src.Type)
 		}

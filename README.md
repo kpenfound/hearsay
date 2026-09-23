@@ -64,7 +64,8 @@ flowchart LR
     API <-- "get_bundle, resolve, search, assert" --> Agent & Human
 ```
 
-GitHub and Discord connectors ship today, along with Drive folder and Obsidian vault backfill.
+GitHub and Discord connectors ship today, along with Drive folder and Obsidian vault backfill
+and an agent session source that agents post their own sessions to.
 Drive change sync, Obsidian live sync and Slack are where the design points next.
 
 ## Quick start

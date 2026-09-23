@@ -835,6 +835,103 @@ or newly disallowed notes receive a tombstone using their previous ACL. A
 rename creates a new path artifact. The gate admits these retraction events
 even when the old folder has left the allowlist; they contain no note text.
 
+### Agent sessions (issue #149)
+
+| Artifact | kind | artifact id | native_id | container |
+|---|---|---|---|---|
+| Session start | `agent_session` | `<session id>` | `<session id>@start` | stream `<agent id>` |
+| Session end | `agent_session` | `<session id>` | `<session id>@end` | stream |
+| Turn | `agent_turn` | `<session id>` | `<session id>@turn:<turn id>` | stream |
+| Tool call | `tool_call` | `<session id>` | `<session id>@call:<call id>` | stream |
+
+The `agent` connector (`internal/connector/agent`) is a `Pusher` that agents
+post their own session events to, one event per `POST /hooks/<source id>`. It is
+not a source that Hearsay reads. The source's own signature is the agent's API
+bearer token, the one its principal names in `token_env`
+([ADR-0014](adr/0014-api-callers-use-per-principal-bearer-tokens.md)):
+`Authorization: Bearer <agent token>`. The author is the agent that token
+belongs to, `{source, kind: agent, native_id: <agent id>}`. A body whose optional
+`agent` names a different agent is refused. `on_behalf_of` names the person the
+session acts for. It must be a configured human principal, and it becomes a
+participant with role `author`, as it is on the API's own `audit` and
+`assertion` events.
+
+The artifact is the session, and each event is one revision of it, keyed by
+what the event is. An artifact's history in L0 is therefore the session in
+order. `time` is when the session started (`started_at`) on every event,
+because every revision of an artifact carries the same `time`. When the event
+itself happened (`time` in the request) is `payload.revision.edited_at`, and it
+orders the session's events. Posting an event again writes nothing. Posting the
+same key with different content is answered 409 and writes nothing, because a
+key names one thing that happened. Session, turn and call ids are 1 to 128 bytes
+of letters, digits, `-`, `_`, `.` and `:`.
+
+The container is the agent's session stream, `{kind: stream, native_id: <agent
+id>}`. The source's `containers` are `*` or the agent ids allowed to post. An
+agent that is not allowed is refused with 403, so the event is not dropped
+without the agent knowing. The ACL is two `identity` entries in this source, the
+agent and the person, whose native ids are their principal ids. Nobody else is
+on it. A turn's `text` is `payload.text`. The session id, phase, turn or call id,
+tool name, and a tool call's `input` and `output` are in `payload.native`.
+None of these kinds is distilled.
+
+The responses are 202 with `{"id": "<event id>"}` for an event written or
+already held, 400 for a request that is not a valid event, 401 for a missing
+token or one that is not an agent's, 403 for a body naming another agent, a
+person who is not a configured human, or an agent the source does not allow,
+and 409 for a rewritten key. The requests of one session, one per kind:
+
+```http
+POST /hooks/agent-sessions
+Authorization: Bearer <shed's token>
+Content-Type: application/json
+
+{"on_behalf_of": "kyle", "session": "s-01", "kind": "agent_session", "phase": "start",
+ "started_at": "2026-09-23T17:00:00Z", "time": "2026-09-23T17:00:00Z"}
+```
+
+```json
+{"on_behalf_of": "kyle", "session": "s-01", "kind": "agent_turn", "turn": "1",
+ "started_at": "2026-09-23T17:00:00Z", "time": "2026-09-23T17:00:05Z",
+ "text": "Reading the retry policy before changing it."}
+```
+
+```json
+{"on_behalf_of": "kyle", "session": "s-01", "kind": "tool_call", "call": "c-1", "tool": "get_bundle",
+ "started_at": "2026-09-23T17:00:00Z", "time": "2026-09-23T17:00:06Z",
+ "input": {"scope": "api"}, "output": {"tokens": 1830}}
+```
+
+```json
+{"agent": "shed", "on_behalf_of": "kyle", "session": "s-01", "kind": "agent_session", "phase": "end",
+ "started_at": "2026-09-23T17:00:00Z", "time": "2026-09-23T17:10:00Z"}
+```
+
+The turn above is written as:
+
+```json
+{
+  "id": "evt:agent-sessions:s-01@turn:1",
+  "source": "agent-sessions",
+  "native_id": "s-01@turn:1",
+  "kind": "agent_turn",
+  "time": "2026-09-23T17:00:00Z",
+  "payload": {
+    "artifact": "s-01",
+    "container": {"kind": "stream", "native_id": "shed"},
+    "text": "Reading the retry policy before changing it.",
+    "author": {"source": "agent-sessions", "kind": "agent", "native_id": "shed"},
+    "participants": [{"identity": {"source": "agent-sessions", "kind": "user", "native_id": "kyle"}, "role": "author"}],
+    "revision": {"token": "turn:1", "edited_at": "2026-09-23T17:00:05Z"},
+    "native": {"session": "s-01", "turn": "1"}
+  },
+  "acl": [
+    {"kind": "identity", "source": "agent-sessions", "native_id": "shed"},
+    {"kind": "identity", "source": "agent-sessions", "native_id": "kyle"}
+  ]
+}
+```
+
 ## Changing this contract
 
 The L0 event shape is a contract other work depends on (CONTRIBUTING.md).
