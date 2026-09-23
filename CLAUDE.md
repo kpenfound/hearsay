@@ -139,6 +139,8 @@ from one call layer whose bytes both interfaces serve verbatim, on `--listen`
 (default `:8080`; `hearsay all` takes `--api-listen`). The caller is named by
 `Hearsay-Principal` and authenticated by a bearer token; the agent acting for
 them is named by `Hearsay-Agent` and must supply its own token (ADR-0014).
+An agent can send `Hearsay-Session` to link bundle audits and assertions to a
+session artifact; `get_session` follows an assertion id to that trace (ADR-0017).
 Every read is filtered by that principal's
 access lists, and every bundle served is an L0 `audit` event under source
 `hearsay`. `assert` is an agent's write: only an agent of class `worker` or
