@@ -559,6 +559,11 @@ func TestConfigValidate(t *testing.T) {
 		"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\n",
 		"scopes/api.yaml":     "id: api\nsources: [github, discord]\n",
 	})
+	reservedSource := writeConfig(t, map[string]string{
+		"sources/github.yaml":  "id: github\ntype: github\ncontainers: [acme/api]\n",
+		"sources/hearsay.yaml": "id: hearsay\ntype: github\ncontainers: [acme/api]\n",
+		"scopes/api.yaml":      "id: api\nsources: [github]\n",
+	})
 
 	tests := []struct {
 		name       string
@@ -598,6 +603,11 @@ func TestConfigValidate(t *testing.T) {
 			name:    "an invalid configuration names the file, the line and the field",
 			args:    []string{"config", "validate", broken},
 			wantErr: `scopes/api.yaml:1: scope "api": sources[1].source: no source is configured with id "discord"`,
+		},
+		{
+			name:    "the reserved Hearsay source id is rejected",
+			args:    []string{"config", "validate", reservedSource},
+			wantErr: `source "hearsay": id: "hearsay" is reserved for Hearsay's own audit and assertion events`,
 		},
 		{
 			name:    "config with no action says what it wanted",

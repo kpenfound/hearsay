@@ -113,6 +113,13 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 			},
 		},
 		{
+			name: "the Hearsay event source id is reserved",
+			files: with(map[string]string{
+				"sources/hearsay.yaml": "id: hearsay\ntype: github\ncontainers: [acme/api]\n",
+			}),
+			want: []string{`source "hearsay": id: "hearsay" is reserved for Hearsay's own audit and assertion events`},
+		},
+		{
 			// The referrer names the id as written, so this is the one round
 			// trip: nothing of that name is configured, because the name is
 			// what is wrong with it.
