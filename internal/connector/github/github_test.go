@@ -23,8 +23,10 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/github"
+	"github.com/kpenfound/hearsay/internal/l1"
 )
 
 const (
@@ -39,7 +41,15 @@ const (
 	// reviewToken is review 77's content token: the first 16 hex digits of
 	// sha256("approved\nLooks good.").
 	reviewToken = "cca24e8b92a08e66"
+	// pullToken is pull request 2's content token: its updated_at, and the
+	// first 16 hex digits of the SHA-256 of each path testdata/api/
+	// pulls-2-files.json names, sorted, followed by a newline.
+	pullToken = "2026-09-04T12:00:00Z+paths:83f03ef649440f8e"
 )
+
+// pullPaths are the paths pull request 2 touches: its files, and the name the
+// renamed one had.
+var pullPaths = []string{"api/health.go", "docs/health.md", "engine/server/health.go", "engine/server/x.go"}
 
 // wantBackfill is every native id a backfill of acme/api emits, in the order it
 // emits them: issues by updated_at, pull requests in creation order with their
@@ -49,7 +59,7 @@ const (
 var wantBackfill = []string{
 	"acme/api#3@2026-08-20T09:30:00Z",
 	"acme/api#1@2026-09-02T11:00:00Z",
-	"acme/api#2@2026-09-04T12:00:00Z",
+	"acme/api#2@" + pullToken,
 	"acme/api#2:review:77@" + reviewToken,
 	"acme/api#3:comment:997@2026-08-15T10:00:00Z",
 	"acme/api#1:comment:998@2026-09-01T12:30:00Z",
@@ -74,6 +84,7 @@ var fixtureLists = map[string]string{
 	"/repos/acme/api/issues":          "issues.json",
 	"/repos/acme/api/pulls":           "pulls.json",
 	"/repos/acme/api/pulls/2/reviews": "reviews-2.json",
+	"/repos/acme/api/pulls/2/files":   "pulls-2-files.json",
 	"/repos/acme/api/issues/comments": "issue-comments.json",
 	"/repos/acme/api/pulls/comments":  "review-comments.json",
 	"/repos/acme/api/commits":         "commits.json",
@@ -210,7 +221,7 @@ func (gh *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		gh.paginate(w, r, since(commits[start:], q.Get("since"), "commit", "committer", "date"))
 	default:
 		items, known := gh.lists[path]
-		if !known && !strings.HasSuffix(sub, "/reviews") && repo != "acme/web" {
+		if !known && !strings.HasSuffix(sub, "/reviews") && !strings.HasSuffix(sub, "/files") && repo != "acme/web" {
 			gh.t.Errorf("unexpected request %s", r.URL.RequestURI())
 			http.NotFound(w, r)
 			return
@@ -633,9 +644,11 @@ func TestBackfillEmitsTheContractsEvents(t *testing.T) {
 		text     string
 		time     string
 		editedAt string
-		// token is the revision token where it is not editedAt.
+		// token is the revision token where it is not editedAt, which is then
+		// the revision's edited_at alone.
 		token  string
 		native string
+		paths  []string
 	}{
 		{
 			nativeID: "acme/api#1@2026-09-02T11:00:00Z", kind: connector.KindIssue, artifact: "acme/api#1", author: kyle,
@@ -648,9 +661,9 @@ func TestBackfillEmitsTheContractsEvents(t *testing.T) {
 			native: `"closed_at":"2026-08-20T09:30:00Z"`,
 		},
 		{
-			nativeID: "acme/api#2@2026-09-04T12:00:00Z", kind: connector.KindPullRequest, artifact: "acme/api#2", author: robin,
-			title: "Fix /health", text: "Fixes #1", time: "2026-09-03T08:00:00Z", editedAt: "2026-09-04T12:00:00Z",
-			native: `"head":{"ref":"fix-health"`,
+			nativeID: "acme/api#2@" + pullToken, kind: connector.KindPullRequest, artifact: "acme/api#2", author: robin,
+			title: "Fix /health", text: "Fixes #1", time: "2026-09-03T08:00:00Z", editedAt: "2026-09-04T12:00:00Z", token: pullToken,
+			native: `"head":{"ref":"fix-health"`, paths: pullPaths,
 		},
 		{
 			nativeID: "acme/api#2:review:77@" + reviewToken, kind: connector.KindReview, artifact: "acme/api#2:review:77", parent: "acme/api#2",
@@ -710,8 +723,12 @@ func TestBackfillEmitsTheContractsEvents(t *testing.T) {
 			}
 			switch {
 			case tt.token != "":
-				if p.Revision == nil || p.Revision.Token != tt.token || !p.Revision.EditedAt.IsZero() {
-					t.Errorf("revision = %+v, want token %s and no edited_at", p.Revision, tt.token)
+				var edited string
+				if p.Revision != nil && !p.Revision.EditedAt.IsZero() {
+					edited = p.Revision.EditedAt.Format(time.RFC3339)
+				}
+				if p.Revision == nil || p.Revision.Token != tt.token || edited != tt.editedAt {
+					t.Errorf("revision = %+v, want token %s and edited_at %q", p.Revision, tt.token, tt.editedAt)
 				}
 			case tt.editedAt == "" && p.Revision != nil:
 				t.Errorf("revision = %+v, want none", p.Revision)
@@ -724,6 +741,9 @@ func TestBackfillEmitsTheContractsEvents(t *testing.T) {
 			}
 			if !strings.Contains(string(p.Native), tt.native) {
 				t.Errorf("native = %s, want it to contain %s", p.Native, tt.native)
+			}
+			if !slices.Equal(p.Paths, tt.paths) || p.PathsTruncated {
+				t.Errorf("paths = %v, truncated %v; want %v, not truncated", p.Paths, p.PathsTruncated, tt.paths)
 			}
 			if p.URL == "" {
 				t.Error("url is empty")
@@ -1060,6 +1080,12 @@ func TestBackfillFailures(t *testing.T) {
 			wantErr: "500",
 		},
 		{
+			name:    "the files of a pull request cannot be read",
+			cursor:  `{"repo":"acme/api","step":"pulls"}`,
+			setup:   func(gh *fakeGitHub) { gh.fail("/repos/acme/api/pulls/2/files", http.StatusBadGateway) },
+			wantErr: "502",
+		},
+		{
 			name:    "the default branch cannot be read",
 			cursor:  `{"repo":"acme/api","step":"commits"}`,
 			setup:   func(gh *fakeGitHub) { gh.fail("/repos/acme/api/branches/main", http.StatusInternalServerError) },
@@ -1288,7 +1314,7 @@ func TestPushReadsItsCommitsInOneCall(t *testing.T) {
 // A push whose read does not finish inside the delivery timeout is answered as
 // a failure while GitHub is still listening.
 func TestPushThatCannotReadInTimeFails(t *testing.T) {
-	t.Cleanup(github.SetPushReadTimeout(50 * time.Millisecond))
+	t.Cleanup(github.SetReadTimeout(50 * time.Millisecond))
 	gh := newFakeGitHub(t)
 	release := gh.hold("/repos/acme/api/compare/" + baseSHA + "..." + sha1)
 	src := newSource(t, gh, sourceID, nil)
@@ -1519,6 +1545,12 @@ func TestWebhookFailuresAreServerErrors(t *testing.T) {
 			// A gate outside a runtime has no store to record a re-sync in.
 			name: "a re-sync cannot be recorded", event: "repository", file: "repository.privatized",
 			setup: func(*fakeGitHub, *connector.Recorder) {},
+		},
+		{
+			name: "the files of a pull request cannot be read", event: "pull_request", file: "pull_request.synchronize",
+			setup: func(gh *fakeGitHub, _ *connector.Recorder) {
+				gh.fail("/repos/acme/api/pulls/2/files", http.StatusInternalServerError)
+			},
 		},
 		{
 			name: "a pushed commit cannot be read", event: "push", file: "push",
@@ -1958,6 +1990,169 @@ func TestASubIssueIsPartOfItsParent(t *testing.T) {
 				}
 				if a, b := asJSON(t, ev), asJSON(t, same); a != b {
 					t.Errorf("webhook event differs from the backfilled one:\n%s\nwant\n%s", a, b)
+				}
+			}
+		})
+	}
+}
+
+// pullEvent is the one pull request event among events.
+func pullEvent(t *testing.T, events []connector.Event) connector.Event {
+	t.Helper()
+	var found []connector.Event
+	for _, ev := range events {
+		if ev.Kind == connector.KindPullRequest {
+			found = append(found, ev)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("%d pull request events, want one: %v", len(found), nativeIDs(found))
+	}
+	return found[0]
+}
+
+// The recorded files list of pull request 2 is what its event says it
+// touches — names, never the patch the list carries — and what L1 links it to
+// code entities by: engine/server/x.go is in engine/server and not in its
+// sibling.
+func TestAPullRequestLinksToTheCodeItTouches(t *testing.T) {
+	gh := newFakeGitHub(t)
+	src := newSource(t, gh, sourceID, nil)
+	c := newConnector(t, src)
+	rec := &connector.Recorder{}
+	backfillAll(t, c, gateFor(src, c, rec))
+	pr := pullEvent(t, rec.Events())
+
+	if !slices.Equal(pr.Payload.Paths, pullPaths) || pr.Payload.PathsTruncated {
+		t.Errorf("paths = %v, truncated %v; want %v", pr.Payload.Paths, pr.Payload.PathsTruncated, pullPaths)
+	}
+	if raw := asJSON(t, pr); strings.Contains(raw, "SECRET_PATCH_LINE") || strings.Contains(raw, "@@") {
+		t.Errorf("the event holds a patch: %s", raw)
+	}
+
+	api := config.SourceRef{Source: sourceID, Project: "acme/api"}
+	code := []config.CodeEntity{
+		{ID: "code:acme/api:engine/server", Name: "Engine server", PathPatterns: []string{"engine/server/**"}, Repo: api},
+		{ID: "code:acme/api:engine/client", Name: "Engine client", PathPatterns: []string{"engine/client/**"}, Repo: api},
+	}
+	var systems []string
+	for _, ref := range l1.References([]connector.Event{pr}, nil, code) {
+		if ref.Type == l1.RefSystem {
+			systems = append(systems, ref.ID)
+		}
+	}
+	if want := []string{"code:acme/api:engine/server"}; !slices.Equal(systems, want) {
+		t.Errorf("system references = %v, want %v", systems, want)
+	}
+}
+
+// A push to a pull request moves its updated_at and changes what it touches:
+// the delivery reads the files again, and a backfill afterwards reads the same
+// list into the same event. A files list that changes under an unchanged
+// updated_at is a new revision too, not an event id that comes back with
+// different content.
+func TestAPullRequestUpdateRefreshesItsPaths(t *testing.T) {
+	gh := newFakeGitHub(t)
+	src := newSource(t, gh, sourceID, nil)
+	c := newConnector(t, src)
+	before := &connector.Recorder{}
+	backfillAll(t, c, gateFor(src, c, before))
+	old := pullEvent(t, before.Events())
+
+	const pushedAt = "2026-09-05T09:00:00Z"
+	gh.setList("/repos/acme/api/pulls/2/files", []map[string]any{
+		{"filename": "engine/client/y.go", "status": "modified", "patch": "@@ -1 +1 @@"},
+	})
+	gh.touch("/repos/acme/api/pulls", 2, pushedAt)
+	body := bytes.ReplaceAll(hook(t, "pull_request.synchronize"), []byte(`"updated_at": "2026-09-04T12:00:00Z"`), []byte(`"updated_at": "`+pushedAt+`"`))
+	live := &connector.Recorder{}
+	if code := deliver(t, c.Handler(gateFor(src, c, live)), "pull_request", body); code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", code)
+	}
+	pushed := pullEvent(t, live.Events())
+	if want := []string{"engine/client/y.go"}; !slices.Equal(pushed.Payload.Paths, want) {
+		t.Errorf("paths after the push = %v, want %v", pushed.Payload.Paths, want)
+	}
+	if !strings.HasPrefix(pushed.NativeID, "acme/api#2@"+pushedAt+"+paths:") || pushed.NativeID == old.NativeID {
+		t.Errorf("native id after the push = %s, want a new revision at %s", pushed.NativeID, pushedAt)
+	}
+
+	after := &connector.Recorder{}
+	fresh := newConnector(t, src)
+	backfillAll(t, fresh, gateFor(src, fresh, after))
+	if a, b := asJSON(t, pullEvent(t, after.Events())), asJSON(t, pushed); a != b {
+		t.Errorf("the backfill after the push differs from the delivery:\n%s\nwant\n%s", a, b)
+	}
+
+	// The same updated_at with another files list.
+	gh.setList("/repos/acme/api/pulls/2/files", []map[string]any{{"filename": "engine/client/z.go", "status": "added"}})
+	again := &connector.Recorder{}
+	if code := deliver(t, c.Handler(gateFor(src, c, again)), "pull_request", body); code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", code)
+	}
+	if moved := pullEvent(t, again.Events()); moved.NativeID == pushed.NativeID {
+		t.Errorf("native id %s is the same for two files lists", moved.NativeID)
+	}
+}
+
+// A pull request touching more paths than the bound is read no further than
+// the bound, and records the first of what was read in sorted order, marked
+// truncated: the same event from a backfill, a second backfill and a delivery.
+func TestThePathsOfAPullRequestAreBounded(t *testing.T) {
+	tests := []struct {
+		name          string
+		files         int
+		wantTruncated bool
+	}{
+		{name: "exactly the bound", files: connector.MaxPaths},
+		{name: "over the bound", files: connector.MaxPaths + 57, wantTruncated: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// The files in an order that is not sorted, as a list GitHub
+			// gives in diff order may not be.
+			files := make([]map[string]any, tt.files)
+			names := make([]string, tt.files)
+			for i := range files {
+				names[i] = fmt.Sprintf("engine/f%04d.go", (i*7919)%tt.files)
+				files[i] = map[string]any{"filename": names[i], "status": "modified", "patch": "@@ -1 +1 @@"}
+			}
+			gh := newFakeGitHub(t)
+			gh.setList("/repos/acme/api/pulls/2/files", files)
+			src := newSource(t, gh, sourceID, nil)
+
+			var events []connector.Event
+			for range 2 {
+				c := newConnector(t, src)
+				rec := &connector.Recorder{}
+				mark := len(gh.seen())
+				backfillAll(t, c, gateFor(src, c, rec))
+				events = append(events, pullEvent(t, rec.Events()))
+				reads := 0
+				for _, uri := range gh.seen()[mark:] {
+					if strings.HasPrefix(uri, "/repos/acme/api/pulls/2/files") {
+						reads++
+					}
+				}
+				if limit := (connector.MaxPaths + 99) / 100; reads > limit {
+					t.Errorf("the files list was read %d times, want at most %d", reads, limit)
+				}
+			}
+			c := newConnector(t, src)
+			live := &connector.Recorder{}
+			if code := deliver(t, c.Handler(gateFor(src, c, live)), "pull_request", hook(t, "pull_request.synchronize")); code != http.StatusAccepted {
+				t.Fatalf("status = %d, want 202", code)
+			}
+			events = append(events, pullEvent(t, live.Events()))
+
+			want := slices.Sorted(slices.Values(names[:connector.MaxPaths]))
+			got := events[0].Payload
+			if !slices.Equal(got.Paths, want) || got.PathsTruncated != tt.wantTruncated {
+				t.Errorf("paths = %d, truncated %v; want the %d read, sorted, truncated %v", len(got.Paths), got.PathsTruncated, len(want), tt.wantTruncated)
+			}
+			for _, ev := range events[1:] {
+				if a, b := asJSON(t, ev), asJSON(t, events[0]); a != b {
+					t.Errorf("a second read differs:\n%s\nwant\n%s", a, b)
 				}
 			}
 		})

@@ -358,7 +358,11 @@ func (c *Connector) pulls(ctx context.Context, sink connector.Sink, v view, pos 
 		if before(floor, p.UpdatedAt) {
 			continue
 		}
-		ev, err := v.pullEvent(p)
+		t, err := c.touched(ctx, v.repo, p.Number)
+		if err != nil {
+			return n, nil, err
+		}
+		ev, err := v.pullEvent(p, t)
 		if err != nil {
 			return n, nil, err
 		}
@@ -376,6 +380,44 @@ func (c *Connector) pulls(ctx context.Context, sink connector.Sink, v view, pos 
 		return n, nil, nil
 	}
 	return n, &position{Repo: pos.Repo, Step: pos.Step, Page: page + 1}, nil
+}
+
+// touched reads the paths one pull request touches from its files list, and
+// stops once it has [connector.MaxPaths] of them: at the largest page size,
+// that is at most three calls for a pull request of any size. What was read is
+// put in the contract's shape by [connector.BoundPaths], and the list is
+// truncated where GitHub had more to give or the bound cut what was read.
+//
+// Only names are read. The files list also carries every file's patch, which
+// is not decoded, and nothing reads a file's content.
+func (c *Connector) touched(ctx context.Context, repo string, number int) (touched, error) {
+	var (
+		paths []string
+		more  = true
+	)
+	for page := 1; more && len(paths) < connector.MaxPaths; page++ {
+		q := url.Values{"per_page": {strconv.Itoa(perPage)}}
+		if page > 1 {
+			q.Set("page", strconv.Itoa(page))
+		}
+		var files []changedFile
+		var err error
+		more, err = c.api.get(ctx, repoPath(repo)+"/pulls/"+strconv.Itoa(number)+"/files?"+q.Encode(), &files)
+		if err != nil {
+			return touched{}, fmt.Errorf("reading the files of pull request %d: %w", number, err)
+		}
+		for _, f := range files {
+			paths = append(paths, f.Filename)
+			if f.PreviousFilename != "" {
+				paths = append(paths, f.PreviousFilename)
+			}
+		}
+		if len(files) == 0 {
+			more = false
+		}
+	}
+	bounded, cut := connector.BoundPaths(paths)
+	return touched{paths: bounded, truncated: cut || more}, nil
 }
 
 // reviews emits every submitted review of one pull request, all its pages in

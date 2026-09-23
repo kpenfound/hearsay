@@ -41,12 +41,13 @@ type delivery struct {
 	After  string `json:"after"`
 }
 
-// pushReadTimeout bounds the one REST read a push delivery makes. GitHub gives
-// up on a delivery that is not answered in ten seconds, closes the connection
-// and does not redeliver, so a read that cannot finish inside that is answered
-// as a failure while GitHub is still listening. A variable so that a test can
+// readTimeout bounds the REST reads a delivery makes: a push's one read of its
+// commits, and a pull request's read of the paths it touches. GitHub gives up
+// on a delivery that is not answered in ten seconds, closes the connection and
+// does not redeliver, so a read that cannot finish inside that is answered as
+// a failure while GitHub is still listening. A variable so that a test can
 // shorten it.
-var pushReadTimeout = 8 * time.Second
+var readTimeout = 8 * time.Second
 
 // comparison is GitHub's compare response, as far as a push reads it.
 type comparison struct {
@@ -204,7 +205,17 @@ func (c *Connector) events(ctx context.Context, event string, v view, d delivery
 		if d.PullRequest == nil {
 			return nil, missing("pull_request")
 		}
-		return one(v.pullEvent(*d.PullRequest))
+		// A delivery does not say which files a pull request touches, so they
+		// are read from the REST API — the same list a backfill reads — on
+		// every delivery: a push to the branch changes them, and so can an
+		// edit that retargets the base.
+		ctx, cancel := context.WithTimeout(ctx, readTimeout)
+		defer cancel()
+		t, err := c.touched(ctx, v.repo, d.PullRequest.Number)
+		if err != nil {
+			return nil, err
+		}
+		return one(v.pullEvent(*d.PullRequest, t))
 
 	case "pull_request_review":
 		if d.Review == nil || d.PullRequest == nil {
@@ -293,7 +304,7 @@ func sameIssue(a, b string) bool {
 // pushed is the commits a push added to the default branch. A push payload
 // names its authors by git name and email and not by account, so the commits
 // are read from the REST API — the same objects a backfill reads, and so the
-// same events — in one call, inside [pushReadTimeout]:
+// same events — in one call, inside [readTimeout]:
 //
 //   - a push that moved the branch compares where it was with where it is,
 //     which returns up to 250 commits;
@@ -312,7 +323,7 @@ func (c *Connector) pushed(ctx context.Context, v view, d delivery) ([]connector
 		return nil, nil
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, pushReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()
 	var (
 		commits []commit
