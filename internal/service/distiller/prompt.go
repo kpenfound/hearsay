@@ -52,6 +52,13 @@ Never quote a credential, a token, a key or a personal email address, even if th
 // kindPrompts is what each kind of artifact is for, and what is worth keeping
 // from it.
 var kindPrompts = map[l1.Kind]string{
+	l1.KindMeetingSegment: `This is one topic of a meeting transcript. Use only the transcript lines in this segment.
+
+- summary: preserve the discussion and reasoning on this topic alone.
+- outcome: only the decision, resolution, or proposal explicitly made in these lines.
+- open_questions: questions left unanswered in these lines.
+
+Do not import an outcome from another topic. Use outcome_kind none when these lines conclude nothing.`,
 	l1.KindWikiSection: `This is one section of a document or wiki page. The markdown heading and body are source text, including any frontmatter, tags, and wikilinks.
 
 - summary: preserve the facts and reasoning in this section only.

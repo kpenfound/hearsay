@@ -212,6 +212,9 @@ func (d *Distiller) Distill(ctx context.Context, docID string) (Result, error) {
 		return result, nil
 	}
 	root := roots[0]
+	if root.Kind == connector.KindTranscript || root.Payload.BaseKind == connector.KindTranscript {
+		return d.distillMeeting(ctx, result, root)
+	}
 	if root.Kind == connector.KindDocument || root.Payload.BaseKind == connector.KindDocument {
 		return d.distillWikiSections(ctx, result, root)
 	}
@@ -313,6 +316,11 @@ func (d *Distiller) deleteConversation(ctx context.Context, source, artifact, do
 			return err
 		}
 		removed, err := tx.Exec(ctx, `DELETE FROM l1_docs WHERE source = $1 AND kind = $2 AND left(source_native_id, length($3)) = $3`, source, l1.KindWikiSection, l1.WikiSectionPrefix(artifact))
+		deleted = deleted || removed.RowsAffected() > 0
+		if err != nil {
+			return err
+		}
+		removed, err = tx.Exec(ctx, `DELETE FROM l1_docs WHERE source = $1 AND kind = $2 AND left(source_native_id, length($3)) = $3`, source, l1.KindMeetingSegment, l1.MeetingSegmentPrefix(artifact))
 		deleted = deleted || removed.RowsAffected() > 0
 		return err
 	})
