@@ -47,10 +47,12 @@ type Connector struct {
 	owner      connector.Identity
 	acl        connector.ACL
 	permission string
+	version    string
 }
 
 var _ connector.Poller = (*Connector)(nil)
 var _ connector.Backfiller = (*Connector)(nil)
+var _ connector.BackfillVersioner = (*Connector)(nil)
 
 // Factory builds a connector for the binary registry.
 func Factory(_ context.Context, src connector.SourceConfig) (connector.Connector, error) {
@@ -117,7 +119,14 @@ func New(src connector.SourceConfig) (*Connector, error) {
 		Version string             `json:"version"`
 	}{acl, s.Owner, s.PermissionVersion})
 	permissionHash := sha256.Sum256(permissionJSON)
-	return &Connector{source: src.ID, root: root, folders: folders, templates: slices.Clone(s.Templates), owner: s.Owner, acl: acl, permission: hex.EncodeToString(permissionHash[:])[:16]}, nil
+	versionJSON, _ := json.Marshal(struct {
+		Root       string   `json:"root"`
+		Folders    []string `json:"folders"`
+		Templates  []string `json:"templates"`
+		Permission string   `json:"permission"`
+	}{s.Root, folders, s.Templates, hex.EncodeToString(permissionHash[:])})
+	versionHash := sha256.Sum256(versionJSON)
+	return &Connector{source: src.ID, root: root, folders: folders, templates: slices.Clone(s.Templates), owner: s.Owner, acl: acl, permission: hex.EncodeToString(permissionHash[:])[:16], version: "obsidian:" + hex.EncodeToString(versionHash[:])}, nil
 }
 
 func validFolder(f string) error {
@@ -168,16 +177,24 @@ type frame struct {
 	After string `json:"after,omitempty"`
 }
 type position struct {
-	Stack []frame `json:"stack"`
+	Version string  `json:"version"`
+	Stack   []frame `json:"stack"`
 }
+
+// BackfillVersion identifies the ACL and configured filesystem selection that
+// a completed walk covered. A changed value asks the runtime to backfill again.
+func (c *Connector) BackfillVersion() string { return c.version }
 
 // Backfill visits at most pageSize filesystem entries per call. The cursor
 // carries path names, never process-local offsets or open file handles.
 func (c *Connector) Backfill(ctx context.Context, sink connector.Sink, from connector.Cursor) (connector.BackfillResult, error) {
-	p := position{Stack: []frame{{Dir: "."}}}
+	p := position{Version: c.version, Stack: []frame{{Dir: "."}}}
 	if from != "" {
 		if err := json.Unmarshal([]byte(from), &p); err != nil {
 			return connector.BackfillResult{}, fmt.Errorf("decoding obsidian cursor: %w", err)
+		}
+		if p.Version != c.version {
+			p = position{Version: c.version, Stack: []frame{{Dir: "."}}}
 		}
 		if len(p.Stack) == 0 || len(p.Stack) > 128 || p.Stack[0].Dir != "." {
 			return connector.BackfillResult{}, errors.New("invalid obsidian cursor")

@@ -220,8 +220,8 @@ space becomes `%20`) to satisfy the L0 native-id contract.
 
 The initial backfill is paged and its cursor is stored in Postgres. Only the
 initial walk is implemented here; later changes and removals are handled by
-#103. ACL and owner changes create new permission revisions when backfill runs
-again. If an ACL is changed back to a prior value, set a new
+#103. ACL and owner changes start a new bounded backfill after restart and create
+new permission revisions. If an ACL is changed back to a prior value, set a new
 `permission_version` to prevent an earlier identical revision from deduplicating
 that transition.
 

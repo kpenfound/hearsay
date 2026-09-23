@@ -436,6 +436,12 @@ type Backfiller interface {
     Backfill(ctx context.Context, sink Sink, from Cursor) (BackfillResult, error)
 }
 
+// Optional: a completed history walk invalidated by config changes.
+type BackfillVersioner interface {
+    Backfiller
+    BackfillVersion() string
+}
+
 // Optional: containers that can stop being public.
 type Resyncer interface {
     Connector
@@ -448,6 +454,11 @@ Push where the source supports it, poll for bounded reads, and stream for a
 client-dialed live connection. A connector may implement several modes, and a
 live source still needs `Backfiller` to get its history.
 
+- **`BackfillVersion`** identifies the configured input set for a completed
+  backfill. The runtime stores its short, printable value with the done cursor
+  and starts a new bounded walk on a later process start if it changes. A
+  connector changing its input set while a walk is unfinished also checks the
+  version in its own cursor before resuming.
 - **`Poll`** is never called concurrently with itself, so a poller may keep its
   position in memory without locking. It returns when it has emitted what one
   pass found. An error is retried on the next tick with backoff.
@@ -699,6 +710,11 @@ label removal are handled by #99.
 |---|---|---|---|---|
 | Markdown note | `document` | `<vault-relative path>.md` (unsafe bytes percent-escaped) | `<path>@<SHA-256 content hash>+<permission hash>` | containing vault-relative folder |
 
+A connector may implement `BackfillVersioner` with a stable `BackfillVersion()`
+for its configured input set. The runtime stores that value in the completed
+cursor and starts a new bounded walk after restart when it changes. An
+unfinished walk remains resumable by its own cursor.
+
 One locally mounted vault is one source. The source's explicit `containers`
 are allowed folders and include descendants; the gate uses a folder boundary
 for this source. Backfill visits a bounded set of filesystem entries per call
@@ -709,6 +725,8 @@ is the author and the sole identity ACL entry by default. `public: true` is an
 explicit opt-in. The permission hash includes the ACL, owner and configured
 permission version, so a changed ACL with unchanged content is a new revision.
 A return to an earlier ACL requires a new configured permission version.
+A changed owner, ACL, root, folder allowlist or template list starts a new
+backfill on restart; this is configuration handling, not live polling.
 Polling and tombstones belong to #103.
 
 ## Changing this contract

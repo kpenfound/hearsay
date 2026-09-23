@@ -111,6 +111,15 @@ type Backfiller interface {
 	Backfill(ctx context.Context, sink Sink, from Cursor) (BackfillResult, error)
 }
 
+// BackfillVersioner is an optional Backfiller whose configured input set can
+// change between process starts. The runtime remembers this stable version when
+// a walk finishes and restarts the walk if a later process reports another one.
+// The version must be a short, printable, persistent-safe cursor value.
+type BackfillVersioner interface {
+	Backfiller
+	BackfillVersion() string
+}
+
 // Cursor is a connector's position in a backfill. It is opaque to Hearsay,
 // which only stores it and hands it back, so a connector may put a page token,
 // a timestamp or a JSON object in it. It must survive a restart, so it may not

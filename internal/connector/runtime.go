@@ -479,6 +479,15 @@ func (r *Runtime) backfill(ctx context.Context, h *hosted, backfiller Backfiller
 	if err != nil {
 		return
 	}
+	version := ""
+	if v, ok := backfiller.(BackfillVersioner); ok {
+		version = v.BackfillVersion()
+	}
+	if state.Done && version != "" && state.Cursor != Cursor(version) {
+		// A different configured input set must be walked again, even when the
+		// previous backfill finished. Re-emission deduplicates unchanged events.
+		state = BackfillState{}
+	}
 	// What health says about the backfill is what the stored position says,
 	// including on a process that did none of the walking: a source walked in an
 	// earlier process is walked, and readiness that said otherwise would have an
@@ -523,6 +532,9 @@ func (r *Runtime) backfill(ctx context.Context, h *hosted, backfiller Backfiller
 			// Next is ignored when Done is set, so the position stays where the
 			// last call that meant one left it.
 			next.Cursor = state.Cursor
+			if version != "" {
+				next.Cursor = Cursor(version)
+			}
 		}
 		if err := r.save(ctx, h, next, interval); err != nil {
 			return
