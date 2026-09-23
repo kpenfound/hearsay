@@ -387,6 +387,18 @@ func TestATombstonedArtifactLosesItsDocument(t *testing.T) {
 	if _, err := d.Distill(t.Context(), id); err != nil {
 		t.Errorf("Distill(retracted, again) = %v", err)
 	}
+	// A later revision of the stable artifact restores its derived document.
+	reentry := fixtureEvents(src)[0]
+	reentry.NativeID = reentry.Payload.Artifact + "@reentry"
+	reentry.Payload.Revision = &connector.Revision{Token: "reentry", EditedAt: at(10)}
+	ingest(t, pool, []connector.Event{reentry})
+	result, err = d.Distill(t.Context(), id)
+	if err != nil || !result.Written {
+		t.Fatalf("Distill(restored) = %+v, %v", result, err)
+	}
+	if _, err := docs.Get(t.Context(), id); err != nil {
+		t.Errorf("restored document is missing: %v", err)
+	}
 }
 
 // A comment deleted at the source leaves the document that quoted it. The

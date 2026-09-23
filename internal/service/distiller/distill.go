@@ -199,7 +199,7 @@ func (d *Distiller) Distill(ctx context.Context, docID string) (Result, error) {
 	}
 	if len(roots) == 0 {
 		// Either the artifact was retracted at the source — a tombstone hides
-		// every event of it — or nothing was ever ingested under this id. A
+		// its earlier revisions — or nothing was ever ingested under this id. A
 		// document derived from nothing is not a document, and leaving one
 		// standing would serve what the source deleted
 		// (docs/design.md#deletion-and-provenance).

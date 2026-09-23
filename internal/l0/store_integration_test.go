@@ -246,6 +246,72 @@ func TestATombstoneHidesTheEventAndKeepsTheRow(t *testing.T) {
 	assertCounts(t, store, event.Source, connector.KindTombstone, 1, 1)
 }
 
+func TestRetractionAndReentryKeepHistoryAndCurrentState(t *testing.T) {
+	store, fake, source := newStore(t)
+	first := fake.NewEvent(connector.KindDocument, "file@r1", "old")
+	first.Payload.Artifact = "file"
+	first.Payload.Revision = &connector.Revision{Token: "r1", EditedAt: first.Time}
+	tomb := fake.NewEvent(connector.KindTombstone, "file:tombstone:1", "")
+	tomb.Payload.Target = "file"
+	for _, ev := range []connector.Event{first, tomb} {
+		if _, err := store.Append(t.Context(), ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, ok, err := store.CurrentArtifact(t.Context(), source, "file"); err != nil || ok {
+		t.Fatalf("retracted current = %v, %v", ok, err)
+	}
+	last, ok, err := store.LastRetraction(t.Context(), source, "file")
+	if err != nil || !ok || last.NativeID != tomb.NativeID {
+		t.Fatalf("last retraction = %+v, %v, %v", last, ok, err)
+	}
+	reentry := first
+	reentry.NativeID = "file@r1+return:1"
+	reentry.Payload.Revision = &connector.Revision{Token: "r1+return:1", EditedAt: first.Time}
+	reentry.Payload.Text = "new"
+	reentry.ACL = connector.ACL{{Kind: connector.ACLPublic}}
+	if _, err := store.Append(t.Context(), reentry); err != nil {
+		t.Fatal(err)
+	}
+	if replay, err := store.Append(t.Context(), tomb); err != nil || replay.Stored {
+		t.Fatalf("replayed tombstone = %+v, %v", replay, err)
+	}
+	if replay, err := store.Append(t.Context(), reentry); err != nil || replay.Stored {
+		t.Fatalf("replayed reentry = %+v, %v", replay, err)
+	}
+	current, ok, err := store.CurrentArtifact(t.Context(), source, "file")
+	if err != nil || !ok || current.Payload.Text != "new" || !slices.Equal(current.ACL, reentry.ACL) {
+		t.Fatalf("restored current = %+v, %v, %v", current, ok, err)
+	}
+	if _, err := store.Get(t.Context(), connector.EventID(source, first.NativeID)); !errors.Is(err, l0.ErrRetracted) {
+		t.Errorf("old revision = %v", err)
+	}
+	if _, err := store.Get(t.Context(), connector.EventID(source, reentry.NativeID)); err != nil {
+		t.Errorf("reentry = %v", err)
+	}
+	visible, err := store.List(t.Context(), l0.ListOptions{Filter: l0.Filter{Source: source, Artifact: "file"}})
+	if err != nil || !slices.Equal(nativeIDs(visible), []string{reentry.NativeID}) {
+		t.Errorf("visible history = %v, %v", nativeIDs(visible), err)
+	}
+	if got := feed(t, store, l0.Cursor{}, source, []string{tomb.NativeID, reentry.NativeID}); !slices.Equal(got, []string{tomb.NativeID, reentry.NativeID}) {
+		t.Errorf("feed = %v", got)
+	}
+	rewritten := reentry
+	rewritten.Payload.Text = "different"
+	if _, err := store.Append(t.Context(), rewritten); !errors.Is(err, l0.ErrRewrite) {
+		t.Errorf("rewrite = %v", err)
+	}
+	secondTomb := tomb
+	secondTomb.NativeID = "file:tombstone:2"
+	secondTomb.Payload.Artifact = secondTomb.NativeID
+	if _, err := store.Append(t.Context(), secondTomb); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.CurrentArtifact(t.Context(), source, "file"); err != nil || ok {
+		t.Errorf("second retraction current = %v, %v", ok, err)
+	}
+}
+
 // Retracted is the one read past a tombstone, and it reads nothing else: an
 // artifact nothing retracted, one the source never held and one another source
 // retracted are all not found, and a retracted one comes back as its current

@@ -195,6 +195,15 @@ when notifications are unavailable or missed. If `notification_url` is set,
 point it to this source's externally reachable `/hooks/<source id>` endpoint;
 the connector renews its Drive notification channel before it expires.
 
+If a file leaves a configured folder, is deleted, or loses the exact meeting
+transcript label, live sync retracts it from current context. Moving a document
+back or reapplying the published label to a transcript in a candidate folder
+restores the same file id with freshly read content and sharing permissions.
+Polling and token-expiry recovery perform the same checks. The prior tombstone
+and revisions remain in L0 history. Keep the service account able to read file
+metadata, labels, content, revisions and permissions after re-entry; an
+unreadable label or file cannot restore it.
+
 ### Obsidian source
 
 Mount one local vault into the connectors container and use its absolute path as

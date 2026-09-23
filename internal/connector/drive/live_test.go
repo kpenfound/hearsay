@@ -17,6 +17,8 @@ import (
 type liveFile struct {
 	Folder, Head, Text      string
 	Tagged, Public, Deleted bool
+	LabelID                 string
+	UnreadableLabels        bool
 }
 
 type liveFixture struct {
@@ -115,9 +117,15 @@ func (f *liveFixture) serve(w http.ResponseWriter, r *http.Request) {
 			}
 			write(fileJSON(id, state))
 		case "listLabels":
+			if state.UnreadableLabels {
+				http.Error(w, "labels unavailable", http.StatusForbidden)
+				return
+			}
 			labels := []map[string]string{}
 			if state.Tagged {
 				labels = append(labels, map[string]string{"id": "label"})
+			} else if state.LabelID != "" {
+				labels = append(labels, map[string]string{"id": state.LabelID})
 			}
 			write(map[string]any{"labels": labels})
 		case "permissions":
