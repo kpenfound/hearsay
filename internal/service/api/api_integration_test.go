@@ -912,6 +912,42 @@ func TestEventDirectiveUsesCurrentRevisionAndPermission(t *testing.T) {
 	}
 }
 
+func TestDirectiveConflictIsIdenticalOverHTTPAndMCP(t *testing.T) {
+	w := newWorld(t)
+	artifact := w.project + "#12:message:conflict"
+	ev := connector.Event{
+		Source: w.src, NativeID: artifact, Kind: connector.KindMessage, Time: day,
+		Payload: connector.Payload{
+			Artifact: artifact, Container: connector.Container{Kind: connector.ContainerChannel, NativeID: w.project},
+			Thread: w.project + "#12", Text: "<@shed> where the lock lives; the customer",
+			Author:   &connector.Identity{Source: w.src, Kind: connector.IdentityUser, NativeID: kyleNode},
+			Mentions: []connector.Identity{{Source: w.src, Kind: connector.IdentityBot, NativeID: "shed-native", Handle: "shed[bot]"}},
+		}, ACL: connector.ACL{{Kind: connector.ACLPublic}},
+	}
+	if _, err := l0.New(w.pool).Append(t.Context(), ev); err != nil {
+		t.Fatal(err)
+	}
+	args := map[string]any{"scope": w.scope, "directive": connector.EventID(w.src, artifact)}
+	for _, caller := range []api.Caller{kyle, sam} {
+		httpBody := w.http(t, caller, "get_bundle", args)
+		mcpBody, isError := w.mcp(t, caller, "get_bundle", args)
+		if isError || !bytes.Equal(httpBody, mcpBody) {
+			t.Fatalf("HTTP %s MCP %s error %v", httpBody, mcpBody, isError)
+		}
+		b := decodeBundle(t, httpBody)
+		want := 2
+		if caller.Principal == "sam" {
+			want = 1
+		}
+		if len(b.Conflicts) != want || b.Conflicts[0].TopicID != l2.TopicID(w.src, w.issue, 0, "where the lock lives") {
+			t.Errorf("%s conflicts = %+v, want %d readable topics", caller.Principal, b.Conflicts, want)
+		}
+		if caller.Principal == "sam" && len(b.Conflicts) > 0 && b.Conflicts[0].Current == "we name them" {
+			t.Fatal("private stance leaked")
+		}
+	}
+}
+
 func mustJSON(t *testing.T, v any) []byte {
 	t.Helper()
 	b, err := json.Marshal(v)
