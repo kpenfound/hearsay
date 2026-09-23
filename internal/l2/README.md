@@ -33,7 +33,8 @@ corrupt.
   document that already holds a live stance on a topic — it was re-distilled,
   or re-run after a deletion — supersedes that stance, not whatever is newest
   on the topic, so one document holds at most one live stance per topic and a
-  restatement never reads as a reply to a later document. The replaced stance
+  replacement does not point to a later document. Its judgement is separately
+  made against the current position shown in the prompt. The replaced stance
   is *retired* (`RetiredSQL`, [Current]): never a topic's current stance, and
   never a predecessor again. A new document version writes a supersession even
   if it takes the same position.

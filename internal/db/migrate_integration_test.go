@@ -139,13 +139,18 @@ func TestMigrateUpAndDown(t *testing.T) {
 	// later is a line added at the top of this list; a migration that creates
 	// no table of its own — an index on an existing one — has no table here and
 	// is only checked for rolling back cleanly.
-	for i, table := range []string{"", "l0_resyncs", "l2_stances", "l0_backfill_cursors", "", "", "", "", "l0_feed_cursors", "l1_docs", "queue_job", "l0_events"} {
+	for i, table := range []string{"", "", "l0_resyncs", "l2_stances", "l0_backfill_cursors", "", "", "", "", "l0_feed_cursors", "l1_docs", "queue_job", "l0_events"} {
 		want := newest - int64(i) - 1
 		if _, err := migrator.Down(t.Context()); err != nil {
 			t.Fatalf("Down() = %v, want no error", err)
 		}
 		if version, err := migrator.Version(t.Context()); err != nil || version != want {
 			t.Fatalf("Version(after down) = %d, %v, want %d", version, err, want)
+		}
+		if i == 0 {
+			if _, err := pool.Exec(t.Context(), `SELECT judgement FROM l2_stances LIMIT 0`); err == nil {
+				t.Error("stance judgement remains after rolling its migration back")
+			}
 		}
 		if table == "" {
 			continue

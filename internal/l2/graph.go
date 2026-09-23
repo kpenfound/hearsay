@@ -12,6 +12,24 @@ import (
 // Tier is how far a stance is to be trusted (docs/design.md#topics-and-stances).
 type Tier string
 
+// Judgement records how a stance relates to the current position offered to
+// the assertion worker. Empty means no comparison was recorded.
+type Judgement string
+
+const (
+	// JudgementUnknown is a stance opened on a new topic or a historical row.
+	JudgementUnknown Judgement = ""
+	// JudgementChanges means the new position differs from the one shown.
+	JudgementChanges Judgement = "changes"
+	// JudgementRestates means it says the same thing, even in other words.
+	JudgementRestates Judgement = "restates"
+)
+
+// Valid reports whether the judgement can be stored.
+func (j Judgement) Valid() bool {
+	return j == JudgementUnknown || j == JudgementChanges || j == JudgementRestates
+}
+
 // The tiers.
 const (
 	// TierRatified is a stance a human confirmed or an authoritative artifact
@@ -72,9 +90,10 @@ func (t Topic) Validate() error {
 
 // Stance is one position on a topic, from one source, at one time.
 type Stance struct {
-	ID       string
-	TopicID  string
-	Position string
+	ID        string
+	TopicID   string
+	Position  string
+	Judgement Judgement
 	// Author is the principal id of whoever took the position, empty where the
 	// document's author did not resolve.
 	Author string
@@ -101,6 +120,8 @@ func (s Stance) Validate() error {
 		return fmt.Errorf("%w: stance %s has no topic", ErrInvalid, s.ID)
 	case s.Position == "" || len(s.Position) > MaxPosition:
 		return fmt.Errorf("%w: stance %s has a position of %d bytes, want 1 to %d", ErrInvalid, s.ID, len(s.Position), MaxPosition)
+	case !s.Judgement.Valid():
+		return fmt.Errorf("%w: stance %s has judgement %q", ErrInvalid, s.ID, s.Judgement)
 	case s.StatedAt.IsZero():
 		return fmt.Errorf("%w: stance %s has no time", ErrInvalid, s.ID)
 	case len(s.Evidence) == 0:
