@@ -23,7 +23,7 @@ Hearsay is the thing the agent asks instead. Chat apps, CLIs, and trackers becom
 |Layer|Holds|Answers|Mutability|
 |---|---|---|---|
 |L0|Raw events from every source|What happened|Append-only, tombstones for deletion|
-|L1|Distilled documents, one per L0 artifact, flat rows in one schema|What was said|Rebuilt from L0|
+|L1|Distilled documents, one or more per L0 artifact, flat rows in one schema|What was said|Rebuilt from L0|
 |L2|Entities, topics, stances, and the edges between them|What it means|Incremental, human-correctable|
 |L3|Derived views: current decisions, scope state, ownership|What is true right now|Rebuilt from L2 at any time, never written directly|
 
@@ -72,6 +72,7 @@ Design points:
 - `references` come from link parsing, @-mention resolution, and known system names, not from the LLM. They are the join key for L2 topic matching and cost nothing to recompute.
 - `outcome_kind` is the L2 trigger. Only docs marked `decided`, `proposed`, or `resolved` enter the assertion pipeline.
 - Meetings are segmented per topic. One meeting produces several L1 docs, each with one `outcome`.
+- A markdown document is partitioned at headings, including nested headings. The material before the first heading (or the whole page without headings) is an intro section. Each section is independently distilled as `wiki_section`; unchanged sections may retain provenance to an earlier L0 revision that contains the same text. A changed source ACL refreshes every current section.
 - Long Slack threads also emit bursts (single-author runs that pass rarity and length gates) so tangent facts survive summarization.
 - A secrets and PII scrub runs before `text` is written.
 - The distiller is stateless and idempotent. Any L1 doc can be regenerated from its `l0_refs`.

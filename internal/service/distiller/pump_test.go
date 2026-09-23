@@ -176,6 +176,10 @@ func TestTargetOf(t *testing.T) {
 			at(1), who(source, "u2", "samr"), "", "")},
 		want: "",
 	}, {
+		name: "a document routes to its source artifact for section distillation",
+		ev:   event(source, connector.KindDocument, "file-1", at(0), who(source, "u1", "kpenfound"), "Design", "# Decision\nText"),
+		want: l1.DocID(source, "file-1"),
+	}, {
 		name: "an extension kind is read through its base kind",
 		ev: func() connector.Event {
 			ev := event(source, "jira.story", "ENG-7", at(0), who(source, "u1", "kpenfound"), "a story", "text")
