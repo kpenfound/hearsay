@@ -550,36 +550,55 @@ func (d *Distiller) writeDocument(ctx context.Context, result Result, source, ar
 // voteAliases uses the existing distill result and structured references. A
 // PR's leading system reference is the most specific touched code entity.
 func (d *Distiller) voteAliases(ctx context.Context, tx pgx.Tx, doc l1.Document) error {
-	if doc.Kind != l1.KindChatThread || len(doc.Body.CodeNames) == 0 {
-		return nil
-	}
-	seen := map[string]bool{}
-	for _, ref := range doc.References {
-		if ref.Type != l1.RefPR {
-			continue
+	switch doc.Kind {
+	case l1.KindChatThread:
+		if len(doc.Body.CodeNames) == 0 {
+			return nil
 		}
-		prs, err := l1.New(tx).PRsByReference(ctx, ref.ID)
+		for _, ref := range doc.References {
+			if ref.Type != l1.RefPR {
+				continue
+			}
+			prs, err := l1.New(tx).PRsByReference(ctx, ref.ID)
+			if err != nil {
+				return err
+			}
+			for _, pr := range prs {
+				if err := voteForPair(ctx, tx, doc, pr.Document); err != nil {
+					return err
+				}
+			}
+		}
+	case l1.KindPR:
+		threads, err := l1.New(tx).ThreadsReferencingPR(ctx, doc.Source.NativeID)
 		if err != nil {
 			return err
 		}
-		for _, pr := range prs {
-			for _, touched := range pr.References {
-				if touched.Type != l1.RefSystem {
-					continue
-				}
-				for _, name := range doc.Body.CodeNames {
-					key := touched.ID + "\x00" + l2.NormalizeAlias(name)
-					if seen[key] {
-						continue
-					}
-					seen[key] = true
-					if err := l2.New(tx).VoteAlias(ctx, touched.ID, name, doc.ID, pr.ID, doc.ACL, pr.ACL); err != nil {
-						return err
-					}
-				}
-				break
+		for _, thread := range threads {
+			if err := voteForPair(ctx, tx, thread.Document, doc); err != nil {
+				return err
 			}
 		}
+	}
+	return nil
+}
+
+func voteForPair(ctx context.Context, tx pgx.Tx, thread, pr l1.Document) error {
+	// References orders touched entities by path specificity. A name without
+	// an explicit target is assigned only to the leading, most specific one.
+	for _, touched := range pr.References {
+		if touched.Type != l1.RefSystem {
+			continue
+		}
+		for _, name := range thread.Body.CodeNames {
+			if l2.NormalizeAlias(name) == "" {
+				continue
+			}
+			if err := l2.New(tx).VoteAlias(ctx, touched.ID, name, thread.ID, pr.ID, thread.ACL, pr.ACL); err != nil {
+				return err
+			}
+		}
+		break
 	}
 	return nil
 }

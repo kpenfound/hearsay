@@ -70,6 +70,29 @@ func (s *Store) PRsByReference(ctx context.Context, id string) ([]Stored, error)
 	return out, rows.Err()
 }
 
+// ThreadsReferencingPR finds chat documents that already named a pull request.
+// It lets a PR distilled after the conversation supply the same vote.
+func (s *Store) ThreadsReferencingPR(ctx context.Context, id string) ([]Stored, error) {
+	ref, err := json.Marshal([]Reference{{Type: RefPR, ID: id}})
+	if err != nil {
+		return nil, fmt.Errorf("encoding PR reference: %w", err)
+	}
+	rows, err := s.db.Query(ctx, `SELECT `+docColumns+` FROM l1_docs WHERE kind = 'chat_thread' AND refs @> $1::jsonb ORDER BY id`, ref)
+	if err != nil {
+		return nil, fmt.Errorf("finding threads for pull request %s: %w", id, err)
+	}
+	defer rows.Close()
+	out := []Stored{}
+	for rows.Next() {
+		doc, err := scanDoc(rows)
+		if err != nil {
+			return nil, fmt.Errorf("finding threads for pull request %s: %w", id, err)
+		}
+		out = append(out, doc)
+	}
+	return out, rows.Err()
+}
+
 // Stored is a document as the table holds it.
 type Stored struct {
 	Document

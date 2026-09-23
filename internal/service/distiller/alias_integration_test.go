@@ -102,4 +102,17 @@ func TestThreadAliasVotesFromTouchedPR(t *testing.T) {
 	if len(matches) != 0 {
 		t.Errorf("unconfirmed alias resolved: %+v", matches)
 	}
+	// A later ACL resync can narrow evidence. Candidate reads must honor the
+	// current L1 grant as well as the snapshot taken when votes were cast.
+	prDoc.ACL = connector.ACL{{Kind: connector.ACLGroup, Source: src, NativeID: "other"}}
+	if _, err := l1.New(pool).Put(t.Context(), prDoc); err != nil {
+		t.Fatal(err)
+	}
+	candidates, err := graph.AliasCandidates(t.Context(), cfg.Repo.Code[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || len(candidates[0].ACL) != 0 {
+		t.Errorf("candidate after evidence restriction = %+v, want no readable grants", candidates)
+	}
 }
