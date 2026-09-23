@@ -982,7 +982,7 @@ func (w *world) standingOf(t *testing.T, calls *api.Calls, authority config.Auth
 		Effective: principal.Effective{Human: "kyle", Grant: principal.Grant{Scopes: principal.AllScopes()}},
 		Audience:  []connector.ACLEntry{{Kind: connector.ACLIdentity, Source: w.src, NativeID: kyleNode}},
 	}
-	current, _, err := l3.New(w.pool).WithAuthority(authority).CurrentStances(t.Context(), reader, w.scope, nil)
+	current, _, _, err := l3.New(w.pool).WithAuthority(authority).CurrentStances(t.Context(), reader, w.scope, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
