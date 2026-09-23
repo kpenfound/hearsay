@@ -73,9 +73,9 @@ func (c *Connector) Public(ctx context.Context, container string) (bool, error) 
 	if !slices.Contains(c.repos, container) {
 		return false, fmt.Errorf("repository %s is not one the source names", container)
 	}
-	var repo repository
-	if _, err := c.api.get(ctx, repoPath(container), &repo); err != nil {
-		return false, fmt.Errorf("reading repository %s: %w", container, err)
+	repo, err := c.api.repository(ctx, container)
+	if err != nil {
+		return false, err
 	}
 	return !repo.Private, nil
 }
@@ -215,16 +215,15 @@ func (c *Connector) advance(pos position) *position {
 //   - commits are walked from the commit the default branch pointed at when the
 //     walk began, whose history cannot change.
 func (c *Connector) page(ctx context.Context, sink connector.Sink, pos position, floor time.Time) (int, *position, error) {
-	var repo repository
-	if _, err := c.api.get(ctx, repoPath(pos.Repo), &repo); err != nil {
-		return 0, nil, fmt.Errorf("reading repository %s: %w", pos.Repo, err)
+	repo, err := c.api.repository(ctx, pos.Repo)
+	if err != nil {
+		return 0, nil, err
 	}
 	v := view{source: c.source, repo: pos.Repo, private: repo.Private}
 
 	var (
 		n    int
 		next *position
-		err  error
 	)
 	switch pos.Step {
 	case stepIssues:

@@ -79,6 +79,13 @@ var fixtureLists = map[string]string{
 	"/repos/acme/api/commits":         "commits.json",
 }
 
+// fixtureContents are what the contents API answers for acme/api, by REST path:
+// the root listing and the one file seeding asks for.
+var fixtureContents = map[string]string{
+	"/repos/acme/api/contents":                    "contents-root.json",
+	"/repos/acme/api/contents/.github/CODEOWNERS": "contents-codeowners.json",
+}
+
 // fakeGitHub is GitHub's REST API over the fixtures, as far as the connector
 // reads it. It is a model rather than a recording: lists honour `since`, `sort`,
 // `direction`, `page` and `per_page` the way GitHub does, and a test may change
@@ -92,6 +99,9 @@ type fakeGitHub struct {
 
 	mu    sync.Mutex
 	lists map[string][]map[string]any
+	// contents are the contents API's answers, verbatim, by path; a path with
+	// none is a 404, as it is from GitHub.
+	contents map[string][]byte
 	// rewound is how many commits a force push has taken off the front of a
 	// repository's default branch.
 	rewound  map[string]int
@@ -105,7 +115,7 @@ type fakeGitHub struct {
 func newFakeGitHub(t *testing.T) *fakeGitHub {
 	t.Helper()
 	gh := &fakeGitHub{
-		t: t, lists: map[string][]map[string]any{}, rewound: map[string]int{},
+		t: t, lists: map[string][]map[string]any{}, contents: map[string][]byte{}, rewound: map[string]int{},
 		status: map[string]int{}, holds: map[string]chan struct{}{},
 	}
 	for path, file := range fixtureLists {
@@ -118,6 +128,13 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 			t.Fatalf("%s: %v", file, err)
 		}
 		gh.lists[path] = items
+	}
+	for path, file := range fixtureContents {
+		raw, err := os.ReadFile(filepath.Join("testdata", "api", file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		gh.contents[path] = raw
 	}
 	gh.srv = httptest.NewServer(http.HandlerFunc(gh.serve))
 	t.Cleanup(gh.srv.Close)
@@ -174,6 +191,13 @@ func (gh *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		out := slices.Clone(commits[head:])
 		slices.Reverse(out)
 		writeJSON(w, map[string]any{"total_commits": len(out), "commits": out})
+	case sub == "/contents" || strings.HasPrefix(sub, "/contents/"):
+		raw, ok := gh.contents[path]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(raw)
 	case sub == "/commits":
 		start := head
 		if sha := q.Get("sha"); sha != "main" {
@@ -302,6 +326,17 @@ func (gh *fakeGitHub) rewind(repo string) {
 	gh.mu.Lock()
 	defer gh.mu.Unlock()
 	gh.rewound[repo]++
+}
+
+// setContents sets what the contents API answers for a path; nil removes it.
+func (gh *fakeGitHub) setContents(path string, raw []byte) {
+	gh.mu.Lock()
+	defer gh.mu.Unlock()
+	if raw == nil {
+		delete(gh.contents, path)
+		return
+	}
+	gh.contents[path] = raw
 }
 
 func (gh *fakeGitHub) fail(path string, status int) {
