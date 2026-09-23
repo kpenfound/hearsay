@@ -66,8 +66,34 @@ func TestPollReconcilesVaultThroughL0(t *testing.T) {
 	if err := c.Poll(t.Context(), sink); err != nil {
 		t.Fatal(err)
 	}
-	before, err := store.Changes(t.Context(), l0.Cursor{}, l0.Filter{Source: src.ID}, l0.MaxLimit)
+	// Changes is ordered by committed transactions across every source. Wait for
+	// this source's initial rows before using the feed as a baseline.
+	changes := func(want int) []l0.Change {
+		t.Helper()
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			got, err := store.Changes(t.Context(), l0.Cursor{}, l0.Filter{Source: src.ID}, l0.MaxLimit)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) == want {
+				return got
+			}
+			if len(got) > want || time.Now().After(deadline) {
+				t.Fatalf("Changes(%q) = %d visible events, want %d", src.ID, len(got), want)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	changes(4)
+	// Give the feed an older unfinished transaction. Poll writes still commit,
+	// but Changes must wait at this transaction even with a source filter.
+	blocker, err := pool.Begin(t.Context())
 	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = blocker.Rollback(t.Context()) }()
+	if _, err := blocker.Exec(t.Context(), "SELECT pg_current_xact_id()"); err != nil {
 		t.Fatal(err)
 	}
 	put(t, root, "Notes/edit.md", "second")
@@ -102,14 +128,19 @@ func TestPollReconcilesVaultThroughL0(t *testing.T) {
 	if !artifacts["Notes/edit.md"] || !artifacts["Notes/renamed.md"] {
 		t.Fatalf("current artifacts = %v", artifacts)
 	}
-	after, err := store.Changes(t.Context(), l0.Cursor{}, l0.Filter{Source: src.ID}, l0.MaxLimit)
+	blocked, err := store.Changes(t.Context(), l0.Cursor{}, l0.Filter{Source: src.ID}, l0.MaxLimit)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The change feed hides document rows once a tombstone retracts them.
-	if len(after) != len(before)+2 {
-		t.Fatalf("visible events after reconciliation = %d, want %d", len(after), len(before)+2)
+	if len(blocked) != 1 {
+		t.Fatalf("Changes() behind unfinished transaction = %d visible events, want 1", len(blocked))
 	}
+	if err := blocker.Rollback(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	// Two document revisions for edit.md, one for renamed.md, and three
+	// tombstones remain visible. The three retracted documents are hidden.
+	after := changes(6)
 	targets := map[string]bool{}
 	for _, change := range after {
 		if change.Event.Kind == connector.KindTombstone {
@@ -124,9 +155,24 @@ func TestPollReconcilesVaultThroughL0(t *testing.T) {
 	if err := c.Poll(t.Context(), sink); err != nil {
 		t.Fatal(err)
 	}
-	again, err := store.Changes(t.Context(), l0.Cursor{}, l0.Filter{Source: src.ID}, l0.MaxLimit)
-	if err != nil || len(again) != len(after) {
-		t.Fatalf("unchanged poll events = %d, %v", len(again), err)
+	again := changes(6)
+	for i := range after {
+		if again[i].Event.ID != after[i].Event.ID {
+			t.Fatalf("unchanged poll event %d = %q, want %q", i, again[i].Event.ID, after[i].Event.ID)
+		}
+	}
+	counts, err := store.Counts(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var total int64
+	for _, count := range counts {
+		if count.Source == src.ID {
+			total += count.Events
+		}
+	}
+	if total != 9 {
+		t.Fatalf("unchanged poll stored events = %d, want 9", total)
 	}
 	if err := c.Close(t.Context()); err != nil {
 		t.Fatal(err)
