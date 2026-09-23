@@ -391,6 +391,15 @@ are contract violations and are returned to the connector as errors.
 Emitting for a source other than the one the connector was configured for is
 always an error, never a drop.
 
+Filesystem reconciliation can retract a document after its old folder leaves
+the allowlist. The runtime gate offers `RetractionSink.Retract` for a validated
+`tombstone` in this case; ordinary `Emit` keeps the allowlist check. The
+poller obtains the prior artifact and ACL from the durable
+`DocumentInventory.Documents(ctx, source)` read on its sink. This read returns
+current documents regardless of the current folder allowlist, including
+documents that must now be retracted. A sink without that read cannot safely
+perform removal reconciliation.
+
 ## The Go interface
 
 A connector is a Go module that exports a `Factory`. Whoever builds the binary
@@ -727,7 +736,14 @@ permission version, so a changed ACL with unchanged content is a new revision.
 A return to an earlier ACL requires a new configured permission version.
 A changed owner, ACL, root, folder allowlist or template list starts a new
 backfill on restart; this is configuration handling, not live polling.
-Polling and tombstones belong to #103.
+Polling reconciles a safe vault walk with the current document inventory in
+L0 on every refresh. The inventory includes previously ingested folders no
+longer allowed by configuration, so a restart still retracts removed notes.
+An unchanged modification time skips reading a file; a changed time triggers
+a content hash check before a revision is emitted. Missing, renamed, excluded
+or newly disallowed notes receive a tombstone using their previous ACL. A
+rename creates a new path artifact. The gate admits these retraction events
+even when the old folder has left the allowlist; they contain no note text.
 
 ## Changing this contract
 
