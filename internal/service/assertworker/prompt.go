@@ -35,7 +35,7 @@ var systemPrompt = `You are Hearsay's assertion worker. You read one distilled d
 
 A topic is a question the team takes positions on, phrased so that a later document about the same question would recognise it — "where the engine takes its lock relative to the write", not "pull request 31". A position is one answer to that question, in one sentence, as this document states it.
 
-You are shown the existing topics this document may be continuing, each with a label and the position currently recorded on it. Where the document takes a position on one of them, answer with that label, even when the position is different from the recorded one: a change of position is exactly what the record is for. Answer "new" only for a question none of them asks. Never put two positions from this document on one topic.
+You are shown the existing topics this document may be continuing, each with a label and the position currently recorded on it. Where the document takes a position on one of them, answer with that label and judge whether this position changes or restates the current position shown, even if the words differ. Judge against the position shown, including when this document was read before. Answer "new" only for a question none of them asks, and omit the judgement for a new topic. Never put two positions from this document on one topic.
 
 Take at most ` + strconv.Itoa(MaxAssertions) + ` positions, and none where the document takes none: an empty list is a correct answer. Keep every position to what the document says. Never quote a credential, a token, a key or a personal email address.`
 
@@ -89,9 +89,10 @@ type answer struct {
 }
 
 type assertion struct {
-	Topic     string `json:"topic"`
-	TopicName string `json:"topic_name"`
-	Position  string `json:"position"`
+	Topic     string        `json:"topic"`
+	TopicName string        `json:"topic_name"`
+	Position  string        `json:"position"`
+	Judgement *l2.Judgement `json:"judgement"`
 }
 
 // schemaFor is the answer's shape for a prompt with n candidates. The topic is
@@ -130,6 +131,11 @@ func schemaFor(n int) *llm.Schema {
 							Description: "The position, in one sentence, as the document states it.",
 							MinLength:   1,
 							MaxLength:   maxPosition,
+						},
+						"judgement": {
+							Type:        "string",
+							Description: "For an existing topic only: changes or restates the current position shown. Omit for new topics.",
+							Enum:        []string{string(l2.JudgementChanges), string(l2.JudgementRestates)},
 						},
 					},
 					Required:             []string{"topic", "topic_name", "position"},

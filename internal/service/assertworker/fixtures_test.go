@@ -218,25 +218,25 @@ func exchanges() []exchange {
 			name:       "the pull request continues it with a different position",
 			doc:        prDoc,
 			candidates: []assertworker.Candidate{{Name: topicName, Current: issuePosition}},
-			answer:     map[string]any{"assertions": []map[string]any{{"topic": "T1", "topic_name": topicName, "position": prPosition}}},
+			answer:     map[string]any{"assertions": []map[string]any{{"topic": "T1", "topic_name": topicName, "position": prPosition, "judgement": "changes"}}},
 		},
 		{
 			name:       "the issue read again finds the topic it opened and takes the same position",
 			doc:        issueDoc,
 			candidates: []assertworker.Candidate{{Name: topicName, Current: issuePosition}},
-			answer:     map[string]any{"assertions": []map[string]any{{"topic": "T1", "topic_name": topicName, "position": issuePosition}}},
+			answer:     map[string]any{"assertions": []map[string]any{{"topic": "T1", "topic_name": topicName, "position": issuePosition, "judgement": "restates"}}},
 		},
 		{
 			name:       "the issue, commented on after the merge, restates its proposal in other words",
 			doc:        commentedIssueDoc,
 			candidates: []assertworker.Candidate{{Name: topicName, Current: prPosition}},
-			answer:     map[string]any{"assertions": []map[string]any{{"topic": "T1", "topic_name": topicName, "position": restatedPosition}}},
+			answer:     map[string]any{"assertions": []map[string]any{{"topic": "T1", "topic_name": topicName, "position": restatedPosition, "judgement": "changes"}}},
 		},
 		{
 			name:       "the issue, its comment deleted, is read again and restates its proposal a third way",
 			doc:        issueDoc,
 			candidates: []assertworker.Candidate{{Name: topicName, Current: restatedPosition}},
-			answer:     map[string]any{"assertions": []map[string]any{{"topic": "T1", "topic_name": topicName, "position": uncommentedPosition}}},
+			answer:     map[string]any{"assertions": []map[string]any{{"topic": "T1", "topic_name": topicName, "position": uncommentedPosition, "judgement": "restates"}}},
 		},
 		{
 			// The newest stated stance is the issue's restatement, which the
@@ -245,7 +245,7 @@ func exchanges() []exchange {
 			name:       "the pull request read again is shown the topic at its own position",
 			doc:        prDoc,
 			candidates: []assertworker.Candidate{{Name: topicName, Current: prPosition}},
-			answer:     map[string]any{"assertions": []map[string]any{{"topic": "T1", "topic_name": topicName, "position": prPosition}}},
+			answer:     map[string]any{"assertions": []map[string]any{{"topic": "T1", "topic_name": topicName, "position": prPosition, "judgement": "restates"}}},
 		},
 		{
 			name: "the commit's answer carries what must not be stored",
@@ -328,6 +328,29 @@ func TestRecordFixtures(t *testing.T) {
 		if _, err := completer.Complete(t.Context(), c.Request); err != nil {
 			t.Fatalf("the recorded answers do not cover a request this package sends: %v", err)
 		}
+	}
+}
+
+func TestJudgementResponseShape(t *testing.T) {
+	_, pr := documents(t, "github-acme")
+	request := assertworker.RequestFor(pr, []assertworker.Candidate{{Name: topicName, Current: issuePosition}}, assertBudget())
+	for _, tc := range []struct {
+		name  string
+		json  string
+		valid bool
+	}{
+		{"change", `{"assertions":[{"topic":"T1","topic_name":"lock","position":"before write","judgement":"changes"}]}`, true},
+		{"restatement", `{"assertions":[{"topic":"T1","topic_name":"lock","position":"job queue lock","judgement":"restates"}]}`, true},
+		{"malformed", `{"assertions":[{"topic":"T1","topic_name":"lock","position":"before write","judgement":"maybe"}]}`, false},
+		{"wrong type", `{"assertions":[{"topic":"T1","topic_name":"lock","position":"before write","judgement":7}]}`, false},
+		{"new without judgement", `{"assertions":[{"topic":"new","topic_name":"lock","position":"before write"}]}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := request.Schema.ValidateJSON([]byte(tc.json))
+			if (err == nil) != tc.valid {
+				t.Errorf("schema validation = %v, want valid %v", err, tc.valid)
+			}
+		})
 	}
 }
 
