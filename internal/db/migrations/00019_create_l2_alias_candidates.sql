@@ -6,11 +6,13 @@ CREATE TABLE l2_alias_candidates (
     entity_id text NOT NULL,
     alias text NOT NULL,
     name text NOT NULL,
+    state text NOT NULL DEFAULT 'proposed',
     votes integer NOT NULL DEFAULT 0,
     evidence text[] NOT NULL DEFAULT '{}',
     acl jsonb NOT NULL DEFAULT '[]'::jsonb,
     PRIMARY KEY (entity_id, alias),
-    CONSTRAINT l2_alias_votes_nonnegative CHECK (votes >= 0)
+    CONSTRAINT l2_alias_votes_nonnegative CHECK (votes >= 0),
+    CONSTRAINT l2_alias_state_known CHECK (state IN ('proposed', 'confirmed', 'rejected'))
 );
 CREATE TABLE l2_alias_votes (
     entity_id text NOT NULL,

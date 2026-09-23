@@ -88,7 +88,7 @@ func TestThreadAliasVotesFromTouchedPR(t *testing.T) {
 			t.Fatalf("candidate after document %d = %+v", i, candidates)
 		}
 		c := candidates[0]
-		if c.Alias != "engine room" || c.Votes != i+1 || len(c.Evidence) != i+2 || !slices.Contains(c.Evidence, prDoc.ID) || !slices.Contains(c.Evidence, id) {
+		if c.Alias != "engine room" || c.State != "proposed" || c.Votes != i+1 || len(c.Evidence) != i+2 || !slices.Contains(c.Evidence, prDoc.ID) || !slices.Contains(c.Evidence, id) {
 			t.Errorf("candidate after document %d = %+v", i, c)
 		}
 		if i == 1 && !slices.Equal(c.ACL, private) {

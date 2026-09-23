@@ -18,6 +18,7 @@ type AliasCandidate struct {
 	EntityID string
 	Alias    string
 	Name     string
+	State    string
 	Votes    int
 	Evidence []string
 	ACL      connector.ACL
@@ -79,7 +80,7 @@ func (s *Store) VoteAlias(ctx context.Context, entityID, name, docID, prDocID st
 // AliasCandidates returns proposals with current evidence restrictions folded
 // into their stored ACL. A missing or retracted evidence document closes access.
 func (s *Store) AliasCandidates(ctx context.Context, entityID string) ([]AliasCandidate, error) {
-	rows, err := s.db.Query(ctx, `SELECT alias,name,votes,evidence,acl FROM l2_alias_candidates WHERE entity_id=$1 ORDER BY alias`, entityID)
+	rows, err := s.db.Query(ctx, `SELECT alias,name,state,votes,evidence,acl FROM l2_alias_candidates WHERE entity_id=$1 ORDER BY alias`, entityID)
 	if err != nil {
 		return nil, fmt.Errorf("listing alias candidates: %w", err)
 	}
@@ -88,7 +89,7 @@ func (s *Store) AliasCandidates(ctx context.Context, entityID string) ([]AliasCa
 	for rows.Next() {
 		c := AliasCandidate{EntityID: entityID}
 		var raw []byte
-		if err := rows.Scan(&c.Alias, &c.Name, &c.Votes, &c.Evidence, &raw); err != nil {
+		if err := rows.Scan(&c.Alias, &c.Name, &c.State, &c.Votes, &c.Evidence, &raw); err != nil {
 			return nil, fmt.Errorf("listing alias candidates: %w", err)
 		}
 		if err := json.Unmarshal(raw, &c.ACL); err != nil {
