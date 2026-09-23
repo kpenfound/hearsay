@@ -200,6 +200,101 @@ func TestAnIssueThenAMergedPullRequestIsOneTopicWithTwoStances(t *testing.T) {
 	}
 }
 
+// Issue #114: the worker offers a document only the topics, and the positions,
+// everyone who may read it may read now — decided by the documents they rest
+// on, not the access lists the topic and stance were written with. The fake
+// answers only the request recorded here, so a prompt that offered anything
+// else would fail the assertion with no fixture.
+func TestTheWorkerOffersOnlyWhatTheDocumentsReadersMayReadNow(t *testing.T) {
+	private := connector.ACL{{Kind: connector.ACLIdentity, Source: "gh", NativeID: "kyle-node"}}
+	answer := func(topic, name string) []byte {
+		return []byte(`{"assertions":[{"topic":"` + topic + `","topic_name":"` + name + `","position":"` + prPosition + `"}]}`)
+	}
+	tests := []struct {
+		name string
+		// hide makes something private after the issue opened its topic.
+		hide       func(t *testing.T, pool *pgxpool.Pool, src string, topic l2.Topic)
+		candidates []assertworker.Candidate
+		response   []byte
+		opened     int
+	}{
+		{
+			name: "a topic whose opening document went private is not offered",
+			hide: func(t *testing.T, pool *pgxpool.Pool, src string, _ l2.Topic) {
+				issue := issueDoc(t, src)
+				issue.ACL = private
+				if _, err := l1.New(pool).Put(t.Context(), issue); err != nil {
+					t.Fatal(err)
+				}
+			},
+			response: answer("new", topicName),
+			opened:   1,
+		},
+		{
+			name: "a topic whose opening document was retracted is not offered",
+			hide: func(t *testing.T, pool *pgxpool.Pool, src string, _ l2.Topic) {
+				if _, err := l1.New(pool).Delete(t.Context(), issueDoc(t, src).ID); err != nil {
+					t.Fatal(err)
+				}
+			},
+			response: answer("new", topicName),
+			opened:   1,
+		},
+		{
+			name: "a position resting on a private document is not shown",
+			hide: func(t *testing.T, pool *pgxpool.Pool, src string, topic l2.Topic) {
+				note := issueDoc(t, src)
+				note.Source.NativeID = "a private note"
+				note.ID, note.ACL = l1.DocID(src, note.Source.NativeID), private
+				if _, err := l1.New(pool).Put(t.Context(), note); err != nil {
+					t.Fatal(err)
+				}
+				// Stated after the issue, so it is the topic's current position.
+				stated := note.Time.LastActivity.Add(time.Hour)
+				if _, _, err := l2.New(pool).AppendStance(t.Context(), l2.Stance{
+					ID: l2.StanceID(topic.ID, note.ID, "what only kyle saw", stated, l2.TierInferred), TopicID: topic.ID,
+					Position: "what only kyle saw", StatedAt: stated, Evidence: []string{note.ID, issueDoc(t, src).ID},
+					Tier: l2.TierInferred, ACL: connector.ACL{{Kind: connector.ACLPublic}},
+				}, stated); err != nil {
+					t.Fatal(err)
+				}
+			},
+			candidates: []assertworker.Candidate{{Name: topicName}},
+			response:   answer("T1", topicName),
+			opened:     0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pool := newPool(t)
+			src := newSource(t)
+			f := store(t, pool, src)
+			scope := l2.ScopeKey(testRepo(src), src, repo)
+			fx := loadFixtures(t)
+			if err := fx.Add(llm.CompletionFixture{
+				Tier: llm.TierAssert, Request: assertworker.RequestFor(prDoc(t, src), tt.candidates, assertBudget()),
+				Response: llm.Response{JSON: tt.response, StopReason: llm.StopEnd, Model: "recorded"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			a := newAsserter(t, pool, src, fx)
+			if r := assertDoc(t, a, f.issueID, scope); r.TopicsOpened != 1 {
+				t.Fatalf("Assert(issue) = %+v, want a topic opened", r)
+			}
+			topics, err := l2.New(pool).Topics(t.Context(), scope)
+			if err != nil || len(topics) != 1 {
+				t.Fatalf("Topics() = %+v, %v, want the issue's", topics, err)
+			}
+			tt.hide(t, pool, src, topics[0])
+			// Were the hidden topic offered as before, the pull request's
+			// recorded answer would continue it and open nothing.
+			if r := assertDoc(t, a, f.prID, scope); r.TopicsOpened != tt.opened || r.StancesWritten != 1 {
+				t.Errorf("Assert(pull request) = %+v, want %d topics opened and one stance", r, tt.opened)
+			}
+		})
+	}
+}
+
 func TestAProposedPullRequestBecomesRatifiedWithTheSamePosition(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)

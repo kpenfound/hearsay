@@ -485,6 +485,85 @@ func TestEveryReadIsFilteredByPrincipal(t *testing.T) {
 	}
 }
 
+// Issue #114: a topic and every stance on it are served on what their documents
+// allow now. When the repository's documents are re-synced private, an outside
+// reader loses the topic and its whole history — the superseded stances too —
+// and a retracted document takes what it opened and what rests on it with it.
+func TestStancesAndTopicsFollowTheirEvidenceAfterAResync(t *testing.T) {
+	w := newWorld(t)
+	ctx := t.Context()
+	docs := l1.New(w.pool)
+	resync := func(id string, acl connector.ACL) {
+		t.Helper()
+		stored, err := docs.Get(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc := stored.Document
+		doc.ACL = acl
+		if changed, err := docs.Put(ctx, doc); err != nil || !changed {
+			t.Fatalf("Put(%s) = %v, %v", id, changed, err)
+		}
+	}
+	private := connector.ACL{{Kind: connector.ACLIdentity, Source: w.src, NativeID: kyleNode}}
+	topic := map[string]any{"topic": l2.TopicID(w.src, w.issue, 0, "where the lock lives")}
+	history := func(caller api.Caller) (int, string) {
+		t.Helper()
+		body, _ := json.Marshal(topic)
+		status, got := w.post(t, "/v1/stance_history", caller, string(body))
+		return status, string(got)
+	}
+	bundleFor := func(caller api.Caller) string {
+		t.Helper()
+		return string(w.http(t, caller, "get_bundle", map[string]any{"scope": w.scope}))
+	}
+
+	// The merged pull request goes private: its stance, the topic's current
+	// one, goes from sam's bundle and from sam's history, and the older one is
+	// not offered as current in its place.
+	resync(w.pr, private)
+	if status, got := history(sam); status != http.StatusOK || strings.Contains(got, "in the worker") ||
+		!strings.Contains(got, "in the request path, behind a flag") {
+		t.Errorf("sam's history after the pull request went private = %d %s", status, got)
+	}
+	sams := bundleFor(sam)
+	for _, gone := range []string{"in the worker", "where the lock lives", "deploys go through the queue", "how the org deploys"} {
+		if strings.Contains(sams, gone) {
+			t.Errorf("sam's bundle holds %q after the pull request went private: %s", gone, sams)
+		}
+	}
+	if kyles := bundleFor(kyle); !strings.Contains(kyles, "in the worker") || !strings.Contains(kyles, "how the org deploys") {
+		t.Errorf("kyle's bundle lost what kyle may read: %s", kyles)
+	}
+
+	// The issue that opened the topic goes private too: the topic is gone for
+	// sam, and with it every stance on it, superseded or not.
+	resync(w.issue, private)
+	if status, got := history(sam); status != http.StatusNotFound || strings.Contains(got, "behind a flag") {
+		t.Errorf("sam's history of a topic whose document went private = %d %s, want 404", status, got)
+	}
+	if status, got := history(kyle); status != http.StatusOK || !strings.Contains(got, "behind a flag") ||
+		!strings.Contains(got, "in the worker") || !strings.Contains(got, "an early private note") {
+		t.Errorf("kyle's history = %d %s, want every stance", status, got)
+	}
+
+	// The pull request is retracted: its stance goes for everyone, and the
+	// topic it opened with it.
+	if _, err := docs.Delete(ctx, w.pr); err != nil {
+		t.Fatal(err)
+	}
+	if status, got := history(kyle); status != http.StatusOK || strings.Contains(got, "in the worker") {
+		t.Errorf("kyle's history after the pull request was retracted = %d %s", status, got)
+	}
+	inherited, _ := json.Marshal(map[string]any{"topic": l2.TopicID(w.src, w.pr, 0, "how the org deploys")})
+	if status, got := w.post(t, "/v1/stance_history", kyle, string(inherited)); status != http.StatusNotFound {
+		t.Errorf("history of a topic whose document was retracted = %d %s, want 404", status, got)
+	}
+	if kyles := bundleFor(kyle); strings.Contains(kyles, "in the worker") || strings.Contains(kyles, "how the org deploys") {
+		t.Errorf("kyle's bundle holds what a retracted document said: %s", kyles)
+	}
+}
+
 // Every bundle served writes an L0 audit event: who asked, on whose behalf,
 // what scope and what was filtered.
 func TestEveryBundleServedIsAnAuditEvent(t *testing.T) {

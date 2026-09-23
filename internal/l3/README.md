@@ -20,7 +20,9 @@ L2 it is not an L3 view — it is an L2 fact and belongs in `internal/l2`.
   head of its supersession chain; a stance its own document's later reading
   replaced is retired (internal/l2). When the reader may not read it, the topic is left out and counted —
   the older stance they may read is not current, and offering it as current
-  would be wrong in a way they could not see.
+  would be wrong in a way they could not see. Whether they may read it is what
+  its documents allow now (`l2.Access`): the topic's opening document, and
+  every piece of the stance's evidence.
 - **A stance is an entity's own only when its topic's `about` names that entity
   itself.** Every other topic reached — through a related entity (for a tracker
   item, the code entities its own document is about) or through an ancestor of

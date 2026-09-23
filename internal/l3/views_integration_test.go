@@ -9,6 +9,7 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -169,55 +170,64 @@ func TestCurrentStancesAreTheHeadsTheReaderMayRead(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Who may read a topic or a stance is its documents' access lists, so
+	// every document is written with the list the case needs.
+	opener := putDoc(t, pool, src, "x", l1.KindIssue, 0, child, public)
 	topic := func(name string, about string) l2.Topic {
 		t.Helper()
-		tp := l2.Topic{ID: l2.TopicID(src, "l1:x", 0, name), Scope: src, Name: name, About: []string{about}, ACL: public, OpenedBy: "l1:x"}
+		tp := l2.Topic{ID: l2.TopicID(src, opener, 0, name), Scope: src, Name: name, About: []string{about}, ACL: public, OpenedBy: opener}
 		if _, err := graph.OpenTopic(ctx, tp); err != nil {
 			t.Fatal(err)
 		}
 		return tp
 	}
-	stance := func(tp l2.Topic, doc, position string, hour int, acl connector.ACL) {
+	doc := func(artifact string, acl connector.ACL) string {
+		t.Helper()
+		return putDoc(t, pool, src, artifact, l1.KindIssue, 0, child, acl)
+	}
+	stance := func(tp l2.Topic, doc, position string, hour int) {
 		t.Helper()
 		at := day.Add(time.Duration(hour) * time.Hour)
 		_, _, err := graph.AppendStance(ctx, l2.Stance{
 			ID: l2.StanceID(tp.ID, doc, position, at, l2.TierInferred), TopicID: tp.ID, Position: position,
-			StatedAt: at, Evidence: []string{doc}, Tier: l2.TierInferred, ACL: acl,
+			StatedAt: at, Evidence: []string{doc}, Tier: l2.TierInferred, ACL: public,
 		}, at)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
 	forked := topic("forked", child)
-	stance(forked, "l1:a", "first", 1, public)
-	stance(forked, "l1:b", "newest", 5, public)
-	stance(forked, "l1:c", "read late", 3, public) // forks behind the head
+	stance(forked, doc("a", public), "first", 1)
+	stance(forked, doc("b", public), "newest", 5)
+	stance(forked, doc("c", public), "read late", 3) // forks behind the head
 	// A document read again, stated earlier than it was the first time (a
 	// deletion moved its last activity back): the newer stance it retired is
 	// not current.
 	restated := topic("restated", child)
-	stance(restated, "l1:k", "said at first", 8, public)
-	stance(restated, "l1:k", "said again", 6, public)
+	k := doc("k", public)
+	stance(restated, k, "said at first", 8)
+	stance(restated, k, "said again", 6)
 	secretPast := topic("a private past", child)
-	stance(secretPast, "l1:d", "what kyle alone saw", 1, private)
-	stance(secretPast, "l1:e", "what everyone sees", 2, public)
+	stance(secretPast, doc("d", private), "what kyle alone saw", 1)
+	stance(secretPast, doc("e", public), "what everyone sees", 2)
 	secretNow := topic("a private present", child)
-	stance(secretNow, "l1:f", "public once", 1, public)
-	stance(secretNow, "l1:g", "private now", 3, private)
+	stance(secretNow, doc("f", public), "public once", 1)
+	stance(secretNow, doc("g", private), "private now", 3)
 	// Newer than every stance of the child's own, so only the sort puts them
 	// last; the related entity's topic is inherited though no ancestor walk
 	// reached it.
 	sibling := "code:" + src + ":sibling"
-	stance(topic("inherited", parent), "l1:h", "from the parent", 9, public)
-	stance(topic("via a related entity", sibling), "l1:j", "from the sibling", 8, public)
+	stance(topic("inherited", parent), doc("h", public), "from the parent", 9)
+	stance(topic("via a related entity", sibling), doc("j", public), "from the sibling", 8)
 	// A topic sam may not read with a stance sam may: the store allows it, and
 	// the topic's name is what must not reach sam.
-	privateTopic := l2.Topic{ID: l2.TopicID(src, "l1:x", 0, "a private topic"), Scope: src, Name: "a private topic",
-		About: []string{child}, ACL: private, OpenedBy: "l1:x"}
+	privateOpener := doc("y", private)
+	privateTopic := l2.Topic{ID: l2.TopicID(src, privateOpener, 0, "a private topic"), Scope: src, Name: "a private topic",
+		About: []string{child}, ACL: private, OpenedBy: privateOpener}
 	if _, err := graph.OpenTopic(ctx, privateTopic); err != nil {
 		t.Fatal(err)
 	}
-	stance(privateTopic, "l1:i", "a public position", 4, public)
+	stance(privateTopic, doc("i", public), "a public position", 4)
 
 	type row struct {
 		Topic, Current, Supersedes string
@@ -262,6 +272,125 @@ func TestCurrentStancesAreTheHeadsTheReaderMayRead(t *testing.T) {
 	}
 }
 
+// Issue #114: a topic and its stance are read on what their documents allow
+// now. The access lists written on them say everyone may read both, and none of
+// them is what decides.
+func TestStancesFollowEveryPieceOfTheirEvidenceNow(t *testing.T) {
+	pool := newPool(t)
+	ctx := t.Context()
+	graph := l2.New(pool)
+	docs := l1.New(pool)
+	src := newSource()
+	entity := "code:" + src + ":api"
+	if err := graph.PutEntity(ctx, l2.Entity{ID: entity, Type: l2.TypeModule, Origin: l2.OriginConfig}); err != nil {
+		t.Fatal(err)
+	}
+	doc := func(artifact string, acl connector.ACL) string {
+		t.Helper()
+		return putDoc(t, pool, src, artifact, l1.KindIssue, 0, entity, acl)
+	}
+	stance := func(tp l2.Topic, position string, hour int, evidence ...string) {
+		t.Helper()
+		at := day.Add(time.Duration(hour) * time.Hour)
+		if _, _, err := graph.AppendStance(ctx, l2.Stance{
+			ID: l2.StanceID(tp.ID, evidence[0], position, at, l2.TierInferred), TopicID: tp.ID, Position: position,
+			StatedAt: at, Evidence: evidence, Tier: l2.TierInferred, ACL: public,
+		}, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	topic := func(name, opener string) l2.Topic {
+		t.Helper()
+		tp := l2.Topic{ID: l2.TopicID(src, opener, 0, name), Scope: src, Name: name, About: []string{entity}, ACL: public, OpenedBy: opener}
+		if _, err := graph.OpenTopic(ctx, tp); err != nil {
+			t.Fatal(err)
+		}
+		return tp
+	}
+
+	// Two pieces of evidence, one of them only kyle's.
+	both := doc("both", public)
+	stance(topic("partial evidence", both), "rests on two", 1, both, doc("kyles half", private))
+	// A topic whose opening document goes private after it was opened.
+	narrowed := doc("narrowed", public)
+	stance(topic("opener narrowed", narrowed), "on an open stance", 1, doc("open evidence", public))
+	// A stance whose evidence goes private after it was read, over a stance
+	// that stays public: sam is not offered the older one in its place.
+	head, prior := doc("head", public), doc("prior", public)
+	evidenceNarrowed := topic("evidence narrowed", prior)
+	stance(evidenceNarrowed, "the older position", 1, prior)
+	stance(evidenceNarrowed, "the newer position", 2, head)
+	// A stance whose evidence is retracted, and one whose evidence never was in L1.
+	retracted := doc("retracted", public)
+	stance(topic("evidence retracted", retracted), "retracted evidence", 1, retracted)
+	missing := doc("missing opener", public)
+	stance(topic("evidence missing", missing), "rests on nothing", 1, "l1:"+src+":never")
+	// A topic whose opening document is retracted.
+	gone := doc("gone", public)
+	stance(topic("opener retracted", gone), "on a gone topic", 1, doc("still here", public))
+	// The one that stays readable, superseding a stance whose evidence goes
+	// private: it stays, and no longer names what it superseded.
+	stays := doc("stays", public)
+	kept := topic("kept", stays)
+	stance(kept, "what went private", 1, doc("went private", public))
+	stance(kept, "what everyone reads", 2, stays)
+
+	for _, id := range []string{narrowed, head, l1.DocID(src, "went private")} {
+		putDoc(t, pool, src, strings.TrimPrefix(id, "l1:"+src+":"), l1.KindIssue, 0, entity, private)
+	}
+	for _, id := range []string{retracted, gone} {
+		if _, err := docs.Delete(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	read := func(reader l1.Reader) (map[string]string, int) {
+		t.Helper()
+		got, withheld, err := l3.New(pool).CurrentStances(ctx, reader, entity, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]string{}
+		for _, c := range got {
+			out[c.Topic.Name] = c.Stance.Position + " / " + c.Supersedes
+		}
+		return out, withheld
+	}
+	sams, withheld := read(sam)
+	if want := map[string]string{"kept": "what everyone reads / "}; fmt.Sprint(sams) != fmt.Sprint(want) || withheld != 6 {
+		t.Errorf("sam's stances = %v with %d withheld, want %v with 6", sams, withheld, want)
+	}
+	kyles, withheld := read(kyle)
+	wantKyle := map[string]string{
+		"partial evidence":  "rests on two / ",
+		"opener narrowed":   "on an open stance / ",
+		"evidence narrowed": "the newer position / the older position",
+		"kept":              "what everyone reads / what went private",
+	}
+	if fmt.Sprint(kyles) != fmt.Sprint(wantKyle) || withheld != 3 {
+		t.Errorf("kyle's stances = %v with %d withheld, want %v with 3", kyles, withheld, wantKyle)
+	}
+
+	// The same through the bundle: nothing of what sam may not read is in it.
+	b, report, err := bundle.New(pool).Assemble(ctx, sam, entity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := bundle.Encode(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"rests on two", "partial evidence", "opener narrowed", "the newer position", "the older position",
+		"retracted evidence", "rests on nothing", "on a gone topic", "what went private"} {
+		if strings.Contains(string(body), secret) {
+			t.Errorf("sam's bundle holds %q: %s", secret, body)
+		}
+	}
+	if report.Withheld.Stances != 6 {
+		t.Errorf("sam's bundle withheld %d stances, want 6", report.Withheld.Stances)
+	}
+}
+
 func TestTheSubjectIsTheDocumentThatSaysItIsTheEntity(t *testing.T) {
 	pool := newPool(t)
 	views := l3.New(pool)
@@ -297,14 +426,14 @@ func TestABundleForAScopeNotGrantedIsEmpty(t *testing.T) {
 	pool := newPool(t)
 	src := newSource()
 	scope := "tracker:" + src + ":acme/api#1"
-	putDoc(t, pool, src, "acme/api#1", l1.KindIssue, 1, scope, public, "open?")
+	issue := putDoc(t, pool, src, "acme/api#1", l1.KindIssue, 1, scope, public, "open?")
 	graph := l2.New(pool)
-	tp := l2.Topic{ID: l2.TopicID(src, "l1:x", 0, "t"), Scope: src, Name: "t", About: []string{scope}, ACL: public, OpenedBy: "l1:x"}
+	tp := l2.Topic{ID: l2.TopicID(src, issue, 0, "t"), Scope: src, Name: "t", About: []string{scope}, ACL: public, OpenedBy: issue}
 	if _, err := graph.OpenTopic(t.Context(), tp); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := graph.AppendStance(t.Context(), l2.Stance{ID: l2.StanceID(tp.ID, "l1:x", "p", day, l2.TierRatified), TopicID: tp.ID, Position: "p",
-		StatedAt: day, Evidence: []string{"l1:x"}, Tier: l2.TierRatified, ACL: public}, day); err != nil {
+	if _, _, err := graph.AppendStance(t.Context(), l2.Stance{ID: l2.StanceID(tp.ID, issue, "p", day, l2.TierRatified), TopicID: tp.ID, Position: "p",
+		StatedAt: day, Evidence: []string{issue}, Tier: l2.TierRatified, ACL: public}, day); err != nil {
 		t.Fatal(err)
 	}
 

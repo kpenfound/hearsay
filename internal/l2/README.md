@@ -48,10 +48,19 @@ corrupt.
   position, document version and tier. The primary key skips a retry of the
   same reading, while a new version or tier records another stance even if the
   position is worded the same way.
+- **Who may read a topic or a stance is decided from L1 as it is now**
+  ([Access]): a topic by the document that opened it, a stance by every piece
+  of its evidence, each still in L1 and readable. The `acl` written on a topic
+  or a stance is what its first document allowed when the worker read it; a
+  second piece of evidence, an ACL re-sync (ADR-0013) or a retraction is not in
+  it, so no read authorizes on it. A document that is gone fails closed.
 - **A topic is only offered to a document everyone who may read it may read the
-  topic too** (`readableBy`): a public topic, or one whose access list carries
-  every grant of the document's, compared without labels. Otherwise a private
-  topic's name reaches a prompt about a public document and the stance it
+  topic too** (`topicReadableBy`): its opening document's current access list
+  is public, or carries every grant of the document's, compared without labels.
+  Its current position is shown only where every piece of that position's
+  evidence passes the same test ([Store.EvidenceReadableBy]); otherwise the
+  topic is offered with no position recorded. Otherwise a private topic's name
+  or position reaches a prompt about a public document and the stance it
   produces.
 - **Join keys leave out people and code entities.** Everybody's documents name
   the same people and systems, and a key everything shares joins everything.
