@@ -3,6 +3,8 @@ package config_test
 import (
 	"testing"
 
+	"github.com/kpenfound/hearsay/internal/connector/obsidian"
+
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
@@ -129,5 +131,26 @@ func TestZeroRepo(t *testing.T) {
 	}
 	if r.Allowlist().Allows("github", "acme/api") {
 		t.Error("the zero Repo allows ingest, and ingest is default deny")
+	}
+}
+
+func TestObsidianSettingsReachConnector(t *testing.T) {
+	repo, err := config.Load(writeFiles(t, map[string]string{
+		"sources/notes.yaml": "id: notes\ntype: obsidian\ncontainers: [Notes]\nsettings:\n  root: /mnt/vault\n  owner: {source: people, kind: user, native_id: owner-1}\n  templates: [Notes/Templates]\n",
+		"scopes/notes.yaml":  "id: notes\nsources: [notes]\n",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, ok := repo.Source("notes")
+	if !ok || src.Type != "obsidian" || len(src.Containers) != 1 || src.Containers[0] != "Notes" {
+		t.Fatalf("source = %+v, %v", src, ok)
+	}
+	var got obsidian.Settings
+	if err := src.DecodeSettings(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Root != "/mnt/vault" || got.Owner.NativeID != "owner-1" || got.Public {
+		t.Fatalf("settings = %+v", got)
 	}
 }

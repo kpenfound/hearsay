@@ -99,7 +99,7 @@ renamed afterwards ([connector contract](connector-contract.md#source-ids)).
 | Field | Meaning |
 |---|---|
 | `id` | The source id. It appears in every event id, so it is chosen once. |
-| `type` | The connector type: `github`, `discord`, `drive`, or a third party's. |
+| `type` | The connector type: `github`, `discord`, `drive`, `obsidian`, or a third party's. |
 | `containers` | The repositories, channels or folders this source may ingest, **by native id** — a repository full name, a channel id, a folder id, never a display name. This is control point 1 of [access control](design.md#access-control): default deny, so a container that is not listed is not ingested. `*` widens it to everything the credentials can see, and must then be the only entry. |
 | `refresh` | A duration (`30s`, `5m`, `1h`). The poll interval and base retry interval for a stream. Ignored by a connector that only receives pushes; the runtime applies its own floor and jitter — never more often than every 30 seconds, and each tick up to a tenth of the interval later than it is due. Without it, polls run every five minutes and failed streams retry from a 30-second base. |
 | `settings` | Opaque to Hearsay and passed to the connector, which rejects a field it does not have. What belongs here is documented by the connector. |
@@ -187,6 +187,43 @@ for a document, or readable sharing permissions are skipped. `webViewLink`
 becomes the source URL. If a file has a `calendar_attendee_emails` Drive
 property containing comma-separated email addresses, those become attendee
 identity hints. Live Drive change sync is handled separately.
+
+### Obsidian source
+
+Mount one local vault into the connectors container and use its absolute path as
+`settings.root`. The process must run on a host that can read the mount. For
+example, mount the host vault at `/mnt/vault` and configure:
+
+```yaml
+sources:
+  - id: notes
+    type: obsidian
+    containers: [Notes, Projects] # vault-relative folders, recursively included
+    settings:
+      root: /mnt/vault
+      owner: {source: people, kind: user, native_id: owner-1}
+      templates: [Notes/Templates, Projects/template.md]
+      # public: true            # explicit opt-in; absent is private to owner
+      # permission_version: v2  # bump on a return to a prior ACL
+```
+
+The root, owner identity and at least one allowed folder are required. `owner`
+uses the connector identity fields (`source`, `kind: user`, `native_id`, and
+optional `handle`, `display_name`, `email`); map it to a principal in
+`principals/` for private reads. `containers` are clean vault-relative folder
+paths, never `*`, and include nested folders. `templates` are excluded paths,
+including descendants when a path is a directory. `.obsidian/`, `.trash/`,
+symlinks, canvas files, attachments and other non-Markdown files are skipped.
+The connector reads Markdown as UTF-8 and stores its frontmatter in `native`.
+Vault-relative artifact paths percent-escape unsafe filename bytes (for example, a
+space becomes `%20`) to satisfy the L0 native-id contract.
+
+The initial backfill is paged and its cursor is stored in Postgres. Only the
+initial walk is implemented here; later changes and removals are handled by
+#103. ACL and owner changes start a new bounded backfill after restart and create
+new permission revisions. If an ACL is changed back to a prior value, set a new
+`permission_version` to prevent an earlier identical revision from deduplicating
+that transition.
 
 ## `scopes/`
 

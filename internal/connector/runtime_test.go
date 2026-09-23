@@ -1031,3 +1031,40 @@ func artifacts(rec *connector.Recorder) []string {
 	}
 	return out
 }
+
+// A completed backfill belongs to the configured input set that produced it.
+// Changing access config must not leave a completed cursor suppressing a walk.
+type versionPager struct {
+	*pager
+	version string
+}
+
+func (v *versionPager) BackfillVersion() string { return v.version }
+
+func TestVersionedBackfillRestartsWhenConfigChanges(t *testing.T) {
+	src := runtimeSource("versioned")
+	cursors := connector.NewMemoryCursors()
+	cursors.Set(src.ID, connector.BackfillState{Cursor: "old-config", Done: true, Events: 3})
+	first := &versionPager{pager: &pager{Fake: pages(src)}, version: "new-config"}
+	rec := &connector.Recorder{}
+	_, stop := start(t, connector.RuntimeOptions{Sources: []connector.SourceConfig{src}, Registry: registryOf(t, map[string]connector.Connector{src.ID: first}), Sink: rec, Cursors: cursors})
+	waitFor(t, "versioned walk", func() bool {
+		state, _ := cursors.Load(t.Context(), src.ID)
+		return state.Done && state.Cursor == "new-config"
+	})
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Events()) != 3 {
+		t.Fatalf("rewalk emitted %d, want 3", len(rec.Events()))
+	}
+	again := &versionPager{pager: &pager{Fake: pages(src)}, version: "new-config"}
+	rec = &connector.Recorder{}
+	_, stop = start(t, connector.RuntimeOptions{Sources: []connector.SourceConfig{src}, Registry: registryOf(t, map[string]connector.Connector{src.ID: again}), Sink: rec, Cursors: cursors})
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Events()) != 0 {
+		t.Fatalf("same version emitted %d events", len(rec.Events()))
+	}
+}
