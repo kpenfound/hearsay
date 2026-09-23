@@ -1,6 +1,6 @@
-// Package obsidian backfills a locally mounted Obsidian vault. The connectors
+// Package obsidian backfills and polls a locally mounted Obsidian vault. The connectors
 // process must run with the vault mounted at settings.root; a path inside a
-// different container or host is not accessible. Live polling is separate work.
+// different container or host is not accessible.
 package obsidian
 
 import (
@@ -158,7 +158,7 @@ func safeDirectory(root *os.Root, f string) error {
 
 // Describe declares the document events this connector emits.
 func (c *Connector) Describe() connector.Descriptor {
-	return connector.Descriptor{Type: Type, Kinds: []connector.Kind{connector.KindDocument}}
+	return connector.Descriptor{Type: Type, Kinds: []connector.Kind{connector.KindDocument, connector.KindTombstone}}
 }
 
 // Health reports the state of this local source.
@@ -169,8 +169,116 @@ func (c *Connector) Health(context.Context) connector.Health {
 // Close releases the mounted vault handle.
 func (c *Connector) Close(context.Context) error { return c.root.Close() }
 
-// Poll is intentionally idle until the separate live-sync work lands.
-func (c *Connector) Poll(context.Context, connector.Sink) error { return nil }
+// Poll reconciles the safe filesystem walk with L0's durable inventory. Reading
+// the inventory on every pass also recovers removals after a process restart.
+func (c *Connector) Poll(ctx context.Context, sink connector.Sink) error {
+	reader, ok := sink.(connector.DocumentInventory)
+	if !ok {
+		return errors.New("obsidian poll requires a document inventory")
+	}
+	retractor, ok := sink.(connector.RetractionSink)
+	if !ok {
+		return errors.New("obsidian poll requires a retraction sink")
+	}
+	stored, err := reader.Documents(ctx, c.source)
+	if err != nil {
+		return fmt.Errorf("reading obsidian inventory: %w", err)
+	}
+	previous := make(map[string]connector.Event, len(stored))
+	for _, ev := range stored {
+		previous[ev.Payload.Artifact] = ev
+	}
+	seen := make(map[string]bool)
+	var scan func(string) error
+	scan = func(dirName string) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if dirName != "." {
+			if err := safeDirectory(c.root, dirName); err != nil {
+				return fmt.Errorf("polling %q: %w", dirName, err)
+			}
+		}
+		dir, err := c.root.Open(dirName)
+		if err != nil {
+			return fmt.Errorf("opening %q: %w", dirName, err)
+		}
+		entries, readErr := dir.ReadDir(-1)
+		closeErr := dir.Close()
+		if readErr != nil {
+			return fmt.Errorf("listing %q: %w", dirName, readErr)
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		for _, entry := range entries {
+			rel := path.Join(dirName, entry.Name())
+			if entry.Type()&os.ModeSymlink != 0 || excluded(rel, c.templates) {
+				continue
+			}
+			if entry.IsDir() {
+				if c.intersects(rel) {
+					if err := scan(rel); err != nil {
+						return err
+					}
+				}
+				continue
+			}
+			if !c.allowed(path.Dir(rel)) || !strings.EqualFold(path.Ext(rel), ".md") || !entry.Type().IsRegular() {
+				continue
+			}
+			artifact := escapedPath(rel)
+			seen[artifact] = true
+			old, exists := previous[artifact]
+			// Modification times avoid reading unchanged files. A permission
+			// change still needs a revision even when the file did not move.
+			info, err := c.root.Lstat(rel)
+			if err != nil {
+				return fmt.Errorf("stat %q: %w", rel, err)
+			}
+			lastModified := old.Time
+			if old.Payload.Revision != nil && !old.Payload.Revision.EditedAt.IsZero() {
+				lastModified = old.Payload.Revision.EditedAt
+			}
+			if exists && old.Payload.Revision != nil && info.ModTime().Equal(lastModified) && strings.HasSuffix(old.Payload.Revision.Token, "+"+c.permission) {
+				continue
+			}
+			ev, err := c.event(rel)
+			if err != nil {
+				return err
+			}
+			if exists {
+				if old.Payload.Revision != nil && ev.Payload.Revision.Token == old.Payload.Revision.Token {
+					continue
+				}
+				ev.Time = old.Time
+				ev.Payload.Revision.EditedAt = info.ModTime().UTC()
+				if ev.Payload.Revision.EditedAt.Before(ev.Time) {
+					ev.Payload.Revision.EditedAt = ev.Time
+				}
+			}
+			if err := sink.Emit(ctx, ev); err != nil {
+				return fmt.Errorf("emitting %q: %w", rel, err)
+			}
+		}
+		return nil
+	}
+	if err := scan("."); err != nil {
+		return err
+	}
+	for artifact, old := range previous {
+		if seen[artifact] {
+			continue
+		}
+		// The filesystem has no deletion timestamp. The last recorded
+		// observation supplies a stable time for retries of this tombstone.
+		ev := connector.Event{Source: c.source, NativeID: artifact + ":tombstone", Kind: connector.KindTombstone, Time: old.Time, ACL: slices.Clone(old.ACL), Payload: connector.Payload{Artifact: artifact + ":tombstone", Target: artifact, Container: old.Payload.Container}}
+		if err := retractor.Retract(ctx, ev); err != nil {
+			return fmt.Errorf("retracting %q: %w", artifact, err)
+		}
+	}
+	return nil
+}
 
 type frame struct {
 	Dir   string `json:"dir"`
@@ -188,6 +296,16 @@ func (c *Connector) BackfillVersion() string { return c.version }
 // Backfill visits at most pageSize filesystem entries per call. The cursor
 // carries path names, never process-local offsets or open file handles.
 func (c *Connector) Backfill(ctx context.Context, sink connector.Sink, from connector.Cursor) (connector.BackfillResult, error) {
+	previous := map[string]connector.Event{}
+	if reader, ok := sink.(connector.DocumentInventory); ok {
+		stored, err := reader.Documents(ctx, c.source)
+		if err != nil && !errors.Is(err, connector.ErrNoDocumentInventory) {
+			return connector.BackfillResult{}, fmt.Errorf("reading obsidian inventory: %w", err)
+		}
+		for _, ev := range stored {
+			previous[ev.Payload.Artifact] = ev
+		}
+	}
 	p := position{Version: c.version, Stack: []frame{{Dir: "."}}}
 	if from != "" {
 		if err := json.Unmarshal([]byte(from), &p); err != nil {
@@ -268,6 +386,17 @@ func (c *Connector) Backfill(ctx context.Context, sink connector.Sink, from conn
 		ev, err := c.event(rel)
 		if err != nil {
 			return connector.BackfillResult{}, err
+		}
+		if old, ok := previous[ev.Payload.Artifact]; ok {
+			if old.Payload.Revision != nil && old.Payload.Revision.Token == ev.Payload.Revision.Token {
+				continue
+			}
+			edited := ev.Time
+			ev.Time = old.Time
+			if edited.Before(ev.Time) {
+				edited = ev.Time
+			}
+			ev.Payload.Revision.EditedAt = edited
 		}
 		if err := sink.Emit(ctx, ev); err != nil {
 			return connector.BackfillResult{}, fmt.Errorf("emitting %q: %w", rel, err)

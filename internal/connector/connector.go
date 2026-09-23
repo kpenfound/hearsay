@@ -30,6 +30,8 @@ var (
 	// ErrUndeclaredKind is returned when a connector emits a kind its
 	// descriptor does not list.
 	ErrUndeclaredKind = errors.New("kind is not declared by the connector")
+	// ErrNoDocumentInventory means the sink cannot read current L0 documents.
+	ErrNoDocumentInventory = errors.New("sink does not provide a document inventory")
 )
 
 // Sink is where a connector puts events. The runtime supplies it; the
@@ -40,6 +42,20 @@ var (
 // cannot remember what it sent should re-send rather than guess.
 type Sink interface {
 	Emit(ctx context.Context, ev Event) error
+}
+
+// DocumentInventory is an optional read surface for filesystem pollers. It
+// returns the current documents of one source, including documents in folders
+// removed from the current allowlist. A poller needs those to retract removals
+// after a process restart. The runtime's gate forwards this to L0.
+type DocumentInventory interface {
+	Documents(ctx context.Context, source string) ([]Event, error)
+}
+
+// RetractionSink lets a poller retract a previously ingested document whose
+// folder has since left the allowlist. The event must be a tombstone.
+type RetractionSink interface {
+	Retract(ctx context.Context, ev Event) error
 }
 
 // Connector is what a source module implements. It is deliberately small: on
