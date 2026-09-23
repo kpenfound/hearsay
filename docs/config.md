@@ -105,6 +105,9 @@ renamed afterwards ([connector contract](connector-contract.md#source-ids)).
 | `settings` | Opaque to Hearsay and passed to the connector, which rejects a field it does not have. What belongs here is documented by the connector. |
 | `secrets` | A map from the name the connector asks for to **the name of an environment variable**. A value that is not an environment variable name is an error, because a configuration repository is checked in and a token pasted here would be too. |
 
+The source id `hearsay` is reserved for Hearsay's own audit and assertion
+events. It is not available to configured sources.
+
 ### Discord source
 
 Install the bot in the guild with **View Channel**, **Read Message History**,
