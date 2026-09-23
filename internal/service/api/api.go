@@ -15,7 +15,7 @@
 // required. Authentication precedes the shared call layer (ADR-0014).
 //
 // The assert and watch calls of docs/design.md#read-and-assert-api are later
-// work, and so are a bundle's anchors and conflicts.
+// work, and so are a bundle's conflicts.
 package api
 
 import (
