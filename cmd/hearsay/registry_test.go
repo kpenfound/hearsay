@@ -28,6 +28,10 @@ func TestConnectorRegistry(t *testing.T) {
 			src:  connector.SourceConfig{ID: "discord", Type: "discord", Containers: []string{"1"}, Settings: []byte(`{"guild":"2"}`), Secrets: map[string]string{"token": "t"}},
 		},
 		{
+			name: "drive is registered",
+			src:  connector.SourceConfig{ID: "drive", Type: "drive", Containers: []string{"folder"}},
+		},
+		{
 			name:        "anything else is not",
 			src:         connector.SourceConfig{ID: "unknown", Type: "unknown", Containers: []string{"1"}},
 			wantUnknown: true,

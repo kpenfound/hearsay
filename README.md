@@ -64,8 +64,8 @@ flowchart LR
     API <-- "get_bundle, resolve, search, assert" --> Agent & Human
 ```
 
-GitHub and Discord connectors ship today; Slack and Drive are where the design
-points next.
+GitHub and Discord connectors ship today, along with Drive folder backfill.
+Drive change sync and Slack are where the design points next.
 
 ## Quick start
 
