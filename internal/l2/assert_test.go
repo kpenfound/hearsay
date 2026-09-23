@@ -114,25 +114,6 @@ func TestTrackerItems(t *testing.T) {
 	}
 }
 
-func TestTierFor(t *testing.T) {
-	tests := []struct {
-		kind    l1.Kind
-		outcome l1.OutcomeKind
-		want    l2.Tier
-	}{
-		{l1.KindPR, l1.OutcomeResolved, l2.TierRatified},
-		{l1.KindPR, l1.OutcomeDecided, l2.TierInferred},
-		{l1.KindPR, l1.OutcomeProposed, l2.TierInferred},
-		{l1.KindIssue, l1.OutcomeResolved, l2.TierInferred},
-		{l1.KindCommit, l1.OutcomeResolved, l2.TierInferred},
-	}
-	for _, tt := range tests {
-		if got := l2.TierFor(doc(tt.kind, "acme/api#1", tt.outcome)); got != tt.want {
-			t.Errorf("TierFor(%s, %s) = %s, want %s", tt.kind, tt.outcome, got, tt.want)
-		}
-	}
-}
-
 func TestIDsAreDerivedFromEveryPart(t *testing.T) {
 	base := l2.TopicID("api", "l1:s:a", 0, "name")
 	if again := l2.TopicID("api", "l1:s:a", 0, "name"); again != base {

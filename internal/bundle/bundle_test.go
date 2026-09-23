@@ -22,13 +22,17 @@ func doc(id string, kind l1.Kind, hour int, summary string) l1.Stored {
 	}}
 }
 
+// current is a topic standing at tier. The tier its stance was written with is
+// always inferred, so a bundle that served or budgeted by the written tier
+// rather than the computed one would show it.
 func current(topic string, tier l2.Tier, hour int) l3.CurrentStance {
 	return l3.CurrentStance{
 		Topic: l2.Topic{ID: "topic:" + topic, Name: topic},
 		Stance: l2.Stance{
-			ID: "stance:" + topic, Position: "the position on " + topic, Tier: tier,
+			ID: "stance:" + topic, Position: "the position on " + topic, Tier: l2.TierInferred,
 			StatedAt: day.Add(time.Duration(hour) * time.Hour), Evidence: []string{"l1:gh:acme/api#" + topic},
 		},
+		Tier: tier,
 	}
 }
 

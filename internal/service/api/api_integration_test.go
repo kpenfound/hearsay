@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -26,6 +27,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
+	"github.com/kpenfound/hearsay/internal/l3"
 	"github.com/kpenfound/hearsay/internal/principal"
 	"github.com/kpenfound/hearsay/internal/service/api"
 )
@@ -109,15 +111,18 @@ func newWorld(t *testing.T) *world {
 			},
 			ACL: acl,
 		}
+		class := config.ArtifactIssue
 		if kind == l1.KindPR {
-			ev.Kind = connector.KindPullRequest
+			// Every pull request in these fixtures merged: it is the
+			// authoritative artifact the ratified stances rest on.
+			ev.Kind, class = connector.KindPullRequest, config.ArtifactMergedPR
 		}
 		if _, err := events.Append(ctx, ev); err != nil {
 			t.Fatalf("Append(%s) = %v", artifact, err)
 		}
 		at := day.Add(time.Duration(hour) * time.Hour)
 		doc := l1.Document{
-			ID: l1.DocID(w.src, artifact), Kind: kind, ArtifactClass: config.ArtifactIssue,
+			ID: l1.DocID(w.src, artifact), Kind: kind, ArtifactClass: class,
 			Source: l1.Source{System: w.src, NativeID: artifact},
 			L0Refs: []string{connector.EventID(w.src, artifact)},
 			Time:   l1.Times{Created: at, Updated: at, LastActivity: at},
@@ -831,4 +836,130 @@ func mustJSON(t *testing.T, v any) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// standing is where one topic stands as each read serves it: the current
+// position and tier in the bundle and in the L3 view, and the current stance
+// and tier in stance_history.
+type standing struct {
+	bundle, view, history string
+}
+
+// standingOf reads one topic three ways for kyle, through the given call layer
+// and the L3 view under the given authority.
+func (w *world) standingOf(t *testing.T, calls *api.Calls, authority config.Authority, topic l2.Topic) standing {
+	t.Helper()
+	var got standing
+	body, err := calls.Call(t.Context(), kyle, "get_bundle", mustJSON(t, map[string]any{"scope": w.scope}))
+	if err != nil {
+		t.Fatalf("get_bundle = %v", err)
+	}
+	for _, s := range decodeBundle(t, body).Stances {
+		if s.TopicID == topic.ID {
+			got.bundle = s.Current + " @ " + s.Tier
+		}
+	}
+	reader := l1.Reader{
+		Effective: principal.Effective{Human: "kyle", Grant: principal.Grant{Scopes: principal.AllScopes()}},
+		Audience:  []connector.ACLEntry{{Kind: connector.ACLIdentity, Source: w.src, NativeID: kyleNode}},
+	}
+	current, _, err := l3.New(w.pool).WithAuthority(authority).CurrentStances(t.Context(), reader, w.scope, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range current {
+		if c.Topic.ID == topic.ID {
+			got.view = c.Stance.Position + " @ " + string(c.Tier)
+		}
+	}
+	body, err = calls.Call(t.Context(), kyle, "stance_history", mustJSON(t, map[string]any{"topic": topic.ID}))
+	if err != nil {
+		t.Fatalf("stance_history = %v", err)
+	}
+	var history api.History
+	if err := json.Unmarshal(body, &history); err != nil {
+		t.Fatal(err)
+	}
+	for _, st := range history.Stances {
+		if st.ID == history.Current {
+			got.history = st.Position + " @ " + history.Tier
+		}
+	}
+	return got
+}
+
+// The acceptance criterion: a topic becomes contested when an issue changes
+// what another issue said, and settles when a merged pull request lands — and
+// L3, the bundle and stance_history serve the same current stance and tier at
+// every step. The tier is computed on the read, so a scope's policy that stops
+// merged pull requests ratifying takes effect with nothing rewritten.
+func TestATopicIsContestedUntilAMergedPullRequestSettlesIt(t *testing.T) {
+	w := newWorld(t)
+	ctx := t.Context()
+	graph := l2.New(w.pool)
+	public := connector.ACL{{Kind: connector.ACLPublic}}
+	first := w.putIn(w.scope, w.project+"#20", l1.KindIssue, 10, "The platform team runs the migration.", public)
+	second := w.putIn(w.scope, w.project+"#21", l1.KindIssue, 11, "Each service team runs its own migration.", public)
+	merged := w.putIn(w.scope, w.project+"#22", l1.KindPR, 12, "Hands each service team its migration; merged.", public)
+	topic := l2.Topic{ID: l2.TopicID(w.src, first, 0, "who runs the migration"), Scope: w.src, Name: "who runs the migration",
+		About: []string{w.scope}, ACL: public, OpenedBy: first}
+	if _, err := graph.OpenTopic(ctx, topic); err != nil {
+		t.Fatal(err)
+	}
+	stance := func(doc, position string, hour int, tier l2.Tier, judgement l2.Judgement) {
+		t.Helper()
+		at := day.Add(time.Duration(hour) * time.Hour)
+		if _, _, err := graph.AppendStance(ctx, l2.Stance{
+			ID: l2.StanceID(topic.ID, doc, position, at, tier), TopicID: topic.ID, Position: position, Author: "kyle",
+			StatedAt: at, Evidence: []string{doc}, Tier: tier, Judgement: judgement, ACL: public,
+		}, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var none config.Authority
+	same := func(step string, want string) {
+		t.Helper()
+		got := w.standingOf(t, w.calls, none, topic)
+		if got != (standing{want, want, want}) {
+			t.Errorf("%s: bundle %q, L3 %q, history %q; want %q from all three", step, got.bundle, got.view, got.history, want)
+		}
+	}
+
+	stance(first, "the platform team", 10, l2.TierInferred, l2.JudgementUnknown)
+	same("one issue", "the platform team @ inferred")
+	stance(second, "each service team", 11, l2.TierInferred, l2.JudgementChanges)
+	same("a second issue changes it", "each service team @ contested")
+	stance(merged, "each service team", 12, l2.TierRatified, l2.JudgementRestates)
+	same("a merged pull request lands", "each service team @ ratified")
+
+	// The same rows under a policy for this scope in which nothing ratifies on
+	// its own: the tier the rows were written with does not decide.
+	dir := t.TempDir()
+	for name, body := range map[string]string{
+		"sources/github.yaml": "id: " + w.src + "\ntype: github\ncontainers: [" + w.project + "]\n",
+		"scopes/scope.yaml":   "id: " + w.src + "\nsources: [" + w.src + "]\n",
+		"authority/a.yaml":    "scope: " + w.src + "\nratified_by:\n  artifacts: []\n",
+	} {
+		full := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	loaded, err := config.Load(dir)
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	strict := repo(w.src)
+	strict.Authority = loaded.Authority
+	calls, err := api.NewCalls(w.pool, strict, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "each service team @ inferred"
+	if got := w.standingOf(t, calls, loaded.Authority, topic); got != (standing{want, want, want}) {
+		t.Errorf("under a policy where nothing ratifies: bundle %q, L3 %q, history %q; want %q from all three", got.bundle, got.view, got.history, want)
+	}
 }

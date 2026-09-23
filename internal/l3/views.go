@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
@@ -35,17 +36,33 @@ const RecentCandidates = 50
 
 // Views are the derived views over one database. Nothing here writes.
 type Views struct {
-	db   Querier
-	docs *l1.Store
+	db        Querier
+	docs      *l1.Store
+	graph     *l2.Store
+	authority config.Authority
 }
 
-// New returns the views over a pool or a transaction. The caller owns it.
-func New(q Querier) *Views { return &Views{db: q, docs: l1.New(q)} }
+// New returns the views over a pool or a transaction, under the built-in
+// authority policy. The caller owns it.
+func New(q Querier) *Views { return &Views{db: q, docs: l1.New(q), graph: l2.New(q)} }
+
+// WithAuthority returns a copy of the views that computes tiers under a
+// configuration's authority policies rather than the built-in one.
+func (v *Views) WithAuthority(a config.Authority) *Views {
+	c := *v
+	c.authority = a
+	return &c
+}
 
 // CurrentStance is the stance a topic stands at now, for a reader.
 type CurrentStance struct {
-	Topic  l2.Topic
+	Topic l2.Topic
+	// Stance is the topic's current stance, computed under the policy in
+	// force for its scope ([l2.Stand]). Its Tier is the tier it was written
+	// with; the tier it is served at is Tier below.
 	Stance l2.Stance
+	// Tier is the computed tier: ratified, inferred or contested.
+	Tier l2.Tier
 	// Supersedes is the position the stance replaced, empty for the first
 	// stance on a topic and for one the reader may not read.
 	Supersedes string
@@ -55,29 +72,18 @@ type CurrentStance struct {
 	Inherited bool
 }
 
-// currentSQL is every topic about one of the entities or an ancestor of one,
-// with the stance it stands at: the newest stated that a later reading of its
-// own document has not retired ([l2.RetiredSQL]), which is the head of the
-// supersession chain — a document read late forks the chain behind the head
-// and never replaces it (internal/l2). The walk up `part_of` is a UNION, so a
-// cycle ends it rather than looping.
-const currentSQL = `
+// topicsSQL is every topic about one of the entities or an ancestor of one. The
+// walk up `part_of` is a UNION, so a cycle ends it rather than looping.
+const topicsSQL = `
 WITH RECURSIVE up(id) AS (
     SELECT unnest($1::text[])
     UNION
     SELECT unnest(e.part_of) FROM l2_entities e JOIN up ON e.id = up.id
 )
-SELECT t.id, t.scope, t.name, t.about, t.acl, t.opened_by, t.created_at,
-       s.id, s.position, s.author, s.stated_at, s.evidence, coalesce(s.supersedes, ''), s.tier, s.acl, s.created_at,
-       coalesce(p.position, ''), coalesce(p.acl, '[]'::jsonb)
+SELECT t.id, t.scope, t.name, t.about, t.acl, t.opened_by, t.created_at
 FROM l2_topics t
-JOIN LATERAL (
-    SELECT * FROM l2_stances s WHERE s.topic_id = t.id AND NOT ` + l2.RetiredSQL + `
-    ORDER BY stated_at DESC, created_at DESC, id DESC LIMIT 1
-) s ON true
-LEFT JOIN l2_stances p ON p.id = s.supersedes
 WHERE t.about && ARRAY(SELECT id FROM up)
-ORDER BY s.stated_at DESC, t.id`
+ORDER BY t.id`
 
 // CurrentStances is the stance every topic about one entity stands at, then the
 // ones it inherits: topics about the related entities — for a tracker item, the
@@ -92,69 +98,83 @@ ORDER BY s.stated_at DESC, t.id`
 // so is every topic one of them opened. Counting those as the item's own would
 // make every topic in the repository a stance of every item in it.
 //
-// A topic the reader may not read, or whose current stance they may not read,
-// is left out and counted in the second result. The older stance they may read
-// is not offered in its place: it is not current, and a bundle that said it was
-// would be wrong in a way the reader could not see.
+// Where a topic stands — its current stance and tier — is computed from every
+// stance on it under the policy in force for its scope ([l2.Store.Assess]),
+// not from what the reader may read: the current stance is the topic's, and a
+// bundle that offered another in its place would be wrong in a way the reader
+// could not see. A topic the reader may not read, or whose current stance they
+// may not read, is left out and counted in the second result.
 func (v *Views) CurrentStances(ctx context.Context, reader l1.Reader, own string, related []string) ([]CurrentStance, int, error) {
 	if own == "" {
 		return []CurrentStance{}, 0, nil
 	}
 	entities := append([]string{own}, related...)
-	rows, err := v.db.Query(ctx, currentSQL, entities)
+	topics, err := v.topics(ctx, entities)
+	if err != nil {
+		return nil, 0, err
+	}
+	assessed, err := v.graph.Assess(ctx, v.authority, topics)
 	if err != nil {
 		return nil, 0, fmt.Errorf("reading current stances: %w", err)
 	}
-	defer rows.Close()
 	out := []CurrentStance{}
 	withheld := 0
-	for rows.Next() {
-		var (
-			c                          CurrentStance
-			tier                       string
-			topicACL, stanceACL, prior []byte
-		)
-		if err := rows.Scan(&c.Topic.ID, &c.Topic.Scope, &c.Topic.Name, &c.Topic.About, &topicACL, &c.Topic.OpenedBy, &c.Topic.CreatedAt,
-			&c.Stance.ID, &c.Stance.Position, &c.Stance.Author, &c.Stance.StatedAt, &c.Stance.Evidence, &c.Stance.Supersedes,
-			&tier, &stanceACL, &c.Stance.CreatedAt, &c.Supersedes, &prior); err != nil {
-			return nil, 0, fmt.Errorf("reading current stances: %w", err)
+	for _, a := range assessed {
+		if !a.Stands {
+			continue
 		}
-		c.Stance.TopicID, c.Stance.Tier = c.Topic.ID, l2.Tier(tier)
-		c.Topic.CreatedAt = c.Topic.CreatedAt.UTC()
-		c.Stance.StatedAt, c.Stance.CreatedAt = c.Stance.StatedAt.UTC(), c.Stance.CreatedAt.UTC()
-		var priorACL connector.ACL
-		if err := errors.Join(
-			json.Unmarshal(topicACL, &c.Topic.ACL),
-			json.Unmarshal(stanceACL, &c.Stance.ACL),
-			json.Unmarshal(prior, &priorACL),
-		); err != nil {
-			return nil, 0, fmt.Errorf("decoding the access lists of topic %s: %w", c.Topic.ID, err)
-		}
-		if !reader.Allows(c.Topic.ACL) || !reader.Allows(c.Stance.ACL) {
+		current := a.Standing.Current
+		if !reader.Allows(a.Topic.ACL) || !reader.Allows(current.ACL) {
 			withheld++
 			continue
 		}
-		if !reader.Allows(priorACL) {
-			c.Supersedes = ""
+		c := CurrentStance{Topic: a.Topic, Stance: current, Tier: a.Standing.Tier, Inherited: !slices.Contains(a.Topic.About, own)}
+		for _, st := range a.History {
+			if st.ID == current.Supersedes && reader.Allows(st.ACL) {
+				c.Supersedes = st.Position
+			}
 		}
-		c.Inherited = !slices.Contains(c.Topic.About, own)
 		out = append(out, c)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, 0, fmt.Errorf("reading current stances: %w", err)
-	}
-	// Stable, so each half keeps the statement's newest-first order.
+	// Own before inherited, and each newest stated first.
 	slices.SortStableFunc(out, func(a, b CurrentStance) int {
-		switch {
-		case a.Inherited == b.Inherited:
-			return 0
-		case b.Inherited:
-			return -1
-		default:
+		if a.Inherited != b.Inherited {
+			if b.Inherited {
+				return -1
+			}
 			return 1
 		}
+		if c := b.Stance.StatedAt.Compare(a.Stance.StatedAt); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Topic.ID, b.Topic.ID)
 	})
 	return out, withheld, nil
+}
+
+func (v *Views) topics(ctx context.Context, entities []string) ([]l2.Topic, error) {
+	rows, err := v.db.Query(ctx, topicsSQL, entities)
+	if err != nil {
+		return nil, fmt.Errorf("reading current stances: %w", err)
+	}
+	defer rows.Close()
+	var out []l2.Topic
+	for rows.Next() {
+		var t l2.Topic
+		var acl []byte
+		if err := rows.Scan(&t.ID, &t.Scope, &t.Name, &t.About, &acl, &t.OpenedBy, &t.CreatedAt); err != nil {
+			return nil, fmt.Errorf("reading current stances: %w", err)
+		}
+		if err := json.Unmarshal(acl, &t.ACL); err != nil {
+			return nil, fmt.Errorf("decoding the access list of topic %s: %w", t.ID, err)
+		}
+		t.CreatedAt = t.CreatedAt.UTC()
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading current stances: %w", err)
+	}
+	return out, nil
 }
 
 // Activity is the recent activity on a scope.
