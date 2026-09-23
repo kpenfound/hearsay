@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 
 	"github.com/kpenfound/hearsay/internal/telemetry"
@@ -21,11 +22,13 @@ type Allowlist struct {
 	// containers maps a source id to its allowed container ids. A source
 	// present with an empty set allows nothing.
 	containers map[string]map[string]bool
+	// folderPrefixes applies only to filesystem vault sources.
+	folderPrefixes map[string][]string
 }
 
 // NewAllowlist builds the allowlist the configured sources describe.
 func NewAllowlist(sources ...SourceConfig) Allowlist {
-	a := Allowlist{containers: make(map[string]map[string]bool, len(sources))}
+	a := Allowlist{containers: make(map[string]map[string]bool, len(sources)), folderPrefixes: make(map[string][]string)}
 	for _, src := range sources {
 		set, ok := a.containers[src.ID]
 		if !ok {
@@ -34,6 +37,9 @@ func NewAllowlist(sources ...SourceConfig) Allowlist {
 		}
 		for _, c := range src.Containers {
 			set[c] = true
+			if src.Type == "obsidian" && c != AllowAll {
+				a.folderPrefixes[src.ID] = append(a.folderPrefixes[src.ID], c)
+			}
 		}
 	}
 	return a
@@ -48,7 +54,15 @@ func (a Allowlist) Allows(source, container string) bool {
 	if len(set) == 0 || container == "" {
 		return false
 	}
-	return set[container] || set[AllowAll]
+	if set[container] || set[AllowAll] {
+		return true
+	}
+	for _, folder := range a.folderPrefixes[source] {
+		if strings.HasPrefix(container, folder+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // Gate is the sink a connector writes through, and the only way an event

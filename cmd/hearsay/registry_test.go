@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -30,6 +31,10 @@ func TestConnectorRegistry(t *testing.T) {
 		{
 			name: "drive is registered",
 			src:  connector.SourceConfig{ID: "drive", Type: "drive", Containers: []string{"folder"}},
+		},
+		{
+			name: "obsidian is registered",
+			src:  connector.SourceConfig{ID: "notes", Type: "obsidian", Containers: []string{"notes"}, Settings: json.RawMessage(`{"root":"/missing-vault","owner":{"source":"notes","kind":"user","native_id":"owner"}}`)},
 		},
 		{
 			name:        "anything else is not",

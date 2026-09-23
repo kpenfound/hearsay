@@ -15,6 +15,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector/discord"
 	"github.com/kpenfound/hearsay/internal/connector/drive"
 	"github.com/kpenfound/hearsay/internal/connector/github"
+	"github.com/kpenfound/hearsay/internal/connector/obsidian"
 	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/llm/providers"
@@ -397,7 +398,7 @@ func checkListen(addr string) error {
 // wiring rather than from whatever happened to be linked in
 // (docs/connector-contract.md).
 //
-// It holds the GitHub, Discord and Drive connectors. A source of any other type
+// It holds the GitHub, Discord, Drive and Obsidian connectors. A source of any other type
 // is a startup failure, as is a source whose connector rejects its config.
 func connectorRegistry() *connector.Registry {
 	registry := connector.NewRegistry()
@@ -406,6 +407,7 @@ func connectorRegistry() *connector.Registry {
 	_ = registry.Register(github.Type, github.Factory)
 	_ = registry.Register(discord.Type, discord.Factory)
 	_ = registry.Register(drive.Type, drive.Factory)
+	_ = registry.Register(obsidian.Type, obsidian.Factory)
 	return registry
 }
 
