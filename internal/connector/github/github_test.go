@@ -1880,6 +1880,8 @@ func TestASubIssueIsPartOfItsParent(t *testing.T) {
 	h := c.Handler(gateFor(src, c, live))
 	tests := []struct {
 		name, event, file string
+		// edit changes the recorded delivery before it is sent.
+		edit func([]byte) []byte
 		// want is the one event the delivery emits; nil is none.
 		want *want
 	}{
@@ -1908,13 +1910,24 @@ func TestASubIssueIsPartOfItsParent(t *testing.T) {
 			want: &want{"acme/api#12@2026-09-14T08:00:00Z", ""},
 		},
 		{
+			name: "a removal whose sub-issue still names the parent removed", event: "sub_issues", file: "sub_issues.parent_issue_removed",
+			edit: func(body []byte) []byte {
+				return bytes.Replace(body, []byte(`"number": 12,`), []byte(`"number": 12, "parent_issue_url": "https://api.github.com/repos/acme/api/issues/10",`), 1)
+			},
+			want: &want{"acme/api#12@2026-09-14T08:00:00Z", ""},
+		},
+		{
 			name: "a sub-issue in another repository is that repository's delivery", event: "sub_issues", file: "sub_issues.sub_issue_added.other_repository",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			before := len(live.Events())
-			code := deliver(t, h, tt.event, hook(t, tt.file))
+			body := hook(t, tt.file)
+			if tt.edit != nil {
+				body = tt.edit(body)
+			}
+			code := deliver(t, h, tt.event, body)
 			events := live.Events()[before:]
 			if tt.want == nil {
 				if code != http.StatusNoContent || len(events) != 0 {
