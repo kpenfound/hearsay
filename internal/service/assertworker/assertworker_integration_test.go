@@ -182,6 +182,12 @@ func TestAnIssueThenAMergedPullRequestIsOneTopicWithTwoStances(t *testing.T) {
 		t.Fatalf("StanceHistory() = %d stances, want 2: %+v", len(history), history)
 	}
 	first, second := history[0], history[1]
+	if first.Judgement != l2.JudgementUnknown || second.Judgement != l2.JudgementChanges {
+		t.Errorf("stance judgements = %q, %q, want unknown then changes", first.Judgement, second.Judgement)
+	}
+	if read, err := graph.Stance(t.Context(), second.ID); err != nil || read.Judgement != l2.JudgementChanges {
+		t.Errorf("Stance() = %+v, %v, want recorded change", read, err)
+	}
 	if first.Position != issuePosition || !slices.Equal(first.Evidence, []string{f.issueID}) ||
 		first.Supersedes != "" || first.Tier != l2.TierInferred || first.Author != "kyle" {
 		t.Errorf("first stance = %+v, want the issue's proposal, inferred, superseding nothing, by kyle", first)
@@ -207,8 +213,8 @@ func TestAnIssueThenAMergedPullRequestIsOneTopicWithTwoStances(t *testing.T) {
 // else would fail the assertion with no fixture.
 func TestTheWorkerOffersOnlyWhatTheDocumentsReadersMayReadNow(t *testing.T) {
 	private := connector.ACL{{Kind: connector.ACLIdentity, Source: "gh", NativeID: "kyle-node"}}
-	answer := func(topic, name string) []byte {
-		return []byte(`{"assertions":[{"topic":"` + topic + `","topic_name":"` + name + `","position":"` + prPosition + `"}]}`)
+	answer := func(topic, judgement string) []byte {
+		return []byte(`{"assertions":[{"topic":"` + topic + `","topic_name":"` + topicName + `","position":"` + prPosition + `"` + judgement + `}]}`)
 	}
 	tests := []struct {
 		name string
@@ -227,7 +233,7 @@ func TestTheWorkerOffersOnlyWhatTheDocumentsReadersMayReadNow(t *testing.T) {
 					t.Fatal(err)
 				}
 			},
-			response: answer("new", topicName),
+			response: answer("new", ""),
 			opened:   1,
 		},
 		{
@@ -237,7 +243,7 @@ func TestTheWorkerOffersOnlyWhatTheDocumentsReadersMayReadNow(t *testing.T) {
 					t.Fatal(err)
 				}
 			},
-			response: answer("new", topicName),
+			response: answer("new", ""),
 			opened:   1,
 		},
 		{
@@ -260,7 +266,7 @@ func TestTheWorkerOffersOnlyWhatTheDocumentsReadersMayReadNow(t *testing.T) {
 				}
 			},
 			candidates: []assertworker.Candidate{{Name: topicName}},
-			response:   answer("T1", topicName),
+			response:   answer("T1", `,"judgement":"changes"`),
 			opened:     0,
 		},
 	}
@@ -290,6 +296,53 @@ func TestTheWorkerOffersOnlyWhatTheDocumentsReadersMayReadNow(t *testing.T) {
 			// recorded answer would continue it and open nothing.
 			if r := assertDoc(t, a, f.prID, scope); r.TopicsOpened != tt.opened || r.StancesWritten != 1 {
 				t.Errorf("Assert(pull request) = %+v, want %d topics opened and one stance", r, tt.opened)
+			}
+			// A judgement against a position the model was not shown is no
+			// comparison, and is not recorded as one.
+			written, err := l2.New(pool).StancesFrom(t.Context(), f.prID)
+			if err != nil || len(written) != 1 || written[0].Judgement != l2.JudgementUnknown {
+				t.Errorf("StancesFrom(pull request) = %+v, %v, want one stance with no judgement", written, err)
+			}
+		})
+	}
+}
+
+func TestExistingTopicRequiresJudgement(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		json string
+	}{
+		{"missing", `{"assertions":[{"topic":"T1","topic_name":"` + topicName + `","position":"` + prPosition + `"}]}`},
+		{"new topic with judgement", `{"assertions":[{"topic":"new","topic_name":"another question","position":"another answer","judgement":"changes"}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := newPool(t)
+			src := newSource(t)
+			f := store(t, pool, src)
+			fx := llm.NewFixtures()
+			issue := issueDoc(t, src)
+			if err := fx.Add(llm.CompletionFixture{
+				Tier:     llm.TierAssert,
+				Request:  assertworker.RequestFor(issue, nil, assertBudget()),
+				Response: llm.Response{JSON: []byte(`{"assertions":[{"topic":"new","topic_name":"` + topicName + `","position":"` + issuePosition + `"}]}`), StopReason: llm.StopEnd, Model: "recorded"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			pr := prDoc(t, src)
+			if err := fx.Add(llm.CompletionFixture{
+				Tier:     llm.TierAssert,
+				Request:  assertworker.RequestFor(pr, []assertworker.Candidate{{Name: topicName, Current: issuePosition}}, assertBudget()),
+				Response: llm.Response{JSON: []byte(tc.json), StopReason: llm.StopEnd, Model: "recorded"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			a := newAsserter(t, pool, src, fx)
+			assertDoc(t, a, f.issueID, src)
+			if _, err := a.Assert(t.Context(), f.prID, src); err == nil || !strings.Contains(err.Error(), "invalid judgement") {
+				t.Errorf("Assert(malformed answer) = %v, want judgement error", err)
+			}
+			if topics, err := l2.New(pool).Topics(t.Context(), src); err != nil || len(topics) != 1 {
+				t.Errorf("Topics() after rejected response = %+v, %v, want only the issue's topic", topics, err)
 			}
 		})
 	}
@@ -467,6 +520,9 @@ func TestARedistilledDocumentReplacesItsOwnStance(t *testing.T) {
 		t.Fatalf("StanceHistory() = %+v, %v, want three stances", history, err)
 	}
 	s1, s2, s3 := history[0], history[1], history[2]
+	if s3.Judgement != l2.JudgementChanges {
+		t.Errorf("restated issue against current PR = %q, want changes", s3.Judgement)
+	}
 	if s1.Position != issuePosition || s2.Position != prPosition || s3.Position != restatedPosition {
 		t.Fatalf("StanceHistory() positions = %q, %q, %q", s1.Position, s2.Position, s3.Position)
 	}
@@ -514,6 +570,18 @@ func TestARedistilledDocumentReplacesItsOwnStance(t *testing.T) {
 	}
 	if last := after[len(after)-1]; last.ID != s3.ID {
 		t.Fatalf("the newest stated stance is %q, want the retired restatement %q", last.Position, s3.Position)
+	}
+	foundParaphrase := false
+	for _, st := range after {
+		if st.Position == uncommentedPosition {
+			foundParaphrase = true
+			if st.Judgement != l2.JudgementRestates {
+				t.Errorf("paraphrase judgement = %q, want restates", st.Judgement)
+			}
+		}
+	}
+	if !foundParaphrase {
+		t.Errorf("StanceHistory() = %+v, want the paraphrase", after)
 	}
 
 	// The pull request read again is shown the topic at its current stance,

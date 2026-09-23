@@ -192,6 +192,9 @@ func (a *Asserter) Assert(ctx context.Context, docID, scope string) (Result, err
 				continue
 			}
 			var topicID string
+			// shown is whether the model was shown a position to judge this
+			// one against; a position withheld from it was not.
+			shown := false
 			if as.Topic == NewTopic {
 				if name == "" {
 					continue
@@ -221,20 +224,26 @@ func (a *Asserter) Assert(ctx context.Context, docID, scope string) (Result, err
 					return fmt.Errorf("asserting %s: the %s answer names topic %q, which was not offered", docID, llm.TierAssert, as.Topic)
 				}
 				topicID = topics[at].ID
+				shown = candidates[at].Current != ""
 			}
 			if err := w.ExtendTopic(ctx, topicID, about, keys); err != nil {
 				return err
 			}
 			tier := l2.TierFor(doc)
+			judgement := l2.JudgementUnknown
+			if as.Judgement != nil && shown {
+				judgement = *as.Judgement
+			}
 			_, written, err := w.AppendStance(ctx, l2.Stance{
-				ID:       l2.StanceID(topicID, docID, position, stored.DistilledAt, tier),
-				TopicID:  topicID,
-				Position: position,
-				Author:   authorOf(doc),
-				StatedAt: doc.Time.LastActivity,
-				Evidence: []string{docID},
-				Tier:     tier,
-				ACL:      doc.ACL,
+				ID:        l2.StanceID(topicID, docID, position, stored.DistilledAt, tier),
+				TopicID:   topicID,
+				Position:  position,
+				Judgement: judgement,
+				Author:    authorOf(doc),
+				StatedAt:  doc.Time.LastActivity,
+				Evidence:  []string{docID},
+				Tier:      tier,
+				ACL:       doc.ACL,
 			}, stored.DistilledAt)
 			if err != nil {
 				return err
@@ -287,6 +296,15 @@ func (a *Asserter) extract(ctx context.Context, doc l1.Document, candidates []Ca
 	var ans answer
 	if err := json.Unmarshal(resp.JSON, &ans); err != nil {
 		return answer{}, fmt.Errorf("asserting %s: the %s answer did not decode: %w", doc.ID, llm.TierAssert, err)
+	}
+	for i, as := range ans.Assertions {
+		valid := as.Judgement == nil
+		if as.Topic != NewTopic {
+			valid = as.Judgement != nil && (*as.Judgement == l2.JudgementChanges || *as.Judgement == l2.JudgementRestates)
+		}
+		if !valid {
+			return answer{}, fmt.Errorf("asserting %s: the %s answer has invalid judgement for assertion %d", doc.ID, llm.TierAssert, i+1)
+		}
 	}
 	return ans, nil
 }

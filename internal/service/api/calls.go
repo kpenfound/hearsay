@@ -382,6 +382,7 @@ func resolve(ctx context.Context, c *Calls, _ Caller, _ l1.Reader, raw json.RawM
 type StanceRecord struct {
 	ID         string   `json:"id"`
 	Position   string   `json:"position"`
+	Judgement  *string  `json:"judgement"`
 	Author     string   `json:"author,omitempty"`
 	StatedAt   string   `json:"stated_at"`
 	Tier       string   `json:"tier"`
@@ -436,6 +437,7 @@ func stanceHistory(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, ra
 		out.Stances = append(out.Stances, StanceRecord{
 			ID: st.ID, Position: st.Position, Author: st.Author, StatedAt: st.StatedAt.UTC().Format(time.RFC3339),
 			Tier: string(st.Tier), Supersedes: st.Supersedes, Evidence: st.Evidence,
+			Judgement: stanceJudgement(st.Judgement),
 		})
 	}
 	for i := range out.Stances {
@@ -445,6 +447,14 @@ func stanceHistory(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, ra
 		}
 	}
 	return out, nil
+}
+
+func stanceJudgement(j l2.Judgement) *string {
+	if j == l2.JudgementUnknown {
+		return nil
+	}
+	v := string(j)
+	return &v
 }
 
 func getL1(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json.RawMessage) (any, error) {

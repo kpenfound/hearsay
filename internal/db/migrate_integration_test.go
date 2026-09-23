@@ -147,6 +147,11 @@ func TestMigrateUpAndDown(t *testing.T) {
 		if version, err := migrator.Version(t.Context()); err != nil || version != want {
 			t.Fatalf("Version(after down) = %d, %v, want %d", version, err, want)
 		}
+		if i == 0 {
+			if _, err := pool.Exec(t.Context(), `SELECT judgement FROM l2_stances LIMIT 0`); err == nil {
+				t.Error("stance judgement remains after rolling its migration back")
+			}
+		}
 		if table == "" {
 			continue
 		}

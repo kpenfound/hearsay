@@ -33,7 +33,8 @@ corrupt.
   document that already holds a live stance on a topic — it was re-distilled,
   or re-run after a deletion — supersedes that stance, not whatever is newest
   on the topic, so one document holds at most one live stance per topic and a
-  restatement never reads as a reply to a later document. The replaced stance
+  replacement does not point to a later document. Its judgement is separately
+  made against the current position shown in the prompt. The replaced stance
   is *retired* (`RetiredSQL`, [Current]): never a topic's current stance, and
   never a predecessor again. A new document version writes a supersession even
   if it takes the same position.
@@ -57,11 +58,12 @@ corrupt.
 - **A topic is only offered to a document everyone who may read it may read the
   topic too** (`topicReadableBy`): its opening document's current access list
   is public, or carries every grant of the document's, compared without labels.
-  Its current position is shown only where every piece of that position's
-  evidence passes the same test ([Store.EvidenceReadableBy]); otherwise the
-  topic is offered with no position recorded. Otherwise a private topic's name
-  or position reaches a prompt about a public document and the stance it
-  produces.
+  Otherwise a private topic's name reaches a prompt about a public document and
+  the stance it produces. Its current position is shown only where every piece
+  of that position's evidence passes the same test
+  ([Store.EvidenceReadableBy]); otherwise the topic is offered with no position
+  recorded, and a stance the document adds to it records no judgement, since
+  nothing was shown to judge against.
 - **Join keys leave out people and code entities.** Everybody's documents name
   the same people and systems, and a key everything shares joins everything.
 - **Nothing unresolved is invented.** A tracker item is an entity only where a

@@ -352,7 +352,7 @@ func aclJSON(acl connector.ACL) string {
 
 // --- stances ---
 
-const stanceColumns = `id, topic_id, position, author, stated_at, evidence, coalesce(supersedes, ''), tier, acl, created_at`
+const stanceColumns = `id, topic_id, position, author, stated_at, evidence, coalesce(supersedes, ''), tier, acl, created_at, judgement`
 
 // RetiredSQL is the predicate, over a stance aliased `s`, that a later reading
 // of its own document replaced it: a stance from the same document on the same
@@ -369,8 +369,8 @@ const RetiredSQL = `EXISTS (
 // A document that already holds a live stance on the topic is being read again
 // in a new version, and the new stance replaces that one, whenever either was
 // stated: one document holds at most one live stance per topic, and a
-// re-distilled document's restatement is recorded as a change to what that
-// document said, not as a reply to whatever is newest on the topic.
+// re-distilled document's stance replaces its own old row, while its recorded
+// judgement still compares with the topic's current position shown in the prompt.
 //
 // Otherwise it is the newest live stance on the topic stated no later than the
 // new one. A stance stated earlier than the topic's current one — a document
@@ -414,10 +414,10 @@ func (s *Store) AppendStance(ctx context.Context, st Stance, distilledAt time.Ti
 		return Stance{}, false, fmt.Errorf("encoding the acl of stance %s: %w", st.ID, err)
 	}
 	tag, err := s.db.Exec(ctx, `
-INSERT INTO l2_stances (id, topic_id, position, author, stated_at, evidence, supersedes, tier, acl)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+INSERT INTO l2_stances (id, topic_id, position, author, stated_at, evidence, supersedes, tier, acl, judgement)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (id) DO NOTHING`,
-		st.ID, st.TopicID, st.Position, st.Author, st.StatedAt, st.Evidence, predecessor, string(st.Tier), acl)
+		st.ID, st.TopicID, st.Position, st.Author, st.StatedAt, st.Evidence, predecessor, string(st.Tier), acl, nullableJudgement(st.Judgement))
 	if err != nil {
 		return Stance{}, false, fmt.Errorf("appending stance %s: %w", st.ID, err)
 	}
@@ -480,17 +480,29 @@ func (s *Store) stances(ctx context.Context, sql string, args ...any) ([]Stance,
 func scanStance(row scanner) (Stance, error) {
 	var st Stance
 	var tier string
+	var judgement *string
 	var acl []byte
 	if err := row.Scan(&st.ID, &st.TopicID, &st.Position, &st.Author, &st.StatedAt, &st.Evidence,
-		&st.Supersedes, &tier, &acl, &st.CreatedAt); err != nil {
+		&st.Supersedes, &tier, &acl, &st.CreatedAt, &judgement); err != nil {
 		return Stance{}, err
 	}
 	st.Tier = Tier(tier)
+	if judgement != nil {
+		st.Judgement = Judgement(*judgement)
+	}
 	if err := json.Unmarshal(acl, &st.ACL); err != nil {
 		return Stance{}, fmt.Errorf("decoding the acl of stance %s: %w", st.ID, err)
 	}
 	st.StatedAt, st.CreatedAt = st.StatedAt.UTC(), st.CreatedAt.UTC()
 	return st, nil
+}
+
+func nullableJudgement(j Judgement) *string {
+	if j == JudgementUnknown {
+		return nil
+	}
+	v := string(j)
+	return &v
 }
 
 // --- what has been read ---
