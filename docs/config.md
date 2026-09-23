@@ -269,6 +269,15 @@ id rather than a vendor abbreviation, so two trackers with the same project key
 in different sources stay apart and an entity id reads back to the source that
 owns it without a lookup, the way an event id does.
 
+The mapping is also what makes the tracker's own hierarchy part of the entity
+map. A GitHub sub-issue is `part_of` its parent issue — item `1235` under
+`tracker:github:acme/api#1234` — where a scope's tracker maps the parent's
+repository too; a parent in a repository no scope's tracker maps is no entity,
+so it is no edge. Moving a sub-issue to another parent, or out of one, replaces
+the edge, and the item inherits its new ancestors' stances. This is the
+tracker's rank in the hierarchy (see `code/` below), and it only ever places
+tracker items.
+
 A scope's tracker must be a source the scope covers: a tracker whose items the
 scope never ingests would map nothing. A container the source does not ingest is
 an error too, for the same reason — the scope would be filtering for something

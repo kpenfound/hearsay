@@ -45,8 +45,10 @@ func (t EntityType) Valid() bool {
 }
 
 // Origin is where an entity came from. A re-seed replaces what it seeded — the
-// `config` and `repo_structure` rows — and never touches a `reference` row,
-// which the assertion worker created because a document pointed at it.
+// `config` and `repo_structure` rows — and never deletes a `reference` row,
+// which the assertion worker created because a document pointed at it or the
+// tracker placed it under a parent. What it writes of one is a tracker item's
+// place in the tracker's hierarchy.
 type Origin string
 
 // The origins.

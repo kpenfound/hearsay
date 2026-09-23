@@ -109,10 +109,13 @@ decided, proposed or resolved; the worker reads it with the `assert` tier,
 matches topics by reference overlap and then embedding similarity, and appends
 stances in `internal/l2`. An `assert` job whose target is an L0 `assertion`
 event, which the API enqueues, is an agent's stance and is appended with no
-model call. At startup it seeds entities from `code/`, and from
+model call. At startup it seeds entities from `code/`, from
 the root directories and CODEOWNERS files of the GitHub repositories `code/`
-names (`github.Reader`, with the source's token), and enqueues every such
-document it has not read. It needs Postgres and refuses without it.
+names (`github.Reader`, with the source's token), and from the tracker
+hierarchy L0 holds — GitHub sub-issues, `part_of` their parent issue — and
+enqueues every such document it has not read. Between startups it follows the
+L0 change feed and places each tracker item again when its issue changes. It
+needs Postgres and refuses without it.
 
 Migrations are `go run ./cmd/hearsay migrate up|status|up-to <n>|down`, or
 `dagger api call hearsay migrate --database-url=...` against a database. They are
