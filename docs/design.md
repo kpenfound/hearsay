@@ -117,10 +117,13 @@ stance:
   time: ...
   evidence: [l1 ids]
   supersedes: stance id | null
+  judgement: changes | restates | null
   tier: ratified | inferred | contested
 ```
 
 The history of stances on a topic is the record. "Current decision" is a derived view (L3), not a stored fact. When a Slack thread decides one thing and a meeting later reverses it, both stances exist, the newer links to the older, and the meeting segment carries the reason.
+
+The assertion worker records `judgement` against the current position shown for an existing topic: `changes` or `restates`, including a paraphrase. A stance opening a topic and older stances without a recorded judgement have `null`. Reads do not infer this from position text.
 
 Tiers:
 

@@ -185,9 +185,14 @@ func TestStancesAreSupersededNeverOverwritten(t *testing.T) {
 	if !written || first.Supersedes != "" {
 		t.Fatalf("the first stance = %+v, written %v, want written and superseding nothing", first, written)
 	}
-	second, _ := add(stance(topic, "l1:s:pr", "engine takes the lock", 5))
+	secondStance := stance(topic, "l1:s:pr", "engine takes the lock", 5)
+	secondStance.Judgement = l2.JudgementChanges
+	second, _ := add(secondStance)
 	if second.Supersedes != first.ID {
 		t.Errorf("the second stance supersedes %q, want %q", second.Supersedes, first.ID)
+	}
+	if first.Judgement != l2.JudgementUnknown || second.Judgement != l2.JudgementChanges {
+		t.Errorf("stored judgements = %q, %q, want unknown then changes", first.Judgement, second.Judgement)
 	}
 
 	// The same position from the same document again is the stance already

@@ -155,23 +155,23 @@ func newWorld(t *testing.T) *world {
 			t.Fatal(err)
 		}
 	}
-	stance := func(tp l2.Topic, docID, position string, hour int, tier l2.Tier, acl connector.ACL) {
+	stance := func(tp l2.Topic, docID, position string, hour int, tier l2.Tier, judgement l2.Judgement, acl connector.ACL) {
 		t.Helper()
 		at := day.Add(time.Duration(hour) * time.Hour)
 		_, _, err := graph.AppendStance(ctx, l2.Stance{
 			ID: l2.StanceID(tp.ID, docID, position, at, tier), TopicID: tp.ID, Position: position, Author: "kyle",
-			StatedAt: at, Evidence: []string{docID}, Tier: tier, ACL: acl,
+			StatedAt: at, Evidence: []string{docID}, Tier: tier, Judgement: judgement, ACL: acl,
 		}, at)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
 	// A private stance on a public topic, older than everything else on it.
-	stance(topic, w.secret, "an early private note", 0, l2.TierInferred, private)
-	stance(topic, w.issue, "in the request path, behind a flag", 1, l2.TierInferred, public)
-	stance(topic, w.pr, "in the worker", 2, l2.TierRatified, public)
-	stance(inherited, w.pr, "deploys go through the queue", 2, l2.TierInferred, public)
-	stance(hidden, w.secret, "we name them", 3, l2.TierInferred, private)
+	stance(topic, w.secret, "an early private note", 0, l2.TierInferred, l2.JudgementUnknown, private)
+	stance(topic, w.issue, "in the request path, behind a flag", 1, l2.TierInferred, l2.JudgementUnknown, public)
+	stance(topic, w.pr, "in the worker", 2, l2.TierRatified, l2.JudgementChanges, public)
+	stance(inherited, w.pr, "deploys go through the queue", 2, l2.TierInferred, l2.JudgementUnknown, public)
+	stance(hidden, w.secret, "we name them", 3, l2.TierInferred, l2.JudgementUnknown, private)
 
 	calls, err := api.NewCalls(pool, repo(w.src), nil)
 	if err != nil {
@@ -449,6 +449,12 @@ func TestEveryReadIsFilteredByPrincipal(t *testing.T) {
 	_ = json.Unmarshal([]byte(samsHistory), &samsStances)
 	if len(samsStances.Stances) != 2 || samsStances.Stances[0].Supersedes != "" || samsStances.Stances[1].Supersedes != samsStances.Stances[0].ID {
 		t.Errorf("sam's history = %+v, want two stances, the first naming nothing it superseded", samsStances.Stances)
+	}
+	if len(samsStances.Stances) == 2 && (samsStances.Stances[0].Judgement != nil || samsStances.Stances[1].Judgement == nil || *samsStances.Stances[1].Judgement != "changes") {
+		t.Errorf("sam's history judgements = %+v, want null then changes", samsStances.Stances)
+	}
+	if !strings.Contains(samsHistory, `"judgement":null`) {
+		t.Errorf("historical unknown judgement omitted from history: %s", samsHistory)
 	}
 	if kyles := string(w.http(t, kyle, "stance_history", history)); !strings.Contains(kyles, "an early private note") {
 		t.Errorf("kyle's history is missing the stance kyle may read: %s", kyles)
