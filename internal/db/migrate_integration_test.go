@@ -139,7 +139,7 @@ func TestMigrateUpAndDown(t *testing.T) {
 	// later is a line added at the top of this list; a migration that creates
 	// no table of its own — an index on an existing one — has no table here and
 	// is only checked for rolling back cleanly.
-	for i, table := range []string{"", "", "l0_resyncs", "l2_stances", "l0_backfill_cursors", "", "", "", "", "l0_feed_cursors", "l1_docs", "queue_job", "l0_events"} {
+	for i, table := range []string{"", "", "", "l0_resyncs", "l2_stances", "l0_backfill_cursors", "", "", "", "", "l0_feed_cursors", "l1_docs", "queue_job", "l0_events"} {
 		want := newest - int64(i) - 1
 		if _, err := migrator.Down(t.Context()); err != nil {
 			t.Fatalf("Down() = %v, want no error", err)
@@ -150,6 +150,11 @@ func TestMigrateUpAndDown(t *testing.T) {
 		if i == 0 {
 			if _, err := pool.Exec(t.Context(), `SELECT judgement FROM l2_stances LIMIT 0`); err == nil {
 				t.Error("stance judgement remains after rolling its migration back")
+			}
+		}
+		if i == 1 {
+			if _, err := pool.Exec(t.Context(), `SELECT artifact_class FROM l1_docs LIMIT 0`); err == nil {
+				t.Error("artifact class remains after rolling its migration back")
 			}
 		}
 		if table == "" {
@@ -378,8 +383,11 @@ func TestArtifactClassBackfill(t *testing.T) {
 	if _, err := migrator.UpTo(t.Context(), 14); err != nil {
 		t.Fatal(err)
 	}
+	if applied, err := migrator.Up(t.Context()); err != nil || len(applied) != 1 || applied[0].Version != 15 {
+		t.Errorf("Up(after backfill) = %v, %v; want only migration 15", applied, err)
+	}
 	if applied, err := migrator.Up(t.Context()); err != nil || len(applied) != 0 {
-		t.Errorf("second Up = %v, %v", applied, err)
+		t.Errorf("Up(again) = %v, %v; want no migrations", applied, err)
 	}
 	for i, tt := range cases {
 		var got string
