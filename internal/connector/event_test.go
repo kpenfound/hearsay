@@ -163,6 +163,20 @@ func TestEventValidate(t *testing.T) {
 			},
 		},
 		{
+			name: "a sub-issue part of an issue in another repository",
+			mutate: func(e *connector.Event) {
+				e.Kind = connector.KindIssue
+				e.NativeID, e.Payload.Artifact = "acme/api#13", "acme/api#13"
+				e.Payload.Parent, e.Payload.Thread = "", ""
+				e.Payload.PartOf = "acme/web#12"
+			},
+		},
+		{
+			name:    "an item part of itself",
+			mutate:  func(e *connector.Event) { e.Payload.PartOf = e.Payload.Artifact },
+			wantErr: true,
+		},
+		{
 			name: "a tombstone that is a revision of what it retracts",
 			mutate: func(e *connector.Event) {
 				e.Kind = connector.KindTombstone

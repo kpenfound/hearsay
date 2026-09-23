@@ -32,6 +32,9 @@ type delivery struct {
 	Comment     *comment    `json:"comment"`
 	PullRequest *pull       `json:"pull_request"`
 	Review      *review     `json:"review"`
+	// sub_issues
+	ParentIssue *issue `json:"parent_issue"`
+	SubIssue    *issue `json:"sub_issue"`
 	// push
 	Ref    string `json:"ref"`
 	Before string `json:"before"`
@@ -137,7 +140,7 @@ func (c *Connector) deliver(ctx context.Context, sink connector.Sink, event stri
 		// An organisation's event that is about no repository: nothing here is.
 		return nil, false, nil
 	}
-	v := view{source: c.source, repo: c.canonical(d.Repository.FullName), private: d.Repository.Private}
+	v := c.view(d.Repository.FullName, d.Repository.Private)
 	if event == "repository" {
 		// Only a repository config names is re-synced: the gate would drop what
 		// a walk of any other emits, and the token has no business reading it.
@@ -232,10 +235,59 @@ func (c *Connector) events(ctx context.Context, event string, v view, d delivery
 		}
 		return one(v.reviewCommentEvent(*d.Comment))
 
+	case "sub_issues":
+		return subIssue(v, d, missing)
+
 	case "push":
 		return c.pushed(ctx, v, d)
 	}
 	return nil, nil
+}
+
+// subIssue is a sub_issues delivery: the sub-issue again, part of the parent it
+// was added to or of none. GitHub sends one to each end of the relationship —
+// `parent_issue_*` to the sub-issue's repository and `sub_issue_*` to the
+// parent's — and they build the same event, so one that is about a sub-issue
+// in another repository is left to that repository's delivery.
+//
+// A removal keeps a parent the sub-issue already names that is not the one
+// removed: moving an issue to another parent removes it from the old one, and
+// that delivery may arrive after the one that added the new.
+func subIssue(v view, d delivery, missing func(string) error) ([]connector.Event, error) {
+	if d.SubIssue == nil || d.ParentIssue == nil {
+		return nil, missing("sub_issue or parent_issue")
+	}
+	repo, ok := repositoryAt(d.SubIssue.RepositoryURL)
+	if !ok {
+		return nil, missing("sub_issue.repository_url")
+	}
+	if !strings.EqualFold(repo, v.repo) {
+		return nil, nil
+	}
+	child := *d.SubIssue
+	switch d.Action {
+	case "parent_issue_added", "sub_issue_added":
+		child.ParentIssueURL = d.ParentIssue.URL
+	case "parent_issue_removed", "sub_issue_removed":
+		if child.ParentIssueURL != "" && sameIssue(child.ParentIssueURL, d.ParentIssue.URL) {
+			child.ParentIssueURL = ""
+		}
+	default:
+		return nil, nil
+	}
+	ev, err := v.issueEvent(child)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errMalformed, err)
+	}
+	return []connector.Event{ev}, nil
+}
+
+// sameIssue reports whether two API URLs name one issue. GitHub's names are
+// case-insensitive.
+func sameIssue(a, b string) bool {
+	ra, na, errA := issueAt(a)
+	rb, nb, errB := issueAt(b)
+	return errA == nil && errB == nil && na == nb && strings.EqualFold(ra, rb)
 }
 
 // pushed is the commits a push added to the default branch. A push payload

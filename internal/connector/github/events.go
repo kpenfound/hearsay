@@ -33,6 +33,8 @@ type repository struct {
 }
 
 type issue struct {
+	// URL is the issue's API URL, which is how a sub-issue names its parent.
+	URL       string     `json:"url"`
 	Number    int        `json:"number"`
 	Title     string     `json:"title"`
 	Body      string     `json:"body"`
@@ -46,6 +48,12 @@ type issue struct {
 	// PullRequest is set on the issues list for an issue that is a pull
 	// request, which the backfill reads from the pulls list instead.
 	PullRequest json.RawMessage `json:"pull_request"`
+	// ParentIssueURL is the API URL of the issue this one is a sub-issue of,
+	// absent where it has no parent.
+	ParentIssueURL string `json:"parent_issue_url"`
+	// RepositoryURL is the API URL of the repository the issue is in, which a
+	// sub_issues delivery needs: it is sent to both ends of the relationship.
+	RepositoryURL string `json:"repository_url"`
 }
 
 type gitRef struct {
@@ -137,6 +145,9 @@ type view struct {
 	source  string
 	repo    string
 	private bool
+	// repos are the configured repositories, for spelling a repository an
+	// artifact in this one points at.
+	repos []string
 }
 
 func (v view) container() connector.Container {
@@ -242,9 +253,26 @@ type issueNative struct {
 	ClosedAt *time.Time `json:"closed_at,omitempty"`
 }
 
+// issueEvent is an issue, part of the issue its parent_issue_url names. Its
+// content token is its updated_at, and `<updated_at>+parent:<parent artifact>`
+// for a sub-issue: GitHub does not promise to move updated_at when an issue
+// changes parent, and two observations that differ in part_of must not share a
+// native id (docs/connector-contract.md).
 func (v view) issueEvent(is issue) (connector.Event, error) {
 	artifact := issueArtifact(v.repo, is.Number)
-	ev, err := v.event(connector.KindIssue, artifact, stamp(is.UpdatedAt), is.CreatedAt, is.UpdatedAt.UTC(), issueNative{
+	var parent string
+	if is.ParentIssueURL != "" {
+		repo, n, err := issueAt(is.ParentIssueURL)
+		if err != nil {
+			return connector.Event{}, fmt.Errorf("the parent of issue %s: %w", artifact, err)
+		}
+		parent = issueArtifact(canonicalIn(v.repos, repo), n)
+	}
+	token := stamp(is.UpdatedAt)
+	if parent != "" {
+		token += "+parent:" + parent
+	}
+	ev, err := v.event(connector.KindIssue, artifact, token, is.CreatedAt, is.UpdatedAt.UTC(), issueNative{
 		Number: is.Number, State: is.State, Labels: labelNames(is.Labels), ClosedAt: utc(is.ClosedAt),
 	})
 	if err != nil {
@@ -254,7 +282,36 @@ func (v view) issueEvent(is issue) (connector.Event, error) {
 	ev.Payload.Title = is.Title
 	ev.Payload.Text = is.Body
 	ev.Payload.Author = v.identity(is.User)
+	ev.Payload.PartOf = parent
 	return ev, nil
+}
+
+// issueAt is the repository and number of the issue an API URL names:
+// `.../repos/acme/api/issues/12`.
+func issueAt(apiURL string) (string, int, error) {
+	i := strings.Index(apiURL, "/repos/")
+	if i < 0 {
+		return "", 0, fmt.Errorf("%q does not name an issue (no /repos/)", apiURL)
+	}
+	repo, number, ok := strings.Cut(apiURL[i+len("/repos/"):], "/issues/")
+	owner, name, _ := strings.Cut(repo, "/")
+	n, err := strconv.Atoi(number)
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") || err != nil || n <= 0 {
+		return "", 0, fmt.Errorf("%q does not name an issue", apiURL)
+	}
+	return repo, n, nil
+}
+
+// repositoryAt is the full name of the repository an API URL names:
+// `.../repos/acme/api`.
+func repositoryAt(apiURL string) (string, bool) {
+	i := strings.Index(apiURL, "/repos/")
+	if i < 0 {
+		return "", false
+	}
+	repo := apiURL[i+len("/repos/"):]
+	owner, name, _ := strings.Cut(repo, "/")
+	return repo, owner != "" && name != "" && !strings.Contains(name, "/")
 }
 
 type pullNative struct {

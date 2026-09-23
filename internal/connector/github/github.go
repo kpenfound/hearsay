@@ -25,7 +25,8 @@
 // The webhook is configured at the source to deliver to the runtime's hook path
 // for the source (`/hooks/<source id>`), as `application/json`, with the same
 // secret, for the events issues, issue_comment, pull_request,
-// pull_request_review, pull_request_review_comment, push and repository.
+// pull_request_review, pull_request_review_comment, push, repository and
+// sub_issues.
 //
 // # Things to know before changing it
 //
@@ -40,6 +41,11 @@
 //     already read moves: issues and comments are walked by updated_at, pull
 //     requests in creation order, commits from a pinned head. [Connector.page]
 //     says how, and the tests change the fake API's data between calls.
+//   - A sub-issue's event is `part_of` its parent issue, from the
+//     `parent_issue_url` both encodings carry, and a sub_issues delivery emits
+//     the sub-issue again with its new parent or none. Its revision token
+//     names the parent, because GitHub does not promise to move `updated_at`
+//     when only the parent changes.
 //   - A re-sync ignores `since`, and a push reads its commits in one REST call
 //     inside GitHub's ten-second delivery timeout.
 //   - Revision tokens compose as the contract says: the content token alone for
@@ -291,8 +297,16 @@ func (c *Connector) emit(ctx context.Context, sink connector.Sink, ev connector.
 // containers: the configured one where the source's name matches it but for
 // case, because GitHub's names are case-insensitive and the allowlist and every
 // artifact id compare bytes.
-func (c *Connector) canonical(fullName string) string {
-	for _, r := range c.repos {
+func (c *Connector) canonical(fullName string) string { return canonicalIn(c.repos, fullName) }
+
+// view is one repository as an event is built in it, spelled the configured
+// way.
+func (c *Connector) view(fullName string, private bool) view {
+	return view{source: c.source, repo: c.canonical(fullName), private: private, repos: c.repos}
+}
+
+func canonicalIn(repos []string, fullName string) string {
+	for _, r := range repos {
 		if strings.EqualFold(r, fullName) {
 			return r
 		}
