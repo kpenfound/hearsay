@@ -60,12 +60,23 @@ func TestTargetOf(t *testing.T) {
 	chat.Payload.Container = connector.Container{Kind: connector.ContainerChannel, NativeID: "C1"}
 	fixture["m1"] = chat
 	chatTarget := l1.DocID(source, l1.ChatWindowKey(chat))
+	transcript := event(source, connector.KindTranscript, "meeting-1", at(0), nil, "Meeting", "Discussion.")
+	fixture["meeting-1"] = transcript
 	tests := []struct {
 		name   string
 		ev     connector.Event
 		hidden distiller.Hidden
 		want   string
 	}{{
+		name: "a transcript targets its derived set",
+		ev:   transcript,
+		want: l1.DocID(source, "meeting-1"),
+	}, {
+		name:   "a transcript tombstone targets its derived set",
+		ev:     tombstoneFor("meeting-1"),
+		hidden: fixture,
+		want:   l1.DocID(source, "meeting-1"),
+	}, {
 		name: "a channel message targets its fixed window",
 		ev:   chat,
 		want: chatTarget,

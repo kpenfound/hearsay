@@ -20,3 +20,15 @@ first message. The thread owns any conclusion and L2 assertion; the burst
 preserves only the tangent's distinct facts. Reprocessing reconciles burst rows
 with current runs in the thread's write transaction. A run that drops below a
 gate or changes anchor loses its old row.
+
+# Meeting topics
+
+A transcript takes a segmentation call before any per-topic distillation. The
+model returns numbered line ranges and stable topic labels; code selects the
+original source lines and deterministically extracts references. Repeated ranges
+with the same label become one segment. The label's normalized hash anchors its
+ID across source edits. A rename is a new identity, and reconciliation removes
+the old row. Empty segmentation removes all current segments. One transaction
+reconciles the set, so failed model calls leave the previous set intact. The
+recorded, synthetic transcript and topic boundaries in `testdata/meetings/`
+can be edited for prompt iteration without exposing real meeting content.

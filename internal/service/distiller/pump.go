@@ -245,7 +245,7 @@ func TargetOf(ctx context.Context, ev connector.Event, hidden Hidden) (string, b
 
 // targetOf is the document an event that is not a tombstone belongs to.
 func targetOf(ev connector.Event) (string, bool) {
-	if ev.Kind == connector.KindDocument || ev.Payload.BaseKind == connector.KindDocument {
+	if ev.Kind == connector.KindDocument || ev.Payload.BaseKind == connector.KindDocument || ev.Kind == connector.KindTranscript || ev.Payload.BaseKind == connector.KindTranscript {
 		return l1.DocID(ev.Source, ev.Payload.Artifact), true
 	}
 	if _, ok := l1.KindFor(ev); ok {

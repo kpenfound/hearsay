@@ -32,7 +32,7 @@ const MaxDocIDLen = len("l1:") + connector.MaxSourceIDLen + len(":burst:chat:") 
 // Kind is what an L1 document is. It is L1's own vocabulary rather than L0's:
 // several L0 kinds make one document (a pull request with its reviews and its
 // comments is one `pr`), and one L0 kind can make several (a meeting
-// transcript is one `meeting_segment` per topic, later, and a document has
+// transcript is one `meeting_segment` per topic, and a document has
 // one `wiki_section` per heading-bounded part.
 //
 // docs/design.md#l1-distilled-documents lists the whole vocabulary. The kinds
@@ -52,6 +52,8 @@ const (
 	KindChatThread Kind = "chat_thread"
 	// KindChatBurst is a gated single-author run within a long conversation.
 	KindChatBurst Kind = "chat_burst"
+	// KindMeetingSegment is one topic in an L0 transcript.
+	KindMeetingSegment Kind = "meeting_segment"
 	// KindWikiSection is one heading-bounded part of an L0 document.
 	KindWikiSection Kind = "wiki_section"
 )
@@ -59,7 +61,8 @@ const (
 // rootKinds maps the L0 kind of an artifact that makes a document of its own to
 // the kind of document it makes. An L0 kind that is not in it is either part of
 // somebody else's document — a `message` on an issue, a `review` on a pull
-// request — or a kind no source this build ingests produces yet.
+// request — or a kind that produces a derived set, like `transcript`,
+// which the distiller routes separately.
 var rootKinds = map[connector.Kind]Kind{
 	connector.KindIssue:       KindIssue,
 	connector.KindPullRequest: KindPR,
@@ -70,13 +73,13 @@ var rootKinds = map[connector.Kind]Kind{
 // Kinds is every document kind this build produces, in the order they are
 // documented.
 func Kinds() []Kind {
-	return []Kind{KindIssue, KindPR, KindCommit, KindChatThread, KindChatBurst, KindWikiSection}
+	return []Kind{KindIssue, KindPR, KindCommit, KindChatThread, KindChatBurst, KindMeetingSegment, KindWikiSection}
 }
 
 // Valid reports whether k is a kind this build produces.
 func (k Kind) Valid() bool {
 	switch k {
-	case KindIssue, KindPR, KindCommit, KindChatThread, KindChatBurst, KindWikiSection:
+	case KindIssue, KindPR, KindCommit, KindChatThread, KindChatBurst, KindMeetingSegment, KindWikiSection:
 		return true
 	}
 	return false
@@ -221,7 +224,8 @@ type Document struct {
 	Source Source `json:"source"`
 	// L0Refs are the event ids this document was built from, in the order the
 	// document reads. A wiki section can retain an earlier source revision
-	// containing identical text when a different section changes. Provenance is required
+	// containing identical text when a different section changes; a meeting
+	// segment may do the same when another topic changes. Provenance is required
 	// — a document that names no events cannot be regenerated or followed back.
 	L0Refs []string `json:"l0_refs"`
 	// Time is when the artifact happened and when it last moved.
