@@ -522,6 +522,39 @@ not told about a mistake it has no part in.
 There is at most one policy per scope, and at most one `*`. Two policies for one
 scope would be two answers.
 
+### How a topic's tier is computed
+
+Every read — the bundle's `stances`, `stance_history` and the current-stance
+view — computes where a topic stands from the policy in force for its scope,
+so a change here takes effect on the next read after a restart, with nothing
+re-run. The tier recorded on each stance when it was written is kept as a
+record and never served as the topic's tier.
+
+- **The window.** Only live stances stated within `contested_window` before the
+  topic's newest live stance are compared. It is measured between stances, not
+  from now, so a topic nothing new was said on is served the same way tomorrow.
+  A stance its own document's later reading replaced is not live.
+- **Current.** Among those, the stance whose evidence ranks highest under
+  `ranking` is current; the most recent wins a tie. A merged PR stays current
+  over a later chat thread until it falls outside the window.
+- **Contested.** Another stance in the window disagrees with the current one,
+  and the current one does not strictly outrank it. Disagreement is what the
+  assertion worker recorded — a stance that *changes* the position it followed,
+  as opposed to one that *restates* it — never a comparison of the words.
+- **Ratified.** Not contested, and the current stance's evidence is a class in
+  `ratified_by.artifacts` from a source `ratified_by.sources` accepts, or a
+  person ratified it by hand.
+- **Inferred.** Everything else.
+
+```yaml
+- scope: incidents
+  contested_window: 72h      # an incident's decisions are compared over days
+```
+
+`contested_window` is a duration — `336h`, not `14d` — and has to be positive.
+Like every other field, a scope that sets it replaces what it inherited and a
+scope that leaves it out inherits it.
+
 ### Artifact classes
 
 Authority is a judgement about *where* something was said. The classes are
@@ -566,6 +599,7 @@ written here because authority is what needs it.
     principals: ["*"]        # anybody who can write to the scope may ratify
     sources: ["*"]           # from any source
     artifacts: [merged_pr]   # and a merged PR ratifies on its own
+  contested_window: 336h     # stances within 14 days of the newest are compared
 ```
 
 The design doc fixes four of the nine positions — a merged PR outranks a

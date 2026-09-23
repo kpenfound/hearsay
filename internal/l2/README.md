@@ -17,18 +17,26 @@ corrupt.
 
 ## Things to know before changing it
 
-- **This is the minimal graph.** Entities, topics and stances with supersession
-  and two tiers: `ratified` for a merged pull request, `inferred` for everything
-  else. Alias learning, authority per scope, `contested` and anchors are later
-  work; nothing writes `contested` yet.
+- **This is the minimal graph.** Entities, topics and stances with
+  supersession. Alias learning, human ratification and anchors are later work.
+- **The tier a read serves is computed, never stored** ([Stand], `tier.go`).
+  It is a pure function of the topic's live stances, the artifact class and
+  source of their evidence as L1 holds it now, their recorded `changes` /
+  `restates` judgements and the scope's authority policy, so a policy change
+  takes effect on the next read. The `tier` on a row is `RecordedTier`: what the
+  stance's own document carried under the policy when it was written. It is part
+  of the stance's id and nothing serves it as the topic's tier. `contested` is
+  only ever computed.
+- **Disagreement follows the supersession path.** A judgement is recorded
+  against the position the worker was shown, which is the chain head the new
+  stance supersedes, so it labels that edge. Two stances disagree where a
+  `changes` edge lies between them; a stance with no recorded judgement is not
+  a disagreement, and position text is never compared.
 - **Serialization is the queue's, and the store assumes it.** `AppendStance`
   reads the predecessor and writes the row in two statements. That is only safe
   because every job under one serial key runs alone (ADR-0007), and topics are
   only ever matched under the key they were opened under ([ScopeKey]). Matching
   across keys would need a different lock, not a different query.
-- **TierFor still uses the distiller's outcome classification.** It reads a
-  resolved `pr` as merged. L1 now carries source merge state in
-  `artifact_class`; the policy-based calculation in #115 will consume it.
 - **A new reading of a document replaces that document's own stance.** A
   document that already holds a live stance on a topic — it was re-distilled,
   or re-run after a deletion — supersedes that stance, not whatever is newest
