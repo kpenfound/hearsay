@@ -91,6 +91,7 @@ type Calls struct {
 	graph     *l2.Store
 	authority config.Authority
 	assembler *bundle.Assembler
+	cache     *bundleCache
 	resolver  *principal.Resolver
 	auth      *authenticator
 	embedder  l1.Embedder
@@ -125,6 +126,7 @@ func NewCalls(q DB, repo config.Repo, embedder l1.Embedder) (*Calls, error) {
 		events:    l0.New(q),
 		graph:     l2.New(q),
 		assembler: bundle.New(q).WithDirectiveSources(repo, resolver).WithAuthority(repo.Authority),
+		cache:     newBundleCache(),
 		authority: repo.Authority,
 		resolver:  resolver,
 		auth:      auth,
@@ -135,7 +137,10 @@ func NewCalls(q DB, repo config.Repo, embedder l1.Embedder) (*Calls, error) {
 }
 
 // WithBudget sets the bundle budget, in estimated tokens.
-func (c *Calls) WithBudget(tokens int) { c.assembler = c.assembler.WithBudget(tokens) }
+func (c *Calls) WithBudget(tokens int) {
+	c.assembler = c.assembler.WithBudget(tokens)
+	c.cache = newBundleCache()
+}
 
 type call struct {
 	tool Tool
@@ -274,21 +279,33 @@ func getBundle(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, r
 	if err := required("scope", args.Scope); err != nil {
 		return nil, err
 	}
-	b, report, err := c.assembler.AssembleForEvent(ctx, reader, args.Scope, args.Directive)
-	if err != nil {
-		return nil, err
+	var revision int64
+	if err := c.db.QueryRow(ctx, `SELECT count(*) FROM bundle_changes`).Scan(&revision); err != nil {
+		return nil, fmt.Errorf("reading bundle watermark: %w", err)
 	}
-	body, err := bundle.Encode(b)
-	if err != nil {
-		return nil, err
+	key := bundleKey{args.Scope, caller.Principal, caller.Agent, args.Directive, revision}
+	entry, hit := c.cache.get(key)
+	if !hit {
+		b, report, err := c.assembler.AssembleForEvent(ctx, reader, args.Scope, args.Directive)
+		if err != nil {
+			return nil, err
+		}
+		body, err := bundle.Encode(b)
+		if err != nil {
+			return nil, err
+		}
+		entry = bundleValue{key: key, body: body, report: report}
 	}
 	// A bundle is served only once the record that it was is written
 	// (docs/design.md#access-control): a bundle nobody can account for is the
 	// thing the audit trail exists to rule out.
-	if err := c.audit(ctx, caller, args.Scope, body, report); err != nil {
+	if err := c.audit(ctx, caller, args.Scope, entry.body, entry.report); err != nil {
 		return nil, err
 	}
-	return body, nil
+	if !hit {
+		c.cache.put(entry)
+	}
+	return entry.body, nil
 }
 
 // AuditRecord is what an audit event's payload.native holds: who asked, on

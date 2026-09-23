@@ -45,6 +45,11 @@ the two endpoints mean was settled in `connectors`, and `api` copies it:
   statuses and fixed sentences: readiness is served more widely than L0, so
   nothing a source or Postgres said goes in it.
 
+The API keeps a bounded, per-process cache of encoded bundles. Its key includes
+the caller, scope, directive and a committed revision of non-audit L0 events
+and L1/L2 writes. Every response still appends its own audit event; a restart
+clears the cache along with the loaded configuration and grants.
+
 The four subcommand names are a contract with the Dagger module and the
 deployment manifests. `hearsay all` is a development convenience and is never a
 deployment target. It is built on `RunAll`, which is a `sync.WaitGroup` and
