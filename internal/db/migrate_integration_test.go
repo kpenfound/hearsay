@@ -140,7 +140,7 @@ func TestMigrateUpAndDown(t *testing.T) {
 	// later is a line added at the top of this list; a migration that creates
 	// no table of its own — an index on an existing one — has no table here and
 	// is only checked for rolling back cleanly.
-	for i, table := range []string{"", "", "", "", "l0_resyncs", "l2_stances", "l0_backfill_cursors", "", "", "", "", "l0_feed_cursors", "l1_docs", "queue_job", "l0_events"} {
+	for i, table := range []string{"l2_pins", "", "", "", "", "l0_resyncs", "l2_stances", "l0_backfill_cursors", "", "", "", "", "l0_feed_cursors", "l1_docs", "queue_job", "l0_events"} {
 		want := newest - int64(i) - 1
 		if _, err := migrator.Down(t.Context()); err != nil {
 			t.Fatalf("Down() = %v, want no error", err)
@@ -148,12 +148,12 @@ func TestMigrateUpAndDown(t *testing.T) {
 		if version, err := migrator.Version(t.Context()); err != nil || version != want {
 			t.Fatalf("Version(after down) = %d, %v, want %d", version, err, want)
 		}
-		if i == 1 {
+		if i == 2 {
 			if _, err := pool.Exec(t.Context(), `SELECT judgement FROM l2_stances LIMIT 0`); err == nil {
 				t.Error("stance judgement remains after rolling its migration back")
 			}
 		}
-		if i == 0 {
+		if i == 1 {
 			if _, err := pool.Exec(t.Context(), `SELECT judgement FROM l2_stances LIMIT 0`); err != nil {
 				t.Errorf("stance judgement missing after rolling reconciliation back: %v", err)
 			}
@@ -161,7 +161,7 @@ func TestMigrateUpAndDown(t *testing.T) {
 				t.Errorf("artifact class missing after rolling reconciliation back: %v", err)
 			}
 		}
-		if i == 2 {
+		if i == 3 {
 			if _, err := pool.Exec(t.Context(), `SELECT artifact_class FROM l1_docs LIMIT 0`); err == nil {
 				t.Error("artifact class remains after rolling its migration back")
 			}
@@ -392,8 +392,8 @@ func TestArtifactClassBackfill(t *testing.T) {
 	if _, err := migrator.UpTo(t.Context(), 14); err != nil {
 		t.Fatal(err)
 	}
-	if applied, err := migrator.Up(t.Context()); err != nil || len(applied) != 2 || applied[0].Version != 15 || applied[1].Version != 16 {
-		t.Errorf("Up(after backfill) = %v, %v; want migrations 15 and 16", applied, err)
+	if applied, err := migrator.Up(t.Context()); err != nil || len(applied) < 2 || applied[0].Version != 15 || applied[1].Version != 16 {
+		t.Errorf("Up(after backfill) = %v, %v; want migrations 15 and 16, then any later ones", applied, err)
 	}
 	if applied, err := migrator.Up(t.Context()); err != nil || len(applied) != 0 {
 		t.Errorf("Up(again) = %v, %v; want no migrations", applied, err)
@@ -474,8 +474,12 @@ func TestVersion14BranchSchemasUpgrade(t *testing.T) {
 			if _, err := migrator.Up(t.Context()); err != nil {
 				t.Fatalf("Up() from %s version 14: %v", branch, err)
 			}
-			if version, err := migrator.Version(t.Context()); err != nil || version != 16 {
-				t.Fatalf("Version() = %d, %v; want 16", version, err)
+			newest, err := db.EmbeddedVersion()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if version, err := migrator.Version(t.Context()); err != nil || version != newest {
+				t.Fatalf("Version() = %d, %v; want %d", version, err, newest)
 			}
 			var class, docText, position, judgement string
 			if err := pool.QueryRow(t.Context(), `SELECT artifact_class, text FROM l1_docs WHERE id = 'l1:legacy:pr-1'`).Scan(&class, &docText); err != nil || class != "merged_pr" || docText != "retained" {

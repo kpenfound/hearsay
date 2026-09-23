@@ -23,6 +23,9 @@ import (
 const (
 	// RecentCap is how many documents `recent` holds: a count, never an age.
 	RecentCap = 5
+	// AnchorCap is how many anchors a scope has. More than that is a sign the
+	// scope is too broad (docs/design.md#anchors).
+	AnchorCap = 4
 	// QuestionDocuments is how many of a scope's newest documents that leave
 	// something unanswered `open_questions` is read from.
 	QuestionDocuments = 5
@@ -44,9 +47,10 @@ var Handles = []string{"get_l1", "get_l0", "search", "stance_history", "resolve"
 // Bundle is the context bundle: pointers plus one line of distillation per
 // pointer, every line carrying an L1 id the consumer can follow with `get_l1`.
 //
-// The field order is the design's, and it is the drop order read from the
-// bottom. Every time is absolute: a relative age would make the same bundle
-// differ from one minute to the next.
+// The field order is the design's. Read from the bottom it is the drop order
+// but for `anchors`, which drop after `recent` and before any stance ([Build]).
+// Every time is absolute: a relative age would make the same bundle differ from
+// one minute to the next.
 type Bundle struct {
 	Directive     *Directive `json:"directive,omitempty"`
 	Scope         Scope      `json:"scope"`
@@ -85,13 +89,14 @@ type Entity struct {
 	Line   string   `json:"line,omitempty"`
 }
 
-// Anchor is a durable artifact that defines the scope. Nothing produces one in
-// this build: anchors are later work, and the section is here, empty, so a
-// consumer reads the design's shape.
+// Anchor is a durable document that defines the scope: pinned, inferred as the
+// most referenced, or defaulted from its `spec` documents, in that order.
 type Anchor struct {
 	L1   string `json:"l1"`
 	Kind string `json:"kind"`
 	Line string `json:"line"`
+	// PinnedBy is the principal who pinned it, and absent where nobody did.
+	PinnedBy string `json:"pinned_by,omitempty"`
 }
 
 // Stance is the current stance on one topic, and the tier it is computed at
@@ -150,6 +155,7 @@ type Withheld struct {
 type Trimmed struct {
 	OpenQuestions int `json:"open_questions"`
 	Recent        int `json:"recent"`
+	Anchors       int `json:"anchors"`
 	Stances       int `json:"stances"`
 }
 
@@ -258,7 +264,16 @@ func (a *Assembler) gather(ctx context.Context, reader l1.Reader, scope string) 
 	if in.Stances, withheld.Stances, err = a.views.CurrentStances(ctx, reader, scope, direct[1:]); err != nil {
 		return in, withheld, err
 	}
-	if in.Recent, err = a.views.Recent(ctx, reader, scope, RecentCap); err != nil {
+	// Anchors before recent: an anchor is not activity, and is not repeated as
+	// it, and does not cost `recent` one of its places.
+	if in.Anchors, err = a.views.Anchors(ctx, reader, scope, AnchorCap); err != nil {
+		return in, withheld, err
+	}
+	anchors := make([]string, len(in.Anchors))
+	for i, anchor := range in.Anchors {
+		anchors[i] = anchor.Doc.ID
+	}
+	if in.Recent, err = a.views.Recent(ctx, reader, scope, RecentCap, anchors); err != nil {
 		return in, withheld, err
 	}
 	if in.Questions, err = a.views.OpenQuestions(ctx, reader, scope, QuestionDocuments); err != nil {
@@ -354,16 +369,23 @@ type Inputs struct {
 	Entities []l2.Entity
 	// Subject is the document the scope is, where there is one.
 	Subject   *l1.Stored
+	Anchors   []l3.Anchor
 	Stances   []l3.CurrentStance
 	Recent    l3.Activity
 	Questions []l3.Question
 }
 
 // Build lays inputs out as a bundle and holds it to a budget, dropping from the
-// bottom: open questions first, then `recent`, then inherited stances whatever
-// their tier, then the scope's own stances that are not ratified, each last
-// first. The scope's own ratified stances never drop, so a bundle can end up
-// over budget, and the scope and the handles are what the rest points into.
+// bottom: open questions first, then `recent`, then anchors, then inherited
+// stances whatever their tier, then the scope's own stances that are not
+// ratified, each last first. The scope's own ratified stances never drop, so a
+// bundle can end up over budget, and the scope and the handles are what the
+// rest points into.
+//
+// Anchors sit above stances in the layout but drop before them: an anchor is a
+// document an agent can still find with `search`, and a stance is the position
+// the team has taken, which it cannot recover as cheaply. They drop after
+// `recent` because the design document is what the activity is about.
 //
 // Inherited stances drop whatever their tier because they are not the scope's:
 // a tracker item inherits every topic in its repository, and a repository with
@@ -394,6 +416,11 @@ func Build(in Inputs, budget int) (Bundle, Trimmed, int, error) {
 			entity.L1, entity.Line = in.Subject.ID, Line(in.Subject.Body.Summary)
 		}
 		b.Scope.Entities = append(b.Scope.Entities, entity)
+	}
+	for _, a := range in.Anchors {
+		b.Anchors = append(b.Anchors, Anchor{
+			L1: a.Doc.ID, Kind: string(a.Doc.Kind), Line: Line(a.Doc.Body.Summary), PinnedBy: a.PinnedBy,
+		})
 	}
 	for _, c := range in.Stances {
 		b.Stances = append(b.Stances, Stance{
@@ -479,6 +506,16 @@ func trim(b Bundle, budget int) (Bundle, Trimmed, int, error) {
 		trimmed.Recent++
 	}
 
+	anchors, err := sizes(len(b.Anchors), func(i int) any { return b.Anchors[i] })
+	if err != nil {
+		return Bundle{}, Trimmed{}, 0, err
+	}
+	keptAnchors := len(b.Anchors)
+	for keptAnchors > 0 && !fits() {
+		drop(anchors[keptAnchors-1], &keptAnchors)
+		trimmed.Anchors++
+	}
+
 	stances, err := sizes(len(b.Stances), func(i int) any { return b.Stances[i] })
 	if err != nil {
 		return Bundle{}, Trimmed{}, 0, err
@@ -510,6 +547,7 @@ func trim(b Bundle, budget int) (Bundle, Trimmed, int, error) {
 
 	b.OpenQuestions = b.OpenQuestions[:keptQuestions]
 	b.Recent.Items = b.Recent.Items[:keptItems]
+	b.Anchors = b.Anchors[:keptAnchors]
 	kept := make([]Stance, 0, keptStances)
 	for i, s := range b.Stances {
 		if !removed[i] {

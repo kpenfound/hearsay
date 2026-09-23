@@ -536,3 +536,68 @@ func TestTheTablesRefuseWhatTheStoreRefuses(t *testing.T) {
 		})
 	}
 }
+
+func TestPinsPersistInPinOrderAndUnpin(t *testing.T) {
+	pool := newPool(t)
+	scope := "code:" + unique()
+	at := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	a := l2.Pin{Scope: scope, L1: "l1:gh:acme/api#1", PinnedBy: "kyle", PinnedAt: at.Add(2 * time.Hour)}
+	b := l2.Pin{Scope: scope, L1: "l1:gh:acme/api#2", PinnedBy: "sam", PinnedAt: at}
+	c := l2.Pin{Scope: scope, L1: "l1:gh:acme/api#0", PinnedBy: "sam", PinnedAt: at}
+	for _, p := range []l2.Pin{a, b, c} {
+		if ok, err := l2.New(pool).Pin(t.Context(), p); err != nil || !ok {
+			t.Fatalf("Pin(%s) = %v, %v; want it recorded", p.L1, ok, err)
+		}
+	}
+	// Pinning again changes nothing: the first pinner and time stay.
+	if ok, err := l2.New(pool).Pin(t.Context(), l2.Pin{Scope: scope, L1: a.L1, PinnedBy: "sam", PinnedAt: at.Add(-time.Hour)}); err != nil || ok {
+		t.Fatalf("pinning %s again = %v, %v; want nothing written", a.L1, ok, err)
+	}
+	// Another scope's pin is not this one's.
+	if _, err := l2.New(pool).Pin(t.Context(), l2.Pin{Scope: scope + "/other", L1: a.L1, PinnedBy: "kyle", PinnedAt: at}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := l2.New(pool).Pins(t.Context(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []l2.Pin{c, b, a}; !slices.Equal(got, want) {
+		t.Errorf("pins = %+v, want first pinned first, a tie in id order: %+v", got, want)
+	}
+
+	for _, tt := range []struct {
+		name    string
+		doc     string
+		removed bool
+		left    []l2.Pin
+	}{
+		{"unpinning removes the pin", b.L1, true, []l2.Pin{c, a}},
+		{"unpinning what is not pinned removes nothing", b.L1, false, []l2.Pin{c, a}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			removed, err := l2.New(pool).Unpin(t.Context(), scope, tt.doc)
+			if err != nil || removed != tt.removed {
+				t.Fatalf("Unpin(%s) = %v, %v; want %v", tt.doc, removed, err, tt.removed)
+			}
+			left, err := l2.New(pool).Pins(t.Context(), scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(left, tt.left) {
+				t.Errorf("pins = %+v, want %+v", left, tt.left)
+			}
+		})
+	}
+
+	for _, p := range []l2.Pin{
+		{L1: a.L1, PinnedBy: "kyle", PinnedAt: at},
+		{Scope: scope, L1: "acme/api#1", PinnedBy: "kyle", PinnedAt: at},
+		{Scope: scope, L1: a.L1, PinnedAt: at},
+		{Scope: scope, L1: a.L1, PinnedBy: "kyle"},
+	} {
+		if _, err := l2.New(pool).Pin(t.Context(), p); !errors.Is(err, l2.ErrInvalid) {
+			t.Errorf("Pin(%+v) = %v, want ErrInvalid", p, err)
+		}
+	}
+}

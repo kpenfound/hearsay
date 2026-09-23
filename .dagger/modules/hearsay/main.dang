@@ -115,6 +115,10 @@ type Hearsay {
   image is the pgvector build: migration 1 creates the extension, and stock
   Postgres fails there — the mistake ADR-0004 warns about.
 
+  Migrating and testing are one exec. As two, a rerun after a failed test
+  reuses the cached migrate step while the service starts a fresh, empty
+  Postgres, and every test then finds a database at version 0.
+
   The Go module's own test check runs the untagged tests; these carry the tag
   so that a plain `go test ./...` skips them on a machine with no Postgres.
   """
@@ -122,8 +126,7 @@ type Hearsay {
     goBase(ws)
       .withServiceBinding("postgres", postgres)
       .withEnvVariable("HEARSAY_DATABASE_URL", databaseUrl)
-      .withExec(["go", "run", "./cmd/hearsay", "migrate", "up"])
-      .withExec(["go", "test", "-race", "-tags=integration", "./..."])
+      .withExec(["sh", "-c", "go run ./cmd/hearsay migrate up && go test -race -tags=integration ./..."])
       .sync
     null
   }
