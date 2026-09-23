@@ -74,7 +74,7 @@ func (c *Connector) PollFrom(ctx context.Context, sink connector.Sink, from conn
 		if change.Type != "file" || change.FileID == "" {
 			continue
 		}
-		if err := c.syncFile(ctx, sink, change.FileID, change.Removed, string(from)); err != nil {
+		if err := c.syncFile(ctx, sink, change.FileID, string(from)); err != nil {
 			return from, fmt.Errorf("syncing Drive file %s: %w", change.FileID, err)
 		}
 	}
@@ -96,7 +96,7 @@ func (c *Connector) PollFrom(ctx context.Context, sink connector.Sink, from conn
 	return connector.Cursor(next), nil
 }
 
-func (c *Connector) syncFile(ctx context.Context, sink connector.Sink, id string, removed bool, observation string) error {
+func (c *Connector) syncFile(ctx context.Context, sink connector.Sink, id, observation string) error {
 	reader, ok := sink.(connector.ArtifactReader)
 	if !ok {
 		return errors.New("drive sync needs an artifact reader")
@@ -105,16 +105,17 @@ func (c *Connector) syncFile(ctx context.Context, sink connector.Sink, id string
 	if err != nil {
 		return err
 	}
+	// Change pages describe a past transition. Always fetch the current file:
+	// a replayed removal may now refer to an eligible file again.
 	var f file
-	if !removed {
-		err = c.api.getJSON(ctx, "/files/"+url.PathEscape(id), url.Values{"fields": {fileFields}, "supportsAllDrives": {"true"}}, &f)
-		if err != nil {
-			var status *statusError
-			if !errors.As(err, &status) || (status.status != http.StatusNotFound && status.status != http.StatusGone) {
-				return err
-			}
-			removed = true
+	removed := false
+	err = c.api.getJSON(ctx, "/files/"+url.PathEscape(id), url.Values{"fields": {fileFields}, "supportsAllDrives": {"true"}}, &f)
+	if err != nil {
+		var status *statusError
+		if !errors.As(err, &status) || (status.status != http.StatusNotFound && status.status != http.StatusGone) {
+			return err
 		}
+		removed = true
 	}
 	if !removed && !f.Trashed && f.ID == id && len(f.Parents) == 1 && slices.Contains(c.folders, f.Parents[0]) && f.MIME != "application/vnd.google-apps.folder" {
 		folder := f.Parents[0]
@@ -142,6 +143,20 @@ func (c *Connector) syncFile(ctx context.Context, sink connector.Sink, id string
 		if had && sameDriveState(previous, ev) {
 			return nil
 		}
+		var retractionID string
+		if !had {
+			r, ok := sink.(connector.RetractionReader)
+			if !ok {
+				return errors.New("drive sync needs a retraction reader")
+			}
+			tomb, found, err := r.LastRetraction(ctx, c.source, id)
+			if err != nil {
+				return err
+			}
+			if found {
+				retractionID = tomb.ID
+			}
+		}
 		// Drive has no permission version. Hash the normalized ACL with the
 		// metadata whose change must also produce a revision (notably folder).
 		acl := slices.Clone(ev.ACL)
@@ -155,7 +170,9 @@ func (c *Connector) syncFile(ctx context.Context, sink connector.Sink, id string
 			Folder, Name, URL string
 			Properties        map[string]string
 			Observation       string
-		}{acl, folder, f.Name, f.URL, f.Properties, observation})
+			Kind              connector.Kind
+			Retraction        string
+		}{acl, folder, f.Name, f.URL, f.Properties, observation, kind, retractionID})
 		hash := sha256.Sum256(versionInput)
 		token := ev.Payload.Revision.Token + "+perm:" + hex.EncodeToString(hash[:12])
 		ev.NativeID = id + "@" + token
@@ -244,7 +261,7 @@ func (c *Connector) reconcile(ctx context.Context, sink connector.Sink, token st
 					continue
 				}
 				seen[f.ID] = true
-				if err := c.syncFile(ctx, sink, f.ID, false, token); err != nil {
+				if err := c.syncFile(ctx, sink, f.ID, token); err != nil {
 					return err
 				}
 			}
@@ -259,7 +276,7 @@ func (c *Connector) reconcile(ctx context.Context, sink connector.Sink, token st
 	}
 	for _, ev := range prior {
 		if !seen[ev.Payload.Artifact] && slices.Contains(c.folders, ev.Payload.Container.NativeID) {
-			if err := c.syncFile(ctx, sink, ev.Payload.Artifact, false, token); err != nil {
+			if err := c.syncFile(ctx, sink, ev.Payload.Artifact, token); err != nil {
 				return err
 			}
 		}
@@ -272,8 +289,12 @@ func (c *Connector) tombstone(ctx context.Context, sink connector.Sink, previous
 		return nil
 	}
 	id := previous.Payload.Artifact
-	ev := connector.Event{Source: c.source, NativeID: id + ":tombstone", Kind: connector.KindTombstone, Time: previous.Time,
-		Payload: connector.Payload{Artifact: id + ":tombstone", Target: id, Container: previous.Payload.Container}, ACL: previous.ACL}
+	// The current revision's identity makes each eligible → ineligible cycle
+	// distinct while a replay of that cycle retains the same tombstone ID.
+	hash := sha256.Sum256([]byte(previous.NativeID))
+	name := id + ":tombstone:" + hex.EncodeToString(hash[:12])
+	ev := connector.Event{Source: c.source, NativeID: name, Kind: connector.KindTombstone, Time: previous.Time,
+		Payload: connector.Payload{Artifact: name, Target: id, Container: previous.Payload.Container}, ACL: previous.ACL}
 	if err := sink.Emit(ctx, ev); err != nil {
 		return err
 	}

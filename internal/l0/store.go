@@ -178,14 +178,15 @@ SELECT e.xact_id::text, e.seq, false,
   FROM l0_events e
  WHERE e.id = $1 AND NOT EXISTS (SELECT 1 FROM inserted)`
 
-// retractedSQL is the visibility rule, and the only one L0 has: an event is hidden
-// once a tombstone in the same source names its artifact. The row stays — L0 is
-// append-only — and every read carries the negation of this predicate, except
+// retractedSQL hides revisions that precede a tombstone in ingest order. A
+// later revision of the same stable artifact is visible again; replaying an
+// earlier tombstone retains its original sequence and cannot hide it. The row
+// stays append-only, and every read carries the negation of this predicate, except
 // [Store.Retracted], which reads what a tombstone hides so that a consumer can
 // re-derive what the retracted artifact was part of.
 const retractedSQL = `EXISTS (
     SELECT 1 FROM l0_events tomb
-     WHERE tomb.source = e.source AND tomb.target = e.artifact
+     WHERE tomb.source = e.source AND tomb.target = e.artifact AND tomb.seq > e.seq
 )`
 
 // notRetractedSQL is what a read admits.
@@ -232,6 +233,28 @@ func (s *Store) CurrentArtifact(ctx context.Context, source, artifact string) (c
 		return connector.Event{}, false, nil
 	}
 	return events[0], true, nil
+}
+
+// LastRetraction returns the latest tombstone for an artifact. A connector
+// uses its event identity when minting a revision that restores the artifact,
+// even when Drive reuses the same head and change observation token.
+func (s *Store) LastRetraction(ctx context.Context, source, artifact string) (connector.Event, bool, error) {
+	var ev connector.Event
+	var kind string
+	var payload, acl []byte
+	err := s.db.QueryRow(ctx, `SELECT `+eventColumns+`
+  FROM l0_events e WHERE e.source = $1 AND e.target = $2
+ ORDER BY e.seq DESC LIMIT 1`, source, artifact).Scan(&ev.ID, &ev.Source, &ev.NativeID, &kind, &ev.Time, &payload, &acl)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return connector.Event{}, false, nil
+	}
+	if err != nil {
+		return connector.Event{}, false, fmt.Errorf("reading last retraction of %s: %w", artifact, err)
+	}
+	if err := decodeInto(&ev, kind, payload, acl); err != nil {
+		return connector.Event{}, false, err
+	}
+	return ev, true, nil
 }
 
 // CurrentArtifacts is the source snapshot used when a change token is first

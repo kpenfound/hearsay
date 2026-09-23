@@ -204,6 +204,18 @@ func (g *Gate) CurrentArtifacts(ctx context.Context, source string) ([]Event, er
 	return r.CurrentArtifacts(ctx, source)
 }
 
+// LastRetraction forwards a provenance read only for this gate's source.
+func (g *Gate) LastRetraction(ctx context.Context, source, artifact string) (Event, bool, error) {
+	if source != g.source {
+		return Event{}, false, ErrForeignSource
+	}
+	r, ok := g.sink.(RetractionReader)
+	if !ok {
+		return Event{}, false, errors.New("sink cannot read retractions")
+	}
+	return r.LastRetraction(ctx, source, artifact)
+}
+
 // RequestPoll wakes the polling loop after a verified notification.
 func (g *Gate) RequestPoll() {
 	if g.pollWake == nil {
