@@ -8,7 +8,9 @@
 // claims those jobs and distils. They are separate because events arrive in
 // bursts and documents do not: the queue collapses a burst of comments on one
 // pull request into one pending job, so the model is called once per document
-// rather than once per event (ADR-0007).
+// rather than once per event (ADR-0007). An agent's session, turn and tool
+// call events belong to no document and are never distilled: they are
+// provenance, not team knowledge.
 //
 // What a document is, and what may be stored in one, is internal/l1's. What
 // this package owns is the prompts, the schema an answer has to satisfy, and

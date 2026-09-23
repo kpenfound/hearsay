@@ -51,6 +51,16 @@ func tombstoneFor(target string) connector.Event {
 	return ev
 }
 
+// agentEvent is an agent session event in a channel, which is where a chat
+// message would be routed to a window, and hanging off a thread where one is
+// given: everything that would give an event a document except its kind.
+func agentEvent(kind connector.Kind, thread string) connector.Event {
+	ev := event(source, kind, "session-1:turn:1", at(1), &connector.Identity{Source: source, Kind: connector.IdentityAgent, NativeID: "shed"}, "", "a turn")
+	ev.Payload.Container = connector.Container{Kind: connector.ContainerChannel, NativeID: "C1"}
+	ev.Payload.Thread = thread
+	return ev
+}
+
 // Which document an event belongs to is the whole of what the pump decides, and
 // it is what makes a change proposal with its reviews one document rather than
 // five.
@@ -208,6 +218,31 @@ func TestTargetOf(t *testing.T) {
 		}(),
 		hidden: fixture,
 		want:   issueID,
+	}, {
+		name: "an agent session event is not distilled",
+		ev:   agentEvent(connector.KindAgentSession, ""),
+		want: "",
+	}, {
+		name: "an agent turn is not distilled, even naming a conversation",
+		ev:   agentEvent(connector.KindAgentTurn, "session-1"),
+		want: "",
+	}, {
+		name: "a tool call is not distilled, even naming a conversation",
+		ev:   agentEvent(connector.KindToolCall, "session-1"),
+		want: "",
+	}, {
+		name: "an extension kind based on an agent turn is not distilled",
+		ev: func() connector.Event {
+			ev := agentEvent("shed.turn", "session-1")
+			ev.Payload.BaseKind = connector.KindAgentTurn
+			return ev
+		}(),
+		want: "",
+	}, {
+		name:   "a tombstone for an agent turn has no target",
+		ev:     tombstoneFor("session-1:turn:1"),
+		hidden: hidden{"session-1:turn:1": agentEvent(connector.KindAgentTurn, "session-1")},
+		want:   "",
 	}, {
 		name: "an event that belongs to nothing has no target",
 		ev:   event(source, connector.KindReaction, repo+"#31:reaction:1", at(1), who(source, "u2", "samr"), "", ""),
