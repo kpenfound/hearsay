@@ -18,7 +18,12 @@ corrupt.
 ## Things to know before changing it
 
 - **This is the minimal graph.** Entities, topics and stances with
-  supersession. Alias learning, human ratification and anchors are later work.
+  supersession, and pins. Alias learning and human ratification are later work.
+- **A pin is a record, not a foreign key.** `l2_pins` names an L1 document id
+  and whoever pinned it; the document is derived and may be distilled again, so
+  the pin outlives it, and a pin whose document is gone is not served. Nothing
+  here filters pins by reader — which pins a reader sees is `internal/l3`'s.
+  Pinning again keeps the first pinner; the pin gesture is later work.
 - **The tier a read serves is computed, never stored** ([Stand], `tier.go`).
   It is a pure function of the topic's live stances, the artifact class and
   source of their evidence as L1 holds it now, their recorded `changes` /
