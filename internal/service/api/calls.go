@@ -85,10 +85,12 @@ type Tool struct {
 // interface serves verbatim. That is what makes the same request over MCP and
 // HTTP byte-identical — there is one encoding, and it happens here.
 type Calls struct {
-	db        DB
-	docs      *l1.Store
-	events    *l0.Store
-	graph     *l2.Store
+	db     DB
+	docs   *l1.Store
+	events *l0.Store
+	graph  *l2.Store
+	// reach is what a caller's reach is read from: the graph, but for a test.
+	reach     principal.Graph
 	authority config.Authority
 	assembler *bundle.Assembler
 	cache     *bundleCache
@@ -120,11 +122,13 @@ func NewCalls(q DB, repo config.Repo, embedder l1.Embedder) (*Calls, error) {
 	if err != nil {
 		return nil, fmt.Errorf("building the identity resolver: %w", err)
 	}
+	graph := l2.New(q)
 	return &Calls{
 		db:        q,
 		docs:      l1.New(q),
 		events:    l0.New(q),
-		graph:     l2.New(q),
+		graph:     graph,
+		reach:     graph,
 		assembler: bundle.New(q).WithDirectiveSources(repo, resolver).WithAuthority(repo.Authority),
 		cache:     newBundleCache(),
 		authority: repo.Authority,
@@ -186,9 +190,14 @@ func (c *Calls) Call(ctx context.Context, caller Caller, name string, args json.
 	if i < 0 {
 		return nil, fail(http.StatusNotFound, "no such call %q", name)
 	}
-	reader, err := c.readerFor(caller)
+	reader, err := c.readerFor(ctx, caller)
 	if err != nil {
-		return nil, err
+		var e *Error
+		if errors.As(err, &e) {
+			return nil, e
+		}
+		telemetry.Logger(ctx).ErrorContext(ctx, "composing a reach failed", "call", name, "principal", caller.Principal, "agent", caller.Agent, "error", err)
+		return nil, errInternal
 	}
 	if len(bytes.TrimSpace(args)) == 0 {
 		args = json.RawMessage(`{}`)
@@ -218,7 +227,22 @@ func (c *Calls) Call(ctx context.Context, caller Caller, name string, args json.
 // An agent is held to its class and to the person it acts for by
 // [principal.AgentRead]. A caller the mapping does not hold is refused: a read
 // nobody is accountable for is not one Hearsay serves.
-func (c *Calls) readerFor(caller Caller) (l1.Reader, error) {
+//
+// Every call then runs within the effective reach ([principal.Reach]): the
+// person's configured scopes and the agent's, each with everything under it in
+// the entity hierarchy, intersected, and capped by the agent's class — an
+// observer reads its scopes, a worker or an orchestrator the code entities
+// they link to as well, a steward whatever the person reaches. A person reading
+// directly reaches their scopes and the code they link to. The reach is read
+// from the graph on every call, so an entity placed under a granted one is in
+// reach on the next call. The access lists still filter everything in it
+// ([l1.Reader.Allows]); the reach narrows what is relevant, never what is
+// permitted.
+//
+// What reach leaves out is answered exactly as what does not exist is: every
+// handle that takes an id serves the same not-found body for either, and a
+// bundle for a scope out of reach is the bundle for an unknown one.
+func (c *Calls) readerFor(ctx context.Context, caller Caller) (l1.Reader, error) {
 	if caller.Principal == "" {
 		return l1.Reader{}, fail(http.StatusUnauthorized, "no principal: name the person the call is for in the %s header", PrincipalHeader)
 	}
@@ -227,6 +251,7 @@ func (c *Calls) readerFor(caller Caller) (l1.Reader, error) {
 		return l1.Reader{}, fail(http.StatusForbidden, "%q is not a configured principal", caller.Principal)
 	}
 	var eff principal.Effective
+	var agentScopes principal.Scopes
 	var err error
 	if caller.Agent == "" {
 		eff, err = principal.HumanRead(human, human.Grant)
@@ -235,10 +260,14 @@ func (c *Calls) readerFor(caller Caller) (l1.Reader, error) {
 		if !found {
 			return l1.Reader{}, fail(http.StatusForbidden, "%q is not a configured principal", caller.Agent)
 		}
+		agentScopes = agent.Grant.Scopes
 		eff, err = principal.AgentRead(agent, human, agent.Grant, human.Grant)
 	}
 	if err != nil {
 		return l1.Reader{}, fail(http.StatusForbidden, "%s", err.Error())
+	}
+	if eff, err = principal.Reach(ctx, c.reach, eff, human.Grant.Scopes, agentScopes); err != nil {
+		return l1.Reader{}, err
 	}
 	reader, err := l1.ReaderFor(c.resolver, eff)
 	if err != nil {
@@ -283,7 +312,7 @@ func getBundle(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, r
 	if err := c.db.QueryRow(ctx, `SELECT count(*) FROM bundle_changes`).Scan(&revision); err != nil {
 		return nil, fmt.Errorf("reading bundle watermark: %w", err)
 	}
-	key := bundleKey{args.Scope, caller.Principal, caller.Agent, args.Directive, revision}
+	key := bundleKey{args.Scope, caller.Principal, caller.Agent, args.Directive, reachKey(reader), revision}
 	entry, hit := c.cache.get(key)
 	if !hit {
 		b, report, err := c.assembler.AssembleForEvent(ctx, reader, args.Scope, args.Directive)
@@ -299,7 +328,7 @@ func getBundle(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, r
 	// A bundle is served only once the record that it was is written
 	// (docs/design.md#access-control): a bundle nobody can account for is the
 	// thing the audit trail exists to rule out.
-	if err := c.audit(ctx, caller, args.Scope, entry.body, entry.report); err != nil {
+	if err := c.audit(ctx, caller, reader, args.Scope, entry.body, entry.report); err != nil {
 		return nil, err
 	}
 	if !hit {
@@ -312,19 +341,24 @@ func getBundle(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, r
 // whose behalf, what scope, and what was filtered. The bundle itself is named
 // by its digest rather than copied: L0 would otherwise hold every bundle ever
 // served, and the digest is enough to tell two apart.
+//
+// Class is the agent's class, which capped the reach the bundle was assembled
+// within. What that reach left out is Report.Reach, counted apart from what the
+// access lists withheld.
 type AuditRecord struct {
 	Call      string        `json:"call"`
 	Principal string        `json:"principal"`
 	Agent     string        `json:"agent,omitempty"`
+	Class     string        `json:"class,omitempty"`
 	Scope     string        `json:"scope"`
 	Bundle    string        `json:"bundle"`
 	Report    bundle.Report `json:"report"`
 }
 
-func (c *Calls) audit(ctx context.Context, caller Caller, scope string, body []byte, report bundle.Report) error {
+func (c *Calls) audit(ctx context.Context, caller Caller, reader l1.Reader, scope string, body []byte, report bundle.Report) error {
 	sum := sha256.Sum256(body)
 	record, err := json.Marshal(AuditRecord{
-		Call: "get_bundle", Principal: caller.Principal, Agent: caller.Agent, Scope: scope,
+		Call: "get_bundle", Principal: caller.Principal, Agent: caller.Agent, Class: string(reader.Effective.Class), Scope: scope,
 		Bundle: "sha256:" + hex.EncodeToString(sum[:]), Report: report,
 	})
 	if err != nil {
@@ -382,7 +416,9 @@ type EntityMatch struct {
 	Paths   []string `json:"paths_matched,omitempty"`
 }
 
-// resolve reads configured names and learned names whose evidence the reader may inspect.
+// resolve reads configured names and learned names whose evidence the reader
+// may inspect, and serves the entities in the reader's reach: one out of it is
+// left out as one that does not exist would be.
 func resolve(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json.RawMessage) (any, error) {
 	var args struct {
 		Text string `json:"text"`
@@ -401,6 +437,9 @@ func resolve(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json
 		Entities []EntityMatch `json:"entities"`
 	}{Entities: []EntityMatch{}}
 	for _, m := range matches {
+		if !reader.InReach([]string{m.Entity.ID}) {
+			continue
+		}
 		out.Entities = append(out.Entities, EntityMatch{
 			ID: m.Entity.ID, Type: string(m.Entity.Type), Name: m.Entity.Name, Owners: m.Entity.Owners,
 			Aliases: m.Aliases, Paths: m.Paths,
@@ -539,7 +578,16 @@ func getL0(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json.R
 	case !reader.Allows(ev.ACL):
 		return nil, notFound
 	}
-	// Reach filtering for events through their documents is added by #148.
+	// An event is in reach when its artifact's document is: one out of reach,
+	// or with no document where the reader's reach is not everything, is
+	// answered as one that does not exist.
+	in, err := c.docs.ArtifactInReach(ctx, reader, ev.Source, ev.Payload.Artifact)
+	if err != nil {
+		return nil, err
+	}
+	if !in {
+		return nil, notFound
+	}
 	return ev, nil
 }
 

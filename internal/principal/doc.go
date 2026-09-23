@@ -12,5 +12,6 @@
 // dropping an author nobody can name. [Class] is what an agent may read and
 // write, and [AgentRead] is the effective principal a read runs as: the
 // intersection of an agent's grants and the invoking human's
-// (docs/design.md#access-control).
+// (docs/design.md#access-control). [Reach] turns that into the entity ids
+// every read filters on, capped by the agent's class.
 package principal

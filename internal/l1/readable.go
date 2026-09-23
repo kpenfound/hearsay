@@ -38,17 +38,104 @@ func (r Reader) Allows(acl connector.ACL) bool {
 }
 
 // MayRead reports whether this reader may read a document: both halves of the
-// filter [Store.Search] and [Store.ListFor] apply in SQL — a scope the reader was
-// granted, and an access list that allows them.
+// filter [Store.Search] and [Store.ListFor] apply in SQL — a document in the
+// reader's reach, and an access list that allows them.
 func (r Reader) MayRead(doc Document) bool {
-	if !r.Allows(doc.ACL) {
+	return r.Allows(doc.ACL) && r.InReach(doc.Scope)
+}
+
+// InReach reports whether something about these entities is in this reader's
+// reach (docs/design.md#access-control): the reach is every entity, or holds
+// one of them. Something about no entity is in reach only of a reach that is
+// every entity, and the zero reader reaches nothing.
+//
+// It is the reach half of the filter in Go, as [Reader.Allows] is the
+// access-list half: a document by its scope, an entity by its id, a topic by
+// what it is about.
+func (r Reader) InReach(about []string) bool {
+	if r.Effective.Human == "" {
 		return false
 	}
 	scopes := r.Effective.Grant.Scopes
-	if scopes.All {
-		return true
+	return scopes.All || slices.ContainsFunc(about, scopes.Has)
+}
+
+// Guard is what decides who may read one document: its access list, and the
+// entities it is about, which decide whose reach it is in.
+type Guard struct {
+	ACL   connector.ACL
+	Scope []string
+}
+
+// Guards is the current [Guard] of every one of these documents the table
+// still holds, by id. A document that was never stored, or that left L1, has
+// none, and whoever reads the map fails closed on it, as with [Store.ACLs].
+func (s *Store) Guards(ctx context.Context, ids []string) (map[string]Guard, error) {
+	out := make(map[string]Guard, len(ids))
+	if len(ids) == 0 {
+		return out, nil
 	}
-	return slices.ContainsFunc(doc.Scope, scopes.Has)
+	rows, err := s.db.Query(ctx, `SELECT id, acl, scope FROM l1_docs WHERE id = ANY($1::text[])`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("reading the guards of %d documents: %w", len(ids), err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			id  string
+			raw []byte
+			g   Guard
+		)
+		if err := rows.Scan(&id, &raw, &g.Scope); err != nil {
+			return nil, fmt.Errorf("reading the guards of %d documents: %w", len(ids), err)
+		}
+		if err := json.Unmarshal(raw, &g.ACL); err != nil {
+			return nil, fmt.Errorf("decoding the access list of %s: %w", id, err)
+		}
+		out[id] = g
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading the guards of %d documents: %w", len(ids), err)
+	}
+	return out, nil
+}
+
+// artifactScopesSQL is the scope of every document built from any revision of
+// one artifact: its own document, a conversation's that holds it, or a
+// section's of it.
+const artifactScopesSQL = `
+SELECT scope FROM l1_docs
+WHERE source = $1 AND l0_refs && ARRAY(SELECT id FROM l0_events WHERE source = $1 AND artifact = $2)`
+
+// ArtifactInReach reports whether an L0 artifact is in this reader's reach:
+// a document built from it is (docs/design.md#access-control). An artifact no
+// document was built from — not distilled yet, or never distilled — is in
+// reach only of a reach that is every entity. The access list is not
+// consulted: the event's own is the caller's to check.
+func (s *Store) ArtifactInReach(ctx context.Context, reader Reader, source, artifact string) (bool, error) {
+	if reader.Effective.Human == "" {
+		return false, nil
+	}
+	if reader.Effective.Grant.Scopes.All {
+		return true, nil
+	}
+	rows, err := s.db.Query(ctx, artifactScopesSQL, source, artifact)
+	if err != nil {
+		return false, fmt.Errorf("reading the documents built from an artifact of %s: %w", source, err)
+	}
+	defer rows.Close()
+	in := false
+	for rows.Next() {
+		var scope []string
+		if err := rows.Scan(&scope); err != nil {
+			return false, fmt.Errorf("reading the documents built from an artifact of %s: %w", source, err)
+		}
+		in = in || reader.InReach(scope)
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("reading the documents built from an artifact of %s: %w", source, err)
+	}
+	return in, nil
 }
 
 // ACLs is the current access list of every one of these documents the table
@@ -201,6 +288,17 @@ func (s *Store) MostReferencedFor(ctx context.Context, reader Reader, scope stri
 		return Stored{}, 0, false, fmt.Errorf("reading the most referenced document about %s: %w", scope, err)
 	}
 	return doc, pointers, true, nil
+}
+
+// About is how many documents are about one entity, whoever may read them. It
+// is what an audit record says reach withheld when the entity itself is out of
+// the reader's reach.
+func (s *Store) About(ctx context.Context, scope string) (int, error) {
+	var n int
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM l1_docs WHERE scope @> ARRAY[$1]::text[]`, scope).Scan(&n); err != nil {
+		return 0, fmt.Errorf("counting documents about an entity: %w", err)
+	}
+	return n, nil
 }
 
 // Withheld is how many documents about one entity this reader may not read. It

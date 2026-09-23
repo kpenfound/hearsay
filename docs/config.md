@@ -485,8 +485,26 @@ everything the one before it may.
 An agent never gets more than the person it is acting for: a read runs as the
 intersection of the agent's grants and theirs. Ratifying and merging topics are
 human actions, and an agent does not get them from the steward class alone — the
-class exists so the door is there, closed. Grants are configured with `scopes`
-on each human or agent; API reach enforcement follows in #148.
+class exists so the door is there, closed.
+
+Grants are configured with `scopes` on each human or agent, and every API call
+runs within the *reach* they add up to. Each principal's scopes are expanded to
+everything `part_of` them before the two are intersected, so a person granted
+`code:acme/api` and an agent granted `code:acme/api:engine` meet at the engine.
+The class then caps the result as the table says: the code entities a scope
+links to are the ones the pull requests about it touch. A steward's own
+`scopes` do not narrow it: it reaches what the person does. A person reading
+directly reaches their scopes and the code they link to.
+
+A document is in reach when it is about an entity in reach, and a document
+about no entity is in reach only when the reach is `"*"`. An L0 event is in
+reach when a document built from its artifact is, and a topic when what it is
+about and the document that opened it are. What is out of reach is answered as
+what does not exist: the same not-found body, and for `get_bundle` the bundle an
+unknown scope gets. Reach narrows what is relevant and grants nothing: the
+source access lists still filter everything inside it. Each bundle's audit
+record names the agent's class and counts what reach withheld, apart from what
+the access lists withheld.
 
 ## `code/`
 

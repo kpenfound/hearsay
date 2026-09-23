@@ -15,6 +15,20 @@
 // bearer token. When [AgentHeader] names an agent, that agent's token is also
 // required. Authentication precedes the shared call layer (ADR-0014).
 //
+// Every call runs within the caller's effective reach (docs/design.md#access-control):
+// the person's configured scopes and the agent's, each covering everything
+// `part_of` it, intersected and capped by the agent's class. An observer reaches
+// its scopes; a worker or an orchestrator the code entities the pull requests
+// about them touch as well; a steward whatever the person reaches. A document
+// is in reach when it is about an entity in reach, an L0 event when a document
+// built from its artifact is, and a topic or a stance when what it rests on is;
+// `resolve` serves only entities in reach. What is out of reach is answered as
+// what does not exist — the same not-found body, and for `get_bundle` the
+// bundle an unknown scope gets — so handles fail closed. Reach narrows what is
+// relevant; the source access lists still decide what may be seen inside it.
+// Each bundle's audit record names the agent's class and counts what reach
+// withheld apart from what the access lists did.
+//
 // The watch call of docs/design.md#read-and-assert-api is later work, and so
 // are a bundle's conflicts.
 package api

@@ -139,9 +139,10 @@ from one call layer whose bytes both interfaces serve verbatim, on `--listen`
 (default `:8080`; `hearsay all` takes `--api-listen`). The caller is named by
 `Hearsay-Principal` and authenticated by a bearer token; the agent acting for
 them is named by `Hearsay-Agent` and must supply its own token (ADR-0014).
-Every read is filtered by that principal's
-access lists, and every bundle served is an L0 `audit` event under source
-`hearsay`. `assert` is an agent's write: only an agent of class `worker` or
+Every call runs within the effective reach — the person's configured scopes
+and the agent's, intersected and capped by the agent's class — and every read
+is filtered by the person's access lists; every bundle served is an L0 `audit`
+event under source `hearsay`. `assert` is an agent's write: only an agent of class `worker` or
 above may call it, and it writes an L0 `assertion` event under source `hearsay`
 and enqueues the `assert` job that appends its stance under the topic's scope,
 with no model call. The bundle is `internal/bundle`, over the views in `internal/l3`. It

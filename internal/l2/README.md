@@ -81,6 +81,10 @@ corrupt.
   or a stance is what its first document allowed when the worker read it; a
   second piece of evidence, an ACL re-sync (ADR-0013) or a retraction is not in
   it, so no read authorizes on it. A document that is gone fails closed.
+  Reach is decided from the same read: a topic is in reach when what it is
+  about and its opening document are, a stance when all its evidence is.
+  `Descendants` and `LinkedCode` are what a reach is expanded over
+  (`principal.Reach`).
 - **A topic is only offered to a document everyone who may read it may read the
   topic too** (`topicReadableBy`): its opening document's current access list
   is public, or carries every grant of the document's, compared without labels.

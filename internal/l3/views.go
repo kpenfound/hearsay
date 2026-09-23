@@ -106,30 +106,40 @@ ORDER BY t.id`
 // whose current stance they may not read, is left out and counted in the second
 // result. A stance they may not read does not make the topic contested for them.
 //
+// Reach is applied before the access lists, and counted apart from them in the
+// third result: a topic out of the reader's reach, or whose current stance
+// rests on a document out of it, is left out whatever its access list says —
+// which is how a stance inherited from an ancestor outside the reach is
+// withheld ([l2.Access.TopicInReach]).
+//
 // Who may read is decided from L1 as it is now ([l2.Access]): a topic by the
 // document that opened it, a stance by every piece of its evidence. A document
 // re-synced private, or retracted, since the worker read it takes what it
 // derived with it.
-func (v *Views) CurrentStances(ctx context.Context, reader l1.Reader, own string, related []string) ([]CurrentStance, int, error) {
+func (v *Views) CurrentStances(ctx context.Context, reader l1.Reader, own string, related []string) ([]CurrentStance, int, int, error) {
 	if own == "" {
-		return []CurrentStance{}, 0, nil
+		return []CurrentStance{}, 0, 0, nil
 	}
 	entities := append([]string{own}, related...)
 	topics, err := v.topics(ctx, entities)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	assessed, err := v.graph.Assess(ctx, v.authority, reader, topics)
 	if err != nil {
-		return nil, 0, fmt.Errorf("reading current stances: %w", err)
+		return nil, 0, 0, fmt.Errorf("reading current stances: %w", err)
 	}
 	out := []CurrentStance{}
-	withheld := 0
+	withheld, outOfReach := 0, 0
 	for _, a := range assessed {
 		if !a.Stands {
 			continue
 		}
 		current := a.Standing.Current
+		if !a.Access.TopicInReach(reader, a.Topic) || !a.Access.StanceInReach(reader, current) {
+			outOfReach++
+			continue
+		}
 		if !a.Access.Topic(reader, a.Topic) || !a.Access.Stance(reader, current) {
 			withheld++
 			continue
@@ -155,7 +165,7 @@ func (v *Views) CurrentStances(ctx context.Context, reader l1.Reader, own string
 		}
 		return strings.Compare(a.Topic.ID, b.Topic.ID)
 	})
-	return out, withheld, nil
+	return out, withheld, outOfReach, nil
 }
 
 func (v *Views) topics(ctx context.Context, entities []string) ([]l2.Topic, error) {

@@ -94,7 +94,12 @@ type Effective struct {
 	// Agent is the id of the agent doing the reading, and is empty when the
 	// person is reading directly.
 	Agent string
-	// Grant is what the read may actually see and do.
+	// Class is the agent's class, and is empty when the person is reading
+	// directly. It caps how far the read reaches ([Reach]).
+	Class Class
+	// Grant is what the read may actually see and do. Its Scopes are the
+	// configured grants intersected as written until [Reach] replaces them
+	// with the reach every read filters on.
 	Grant Grant
 }
 
@@ -128,7 +133,7 @@ func AgentRead(agent, human Principal, agentGrant, humanGrant Grant) (Effective,
 	grant := agentGrant.Intersect(humanGrant)
 	grant.Rights = grant.Rights.Intersect(agent.Class.Rights())
 	grant.Rights.Write &^= WriteRatify | WriteMerge
-	return Effective{Human: human.ID, Agent: agent.ID, Grant: grant}, nil
+	return Effective{Human: human.ID, Agent: agent.ID, Class: agent.Class, Grant: grant}, nil
 }
 
 func mustBe(p Principal, want Kind, verb string) error {

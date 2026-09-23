@@ -10,11 +10,11 @@ import (
 )
 
 // Reader is who a read of this table runs as: the effective principal — who
-// asked, on whose behalf, and what scopes that combination holds — together
-// with the access-list entries that principal satisfies.
+// asked, on whose behalf, and how far that combination reaches — together with
+// the access-list entries that principal satisfies.
 //
-// Both halves are filters and they are not the same mechanism: Scopes decide
-// what is relevant, the audience decides what may be seen
+// Both halves are filters and they are not the same mechanism: the reach
+// decides what is relevant, the audience decides what may be seen
 // (docs/design.md#access-control). A read applies both before it ranks
 // anything, so a document the reader may not read never takes a rank.
 //
@@ -24,16 +24,13 @@ import (
 // person nobody has mapped into any source is still a person the team's public
 // documents are for.
 //
-// What a reader may do beyond reading is not consulted here.
-// [principal.Effective]'s Grant carries Rights as well as Scopes, and this
-// filter is deliberately scopes-plus-access-list: how far a principal reads
-// within what it is granted — [principal.ReadScoped] against
-// [principal.ReadAll] — is the reach #21 builds on top of this, and a filter
-// that guessed at it now would be a permission nobody granted or a denial
-// nobody asked for.
+// What a reader may do beyond reading is not consulted here. How far it reads
+// is: [principal.Reach] composes the person's scopes, the agent's and the
+// agent's class into the entity ids Effective.Grant.Scopes holds by the time a
+// read runs, and every filter here reads that and nothing else.
 type Reader struct {
-	// Effective is the principal the read is for. Its Grant.Scopes is what the
-	// read may look in.
+	// Effective is the principal the read is for. Its Grant.Scopes is the
+	// reach: the entity ids the read may read documents about ([Reader.InReach]).
 	Effective principal.Effective
 	// Audience are the access-list entries this reader satisfies: an
 	// `identity` entry for each source-native identity that is them, and a
@@ -55,8 +52,8 @@ type Reader struct {
 // channels, and intersecting its (empty) audience with theirs would make every
 // delegated read return nothing. What the agent narrows is the grant, which
 // [principal.AgentRead] has already intersected by the time the effective
-// principal reaches here. Widening this — a per-agent audience of its own — is
-// #21's, and it can only ever narrow what this returns.
+// principal reaches here, and [principal.Reach] has narrowed further. A
+// per-agent audience of its own could only ever narrow what this returns.
 //
 // A principal the mapping does not hold, or one that is not a person, is an
 // error rather than an empty audience: a read nobody is accountable for is not
