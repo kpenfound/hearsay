@@ -12,7 +12,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/l1"
 )
 
-// AliasCandidate is a proposed name. It is deliberately absent from Resolve.
+// AliasCandidate is a learned name and its decision. Only confirmed names resolve.
 // ACL is the intersection of every current evidence document's grants; an
 // empty ACL means no reader may see the proposal.
 type AliasCandidate struct {
@@ -85,7 +85,7 @@ func (s *Store) VoteAlias(ctx context.Context, entityID, name, docID, prDocID st
 	return nil
 }
 
-// AliasCandidates returns proposals with current evidence restrictions folded
+// AliasCandidates returns candidates with current evidence restrictions folded
 // into their stored ACL. A missing or retracted evidence document closes access.
 func (s *Store) AliasCandidates(ctx context.Context, entityID string) ([]AliasCandidate, error) {
 	query := `SELECT entity_id,alias,name,state,votes,evidence,acl FROM l2_alias_candidates`

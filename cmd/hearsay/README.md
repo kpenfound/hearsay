@@ -15,6 +15,10 @@ The one binary Hearsay ships. Each process is a subcommand of it (ADR-0003).
 | `hearsay aliases list\|confirm <entity> <name>\|reject <entity> <name>` | List candidates and decide their names as a configured human. |
 | `hearsay version` | Version, commit and build date. |
 
+`hearsay aliases` requires `--config` and `--principal <human-id>`. Its list shows
+entity, name, state and vote count only where that human may read every current
+evidence document. Confirm and reject take the entity id and name shown by list.
+
 `migrate`, `config`, `l0` and `aliases` take an action word, and flags go on either side of
 it and after its argument: `hearsay l0 get <id> --database-url x` and
 `hearsay l0 --database-url x get <id>` are the same command. Each action reads
