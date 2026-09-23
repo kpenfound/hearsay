@@ -1,9 +1,9 @@
-package l2_test
+package config_test
 
 import (
 	"testing"
 
-	"github.com/kpenfound/hearsay/internal/l2"
+	"github.com/kpenfound/hearsay/internal/config"
 )
 
 func TestMatchPath(t *testing.T) {
@@ -38,7 +38,7 @@ func TestMatchPath(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := l2.MatchPath(tt.pattern, tt.path); got != tt.want {
+			if got := config.MatchPath(tt.pattern, tt.path); got != tt.want {
 				t.Errorf("MatchPath(%q, %q) = %v, want %v", tt.pattern, tt.path, got, tt.want)
 			}
 		})

@@ -1,4 +1,4 @@
-package l2
+package config
 
 import (
 	"strings"
@@ -70,10 +70,11 @@ func matchSegment(pattern, name string) bool {
 	return name == ""
 }
 
-// staticPrefix is the directory a pattern names before its first wildcard:
+// StaticPrefix is the directory a pattern names before its first wildcard:
 // `engine/server/**` is `engine/server`. It is what a CODEOWNERS rule is matched
-// against, because ownership is of a directory and a pattern is a set of paths.
-func staticPrefix(pattern string) string {
+// against, because ownership is of a directory and a pattern is a set of paths,
+// and its depth is how specific a match of the pattern is.
+func StaticPrefix(pattern string) string {
 	pattern = strings.TrimPrefix(strings.TrimPrefix(pattern, "./"), "/")
 	segments := strings.Split(pattern, "/")
 	out := segments[:0:0]

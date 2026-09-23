@@ -3,6 +3,7 @@ package l2
 import (
 	"strings"
 
+	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
@@ -67,7 +68,7 @@ func ownsDir(pattern, dir string) bool {
 	}
 	// A directory pattern owns the directory and everything under it, so a dir
 	// is owned when it is the pattern or inside what the pattern names.
-	return MatchPath(pattern, dir) || MatchPath(pattern+"/**", dir)
+	return config.MatchPath(pattern, dir) || config.MatchPath(pattern+"/**", dir)
 }
 
 // ResolveOwners turns CODEOWNERS spellings into principal ids through the

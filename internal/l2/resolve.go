@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"unicode"
+
+	"github.com/kpenfound/hearsay/internal/config"
 )
 
 // Match is one entity a text names, and how it named it.
@@ -71,7 +73,7 @@ func Resolve(entities []Entity, text string) []Match {
 		}
 		for i, e := range entities {
 			for _, pattern := range e.PathPatterns {
-				if MatchPath(pattern, word) {
+				if config.MatchPath(pattern, word) {
 					m := at(i)
 					m.Paths = append(m.Paths, word)
 					break

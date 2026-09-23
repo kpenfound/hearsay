@@ -235,7 +235,7 @@ func Seed(ctx context.Context, repo config.Repo, reader RepoReader, tracker []Pl
 			}
 			var spellings []string
 			for _, pattern := range e.PathPatterns {
-				spellings = append(spellings, OwnersOf(rules, staticPrefix(pattern))...)
+				spellings = append(spellings, OwnersOf(rules, config.StaticPrefix(pattern))...)
 			}
 			e.Owners = sortedUnique(ResolveOwners(resolver, c.Repo.Source, spellings))
 		}
