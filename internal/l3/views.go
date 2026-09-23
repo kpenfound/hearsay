@@ -69,7 +69,7 @@ WITH RECURSIVE up(id) AS (
 )
 SELECT t.id, t.scope, t.name, t.about, t.acl, t.opened_by, t.created_at,
        s.id, s.position, s.author, s.stated_at, s.evidence, coalesce(s.supersedes, ''), s.tier, s.acl, s.created_at,
-       coalesce(p.position, ''), coalesce(p.acl, '[]'::jsonb)
+       coalesce(p.position, ''), coalesce(p.evidence, '{}'::text[])
 FROM l2_topics t
 JOIN LATERAL (
     SELECT * FROM l2_stances s WHERE s.topic_id = t.id AND NOT ` + l2.RetiredSQL + `
@@ -96,6 +96,11 @@ ORDER BY s.stated_at DESC, t.id`
 // is left out and counted in the second result. The older stance they may read
 // is not offered in its place: it is not current, and a bundle that said it was
 // would be wrong in a way the reader could not see.
+//
+// Who may read is decided from L1 as it is now ([l2.Access]): a topic by the
+// document that opened it, a stance by every piece of its evidence. A document
+// re-synced private, or retracted, since the worker read it takes what it
+// derived with it.
 func (v *Views) CurrentStances(ctx context.Context, reader l1.Reader, own string, related []string) ([]CurrentStance, int, error) {
 	if own == "" {
 		return []CurrentStance{}, 0, nil
@@ -106,42 +111,61 @@ func (v *Views) CurrentStances(ctx context.Context, reader l1.Reader, own string
 		return nil, 0, fmt.Errorf("reading current stances: %w", err)
 	}
 	defer rows.Close()
-	out := []CurrentStance{}
-	withheld := 0
+	var (
+		read   []CurrentStance
+		priors []l2.Stance
+	)
 	for rows.Next() {
 		var (
-			c                          CurrentStance
-			tier                       string
-			topicACL, stanceACL, prior []byte
+			c                   CurrentStance
+			prior               l2.Stance
+			tier                string
+			topicACL, stanceACL []byte
 		)
 		if err := rows.Scan(&c.Topic.ID, &c.Topic.Scope, &c.Topic.Name, &c.Topic.About, &topicACL, &c.Topic.OpenedBy, &c.Topic.CreatedAt,
 			&c.Stance.ID, &c.Stance.Position, &c.Stance.Author, &c.Stance.StatedAt, &c.Stance.Evidence, &c.Stance.Supersedes,
-			&tier, &stanceACL, &c.Stance.CreatedAt, &c.Supersedes, &prior); err != nil {
+			&tier, &stanceACL, &c.Stance.CreatedAt, &c.Supersedes, &prior.Evidence); err != nil {
 			return nil, 0, fmt.Errorf("reading current stances: %w", err)
 		}
 		c.Stance.TopicID, c.Stance.Tier = c.Topic.ID, l2.Tier(tier)
 		c.Topic.CreatedAt = c.Topic.CreatedAt.UTC()
 		c.Stance.StatedAt, c.Stance.CreatedAt = c.Stance.StatedAt.UTC(), c.Stance.CreatedAt.UTC()
-		var priorACL connector.ACL
 		if err := errors.Join(
 			json.Unmarshal(topicACL, &c.Topic.ACL),
 			json.Unmarshal(stanceACL, &c.Stance.ACL),
-			json.Unmarshal(prior, &priorACL),
 		); err != nil {
 			return nil, 0, fmt.Errorf("decoding the access lists of topic %s: %w", c.Topic.ID, err)
 		}
-		if !reader.Allows(c.Topic.ACL) || !reader.Allows(c.Stance.ACL) {
+		read = append(read, c)
+		priors = append(priors, prior)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("reading current stances: %w", err)
+	}
+	rows.Close()
+
+	topics := make([]l2.Topic, len(read))
+	stances := make([]l2.Stance, 0, 2*len(read))
+	for i, c := range read {
+		topics[i] = c.Topic
+		stances = append(stances, c.Stance, priors[i])
+	}
+	access, err := l2.New(v.db).Access(ctx, topics, stances)
+	if err != nil {
+		return nil, 0, err
+	}
+	out := []CurrentStance{}
+	withheld := 0
+	for i, c := range read {
+		if !access.Topic(reader, c.Topic) || !access.Stance(reader, c.Stance) {
 			withheld++
 			continue
 		}
-		if !reader.Allows(priorACL) {
+		if !access.Stance(reader, priors[i]) {
 			c.Supersedes = ""
 		}
 		c.Inherited = !slices.Contains(c.Topic.About, own)
 		out = append(out, c)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, 0, fmt.Errorf("reading current stances: %w", err)
 	}
 	// Stable, so each half keeps the statement's newest-first order.
 	slices.SortStableFunc(out, func(a, b CurrentStance) int {

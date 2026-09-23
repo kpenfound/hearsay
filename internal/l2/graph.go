@@ -45,8 +45,10 @@ type Topic struct {
 	About []string
 	// JoinKeys are the join keys of every document with a stance on it.
 	JoinKeys []string
-	// ACL is who may read the topic: the access list of the document that
-	// opened it.
+	// ACL is the access list of the document that opened the topic, as it was
+	// when the topic was opened. It is a record, not who may read the topic
+	// now: a read decides that from the document's current access list
+	// ([Access]).
 	ACL connector.ACL
 	// OpenedBy is the L1 document the topic was opened from.
 	OpenedBy  string
@@ -87,7 +89,10 @@ type Stance struct {
 	// first.
 	Supersedes string
 	Tier       Tier
-	// ACL is the most restrictive access list of the evidence.
+	// ACL is the access list of the document the stance was read from, as it
+	// was when it was read. It is a record, not who may read the stance now: a
+	// read decides that from every piece of evidence's current access list
+	// ([Access]).
 	ACL       connector.ACL
 	CreatedAt time.Time
 }

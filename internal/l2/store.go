@@ -227,13 +227,22 @@ func (s *Store) Topics(ctx context.Context, scope string) ([]Topic, error) {
 	return s.topics(ctx, `SELECT `+topicColumns+` FROM l2_topics t WHERE t.scope = $1 ORDER BY t.created_at, t.id`, scope)
 }
 
-// readableBy is the predicate that offers a topic to a document: everyone who
-// may read the document may read the topic. That holds for a public topic, and
-// for one whose access list carries every grant the document's does — an entry
-// is compared on kind, source and native id, never the label, as in
-// internal/l1. It is what keeps the name of a private topic out of a prompt
-// about a public document, and out of the stance that prompt produces.
-const readableBy = `(t.acl @> '[{"kind":"public"}]'::jsonb OR t.acl @> %s::jsonb)`
+// readableBy is the predicate, over an access-list column, that everyone who
+// may read a document may read what carries it: the list is public, or it
+// carries every grant the document's does — an entry is compared on kind,
+// source and native id, never the label, as in internal/l1.
+func readableBy(column, readers string) string {
+	return fmt.Sprintf(`(%[1]s @> '[{"kind":"public"}]'::jsonb OR %[1]s @> %[2]s::jsonb)`, column, readers)
+}
+
+// topicReadableBy is readableBy for a topic: the document that opened it is
+// still in L1, and its access list *now* is readable by everyone who may read
+// the document being asserted. The access list the topic was written with is
+// not consulted ([Access]). It is what keeps the name of a private topic out of
+// a prompt about a public document, and out of the stance that prompt produces.
+func topicReadableBy(readers string) string {
+	return `EXISTS (SELECT 1 FROM l1_docs o WHERE o.id = t.opened_by AND ` + readableBy("o.acl", readers) + `)`
+}
 
 // TopicsByJoinKeys is the first half of topic matching: the topics in one scope
 // that share a join key with a document and that its readers may read, most
@@ -244,7 +253,7 @@ func (s *Store) TopicsByJoinKeys(ctx context.Context, scope string, keys []strin
 	}
 	return s.topics(ctx, `
 SELECT `+topicColumns+` FROM l2_topics t
-WHERE t.scope = $1 AND t.join_keys && $2::text[] AND `+fmt.Sprintf(readableBy, "$3")+`
+WHERE t.scope = $1 AND t.join_keys && $2::text[] AND `+topicReadableBy("$3")+`
 ORDER BY cardinality(ARRAY(SELECT unnest(t.join_keys) INTERSECT SELECT unnest($2::text[]))) DESC, t.created_at, t.id
 LIMIT $4`, scope, keys, aclJSON(readers), limit)
 }
@@ -264,11 +273,31 @@ JOIN l2_stances s ON s.topic_id = t.id
 JOIN l1_docs d ON d.id = s.evidence[1]
 CROSS JOIN (SELECT embedding FROM l1_docs WHERE id = $2 AND embedding IS NOT NULL) q
 WHERE t.scope = $1 AND d.id <> $2 AND d.embedding IS NOT NULL
-  AND NOT (t.id = ANY($5::text[])) AND `+fmt.Sprintf(readableBy, "$6")+`
+  AND NOT (t.id = ANY($5::text[])) AND `+topicReadableBy("$6")+`
 GROUP BY t.id
 HAVING min(d.embedding <=> q.embedding) <= $3
 ORDER BY min(d.embedding <=> q.embedding), t.id
 LIMIT $4`, scope, docID, maxDistance, limit, orEmpty(exclude), aclJSON(readers))
+}
+
+// EvidenceReadableBy reports whether everyone who may read a document may read
+// every piece of this evidence now: each is still in L1 and its access list is
+// readable by the document's readers, the way a topic is offered to it. It is
+// what decides whether a topic's current position may be shown in a prompt
+// about that document.
+func (s *Store) EvidenceReadableBy(ctx context.Context, evidence []string, readers connector.ACL) (bool, error) {
+	if len(evidence) == 0 {
+		return false, nil
+	}
+	var readable bool
+	err := s.db.QueryRow(ctx, `
+SELECT count(DISTINCT d.id) = cardinality(ARRAY(SELECT DISTINCT unnest($1::text[])))
+FROM l1_docs d
+WHERE d.id = ANY($1::text[]) AND `+readableBy("d.acl", "$2"), evidence, aclJSON(readers)).Scan(&readable)
+	if err != nil {
+		return false, fmt.Errorf("reading whether %d documents are readable: %w", len(evidence), err)
+	}
+	return readable, nil
 }
 
 func (s *Store) topics(ctx context.Context, sql string, args ...any) ([]Topic, error) {
