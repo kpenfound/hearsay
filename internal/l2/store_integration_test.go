@@ -130,8 +130,9 @@ func TestEntitiesAreSeededAndCreatedOnReference(t *testing.T) {
 	if _, err := store.Entity(ctx, "code:acme/api:gone"); !errors.Is(err, l2.ErrNotFound) {
 		t.Errorf("Entity(gone) = %v, want ErrNotFound", err)
 	}
-	if err := store.ReplaceSeeded(ctx, []l2.Entity{item}); !errors.Is(err, l2.ErrInvalid) {
-		t.Errorf("ReplaceSeeded(a reference) = %v, want ErrInvalid", err)
+	person := l2.Entity{ID: "person:robin", Type: l2.TypePerson, Origin: l2.OriginReference}
+	if err := store.ReplaceSeeded(ctx, []l2.Entity{seeded[0], seeded[2], person}); !errors.Is(err, l2.ErrInvalid) {
+		t.Errorf("ReplaceSeeded(a reference that is no tracker item) = %v, want ErrInvalid", err)
 	}
 
 	matches, err := store.Resolve(ctx, "The Engine is slow, see acme/api#12")
@@ -144,6 +145,23 @@ func TestEntitiesAreSeededAndCreatedOnReference(t *testing.T) {
 	}
 	if want := []string{"code:acme/api:engine", item.ID}; !slices.Equal(matched, want) {
 		t.Errorf("Resolve() = %q, want %q", matched, want)
+	}
+
+	// Issue #120: the tracker items the tracker places are seeded with their
+	// parents, and one it no longer places keeps its row and loses them.
+	placed := item
+	placed.PartOf = []string{"tracker:github-acme:acme/api#10"}
+	if err := store.ReplaceSeeded(ctx, []l2.Entity{seeded[0], seeded[2], placed}); err != nil {
+		t.Fatalf("ReplaceSeeded(a placed tracker item) = %v", err)
+	}
+	if e, err := store.Entity(ctx, item.ID); err != nil || !slices.Equal(e.PartOf, placed.PartOf) {
+		t.Errorf("Entity(%s) = %+v, %v, want it part of #10", item.ID, e, err)
+	}
+	if err := store.ReplaceSeeded(ctx, []l2.Entity{seeded[0], seeded[2]}); err != nil {
+		t.Fatalf("ReplaceSeeded(placed nowhere) = %v", err)
+	}
+	if e, err := store.Entity(ctx, item.ID); err != nil || len(e.PartOf) != 0 {
+		t.Errorf("Entity(%s) = %+v, %v, want it kept and part of nothing", item.ID, e, err)
 	}
 }
 
