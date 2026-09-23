@@ -441,6 +441,21 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 			want:  []string{`authority policy "api": ranking[1]: "merged_pr" is listed twice`},
 		},
 		{
+			name:  "a contested window that is not a duration",
+			files: with(map[string]string{"authority/a.yaml": "scope: api\ncontested_window: 14d\n"}),
+			want:  []string{`authority policy "api": contested_window: "14d" is not a duration`},
+		},
+		{
+			name:  "a contested window of nothing",
+			files: with(map[string]string{"authority/a.yaml": "scope: \"*\"\ncontested_window: 0s\n"}),
+			want:  []string{`authority policy "*": contested_window: 0s is not positive`},
+		},
+		{
+			name:  "a negative contested window",
+			files: with(map[string]string{"authority/a.yaml": "scope: api\ncontested_window: -1h\n"}),
+			want:  []string{`authority policy "api": contested_window: -1h is not positive`},
+		},
+		{
 			name:  "a wildcard in a ranking",
 			files: with(map[string]string{"authority/a.yaml": "scope: api\nranking: [\"*\"]\n"}),
 			want:  []string{`authority policy "api": ranking[0]: "*" is not allowed here`},

@@ -1,6 +1,9 @@
 package config
 
-import "slices"
+import (
+	"slices"
+	"time"
+)
 
 // AnyValue is the entry that widens a list of principals, sources or scopes to
 // all of them. It is spelled the way the ingest allowlist spells it
@@ -85,6 +88,25 @@ type Policy struct {
 	Ranking []ArtifactClass
 	// RatifiedBy is what can make a stance ratified in this scope.
 	RatifiedBy Ratifiers
+	// ContestedWindow is how far before a topic's newest live stance another
+	// stance still counts when deciding its current stance and whether it is
+	// contested. It is measured between stances, never from now, so a graph
+	// nothing was added to is served the same way tomorrow. Zero is unset: it
+	// inherits, and where nothing sets it, it is [DefaultContestedWindow].
+	ContestedWindow time.Duration
+}
+
+// DefaultContestedWindow is the contested window a policy has where nothing
+// configures one.
+const DefaultContestedWindow = 14 * 24 * time.Hour
+
+// Window is the contested window in force: [Policy.ContestedWindow], or
+// [DefaultContestedWindow] where that is unset.
+func (p Policy) Window() time.Duration {
+	if p.ContestedWindow <= 0 {
+		return DefaultContestedWindow
+	}
+	return p.ContestedWindow
 }
 
 // Ratifiers is what may produce a ratified stance: agents act on ratified
@@ -105,8 +127,8 @@ type Ratifiers struct {
 }
 
 // DefaultPolicy is the authority in force where nothing is configured: the
-// default ranking, anybody may ratify by hand, and a merged pull request
-// ratifies on its own.
+// default ranking, anybody may ratify by hand, a merged pull request ratifies
+// on its own, and stances within 14 days of a topic's newest are compared.
 //
 // A frozen spec and CODEOWNERS are named alongside a merged pull request in the
 // design doc, but Hearsay cannot tell a frozen spec from a draft one, so adding
@@ -120,6 +142,7 @@ func DefaultPolicy() Policy {
 			Sources:    []string{AnyValue},
 			Artifacts:  []ArtifactClass{ArtifactMergedPR},
 		},
+		ContestedWindow: DefaultContestedWindow,
 	}
 }
 
@@ -230,7 +253,8 @@ func newAuthority(policies []Policy) Authority {
 
 // mergePolicy layers over onto base. A nil list is unset and inherits; a list
 // that is present but empty is a decision and is kept, which is how a scope
-// says that nobody may ratify by hand.
+// says that nobody may ratify by hand. A zero contested window is unset: the
+// loader refuses a window that is not positive, so zero is never written.
 func mergePolicy(base, over Policy) Policy {
 	merged := base
 	merged.Scope = over.Scope
@@ -245,6 +269,9 @@ func mergePolicy(base, over Policy) Policy {
 	}
 	if over.RatifiedBy.Artifacts != nil {
 		merged.RatifiedBy.Artifacts = over.RatifiedBy.Artifacts
+	}
+	if over.ContestedWindow != 0 {
+		merged.ContestedWindow = over.ContestedWindow
 	}
 	return merged
 }

@@ -94,7 +94,8 @@ type Anchor struct {
 	Line string `json:"line"`
 }
 
-// Stance is the current stance on one topic.
+// Stance is the current stance on one topic, and the tier it is computed at
+// under the policy in force for the topic's scope.
 type Stance struct {
 	Topic string `json:"topic"`
 	// TopicID is what `stance_history` takes.
@@ -184,6 +185,14 @@ func New(q l3.Querier) *Assembler {
 func (a *Assembler) WithDirectiveSources(repo config.Repo, resolver *principal.Resolver) *Assembler {
 	c := *a
 	c.repo, c.resolver = repo, resolver
+	return &c
+}
+
+// WithAuthority supplies the authority policies stance tiers are computed
+// under. Without it they are computed under the built-in policy.
+func (a *Assembler) WithAuthority(authority config.Authority) *Assembler {
+	c := *a
+	c.views = a.views.WithAuthority(authority)
 	return &c
 }
 
@@ -391,7 +400,7 @@ func Build(in Inputs, budget int) (Bundle, Trimmed, int, error) {
 			Topic:      Line(c.Topic.Name),
 			TopicID:    c.Topic.ID,
 			Current:    Line(c.Stance.Position),
-			Tier:       string(c.Stance.Tier),
+			Tier:       string(c.Tier),
 			Since:      stamp(c.Stance.StatedAt),
 			Supersedes: Line(c.Supersedes),
 			Evidence:   slices.Clone(c.Stance.Evidence),

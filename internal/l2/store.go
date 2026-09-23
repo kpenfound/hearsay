@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 )
 
@@ -329,8 +330,7 @@ const stanceColumns = `id, topic_id, position, author, stated_at, evidence, coal
 // of its own document replaced it: a stance from the same document on the same
 // topic supersedes it. A retired stance is never a topic's current one, and
 // never a predecessor again. It reads through the topic's index, not the whole
-// table. internal/l3 uses it too, so the head the views serve and the head the
-// store appends behind are the same stance.
+// table. [Current] and [Stand] apply the same rule to a history already read.
 const RetiredSQL = `EXISTS (
     SELECT 1 FROM l2_stances n
     WHERE n.topic_id = s.topic_id AND n.supersedes = s.id AND n.evidence[1] = s.evidence[1])`
@@ -420,6 +420,97 @@ func (s *Store) stance(ctx context.Context, sql string, args ...any) (Stance, er
 func (s *Store) StanceHistory(ctx context.Context, topicID string) ([]Stance, error) {
 	return s.stances(ctx, `SELECT `+stanceColumns+` FROM l2_stances WHERE topic_id = $1
 ORDER BY stated_at, created_at, id`, topicID)
+}
+
+// StanceHistories is [Store.StanceHistory] for many topics in one statement,
+// keyed by topic id. A topic with no stance has no entry.
+func (s *Store) StanceHistories(ctx context.Context, topicIDs []string) (map[string][]Stance, error) {
+	out := map[string][]Stance{}
+	if len(topicIDs) == 0 {
+		return out, nil
+	}
+	stances, err := s.stances(ctx, `SELECT `+stanceColumns+` FROM l2_stances WHERE topic_id = ANY($1)
+ORDER BY topic_id, stated_at, created_at, id`, topicIDs)
+	if err != nil {
+		return nil, err
+	}
+	for _, st := range stances {
+		out[st.TopicID] = append(out[st.TopicID], st)
+	}
+	return out, nil
+}
+
+// Evidence is what authority knows about each of these L1 documents as L1
+// holds them now, keyed by document id. A document L1 no longer holds is left
+// out, and ranks as nothing ([TierInputs]).
+func (s *Store) Evidence(ctx context.Context, docIDs []string) (map[string]Evidence, error) {
+	out := map[string]Evidence{}
+	if len(docIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(ctx, `SELECT id, artifact_class, source FROM l1_docs WHERE id = ANY($1)`, docIDs)
+	if err != nil {
+		return nil, fmt.Errorf("reading the evidence of stances: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, class string
+		var ev Evidence
+		if err := rows.Scan(&id, &class, &ev.Source); err != nil {
+			return nil, fmt.Errorf("reading the evidence of stances: %w", err)
+		}
+		ev.Class = config.ArtifactClass(class)
+		out[id] = ev
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading the evidence of stances: %w", err)
+	}
+	return out, nil
+}
+
+// Assessment is a topic, its history and where it stands.
+type Assessment struct {
+	Topic   Topic
+	History []Stance
+	// Standing is meaningful only where Stands is true: a topic with no live
+	// stance stands nowhere.
+	Standing Standing
+	Stands   bool
+}
+
+// Assess computes where each topic stands ([Stand]) from what the database
+// holds now: every stance on it, the artifact class and source of their
+// evidence as L1 holds it, and the policy authority puts in force for the
+// topic's scope. It is what every read serves, so a change to the policy takes
+// effect on the next read. The assessments are in the order of the topics.
+//
+// Nothing records a person's ratification before v0.8.0, so none is passed.
+func (s *Store) Assess(ctx context.Context, authority config.Authority, topics []Topic) ([]Assessment, error) {
+	ids := make([]string, len(topics))
+	for i, t := range topics {
+		ids[i] = t.ID
+	}
+	histories, err := s.StanceHistories(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	var docs []string
+	for _, history := range histories {
+		for _, st := range history {
+			docs = append(docs, st.Evidence...)
+		}
+	}
+	evidence, err := s.Evidence(ctx, sortedUnique(docs))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Assessment, len(topics))
+	for i, t := range topics {
+		history := histories[t.ID]
+		standing, ok := Stand(TierInputs{History: history, Evidence: evidence, Policy: authority.ForScope(t.Scope)})
+		out[i] = Assessment{Topic: t, History: history, Standing: standing, Stands: ok}
+	}
+	return out, nil
 }
 
 // StancesFrom is every stance read from one document, oldest first.

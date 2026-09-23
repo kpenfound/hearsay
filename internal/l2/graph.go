@@ -38,8 +38,8 @@ const (
 	// TierInferred is the assertion pipeline's best reading. Agents cite it
 	// and proceed.
 	TierInferred Tier = "inferred"
-	// TierContested is a stance recent ones disagree with. Agents ask. Nothing
-	// in this build writes it yet.
+	// TierContested is a stance recent ones disagree with. Agents ask. It is
+	// only ever computed ([Stand]); nothing writes it on a row.
 	TierContested Tier = "contested"
 )
 
@@ -105,7 +105,10 @@ type Stance struct {
 	// Supersedes is the stance this one replaced on its topic, empty for the
 	// first.
 	Supersedes string
-	Tier       Tier
+	// Tier is the tier the stance was written with ([RecordedTier]), a record
+	// of that moment and part of its id. The tier a read serves is computed
+	// ([Stand]).
+	Tier Tier
 	// ACL is the most restrictive access list of the evidence.
 	ACL       connector.ACL
 	CreatedAt time.Time
@@ -141,11 +144,26 @@ func (s Stance) Validate() error {
 	return nil
 }
 
-// Current is the stance a topic stands at, given its history in the order
-// [Store.StanceHistory] returns it: the newest stated that a later reading of
-// its own document has not retired. It is [RetiredSQL]'s rule, and internal/l3's,
-// for a history already read. It reports false for a topic with no stance.
+// Current is the head of a topic's supersession chain, given its history in
+// the order [Store.StanceHistory] returns it: the newest stated that a later
+// reading of its own document has not retired. It is [RetiredSQL]'s rule for a
+// history already read, and it is the position the assertion worker shows a
+// model and the stance a new one supersedes. It is not what a read serves as
+// the topic's current stance — that is [Stand]'s, which weighs authority. It
+// reports false for a topic with no stance.
 func Current(history []Stance) (Stance, bool) {
+	retired := retiredIn(history)
+	for i := len(history) - 1; i >= 0; i-- {
+		if !retired[history[i].ID] {
+			return history[i], true
+		}
+	}
+	return Stance{}, false
+}
+
+// retiredIn is the stances in a history that a later reading of their own
+// document replaced.
+func retiredIn(history []Stance) map[string]bool {
 	from := make(map[string]string, len(history))
 	for _, st := range history {
 		from[st.ID] = st.Evidence[0]
@@ -156,12 +174,7 @@ func Current(history []Stance) (Stance, bool) {
 			retired[st.Supersedes] = true
 		}
 	}
-	for i := len(history) - 1; i >= 0; i-- {
-		if !retired[history[i].ID] {
-			return history[i], true
-		}
-	}
-	return Stance{}, false
+	return retired
 }
 
 // TopicID is the id of a topic opened from a document. It is a function of the
