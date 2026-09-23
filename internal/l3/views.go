@@ -192,19 +192,28 @@ type Activity struct {
 // [RecentCandidates] newest takes a place first, and the rest of the places go
 // by recency, so five commits do not crowd out the one issue that changed the
 // plan.
-func (v *Views) Recent(ctx context.Context, reader l1.Reader, scope string, n int) (Activity, error) {
+//
+// The documents in except — a bundle's anchors — take no place and are not
+// counted among the candidates, so an anchor is never repeated as activity and
+// never costs `recent` one of its places. They still count as activity on the
+// scope: an edit to an anchor can be the scope's last activity.
+func (v *Views) Recent(ctx context.Context, reader l1.Reader, scope string, n int, except []string) (Activity, error) {
 	if n <= 0 {
 		return Activity{Items: []l1.Stored{}}, nil
 	}
-	candidates, err := v.docs.ListFor(ctx, reader, l1.ListOptions{Scope: scope, Limit: RecentCandidates})
+	listed, err := v.docs.ListFor(ctx, reader, l1.ListOptions{Scope: scope, Limit: RecentCandidates + len(except)})
 	if err != nil {
 		return Activity{}, err
 	}
 	out := Activity{Items: []l1.Stored{}}
-	if len(candidates) == 0 {
+	if len(listed) == 0 {
 		return out, nil
 	}
-	out.LastActivity = candidates[0].Time.LastActivity
+	out.LastActivity = listed[0].Time.LastActivity
+	candidates := slices.DeleteFunc(listed, func(doc l1.Stored) bool { return slices.Contains(except, doc.ID) })
+	if len(candidates) > RecentCandidates {
+		candidates = candidates[:RecentCandidates]
+	}
 
 	taken := make([]bool, len(candidates))
 	seen := map[l1.Kind]bool{}
@@ -231,6 +240,80 @@ func (v *Views) Recent(ctx context.Context, reader l1.Reader, scope string, n in
 		if taken[i] {
 			out.Items = append(out.Items, doc)
 		}
+	}
+	return out, nil
+}
+
+// Anchor is a durable document that defines a scope (docs/design.md#anchors).
+type Anchor struct {
+	Doc l1.Stored
+	// PinnedBy is the principal who pinned it, empty for an anchor that was
+	// inferred or defaulted.
+	PinnedBy string
+}
+
+// Anchors is up to n documents that define an entity, for a reader: the ones
+// people pinned to it, first pinned first; then the one inferred as the most
+// referenced by the other documents about it ([l1.Store.MostReferencedFor]);
+// then its `spec` documents, newest activity first. A document is an anchor
+// once, where it first qualifies, and nothing configured adds one (docs/config.md).
+//
+// Every one is a document the reader may read. A pinned document they may not
+// read — or one no longer in L1 — is left out and takes no place, and the
+// inference and the defaults only ever see what they may read, so what is
+// hidden from them neither takes a place nor decides which document does.
+func (v *Views) Anchors(ctx context.Context, reader l1.Reader, scope string, n int) ([]Anchor, error) {
+	out := []Anchor{}
+	if n <= 0 || scope == "" || reader.Effective.Human == "" || !reader.Effective.Grant.Scopes.Has(scope) {
+		return out, nil
+	}
+	add := func(doc l1.Stored, pinnedBy string) {
+		if len(out) < n && !slices.ContainsFunc(out, func(a Anchor) bool { return a.Doc.ID == doc.ID }) {
+			out = append(out, Anchor{Doc: doc, PinnedBy: pinnedBy})
+		}
+	}
+
+	pins, err := v.graph.Pins(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	for _, pin := range pins {
+		if len(out) == n {
+			return out, nil
+		}
+		doc, err := v.docs.Get(ctx, pin.L1)
+		if errors.Is(err, l1.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if reader.MayRead(doc.Document) {
+			add(doc, pin.PinnedBy)
+		}
+	}
+	if len(out) == n {
+		return out, nil
+	}
+
+	inferred, _, ok, err := v.docs.MostReferencedFor(ctx, reader, scope)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		add(inferred, "")
+	}
+	if len(out) == n {
+		return out, nil
+	}
+
+	// Enough that the ones already taken cannot leave a place unfilled.
+	specs, err := v.docs.ListFor(ctx, reader, l1.ListOptions{Scope: scope, Class: config.ArtifactSpec, Limit: n + len(out)})
+	if err != nil {
+		return nil, err
+	}
+	for _, doc := range specs {
+		add(doc, "")
 	}
 	return out, nil
 }

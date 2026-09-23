@@ -2,8 +2,11 @@ package l1
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/kpenfound/hearsay/internal/connector"
 )
@@ -55,6 +58,9 @@ func (s *Store) ListFor(ctx context.Context, reader Reader, opts ListOptions) ([
 	if opts.OutcomeKind != "" && !opts.OutcomeKind.Valid() {
 		return nil, fmt.Errorf("%w: outcome kind %q", ErrInvalidDocument, opts.OutcomeKind)
 	}
+	if opts.Class != "" && !opts.Class.Valid() {
+		return nil, fmt.Errorf("%w: artifact class %q", ErrInvalidDocument, opts.Class)
+	}
 	q := &query{}
 	filter, ok := reader.predicate(q, opts.Scope)
 	if !ok {
@@ -66,6 +72,9 @@ func (s *Store) ListFor(ctx context.Context, reader Reader, opts ListOptions) ([
 	}
 	if opts.Kind != "" {
 		q.and("kind", string(opts.Kind))
+	}
+	if opts.Class != "" {
+		q.and("artifact_class", string(opts.Class))
 	}
 	if opts.OutcomeKind != "" {
 		q.and("outcome_kind", string(opts.OutcomeKind))
@@ -100,6 +109,62 @@ func (s *Store) ListFor(ctx context.Context, reader Reader, opts ListOptions) ([
 		return nil, fmt.Errorf("listing readable documents: %w", err)
 	}
 	return docs, nil
+}
+
+// mostReferencedSQL ranks the documents about one entity by how many other
+// documents about it point at them, both sides filtered by the reader first.
+// A reference points at a document when it names what the document is: an
+// issue, a pull request or a bare tracker item names an issue or pull request
+// by its artifact id, a commit a commit by its own, and a link a document by
+// its permalink. The ids are compared without the source, as L2's join keys
+// compare them: a chat that links an issue is in another source than the issue.
+const mostReferencedSQL = `
+WITH readable AS (
+    SELECT id, kind, source_native_id, source_url, refs FROM l1_docs WHERE %s
+), pointed AS (
+    SELECT DISTINCT r.id AS referrer, ref->>'type' AS type, ref->>'id' AS target
+    FROM readable r, jsonb_array_elements(r.refs) AS ref
+), ranked AS (
+    SELECT t.id AS doc, count(DISTINCT p.referrer) AS pointers
+    FROM readable t JOIN pointed p ON p.referrer <> t.id AND (
+           (t.kind IN ('issue', 'pr') AND p.type IN ('issue', 'pr', 'tracker_item') AND p.target = t.source_native_id)
+        OR (t.kind = 'commit' AND p.type = 'commit' AND p.target = t.source_native_id)
+        OR (p.type = 'url' AND t.source_url <> '' AND p.target = t.source_url))
+    GROUP BY t.id
+    ORDER BY pointers DESC, t.id ASC
+    LIMIT 1
+)
+SELECT %s, ranked.pointers FROM l1_docs JOIN ranked ON l1_docs.id = ranked.doc`
+
+// MostReferencedFor is the document about an entity that the most other
+// documents about it point at, counting only documents this reader may read on
+// either end: one they may not read neither wins nor counts towards another
+// winning. It returns how many point at it, and false where no readable
+// document is pointed at by another. A tie goes to the lower document id, so
+// the same graph and the same reader always give the same document.
+func (s *Store) MostReferencedFor(ctx context.Context, reader Reader, scope string) (Stored, int, bool, error) {
+	if scope == "" {
+		return Stored{}, 0, false, fmt.Errorf("%w: the most referenced document is read for one entity", ErrInvalidDocument)
+	}
+	q := &query{}
+	filter, ok := reader.predicate(q, scope)
+	if !ok {
+		return Stored{}, 0, false, nil
+	}
+	var d docScan
+	var pointers int
+	err := s.db.QueryRow(ctx, fmt.Sprintf(mostReferencedSQL, filter, docColumns), q.args...).Scan(append(d.dests(), &pointers)...)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Stored{}, 0, false, nil
+	}
+	if err != nil {
+		return Stored{}, 0, false, fmt.Errorf("reading the most referenced document about %s: %w", scope, err)
+	}
+	doc, err := d.done()
+	if err != nil {
+		return Stored{}, 0, false, fmt.Errorf("reading the most referenced document about %s: %w", scope, err)
+	}
+	return doc, pointers, true, nil
 }
 
 // Withheld is how many documents about one entity this reader may not read. It

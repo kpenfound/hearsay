@@ -187,6 +187,9 @@ type ListOptions struct {
 	Source string
 	// Kind reads one document kind only.
 	Kind Kind
+	// Class reads one artifact class only: `spec` is how a scope's anchors are
+	// defaulted.
+	Class config.ArtifactClass
 	// OutcomeKind reads the documents that concluded one sort of thing. The
 	// assertion worker's read is this, three times over — or once, with
 	// Asserting.
@@ -215,12 +218,18 @@ func (s *Store) List(ctx context.Context, opts ListOptions) ([]Stored, error) {
 	if opts.OpenQuestions {
 		return nil, fmt.Errorf("%w: List does not filter on open questions; ListFor does", ErrInvalidDocument)
 	}
+	if opts.Class != "" && !opts.Class.Valid() {
+		return nil, fmt.Errorf("%w: artifact class %q", ErrInvalidDocument, opts.Class)
+	}
 	q := &query{sql: `SELECT ` + docColumns + ` FROM l1_docs WHERE true`}
 	if opts.Source != "" {
 		q.and("source", opts.Source)
 	}
 	if opts.Kind != "" {
 		q.and("kind", string(opts.Kind))
+	}
+	if opts.Class != "" {
+		q.and("artifact_class", string(opts.Class))
 	}
 	if opts.OutcomeKind != "" {
 		q.and("outcome_kind", string(opts.OutcomeKind))
