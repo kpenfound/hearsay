@@ -1,5 +1,4 @@
-// Package drive backfills explicitly configured Google Drive folders into L0.
-// It does not watch changes; live sync belongs to the separate Drive change connector work.
+// Package drive backfills and tracks explicitly configured Google Drive folders.
 package drive
 
 import (
@@ -36,6 +35,7 @@ type Settings struct {
 	TranscriptCandidateFolderIDs []string `json:"transcript_candidate_folder_ids"`
 	MeetingTranscriptLabelID     string   `json:"meeting_transcript_label_id"`
 	APIURL                       string   `json:"api_url"`
+	NotificationURL              string   `json:"notification_url"`
 }
 
 type credentials struct {
@@ -47,18 +47,24 @@ type credentials struct {
 
 // Connector walks configured Drive folders into L0.
 type Connector struct {
-	source      string
-	folders     []string
-	candidates  map[string]bool
-	label       string
-	api         *client
-	mu          sync.Mutex
-	lastEventAt time.Time
+	source          string
+	folders         []string
+	candidates      map[string]bool
+	label           string
+	api             *client
+	mu              sync.Mutex
+	lastEventAt     time.Time
+	notificationURL string
+	watchID         string
+	watchToken      string
+	watchExpires    time.Time
 }
 
 var (
-	_ connector.Poller     = (*Connector)(nil)
-	_ connector.Backfiller = (*Connector)(nil)
+	_ connector.Poller       = (*Connector)(nil)
+	_ connector.CursorPoller = (*Connector)(nil)
+	_ connector.Pusher       = (*Connector)(nil)
+	_ connector.Backfiller   = (*Connector)(nil)
 )
 
 // Factory is registered under Type by the binary.
@@ -144,13 +150,24 @@ func New(src connector.SourceConfig) (*Connector, error) {
 	if apiURL.Scheme == "http" && !strings.HasPrefix(apiURL.Host, "127.0.0.1:") && !strings.HasPrefix(apiURL.Host, "localhost:") {
 		return nil, errors.New("settings.api_url must use HTTPS except for a local fixture")
 	}
+	if settings.NotificationURL != "" {
+		notificationURL, err := url.Parse(settings.NotificationURL)
+		if err != nil {
+			return nil, fmt.Errorf("settings.notification_url: %w", err)
+		}
+		localNotification := notificationURL.Scheme == "http" && (strings.HasPrefix(notificationURL.Host, "127.0.0.1:") || strings.HasPrefix(notificationURL.Host, "localhost:"))
+		if notificationURL.Host == "" || (notificationURL.Scheme != "https" && !localNotification) {
+			return nil, errors.New("settings.notification_url must be HTTPS or a local fixture URL")
+		}
+	}
 	return &Connector{source: src.ID, folders: folders, candidates: candidates, label: settings.MeetingTranscriptLabelID,
-		api: &client{base: strings.TrimRight(apiURL.String(), "/"), tokenURI: cred.TokenURI, email: cred.ClientEmail, key: rsaKey, http: &http.Client{Timeout: 30 * time.Second}}}, nil
+		notificationURL: settings.NotificationURL,
+		api:             &client{base: strings.TrimRight(apiURL.String(), "/"), tokenURI: cred.TokenURI, email: cred.ClientEmail, key: rsaKey, http: &http.Client{Timeout: 30 * time.Second}}}, nil
 }
 
 // Describe declares the two L0 kinds Drive can emit.
 func (c *Connector) Describe() connector.Descriptor {
-	return connector.Descriptor{Type: Type, Kinds: []connector.Kind{connector.KindDocument, connector.KindTranscript}}
+	return connector.Descriptor{Type: Type, Kinds: []connector.Kind{connector.KindDocument, connector.KindTranscript, connector.KindTombstone}}
 }
 
 // Health reports the last emitted event without doing IO.
@@ -163,5 +180,7 @@ func (c *Connector) Health(context.Context) connector.Health {
 // Close has nothing to release; the connector starts no goroutines.
 func (c *Connector) Close(context.Context) error { return nil }
 
-// Poll is deliberately inert until issue #99 supplies an ongoing change feed.
-func (c *Connector) Poll(context.Context, connector.Sink) error { return nil }
+// Poll is unused when the runtime offers the durable CursorPoller path.
+func (c *Connector) Poll(context.Context, connector.Sink) error {
+	return errors.New("drive polling needs a durable cursor")
+}

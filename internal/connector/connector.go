@@ -93,6 +93,25 @@ type Poller interface {
 	Poll(ctx context.Context, sink Sink) error
 }
 
+// CursorPoller polls a source change feed with a runtime-owned durable cursor.
+// A successful call returns the position after all events it emitted. A failed
+// call leaves the stored position unchanged and may be replayed.
+type CursorPoller interface {
+	Poller
+	PollFrom(ctx context.Context, sink Sink, from Cursor) (Cursor, error)
+}
+
+// ArtifactReader lets a connector inspect a previously ingested artifact when
+// a change feed reports a deletion without its former container or ACL.
+type ArtifactReader interface {
+	CurrentArtifact(ctx context.Context, source, artifact string) (Event, bool, error)
+	CurrentArtifacts(ctx context.Context, source string) ([]Event, error)
+}
+
+// PollRequester asks the runtime to poll soon after a verified notification.
+// The ordinary poll cadence remains the recovery path if a notice is missed.
+type PollRequester interface{ RequestPoll() }
+
 // Streamer dials and reads a long-lived source connection. Stream returns when
 // the connection ends; the runtime calls it again with backoff after an error,
 // unless the error wraps [ErrStreamPermanent].

@@ -38,6 +38,7 @@ type file struct {
 	Owners     []user            `json:"owners"`
 	Modifier   *user             `json:"lastModifyingUser"`
 	Properties map[string]string `json:"properties"`
+	Trashed    bool              `json:"trashed"`
 }
 type fileList struct {
 	Files []file `json:"files"`

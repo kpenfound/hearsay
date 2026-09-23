@@ -433,6 +433,21 @@ type Poller interface {
     Poll(ctx context.Context, sink Sink) error
 }
 
+// Optional: a live change feed whose position must survive a restart.
+type CursorPoller interface {
+    Poller
+    PollFrom(ctx context.Context, sink Sink, from Cursor) (Cursor, error)
+}
+
+// Optional sink read for a feed that reports deletion without old ACL data.
+type ArtifactReader interface {
+    CurrentArtifact(ctx context.Context, source, artifact string) (Event, bool, error)
+    CurrentArtifacts(ctx context.Context, source string) ([]Event, error)
+}
+
+// Optional sink wake for a verified notification.
+type PollRequester interface { RequestPoll() }
+
 // Stream: we dial the source, which sends events on the connection.
 type Streamer interface {
     Connector
@@ -471,6 +486,11 @@ live source still needs `Backfiller` to get its history.
 - **`Poll`** is never called concurrently with itself, so a poller may keep its
   position in memory without locking. It returns when it has emitted what one
   pass found. An error is retried on the next tick with backoff.
+- **`PollFrom`** takes a separate durable cursor when a connector implements
+  `CursorPoller`; the runtime saves its successor only after the call succeeds.
+  A failed call replays from the former cursor. Its `Poll` method is not called
+  by that runtime. A verified push notification may request an early poll;
+  ordinary cadence remains the fallback.
 - **`Stream`** runs in a runtime-owned goroutine until its connection ends or
   its context is cancelled. The runtime retries an ended stream with the same
   capped backoff as a failed poll. The connector owns its socket, heartbeat,
@@ -679,11 +699,11 @@ else.
 
 | Artifact | kind | artifact id | native_id | container |
 |---|---|---|---|---|
-| Document | `document` | `<file id>` | `<file id>@<head revision id>` | folder `<folder id>` |
-| Meeting transcript | `transcript` | `<file id>` | `<file id>@<head revision id>` | folder |
+| Document | `document` | `<file id>` | backfill: `<file id>@<head revision id>`; live: `<file id>@<head revision id>+perm:<permission version>` | folder `<folder id>` |
+| Meeting transcript | `transcript` | `<file id>` | backfill: `<file id>@<head revision id>`; live: `<file id>@<head revision id>+perm:<permission version>` | folder |
 | Comment on a document (future work) | `message` | `<file id>:comment:<comment id>` | `…@<modified time>` | folder |
 
-The initial Drive connector implements bounded `Backfiller` calls only. It walks
+The initial Drive backfill implements bounded `Backfiller` calls. It walks
 one page of one explicitly configured folder per call. The source `containers`
 are direct parent folder IDs; there is no recursive expansion. Candidate
 transcript folders are separately listed in
@@ -705,13 +725,24 @@ person, which is why `transcript` does not require one; attendees go in
 `participants` with role `attendee`.
 
 The backfill uses the content head revision ID exactly, as issue #98 requires.
-Permission-only changes and live sync are the subsequent Drive change work
-(#99); those will need a distinct permission revision token when the ACL moves
-without a content edit.
+Ongoing sync consumes Drive's changes feed with a separate durable cursor.
+Every change re-fetches the file, its direct labels and current permissions.
+The live permission version hashes the normalized ACL, folder and metadata
+with the change observation token. An unchanged observation emits nothing.
+This lets sharing-only changes and a public → private → public cycle produce
+distinct revisions. A new or expired change token triggers a full
+reconciliation of configured folders against L0; the token captured before
+that scan catches any concurrent changes afterward. An optional
+`settings.notification_url` registers an expiring Drive change channel.
+Verified notifications wake the poller; the configured refresh cadence polls
+the same durable feed if notification delivery is unavailable or missed.
 
 Files whose direct parent is not configured are ignored before reaching the
-gate, which also enforces the source allowlist. Folder moves, deletions and
-label removal are handled by #99.
+gate, which also enforces the source allowlist. Deletions, moves outside the
+allowlist, and meeting-label removal emit a tombstone under the former folder
+and ACL. L0 currently treats a tombstone as permanent for that file ID; a
+subsequent move back into scope requires a future revival contract or a new
+artifact identity.
 
 ### Obsidian (issue #102)
 

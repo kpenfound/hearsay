@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,77 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/connector"
 )
+
+type cursorPoller struct {
+	connector.Connector
+	seen chan connector.Cursor
+}
+
+func (p *cursorPoller) Poll(context.Context, connector.Sink) error {
+	return errors.New("ordinary Poll called for cursor poller")
+}
+func (p *cursorPoller) PollFrom(_ context.Context, _ connector.Sink, from connector.Cursor) (connector.Cursor, error) {
+	select {
+	case p.seen <- from:
+	default:
+	}
+	n, err := strconv.Atoi(string(from))
+	if from == "" {
+		n, err = 0, nil
+	}
+	if err != nil {
+		return from, err
+	}
+	return connector.Cursor(strconv.Itoa(n + 1)), nil
+}
+
+func TestCursorPollerResumesFromDurablePosition(t *testing.T) {
+	src := runtimeSource("cursor-poll")
+	positions := connector.NewMemoryCursors()
+	newRuntime := func(p *cursorPoller) func() error {
+		reg := connector.NewRegistry()
+		if err := reg.Register(connector.FakeType, func(context.Context, connector.SourceConfig) (connector.Connector, error) { return p, nil }); err != nil {
+			t.Fatal(err)
+		}
+		_, stop := start(t, connector.RuntimeOptions{Sources: []connector.SourceConfig{src}, Registry: reg, Sink: &connector.Recorder{}, Cursors: positions})
+		return stop
+	}
+	p := &cursorPoller{Connector: connector.NewFake(src), seen: make(chan connector.Cursor, 10)}
+	stop := newRuntime(p)
+	var first connector.Cursor
+	select {
+	case first = <-p.seen:
+	case <-time.After(10 * time.Second):
+		t.Fatal("first poll never ran")
+	}
+	if first != "" {
+		t.Errorf("first cursor = %q", first)
+	}
+	select {
+	case next := <-p.seen:
+		if next != "1" {
+			t.Errorf("next cursor = %q", next)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("saved cursor was not read")
+	}
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+	p2 := &cursorPoller{Connector: connector.NewFake(src), seen: make(chan connector.Cursor, 10)}
+	stop2 := newRuntime(p2)
+	select {
+	case resumed := <-p2.seen:
+		if resumed == "" {
+			t.Error("restart lost the cursor")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("resumed poll never ran")
+	}
+	if err := stop2(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // The store the runtime keeps backfill positions in, and the one a test uses,
 // are the same interface.
