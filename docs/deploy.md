@@ -1,7 +1,12 @@
 # Deploying Hearsay
 
-How to run Hearsay for a team on one host, with Docker Compose. The files are
-in [`deploy/compose/`](../deploy/compose/):
+How to run Hearsay for a team: on one host with Docker Compose, or on
+Kubernetes with the Helm chart ([Kubernetes with Helm](#kubernetes-with-helm)).
+Most of this guide is about Compose. The chart deploys the same shape, and the
+sections on the image, the environment, TLS, webhooks and replicas apply to
+both.
+
+The Compose files are in [`deploy/compose/`](../deploy/compose/):
 
 | File | What it is |
 |---|---|
@@ -337,7 +342,231 @@ curl -s -X POST 127.0.0.1:8080/v1/get_bundle \
 `operator` and `team` are the example configuration's. Use a principal and a
 scope of your own.
 
-For contributors, `dagger check hearsay:compose-check` validates
+## Kubernetes with Helm
+
+The chart is [`deploy/helm/hearsay/`](../deploy/helm/hearsay/). It is not
+published to a chart repository: install it from a checkout of the release you
+are deploying. [`values.yaml`](../deploy/helm/hearsay/values.yaml) documents
+every value.
+
+It deploys the Compose shape, minus Postgres. `<name>` below is
+`<release>-hearsay`, or just the release name if it already contains
+`hearsay`:
+
+| Object | What it is |
+|---|---|
+| Job `<name>-migrate` | `hearsay migrate up`, a pre-install and pre-upgrade hook. |
+| Deployment and Service `<name>-connectors` | `hearsay connectors`, port 8081: `/hooks/<source id>`, `/healthz`, `/readyz`. |
+| Deployment `<name>-distiller` | `hearsay distiller`, port 8082, probes only. No Service. |
+| Deployment `<name>-assert-worker` | `hearsay assert-worker`, port 8083, probes only. No Service. |
+| Deployment and Service `<name>-api` | `hearsay api`, port 8080: `/v1/<call>`, `/mcp`, `/discord/<source id>/interactions`, `/healthz`, `/readyz`. |
+| ConfigMap `<name>-config` | The configuration, unless it comes from `config.volume`. |
+| Ingress `<name>` | Optional, off by default. |
+
+Every service's pod has a startup and a liveness probe on `/healthz` and a
+readiness probe on `/readyz`. The Services are `ClusterIP`. The pods run as `nobody` with
+a read-only root filesystem, no privilege escalation, no capabilities and the
+`RuntimeDefault` seccomp profile. They get no service account token, because
+Hearsay never calls the Kubernetes API, and no service-link variables, which
+would otherwise put `<SERVICE>_PORT` variables starting with `HEARSAY_` into a
+release named `hearsay`.
+
+### What you supply
+
+The chart refuses to render without three values: `image.tag`,
+`database.existingSecret` and a configuration. It never takes a secret as a
+value and renders no Secret. Every credential is a reference to a Secret you
+create first.
+
+1. **Postgres** 16 or later with pgvector (ADR-0004), reachable from the
+   cluster: a managed database, or one your Postgres operator runs. The chart
+   runs no database. Its migration hook runs before any other object in the
+   release exists, so a database in the same release would not be there for it
+   yet.
+2. **The database URL**, in a Secret:
+
+   ```sh
+   kubectl create secret generic hearsay-database \
+     --from-literal=HEARSAY_DATABASE_URL='postgres://hearsay:<password>@db.internal:5432/hearsay?sslmode=require'
+   ```
+
+   `database.key` names the key if it is not `HEARSAY_DATABASE_URL`. The
+   migration job reads this and nothing else.
+3. **Everything else the services read** ([The env file](#the-env-file) lists
+   it): the API tokens, the model key and the source credentials. The
+   simplest form is one Secret from the env file `hearsay init` wrote, plus
+   `ANTHROPIC_API_KEY`:
+
+   ```sh
+   kubectl create secret generic hearsay-env --from-env-file=hearsay.env
+   ```
+
+   `kubectl` takes every value literally. Remove the single quotes around
+   `HEARSAY_DRIVE_CREDENTIALS` first, or they become part of the key.
+4. **A values file**:
+
+   ```yaml
+   image:
+     tag: v0.10.0
+     # digest: sha256:…   # the digest `publish` printed
+   database:
+     existingSecret: hearsay-database
+   existingSecrets: [hearsay-env]
+   ```
+
+Then validate the configuration, as for Compose, and install:
+
+```sh
+helm install hearsay deploy/helm/hearsay -f values.yaml \
+  --set-file config.hearsayYaml=config/hearsay.yaml --wait
+```
+
+The values that decide where credentials go:
+
+| Value | What it does |
+|---|---|
+| `existingSecrets` | Secrets every service reads whole (`envFrom`): each key becomes a variable of that name. |
+| `secretEnv` | Single keys: `VARIABLE: {secret: <name>, key: <key>}`. |
+| `env` | Plain values that are not secret, such as `HEARSAY_LOG_LEVEL`. |
+| `connectors.*`, `distiller.*`, `assertWorker.*`, `api.*` | Each takes its own `existingSecrets`, `secretEnv` and `env`, added to the shared ones. |
+
+Every service gets the shared ones, as every Compose service gets all of
+`.env`. To keep a credential away from the services that do not read it, put it
+under the service that does, using the "Read by" column of the env table. For
+example, the GitHub webhook secret goes under `connectors.secretEnv`. The chart
+sets `HEARSAY_CONFIG`, `HEARSAY_DATABASE_URL` and the listen addresses itself,
+and refuses them in any of these.
+
+### Configuration
+
+Set exactly one of:
+
+| Value | Form |
+|---|---|
+| `config.hearsayYaml` | The single file, usually `--set-file config.hearsayYaml=hearsay.yaml`. Rendered into the ConfigMap. |
+| `config.files` | The directory form, as a map from path to contents (`sources/github.yaml: \|` …). Rendered into the ConfigMap and mounted with each file at its path. A ConfigMap key cannot hold a slash, so `sources/github.yaml` is stored under the key `sources.github.yaml`. |
+| `config.volume` | Any volume source, such as `configMap: {name: team-config}` for a ConfigMap you manage, or a PersistentVolumeClaim. |
+
+Whichever it is, it is mounted read-only at `/etc/hearsay`. Keep secrets out of
+it, for the same reason as with Compose.
+
+### Migrations
+
+The hook Job runs `hearsay migrate up` from the image being deployed
+([ADR-0006](adr/0006-schema-migrations-with-goose.md)). It runs before
+`helm install` creates the services and before `helm upgrade` changes
+anything. Helm waits for it, and if it fails the install or upgrade fails with
+nothing rolled. The services check the schema at startup, as they do under
+Compose, and no service migrates for itself.
+
+The Job is kept after it succeeds, so its log can be read, and deleted when the
+next install or upgrade creates a new one:
+
+```sh
+kubectl logs job/hearsay-migrate
+kubectl exec deploy/hearsay-api -- hearsay migrate status
+```
+
+Helm waits for the hook for `--timeout` (5 minutes by default), and the Job
+gives up after `migrate.activeDeadlineSeconds` (600). Raise both for a release
+whose notes warn of a long migration. `migrate.enabled=false` leaves migrating
+to you. `helm rollback` runs no hook: the old image runs against the newer
+schema, which expand and contract allows, as with a Compose rollback.
+
+### Upgrading and changing configuration
+
+An upgrade is the new `image.tag` and the same configuration flags as before:
+
+```sh
+helm upgrade hearsay deploy/helm/hearsay -f values.yaml \
+  --set image.tag=v0.11.0 --set-file config.hearsayYaml=config/hearsay.yaml --wait
+```
+
+Back up first. The hook migrates, then the Deployments roll.
+
+Configuration is read once, at startup (ADR-0009), so a change has to replace
+the pods:
+
+- With `config.hearsayYaml` or `config.files`, every pod carries a checksum of
+  the ConfigMap. A `helm upgrade` with a changed configuration rolls all four
+  Deployments.
+- With `config.volume`, the chart cannot see the contents. Set `config.digest`
+  to the digest `hearsay config validate` printed. It is a pod annotation, so a
+  new digest rolls the pods. Or restart them yourself.
+- A changed Secret rolls nothing. Restart after rotating a credential, and
+  update the Secret before the configuration when you add a principal:
+
+  ```sh
+  kubectl rollout restart deployment -l app.kubernetes.io/instance=hearsay
+  ```
+
+A service that finds the configuration invalid exits, so its new pod restarts
+and never becomes ready. The rolling update keeps the old pod serving until the
+new one is ready, so the old configuration stays up and `helm upgrade --wait` fails.
+Fix the configuration and upgrade again, or `helm rollback`. To confirm the
+rollout, compare the `config_digest` each pod logs at startup with the one
+`config validate` printed:
+
+```sh
+kubectl logs -l app.kubernetes.io/instance=hearsay --tail=-1 | grep config_digest
+```
+
+### Ingress and TLS
+
+With `ingress.enabled=true` the chart renders one Ingress for `ingress.host`.
+It routes `/hooks` to the connectors and `/v1`, `/mcp` and `/discord` to the
+API, as the Caddy example does. The health endpoints stay inside the cluster.
+
+TLS is on by default. `ingress.tls.secretName` is required, and names an
+existing TLS Secret or the one cert-manager writes for an issuer you name in
+`ingress.annotations`. Set `ingress.tls.enabled=false` only when something in
+front of the controller terminates TLS: bearer tokens cross this hop. The
+requirements on the proxy still hold. It must pass headers and bodies through
+unchanged, and allow at least 30 seconds for a response. With ingress-nginx,
+the default 60-second `proxy-read-timeout` is enough.
+
+Without the Ingress, the API and the webhooks are reachable only inside the
+cluster, at `http://hearsay-api:8080` and `http://hearsay-connectors:8081`.
+The webhook sources in [Webhook ingress](#webhook-ingress) need a public HTTPS
+URL, so put whatever ingress you use in front of the connectors' Service.
+
+### Replicas
+
+Every Deployment defaults to one replica. `api.replicas`, `distiller.replicas`
+and `assertWorker.replicas` can be raised, as
+[Replicas and serialization](#replicas-and-serialization) describes. Keep
+`connectors.replicas` at 1. `connectors.sources` limits the connectors
+Deployment to some of the configured sources (`--source`). The chart runs one
+connectors Deployment, so splitting sources across several is not something it
+does.
+
+A connectors pod whose `/readyz` fails, because a source reports itself
+failed, leaves its Service's endpoints until the source recovers. While it is
+out, no webhook reaches that pod, for any source. `kubectl get pods` shows it
+0/1, and its `/readyz` names the source.
+
+To mount an Obsidian vault into the connectors, use `connectors.extraVolumes`
+and `connectors.extraVolumeMounts`, read-only at the source's `settings.root`.
+
+### Checking a Kubernetes deployment
+
+```sh
+kubectl get pods,jobs -l app.kubernetes.io/instance=hearsay   # migrate complete; four pods 1/1
+kubectl port-forward svc/hearsay-api 8080 &
+curl -s -X POST 127.0.0.1:8080/v1/get_bundle \
+  -H 'Hearsay-Principal: operator' -H "Authorization: Bearer $HEARSAY_OPERATOR_TOKEN" \
+  -d '{"scope":"team"}'
+```
+
+## For contributors
+
+`dagger check hearsay:helm-check` lints the chart and renders it with the
+values files in `deploy/helm/ci/`, for install and upgrade. It holds the output
+to the shape described here and checks that the chart refuses what it must.
+It also lays each config form out the way the kubelet mounts a ConfigMap and
+runs `hearsay config validate` on it. It needs no cluster.
+
+`dagger check hearsay:compose-check` validates
 `deploy/compose` with Compose's own parser and holds it to the shape described
 here. It needs no Docker daemon. `dagger api call hearsay compose-smoke` runs
 the stack for real, in a Docker daemon of its own, from the image built from the

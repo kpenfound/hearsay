@@ -20,7 +20,7 @@ implements, are specified in
 Dagger runs everything. The workspace is `dagger.toml`. The tests and the
 `go generate` drift check come from the reusable Go module
 (`github.com/dagger/go`) it installs; lint, the integration tests, the tidy,
-image and compose checks, the binary, the image, migrations and the dev stack are `hearsay`, our own module
+image, compose and Helm checks, the binary, the image, migrations and the dev stack are `hearsay`, our own module
 in `.dagger/modules/hearsay/main.dang`, written in Dang. Its `go-test-base`
 function hands the Go module a container with Postgres attached.
 There is no CI workflow: Dagger Cloud runs `dagger check` on every commit.
@@ -45,7 +45,13 @@ four services from the published image) and its guide is
 [docs/deploy.md](docs/deploy.md). `hearsay:compose-check` holds it to that
 shape without a Docker daemon, and `compose-smoke` runs it. A service that
 comes to read a new environment variable adds it to `deploy/compose/env.example`
-and to the guide's env table.
+and to the guide's env table. The Kubernetes form is the Helm chart in
+`deploy/helm/hearsay` (the same four services, `hearsay migrate up` as a
+pre-install and pre-upgrade hook Job, external Postgres, every credential a
+reference to an existing Secret), in the same guide; `hearsay:helm-check`
+lints it and holds `helm template` to that shape without a cluster. A new
+listen address the probes or Services would depend on belongs in the chart's
+reserved list in `templates/_helpers.tpl`.
 
 The Go module's own lint check is switched off in `dagger.toml` (its
 golangci-lint is built with an older Go than go.mod asks for); `hearsay:lint`
