@@ -178,10 +178,10 @@ renamed afterwards ([connector contract](connector-contract.md#source-ids)).
 | Field | Meaning |
 |---|---|
 | `id` | The source id. It appears in every event id, so it is chosen once. |
-| `type` | The connector type: `github`, `discord`, `drive`, `obsidian`, `agent`, or a third party's. |
+| `type` | The connector type: `github`, `discord`, `slack`, `drive`, `obsidian`, `agent`, or a third party's. |
 | `containers` | The repositories, channels or folders this source may ingest, **by native id** — a repository full name, a channel id, a folder id, never a display name. This is control point 1 of [access control](design.md#access-control): default deny, so a container that is not listed is not ingested. `*` widens it to everything the credentials can see, and must then be the only entry. |
 | `refresh` | A duration (`30s`, `5m`, `1h`). The poll interval and base retry interval for a stream. Ignored by a connector that only receives pushes; the runtime applies its own floor and jitter — never more often than every 30 seconds, and each tick up to a tenth of the interval later than it is due. Without it, polls run every five minutes and failed streams retry from a 30-second base. |
-| `read_only` | `true` or `false`, default `false`; nothing else is a boolean here, so `yes` is an error. `true` means Hearsay never writes to the source and its credentials need no write access: it is ingested in full, but its reactions are not gestures, its `/hearsay` comments are ordinary content that is distilled, and no command is registered, answered or replied to. People on it give feedback through `hearsay gestures` and `hearsay topics`. It changes nothing for a source type that never writes (Drive, Obsidian, agent). Switching a source to read-only leaves gestures and merges it already made in force; undo them with the CLI. |
+| `read_only` | `true` or `false`, default `false`; nothing else is a boolean here, so `yes` is an error. `true` means Hearsay never writes to the source and its credentials need no write access: it is ingested in full, but its reactions are not gestures, its `/hearsay` comments are ordinary content that is distilled, and no command is registered, answered or replied to. People on it give feedback through `hearsay gestures` and `hearsay topics`. It changes nothing for a source type that never writes (Slack in this version, Drive, Obsidian, agent). Switching a source to read-only leaves gestures and merges it already made in force; undo them with the CLI. |
 | `settings` | Opaque to Hearsay and passed to the connector, which rejects a field it does not have. What belongs here is documented by the connector. |
 | `secrets` | A map from the name the connector asks for to **the name of an environment variable**. A value that is not an environment variable name is an error, because a configuration repository is checked in and a token pasted here would be too. |
 
@@ -326,6 +326,62 @@ permission revision and the current ACL. `/readyz` reports backfill and re-sync
 failures; a REST error or 429 retries the same page. Keep the bot's View Channel,
 Read Message History, and private-thread access after changing a channel's
 visibility, or the re-sync cannot read the artifacts it must re-emit.
+
+### Slack source
+
+A Slack source is one workspace, read over Socket Mode: the connectors service
+dials Slack, so it needs no public URL. Only **public channels** are ingested
+in this version. Private channels, direct messages and Slack Connect channels
+shared with another organisation are refused, and so is `*`.
+
+```yaml
+sources:
+  - id: slack
+    type: slack
+    containers: [C0123ABCD, C0456EFGH]  # public channel ids, never names
+    settings:
+      team: T0123ABCD                   # the workspace id
+      # api_url: https://slack.com/api  # optional; localhost for fixtures
+    secrets:
+      app_token: HEARSAY_SLACK_APP_TOKEN  # xapp-…, scope connections:write
+      bot_token: HEARSAY_SLACK_BOT_TOKEN  # xoxb-…
+```
+
+Create the app at https://api.slack.com/apps from the manifest in the
+`internal/connector/slack` package comment. It turns on Socket Mode,
+subscribes the bot to `message.channels`, `reaction_added` and
+`reaction_removed`, and asks for the bot scopes `channels:history`,
+`channels:read` and `reactions:read`, all read-only. Under Basic Information,
+generate an app-level token with the `connections:write` scope; that is
+`app_token`. Install the app to the workspace; its Bot User OAuth Token is
+`bot_token`. Then invite the app (`/invite @Hearsay`) into every channel
+`containers` names, because Slack sends an app nothing from a channel it is not
+in. A channel id is the last part of the channel's link, and the workspace id is
+in the workspace's settings or in any `app.slack.com/client/T…` URL.
+
+A `D…` (direct message) or `G…` (private channel or group DM) id fails at
+startup. Private channels created since 2021 have `C…` ids too, so on every
+connection the connector reads each channel with `conversations.info`: a
+private, direct-message or Slack Connect channel stops the source with failed
+health, and the fix is to take it out of `containers` and restart. A channel the
+app is not in is reported as degraded health and checked again on the next
+connection. Messages from any other workspace are dropped.
+
+Messages, thread replies, edits, deletions and reactions are ingested. A thread
+reply's conversation is the message it answers, so a thread is distilled as a
+`chat_thread` of that message and its replies, and a message is also part of its
+channel's 30-minute conversation. Reactions are plain L0: nothing reads them as
+gestures yet, and Hearsay answers no slash command and writes nothing to Slack,
+so `read_only` changes nothing for a Slack source today.
+
+Run `hearsay connectors --config ./hearsay.yaml`. `/readyz` reports the socket:
+`connecting`, `connected`, `reconnecting` after a break, or failed with the
+reason. The connector opens a new connection itself when Slack asks it to
+refresh one, and the runtime reconnects one that breaks, with backoff. Slack
+delivers again an event whose acknowledgement it did not get, and an event is
+acknowledged only once it is in L0. History before the connector started, and
+what was said while it was down beyond Slack's redeliveries, are not read in
+this version.
 
 ### Google Drive source
 

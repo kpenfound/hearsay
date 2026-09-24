@@ -122,11 +122,13 @@ the `hearsay.env` that `hearsay init` wrote, plus the deployment block of
 | `HEARSAY_GITHUB_TOKEN` | `connectors`; `assert-worker` for a GitHub source that is not `read_only` or that `code/` names | **Supply** if the configuration names it. |
 | `HEARSAY_GITHUB_WEBHOOK_SECRET` | `connectors` | **Supply** if the configuration names it: the secret the webhooks sign with. |
 | `HEARSAY_DISCORD_TOKEN` | `connectors`; `api` for a Discord source with `application_id` and `public_key` that is not `read_only` | **Supply** if the configuration names it. |
+| `HEARSAY_SLACK_APP_TOKEN`, `HEARSAY_SLACK_BOT_TOKEN` | `connectors` | **Supply** if the configuration names them: the Slack app's app-level token (`xapp-…`) and bot token (`xoxb-…`). |
 | `HEARSAY_DRIVE_CREDENTIALS` | `connectors` | **Supply** if the configuration names it: the service account's JSON key, on one line, in single quotes. |
 | `HEARSAY_LOG_LEVEL`, `HEARSAY_LOG_FORMAT` | all four services | Optional. `info` and JSON (the format when there is no terminal) by default. |
 | `HEARSAY_INSTANCE` | all four services | Optional. The replica name on every log line; the container's hostname by default. |
 
-The source-credential names are the ones `hearsay init` writes. A configuration
+The source-credential names are the ones `hearsay init` writes, and for Slack
+the ones [docs/config.md](config.md#slack-source) uses. A configuration
 can name any variable in `secrets:` and `token_env`, and whatever it names is
 what the services read. Every service receives all of `.env`, because only the
 configuration knows which names it uses.
@@ -224,7 +226,8 @@ example hostname.
 ## Webhook ingress
 
 The connectors service polls or streams most sources, and those need only
-outbound access. The sources that push to Hearsay need a public HTTPS URL
+outbound access. Slack is one of them: its Socket Mode connection is dialed from
+the connectors, so it needs no ingress. The sources that push to Hearsay need a public HTTPS URL
 through the proxy:
 
 | Source | Delivers to | Configure |

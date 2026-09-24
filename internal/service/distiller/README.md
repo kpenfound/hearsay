@@ -1,8 +1,10 @@
 # Chat burst gates
 
-The distiller considers current messages in each native thread or 30 minute
-channel conversation, ordered by source time and artifact ID. The native thread
-root is not counted. A burst requires all three gates:
+The distiller considers current messages in each native thread, each message's
+replies on a source whose replies name that message as their thread, or 30
+minute channel conversation, ordered by source time and artifact ID. A native
+thread's root is not counted; a message that heads its replies is. A burst
+requires all three gates:
 
 - The conversation has at least **8** current messages.
 - A contiguous run contains at least **3** messages by the same source identity.
