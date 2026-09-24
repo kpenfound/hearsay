@@ -115,6 +115,12 @@
 // the repository's metadata, the root listing through the contents API — names
 // and types, no content — and the files it is asked for, on the default branch,
 // and keeps none of it.
+//
+// `hearsay init` builds a Reader too, to seed principals: it lists each
+// repository's collaborators ([Reader.Collaborators]) and reads each one's
+// public profile and linked accounts ([Reader.Profile],
+// [Reader.SocialAccounts]). The token needs Metadata read for that, which
+// every configuration of the source already asks for.
 package github
 
 import (

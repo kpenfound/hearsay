@@ -1,0 +1,27 @@
+[
+  {
+    "login": "RobinOK",
+    "id": 2,
+    "node_id": "MDQ6VXNlcjI=",
+    "avatar_url": "https://avatars.githubusercontent.com/u/2?v=4",
+    "url": "https://api.github.com/users/RobinOK",
+    "html_url": "https://github.com/RobinOK",
+    "type": "User",
+    "site_admin": false,
+    "permissions": {"admin": false, "maintain": false, "push": true, "triage": true, "pull": true},
+    "role_name": "write"
+  }
+,
+  {
+    "login": "jordan",
+    "id": 5,
+    "node_id": "MDQ6VXNlcjU=",
+    "avatar_url": "https://avatars.githubusercontent.com/u/5?v=4",
+    "url": "https://api.github.com/users/jordan",
+    "html_url": "https://github.com/jordan",
+    "type": "User",
+    "site_admin": false,
+    "permissions": {"admin": false, "maintain": false, "push": true, "triage": true, "pull": true},
+    "role_name": "write"
+  }
+]

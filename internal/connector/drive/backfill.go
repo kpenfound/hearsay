@@ -330,3 +330,32 @@ func (c *Connector) permissions(ctx context.Context, id string) (connector.ACL, 
 	}
 	return nil, fmt.Errorf("permissions of %s exceed bounded walk", id)
 }
+
+// User is one Google account a folder is shared with directly.
+type User struct {
+	// PermissionID is the account's permission id, the native id the
+	// connector writes on authors and access lists.
+	PermissionID string
+	Email        string
+}
+
+// FolderUsers lists the accounts one configured folder is shared with, from
+// its sharing permissions: users only, not groups, domains or links. It is
+// what `hearsay init` matches principals' email addresses against, and
+// nothing else calls it.
+func (c *Connector) FolderUsers(ctx context.Context, folder string) ([]User, error) {
+	if !slices.Contains(c.folders, folder) {
+		return nil, fmt.Errorf("folder %s is not one the source names", folder)
+	}
+	acl, err := c.permissions(ctx, folder)
+	if err != nil {
+		return nil, fmt.Errorf("reading the sharing of folder %s: %w", folder, err)
+	}
+	var out []User
+	for _, e := range acl {
+		if e.Kind == connector.ACLIdentity && e.Label != "" {
+			out = append(out, User{PermissionID: e.NativeID, Email: e.Label})
+		}
+	}
+	return out, nil
+}

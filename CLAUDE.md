@@ -73,6 +73,7 @@ go run ./cmd/hearsay all          # all four in one process, dev only
 go run ./cmd/hearsay api --log-level debug --log-format text
 go run ./cmd/hearsay api --config ./config   # the configuration repository
 go run ./cmd/hearsay config validate ./config
+go run ./cmd/hearsay init --out ./config/hearsay.yaml   # a new team's config and env file
 go run ./cmd/hearsay l0 count --database-url=...   # what is in the event store
 go run ./cmd/hearsay connectors --source github --listen :8081
 ```
@@ -82,6 +83,14 @@ service reads the configuration repository first when `--config` (or `HEARSAY_CO
 and refuses to start if it is invalid; configuration is read once, at startup,
 and a change to it is a restart (ADR-0009). The format is
 [docs/config.md](docs/config.md).
+
+`hearsay init` writes a new team's single-file `hearsay.yaml` and a mode-0600
+env file for the secrets it names, with no database (`internal/onboard`). It
+prompts on a terminal, and every prompt has a flag. With `HEARSAY_GITHUB_TOKEN`
+in its environment it seeds principals from the repositories' collaborators,
+and with `HEARSAY_DISCORD_TOKEN` and `HEARSAY_DRIVE_CREDENTIALS` it adds the
+Discord and Drive accounts those sources confirm; it never writes a credential
+it did not generate, and refuses to overwrite either file without `--force`.
 
 The distiller is not a stub. It reads the L0 change feed, enqueues a `distill`
 job per document, and turns each one into an L1 document with a model call
@@ -287,6 +296,7 @@ One binary, four services, layers underneath (ADR-0003).
 | `internal/service` | The four processes, one subpackage each. Every one exposes `Run(ctx, cfg, deps) error`. |
 | `internal/l0` … `internal/l3` | The four layers: events, documents, graph, derived views. |
 | `internal/eval` | The evaluation metrics `hearsay eval` prints. |
+| `internal/onboard` | The first configuration `hearsay init` writes: `hearsay.yaml` and its env file. |
 | `internal/bundle` | Context bundle assembly — the primary read. |
 | `internal/connector` | The connector contract and runtime. |
 | `internal/llm` | Provider abstraction and the `distill`/`assert`/`embed` tiers. |

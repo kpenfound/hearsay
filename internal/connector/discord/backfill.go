@@ -349,7 +349,7 @@ func (c *Connector) get(ctx context.Context, path string, v any) error {
 		return fmt.Errorf("discord GET %s: rate limited", strings.Split(path, "?")[0])
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("discord GET %s: %d %s", strings.Split(path, "?")[0], resp.StatusCode, http.StatusText(resp.StatusCode))
+		return fmt.Errorf("discord GET %s: %w", strings.Split(path, "?")[0], restStatus(resp.StatusCode))
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 32<<20)).Decode(v); err != nil {
 		return fmt.Errorf("decode discord GET %s: %w", strings.Split(path, "?")[0], err)

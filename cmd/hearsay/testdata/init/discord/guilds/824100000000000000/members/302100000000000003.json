@@ -1,0 +1,28 @@
+{
+  "avatar": null,
+  "banner": null,
+  "communication_disabled_until": null,
+  "flags": 0,
+  "joined_at": "2025-11-02T18:04:11.201000+00:00",
+  "nick": null,
+  "pending": false,
+  "premium_since": null,
+  "roles": ["824100000000000010"],
+  "user": {
+    "id": "302100000000000003",
+    "username": "kyle",
+    "avatar": null,
+    "discriminator": "0",
+    "public_flags": 0,
+    "flags": 0,
+    "banner": null,
+    "accent_color": null,
+    "global_name": "Kyle",
+    "avatar_decoration_data": null,
+    "banner_color": null,
+    "clan": null,
+    "primary_guild": null
+  },
+  "mute": false,
+  "deaf": false
+}

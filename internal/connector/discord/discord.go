@@ -30,6 +30,10 @@
 // History, and the intents above: no `applications.commands` scope, no Send
 // Messages, and no Interactions Endpoint URL. Its people give feedback through
 // `hearsay gestures` and `hearsay topics` instead.
+//
+// `hearsay init` builds a Connector without starting it, to confirm that a
+// Discord account a person links from GitHub is a member of the guild
+// ([Connector.Member]): one member lookup, which needs no privileged intent.
 package discord
 
 import (

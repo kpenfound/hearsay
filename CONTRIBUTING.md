@@ -345,6 +345,7 @@ yet.
 ## Configuration
 
 ```sh
+go run ./cmd/hearsay init                        # a new team's hearsay.yaml and hearsay.env
 go run ./cmd/hearsay config validate ./config   # every problem, with file and line
 go run ./cmd/hearsay api --config ./config      # what a service reads at startup
 ```
