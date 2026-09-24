@@ -17,6 +17,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector/drive"
 	"github.com/kpenfound/hearsay/internal/connector/github"
 	"github.com/kpenfound/hearsay/internal/connector/obsidian"
+	"github.com/kpenfound/hearsay/internal/connector/slack"
 	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/llm"
@@ -534,9 +535,9 @@ func checkListen(addr string) error {
 // wiring rather than from whatever happened to be linked in
 // (docs/connector-contract.md).
 //
-// It holds the GitHub, Discord, Drive, Obsidian and agent session connectors. A
-// source of any other type is a startup failure, as is a source whose connector
-// rejects its config. The agent session connector authenticates agents by the
+// It holds the GitHub, Discord, Slack, Drive, Obsidian and agent session
+// connectors. A source of any other type is a startup failure, as is a source
+// whose connector rejects its config. The agent session connector authenticates agents by the
 // tokens their principals name, so it is built from the principals.
 func connectorRegistry(principals []principal.Principal) *connector.Registry {
 	registry := connector.NewRegistry()
@@ -544,6 +545,7 @@ func connectorRegistry(principals []principal.Principal) *connector.Registry {
 	// twice, which a fixed list cannot be; TestConnectorRegistry pins the list.
 	_ = registry.Register(github.Type, github.Factory)
 	_ = registry.Register(discord.Type, discord.Factory)
+	_ = registry.Register(slack.Type, slack.Factory)
 	_ = registry.Register(drive.Type, drive.Factory)
 	_ = registry.Register(obsidian.Type, obsidian.Factory)
 	_ = registry.Register(agent.Type, agent.NewFactory(principals, os.LookupEnv))
