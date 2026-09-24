@@ -22,7 +22,7 @@ not distill, and it does not decide what an event means. Storing an event is
 
 The event type lives here rather than in `internal/l0` because the event shape
 *is* the connector contract; `internal/l0` is what stores it. Hearsay's own
-writers — `assert`, and the audit event every bundle produces — use the same
+writers — `assert`, bundle audits and session handle audits — use the same
 type.
 
 The interface is the third-party extension point. Ingest modes are additive

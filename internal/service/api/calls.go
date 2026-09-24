@@ -186,7 +186,7 @@ var calls = []call{
 		schema(`{"id":{"type":"string"}}`, "id")}, getL1},
 	{Tool{"get_l0", "One L0 event by id.",
 		schema(`{"id":{"type":"string"}}`, "id")}, getL0},
-	{Tool{"get_session", "Follow an assertion event id to the agent session and its ordered events and served bundle audit events.",
+	{Tool{"get_session", "Follow an assertion event id to the agent session and its ordered events, bundle audits and handle audits.",
 		schema(`{"assertion":{"type":"string"}}`, "assertion")}, getSession},
 	{Tool{"search", "Hybrid retrieval over L1: full text and embeddings, fused by rank. Returns documents, not answers.",
 		schema(`{"query":{"type":"string"},"scope":{"type":"string","description":"an entity id to search within"},"limit":{"type":"integer"}}`, "query")}, search},
@@ -237,6 +237,12 @@ func (c *Calls) Call(ctx context.Context, caller Caller, name string, args json.
 		args = json.RawMessage(`{}`)
 	}
 	result, err := calls[i].run(ctx, c, caller, reader, args)
+	if caller.Session != "" && isHandleCall(name) {
+		if auditErr := c.auditHandle(ctx, caller, reader, name, args, result, err); auditErr != nil {
+			telemetry.Logger(ctx).ErrorContext(ctx, "handle audit failed", "call", name, "error", auditErr)
+			return nil, errInternal
+		}
+	}
 	if err != nil {
 		var e *Error
 		if errors.As(err, &e) {
@@ -371,32 +377,153 @@ func getBundle(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, r
 	return entry.body, nil
 }
 
-// AuditRecord is what an audit event's payload.native holds: who asked, on
-// whose behalf, what scope, and what was filtered. The bundle itself is named
-// by its digest rather than copied: L0 would otherwise hold every bundle ever
-// served, and the digest is enough to tell two apart.
+// AuditRecord is what an audit event's payload.native holds. Bundle audits
+// name the served, trimmed section ids and a digest, never bundle text. Handle
+// audits exist only for authenticated sessions; they name successful targets
+// or returned ids, and omit both on refusal. Query text and content are never
+// stored. Both kinds retain the closed audit ACL.
 //
 // Class is the agent's class, which capped the reach the bundle was assembled
 // within. What that reach left out is Report.Reach, counted apart from what the
 // access lists withheld.
 type AuditRecord struct {
-	Call          string        `json:"call"`
-	Principal     string        `json:"principal"`
-	Agent         string        `json:"agent,omitempty"`
-	Class         string        `json:"class,omitempty"`
-	Session       string        `json:"session,omitempty"`
-	SessionSource string        `json:"session_source,omitempty"`
-	Scope         string        `json:"scope"`
-	Bundle        string        `json:"bundle"`
-	Report        bundle.Report `json:"report"`
+	Call          string              `json:"call"`
+	Principal     string              `json:"principal"`
+	Agent         string              `json:"agent,omitempty"`
+	Class         string              `json:"class,omitempty"`
+	Session       string              `json:"session,omitempty"`
+	SessionSource string              `json:"session_source,omitempty"`
+	Scope         string              `json:"scope,omitempty"`
+	Bundle        string              `json:"bundle,omitempty"`
+	Report        bundle.Report       `json:"report,omitempty"`
+	Sections      map[string]AuditIDs `json:"sections,omitempty"`
+	TargetIDs     []string            `json:"target_ids,omitempty"`
+	ReturnedIDs   []string            `json:"returned_ids,omitempty"`
+	Status        int                 `json:"status,omitempty"`
+}
+
+// AuditIDs contains only ids that a bundle section actually served.
+type AuditIDs struct {
+	L1       []string `json:"l1,omitempty"`
+	Topics   []string `json:"topics,omitempty"`
+	Entities []string `json:"entities,omitempty"`
 }
 
 func (c *Calls) audit(ctx context.Context, caller Caller, reader l1.Reader, scope string, body []byte, report bundle.Report) error {
 	sum := sha256.Sum256(body)
-	record, err := json.Marshal(AuditRecord{
+	var served bundle.Bundle
+	if err := json.Unmarshal(body, &served); err != nil {
+		return fmt.Errorf("decoding the served bundle for audit: %w", err)
+	}
+	record := AuditRecord{
 		Call: "get_bundle", Principal: caller.Principal, Agent: caller.Agent, Class: string(reader.Effective.Class), Session: caller.Session, SessionSource: caller.SessionSource, Scope: scope,
-		Bundle: "sha256:" + hex.EncodeToString(sum[:]), Report: report,
-	})
+		Bundle: "sha256:" + hex.EncodeToString(sum[:]), Report: report, Sections: bundleSectionIDs(served),
+	}
+	return c.appendAudit(ctx, caller, record)
+}
+
+func bundleSectionIDs(b bundle.Bundle) map[string]AuditIDs {
+	sections := map[string]AuditIDs{}
+	ids := AuditIDs{}
+	for _, e := range b.Scope.Entities {
+		ids.Entities = append(ids.Entities, e.ID)
+		if e.L1 != "" {
+			ids.L1 = append(ids.L1, e.L1)
+		}
+	}
+	sections["scope.entities"] = ids
+	ids = AuditIDs{}
+	for _, a := range b.Anchors {
+		ids.L1 = append(ids.L1, a.L1)
+	}
+	sections["anchors"] = ids
+	ids = AuditIDs{}
+	for _, s := range b.Stances {
+		ids.Topics = append(ids.Topics, s.TopicID)
+		ids.L1 = append(ids.L1, s.Evidence...)
+	}
+	sections["stances"] = ids
+	ids = AuditIDs{}
+	for _, item := range b.Recent.Items {
+		ids.L1 = append(ids.L1, item.L1)
+	}
+	sections["recent"] = ids
+	ids = AuditIDs{}
+	for _, q := range b.OpenQuestions {
+		ids.L1 = append(ids.L1, q.Evidence...)
+	}
+	sections["open_questions"] = ids
+	ids = AuditIDs{}
+	for _, conflict := range b.Conflicts {
+		ids.Topics = append(ids.Topics, conflict.TopicID)
+	}
+	sections["conflicts"] = ids
+	return sections
+}
+
+func isHandleCall(name string) bool {
+	switch name {
+	case "get_l1", "get_l0", "stance_history", "search", "resolve":
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Calls) auditHandle(ctx context.Context, caller Caller, reader l1.Reader, name string, raw json.RawMessage, result any, callErr error) error {
+	record := AuditRecord{Call: name, Principal: caller.Principal, Agent: caller.Agent, Class: string(reader.Effective.Class), Session: caller.Session, SessionSource: caller.SessionSource}
+	if callErr != nil {
+		var e *Error
+		if errors.As(callErr, &e) {
+			record.Status = e.Status
+		} else {
+			record.Status = http.StatusInternalServerError
+		}
+		return c.appendAudit(ctx, caller, record)
+	}
+	var args struct {
+		ID    string `json:"id"`
+		Topic string `json:"topic"`
+		Scope string `json:"scope"`
+	}
+	// The successful call already validated its arguments. Decode only the
+	// fields needed for the audit; search query and resolve text stay unread.
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	for key, dest := range map[string]*string{"id": &args.ID, "topic": &args.Topic, "scope": &args.Scope} {
+		if value, ok := fields[key]; ok {
+			if err := json.Unmarshal(value, dest); err != nil {
+				return err
+			}
+		}
+	}
+	record.Scope = args.Scope
+	switch name {
+	case "get_l1", "get_l0":
+		record.TargetIDs = []string{args.ID}
+	case "stance_history":
+		record.TargetIDs = []string{args.Topic}
+		record.ReturnedIDs = []string{result.(History).ID}
+	case "search":
+		for _, hit := range result.(struct {
+			Documents []SearchHit `json:"documents"`
+		}).Documents {
+			record.ReturnedIDs = append(record.ReturnedIDs, hit.ID)
+		}
+	case "resolve":
+		for _, match := range result.(struct {
+			Entities []EntityMatch `json:"entities"`
+		}).Entities {
+			record.ReturnedIDs = append(record.ReturnedIDs, match.ID)
+		}
+	}
+	return c.appendAudit(ctx, caller, record)
+}
+
+func (c *Calls) appendAudit(ctx context.Context, caller Caller, audit AuditRecord) error {
+	record, err := json.Marshal(audit)
 	if err != nil {
 		return fmt.Errorf("encoding the audit record: %w", err)
 	}
@@ -407,7 +534,11 @@ func (c *Calls) audit(ctx context.Context, caller Caller, reader l1.Reader, scop
 		participants = []connector.Participant{{Identity: author, Role: connector.RoleAuthor}}
 		author = connector.Identity{Source: AuditSource, Kind: connector.IdentityAgent, NativeID: caller.Agent}
 	}
-	artifact := "bundle:" + c.id()
+	prefix := "bundle:"
+	if audit.Call != "get_bundle" {
+		prefix = "handle:"
+	}
+	artifact := prefix + c.id()
 	ev := connector.Event{
 		Source:   AuditSource,
 		NativeID: artifact,
@@ -429,10 +560,10 @@ func (c *Calls) audit(ctx context.Context, caller Caller, reader l1.Reader, scop
 	}
 	appended, err := c.events.Append(ctx, ev)
 	if err != nil {
-		return fmt.Errorf("writing the audit event for a bundle: %w", err)
+		return fmt.Errorf("writing the audit event: %w", err)
 	}
-	telemetry.Logger(ctx).DebugContext(ctx, "bundle served", "audit_event", appended.ID, "scope", scope,
-		"principal", caller.Principal, "agent", caller.Agent, "tokens", report.Tokens)
+	telemetry.Logger(ctx).DebugContext(ctx, "call audited", "audit_event", appended.ID, "call", audit.Call,
+		"scope", audit.Scope, "principal", caller.Principal, "agent", caller.Agent)
 	return nil
 }
 

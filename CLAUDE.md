@@ -192,8 +192,12 @@ from one call layer whose bytes both interfaces serve verbatim, on `--listen`
 (default `:8080`; `hearsay all` takes `--api-listen`). The caller is named by
 `Hearsay-Principal` and authenticated by a bearer token; the agent acting for
 them is named by `Hearsay-Agent` and must supply its own token (ADR-0014).
-An agent can send `Hearsay-Session` to link bundle audits and assertions to a
-session artifact; `get_session` follows an assertion id to that trace (ADR-0017).
+An agent can send `Hearsay-Session` to link bundle audits, handle audits and
+assertions to a session artifact; `get_session` follows an assertion id to that
+ordered trace (ADR-0017). Bundle audits record the ids served in each trimmed
+section; `get_l1`, `get_l0`, `stance_history`, `search` and `resolve` audit
+successful handles and refused attempts only when a session is named. Audits
+contain ids, never query text or content.
 Every call runs within the effective reach — the person's configured scopes
 and the agent's, intersected and capped by the agent's class — and every read
 is filtered by the person's access lists; every bundle served is an L0 `audit`

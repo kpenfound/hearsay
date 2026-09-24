@@ -54,7 +54,7 @@ func (c *Calls) sessionSource(ctx context.Context, caller Caller, reader l1.Read
 	return found, nil
 }
 
-// SessionTrace is a session's connector events and the bundle audits made in
+// SessionTrace is a session's connector events and bundle and handle audits made in
 // it, in occurrence order. The assertion id is the handle used to find it.
 type SessionTrace struct {
 	Source   string            `json:"source"`
@@ -146,7 +146,7 @@ ORDER BY coalesce(revision_edited_at, occurred_at), seq`, source, as.Session, Au
 			// A historical audit may concern a scope the caller can no longer
 			// reach. Fail closed on grants even though the session still allows
 			// the caller.
-			if audit.Principal == caller.Principal && audit.Agent == as.Agent && reader.Effective.Grant.Scopes.Has(audit.Scope) {
+			if audit.Principal == caller.Principal && audit.Agent == as.Agent && (audit.Scope == "" || reader.Effective.Grant.Scopes.Has(audit.Scope)) {
 				trace.Events = append(trace.Events, item)
 			}
 		} else if reader.Allows(item.ACL) {
