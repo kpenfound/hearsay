@@ -72,6 +72,9 @@ the design points next.
 
 ## Quick start
 
+For a new team setting up GitHub, Discord and Drive, start with the
+[getting-started guide](docs/getting-started.md).
+
 ```sh
 dagger check           # lint, tests and the image: every gate, in parallel
 dagger up              # Postgres plus all four services
