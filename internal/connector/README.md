@@ -28,7 +28,7 @@ type.
 The interface is the third-party extension point. Ingest modes are additive
 optional interfaces; the base Connector methods remain required.
 
-Four things to know about the runtime before changing it:
+Six things to know about the runtime before changing it:
 
 - **A connector's `Poll` has exactly one caller**, the goroutine the runtime
   gives it, which is what lets a poller keep its position in memory without
@@ -49,6 +49,13 @@ Four things to know about the runtime before changing it:
   handler answers; at startup the runtime also asks about every container L0
   still serves as public (ADR-0013). A connector starts no goroutine of its own
   for one, because a walk held in a process is lost to a restart.
+- **A chat command is the runtime's to record and apply, never the
+  connector's.** A connector hands a parsed `Command` to its sink
+  (`CommandSink`); the gate records its `command` event and calls the
+  `CommandApplier` the process wired in (`internal/l2`'s `Commands`, which this
+  package only names as an interface, so it imports nothing above L0), and
+  returns the result for the connector to answer. A read-only source gets
+  `ErrReadOnly` before anything is written (ADR-0025).
 - **Nothing reaches the sink except through a `Gate`.** The runtime builds one
   per source from the same config the allowlist is built from, so a container
   nobody configured is dropped and counted rather than written.

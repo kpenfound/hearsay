@@ -87,6 +87,10 @@ type RuntimeOptions struct {
 	// rather than setting variables on the process it shares with every other
 	// test.
 	Lookup func(string) (string, bool)
+	// Commands is what the chat commands a connector hands its sink
+	// ([CommandSink]) are applied through: `internal/l2`'s applier in a
+	// process. Nil records and applies none, and says so to the connector.
+	Commands CommandApplier
 	// Cadence is the runtime's own timings. Its zero value is the defaults.
 	Cadence Cadence
 }
@@ -226,7 +230,8 @@ type hosted struct {
 
 // Runtime hosts a set of connectors: it builds one per configured source, polls
 // the pollers, supervises streams, drives the backfillers through their
-// cursors, mounts the pushers' handlers, and reports what all of them think of
+// cursors, mounts the pushers' handlers, records and applies the chat commands
+// they receive ([CommandSink]), and reports what all of them think of
 // themselves.
 //
 // It is the supervision the connector contract leaves to Hearsay. What may be
@@ -278,6 +283,7 @@ func NewRuntime(ctx context.Context, opts RuntimeOptions) (*Runtime, error) {
 		}
 		h := &hosted{src: src, conn: conn, gate: NewGate(opts.Sink, src.ID, conn.Describe(), allow)}
 		h.gate.pollWake = make(chan struct{}, 1)
+		h.gate.commands, h.gate.readOnly = opts.Commands, src.ReadOnly
 		if _, ok := conn.(Resyncer); ok && opts.Resyncs != nil {
 			h.gate.resyncs = opts.Resyncs
 			h.gate.wake = make(chan struct{}, 1)

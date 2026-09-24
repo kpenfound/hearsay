@@ -4,7 +4,7 @@ The one binary Hearsay ships. Each process is a subcommand of it (ADR-0003).
 
 | Subcommand | What it runs |
 |---|---|
-| `hearsay connectors [--source name]...` | Source connectors. Writes L0 only. Serves webhooks and health on `--listen`. |
+| `hearsay connectors [--source name]...` | Source connectors. Writes L0, and applies the chat commands they receive (ADR-0025). Serves webhooks and health on `--listen`. |
 | `hearsay distiller` | The distiller. L0 to L1. |
 | `hearsay assert-worker` | The assertion worker. L1 to L2. |
 | `hearsay api` | The read and assert API. |

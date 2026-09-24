@@ -46,7 +46,7 @@ type command struct {
 // Dagger module and the deployment manifests; do not rename them casually.
 func commands() []command {
 	return []command{
-		{connectors.Name, "[--source name]...", "Run the source connectors. Writes L0 only.", runConnectors},
+		{connectors.Name, "[--source name]...", "Run the source connectors. Writes L0, and applies the chat commands they receive.", runConnectors},
 		{distiller.Name, "", "Run the distiller. L0 to L1.", runDistiller},
 		{assertworker.Name, "", "Run the assertion worker. L1 to L2.", runAssertWorker},
 		{api.Name, "", "Run the read and assert API over MCP and HTTP.", runAPI},

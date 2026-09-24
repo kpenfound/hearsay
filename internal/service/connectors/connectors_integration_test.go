@@ -244,3 +244,72 @@ func artifactsIn(t *testing.T, store *l0.Store, source string) []string {
 	slices.Sort(out)
 	return out
 }
+
+// A command a connector receives is recorded in L0 as a `command` event and
+// applied through the applier the service builds over the database, and the
+// connector gets the result to answer with; a read-only source records,
+// applies and answers nothing.
+func TestTheServiceRecordsAndAppliesACommand(t *testing.T) {
+	pool := newPool(t)
+	store := l0.New(pool)
+	tests := []struct {
+		name     string
+		readOnly bool
+		status   int
+		want     connector.CommandOutcome
+		recorded []string
+	}{
+		{name: "a source that takes commands", status: http.StatusOK, want: connector.CommandUnmapped, recorded: []string{"interaction:1"}},
+		{name: "a read-only source", readOnly: true, status: http.StatusNoContent, recorded: []string{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id := newSourceID(t)
+			src := connector.SourceConfig{ID: id, Type: connector.FakeType, Containers: []string{"C123"}, Refresh: time.Hour, ReadOnly: tt.readOnly}
+			cfg := &config.Config{Repo: config.Repo{Sources: []connector.SourceConfig{src}}}
+			fake := connector.NewFake(src)
+			addr, stop := run(t, cfg, connectors.Deps{Pool: pool, Registry: fakeRegistry(t, map[string]connector.Connector{id: fake})})
+			defer func() {
+				if err := stop(); err != nil {
+					t.Errorf("Run() = %v, want nil", err)
+				}
+			}()
+
+			body, err := json.Marshal(connector.Command{Event: fake.NewEvent(connector.KindCommand, "interaction:1", "/hearsay pin"), Verb: connector.CommandPin, Target: "C123/1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+addr+connector.HookPath(id)+"?command", strings.NewReader(string(body)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("POST the command: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != tt.status {
+				t.Fatalf("the command was answered %d, want %d", resp.StatusCode, tt.status)
+			}
+			if tt.status == http.StatusOK {
+				var got connector.CommandResult
+				if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+					t.Fatal(err)
+				}
+				if got.Outcome != tt.want {
+					t.Errorf("the result is %+v, want %s", got, tt.want)
+				}
+			}
+			if got := artifactsIn(t, store, id); !slices.Equal(got, tt.recorded) {
+				t.Errorf("L0 holds %v, want %v", got, tt.recorded)
+			}
+			if len(tt.recorded) == 0 {
+				return
+			}
+			ev, err := store.Get(t.Context(), connector.EventID(id, "interaction:1"))
+			if err != nil || ev.Kind != connector.KindCommand {
+				t.Errorf("the recorded event is %+v, %v; want a command", ev, err)
+			}
+		})
+	}
+}

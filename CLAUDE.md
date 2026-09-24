@@ -171,7 +171,7 @@ Every read and the assertion worker's matching follow the ledger: a topic
 merged away reads, and is written to, as the topic it went into, and a split's
 topic is a topic of its own that gets a row when its first new stance lands
 ([ADR-0021](docs/adr/0021-reads-follow-the-topic-ledger.md)). `hearsay topics`
-and Discord's `/hearsay merge` call `Operate`; GitHub's `/hearsay merge` runs
+and a chat `merge` (through `l2.Commands`) call `Operate`; GitHub's `/hearsay merge` runs
 inside an assert job already holding the key, and calls
 `l2.Store.ApplyOperation`, its in-transaction form.
 
@@ -189,19 +189,35 @@ The assertion worker interprets Discord reaction L0 events and their
 tombstones as gestures through this ledger. It resolves the actor and the
 containing L1 thread or burst without writing to Discord.
 Parsing a source's reaction or command into a request is the connector work
-items'. The CLI and Discord's `/hearsay pin` call `RecordGesture` directly.
+items'. The CLI calls `RecordGesture` directly, and a chat `pin` calls it
+through `l2.Commands`.
 
 Discord's `/hearsay pin` and `/hearsay merge` are answered by the API, not the
 connector: `api.Interactions` on `POST /discord/<source>/interactions`, for a
 Discord source whose settings name `application_id` and `public_key` and
 which is not `read_only`. It
 verifies the signature, records the command as an L0 `command` event (never
-distilled), maps the Discord user to a configured human, applies the command
-through `RecordGesture` or `Operate`, and answers ephemerally within Discord's
-three seconds, deferring and editing the answer when the work takes longer
+distilled), applies it through the shared applier, and answers ephemerally
+within Discord's three seconds, deferring and editing the answer when the work
+takes longer
 ([ADR-0024](docs/adr/0024-discord-commands-are-applied-by-the-interaction-adapter.md)).
 Merge autocomplete offers the topics `l2.View` lets the person read — the view
 `hearsay topics` reads through.
+
+That applier is `l2.Commands`, and every process that receives a chat command
+applies it through it
+([ADR-0025](docs/adr/0025-chat-commands-are-applied-by-the-receiving-process-through-one-applier.md)).
+Given the recorded command event, the invoker's source identity, the verb
+(`pin` or `merge`) and its arguments, it maps the invoker to a configured
+human, reads through their `l2.View`, calls `RecordGesture` or `Operate`, and
+returns a `connector.CommandResult`, a value the caller phrases for its own
+surface; `MergeChoices` is the autocomplete. A connector that receives commands
+itself hands its parsed `connector.Command` to its sink (`connector.CommandSink`):
+the runtime records the `command` event through the gate, applies it through
+`RuntimeOptions.Commands` (the connectors service builds `l2.Commands` over its
+pool) and returns the result for the connector to answer ephemerally. A
+`read_only` source gets `connector.ErrReadOnly`: nothing recorded, applied or
+answered.
 
 Migrations are `go run ./cmd/hearsay migrate up|status|up-to <n>|down`, or
 `dagger api call hearsay migrate --database-url=...` against a database. They are

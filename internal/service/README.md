@@ -4,7 +4,7 @@ The four processes, one subpackage each (ADR-0003):
 
 | Package | Subcommand | Does |
 |---|---|---|
-| `connectors` | `hearsay connectors` | Hosts source connectors. Writes L0 only. Serves their webhooks and its health. |
+| `connectors` | `hearsay connectors` | Hosts source connectors. Writes L0, and applies the chat commands they receive through `l2.Commands`. Serves their webhooks and its health. |
 | `distiller` | `hearsay distiller` | L0 to L1. Stateless, parallel, retryable. |
 | `assertworker` | `hearsay assert-worker` | L1 to L2. Serialized per scope. |
 | `api` | `hearsay api` | Bundle assembly, MCP and HTTP, audit. |

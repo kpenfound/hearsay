@@ -31,10 +31,15 @@ This includes Discord reactions and slash commands and GitHub `/hearsay`
 issue or PR comment commands. Their source actor, target, event identity and
 command data are described in L0. The assertion worker's L0 change-feed
 follower interprets reactions and GitHub commands after mapping a human
-principal and checking the scope's `ratified_by.principals`; the API's
-Discord interaction adapter applies a slash command itself, with the same
-checks, under the same serial key
-([ADR-0024](adr/0024-discord-commands-are-applied-by-the-interaction-adapter.md)).
+principal and checking the scope's `ratified_by.principals`. A chat slash
+command is applied by the process that receives it — the API's Discord
+interaction adapter, or the connector runtime for a connector that receives
+commands itself ([below](#chat-commands)) — through one shared applier, with
+the same checks, under the same serial key
+([ADR-0024](adr/0024-discord-commands-are-applied-by-the-interaction-adapter.md),
+[ADR-0025](adr/0025-chat-commands-are-applied-by-the-receiving-process-through-one-applier.md)).
+The connector itself still interprets nothing: it parses the request, and
+the runtime records and applies it.
 Unmapped or unauthorized gestures make no L2 change. The worker enqueues an
 idempotent `assert` job targeted at
 `gesture:<source event id>` under the scope's existing serial key, shared with
@@ -51,11 +56,13 @@ defers an ephemeral answer and edits it in when the work completes); the
 configured Discord bot token registers commands and is never used for channel
 replies. That adapter,
 not the connector, reads L2 for autocomplete under the invoker's mapped
-principal, and merge choices are limited to topics the invoker can read. For
+principal, and merge choices are limited to topics the invoker can read. A
+connector that receives chat commands answers each one ephemerally, through
+the source, with the result the runtime hands back, and with nothing else. For
 GitHub, the assertion worker uses the configured source bot/app `secrets.token`
 with issue and PR comment write permission to post one result-or-refusal
 reply per command. A durable record keyed by the command event and
-source-comment reconciliation prevent duplicates on retry. Neither runtime
+source-comment reconciliation prevent duplicates on retry. No runtime
 component sends any other source write or anything unprompted. Commands and
 Hearsay-authored replies, including a GitHub reply's webhook echo, are L0
 control traffic excluded from L1 distillation; the echo cannot become another
@@ -65,7 +72,9 @@ A source configured `read_only: true` opts out of that exception
 (`SourceConfig.ReadOnly`, [config](config.md#sources)). It is ingested exactly
 as it would be otherwise, and its credentials need no write access, but nothing
 reads its reactions as gestures, no command is registered or answered for it,
-and nothing is posted to it. A connector that would describe a comment as a
+and nothing is posted to it. The runtime refuses a command such a source's
+connector hands it, recording nothing, and the connector answers nothing. A
+connector that would describe a comment as a
 `command` describes it as the ordinary content it then is, and does not declare
 `command` in its descriptor. A connector that never writes, which is every
 connector, starts and reports health on read-only credentials.
@@ -166,8 +175,10 @@ rows carry the deletion that hid them.
 
 A `command` is written under the source it was given in, by the runtime
 component that received it: a Discord slash command by the API's interaction
-adapter (ADR-0024), and a GitHub `/hearsay` comment, which arrives with the
-comment webhook, by the GitHub connector. Hearsay's reply to a GitHub command
+adapter (ADR-0024), a chat command a connector receives by the connector
+runtime when the connector hands it over ([chat commands](#chat-commands),
+ADR-0025), and a GitHub `/hearsay` comment, which arrives with the comment
+webhook, by the GitHub connector. Hearsay's reply to a GitHub command
 is `github.reply`, based on `command`. The distiller reads no document from
 either, and leaves both out of the conversation they hang off (ADR-0022).
 
@@ -647,6 +658,56 @@ type Sink interface {
 `Emit` is safe for concurrent use and safe to call with an event that was emitted
 before.
 
+### Chat commands
+
+A connector whose source delivers chat slash commands to it — over its own
+socket, or to its push handler — does not apply them, and never reads or
+writes L2. It parses the source's request into a `Command` and hands it to the
+runtime, which its sink implements as a `CommandSink`:
+
+```go
+// Optional sink capability: record, apply and return a chat command's result.
+type CommandSink interface {
+    Command(ctx context.Context, cmd Command) (CommandResult, error)
+}
+
+type Command struct {
+    Event      Event  // the `command` event; its author is who ran it
+    Verb       string // CommandPin ("pin") or CommandMerge ("merge")
+    Target     string // pin: the artifact whose document is pinned, the thread it was run in
+    From, Into string // merge: the topic ids
+}
+```
+
+The connector declares `command` in its descriptor and gives the event an id
+the source gives that command once, so a request delivered twice is one event.
+The runtime checks it as it checks any event, and then:
+
+- **records it** in L0 as a `command` event of the source, which the distiller
+  never reads. A command in a container the allowlist does not admit is
+  answered `not_read` and recorded nowhere.
+- **applies it** through the applier the process wired in, which maps the
+  author to a configured human, reads as that person, and writes a pin
+  through the gesture ledger (keyed by the command event, so a retry records
+  nothing) or a merge through the topic ledger. Both hold the scope's `assert`
+  serial key and refuse a person the scope's `ratified_by.principals` does not
+  name ([ADR-0022](adr/0022-human-gestures-and-command-replies.md),
+  [ADR-0023](adr/0023-human-gestures-are-a-ledger-every-standing-reads.md)).
+- **returns the result**, a `CommandResult`: an `Outcome` (`pinned`,
+  `already_pinned` and `merged` applied the command; every other outcome says
+  why nothing changed, `unmapped`, `not_allowed`, `no_such_topic` and so on)
+  and the ids and names the answer needs. The connector phrases it in the
+  source's terms and answers the person ephemerally. It is the only thing
+  a connector posts to a source.
+
+A `read_only: true` source gets `ErrReadOnly`: nothing is recorded or applied,
+and the connector answers nothing. Any other error means the connector sent a
+command the contract does not allow, and it answers nothing either. The command
+is applied in the process that received it, while the request waits, and
+nothing retries it: a process that dies mid-command leaves it unapplied, and
+the person runs it again
+([ADR-0025](adr/0025-chat-commands-are-applied-by-the-receiving-process-through-one-applier.md)).
+
 ### The source config a connector consumes
 
 One entry of the config repository's `sources/` directory, parsed. The on-disk
@@ -659,7 +720,7 @@ connector:
 | `Type` | The connector type, which selects the factory. |
 | `Containers` | The repositories, channels or folders this source may ingest, by native id. Default deny; `*` widens it. |
 | `Refresh` | How often the runtime calls `Poll`, and the retry base for `Stream`. Ignored by a push-only connector; the runtime applies its own floor and jitter. A stream with none retries from the minimum refresh (30 seconds). |
-| `ReadOnly` | Hearsay never writes to the source ([above](#what-a-connector-does-and-what-it-must-not)). A connector that would describe a comment as a `command` describes it as ordinary content instead, and declares no `command`. |
+| `ReadOnly` | Hearsay never writes to the source ([above](#what-a-connector-does-and-what-it-must-not)). A connector that would describe a comment as a `command` describes it as ordinary content instead, and declares no `command`; the runtime refuses a chat command from it with `ErrReadOnly`. |
 | `Settings` | The connector's own configuration, as JSON. Decode it with `DecodeSettings`, which rejects unknown fields so that a typo in config fails at startup. |
 | `Secrets` | Credentials, resolved by the runtime from the environment. They never live in the config repository, which is checked in: config names a secret, the runtime supplies its value. |
 
@@ -670,7 +731,9 @@ health status.
 ### Testing a connector
 
 `internal/connector` ships a `Fake` connector implementing all three modes and a
-`Recorder` sink. A connector's own tests should drive it through a `Gate` built
+`Recorder` sink. A post to the fake's handler with the query parameter
+`command` is a `Command`, handed to the runtime, and answered with its
+`CommandResult` as JSON. A connector's own tests should drive it through a `Gate` built
 from the same `SourceConfig` as the allowlist, because that is what runs in
 production, and assert on what the recorder received.
 

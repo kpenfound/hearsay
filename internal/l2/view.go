@@ -12,7 +12,7 @@ import (
 
 // View is the graph as one configured human reads it when they call on
 // Hearsay directly, with no agent: `hearsay topics`, `hearsay gestures` and
-// the Discord interaction adapter all read topics through it, so a topic one
+// chat commands ([Commands]) all read topics through it, so a topic one
 // of them offers is one the others would. It is the reader the API builds for
 // the same person (`stance_history`): their configured scopes and the code
 // those link to, expanded over the graph, and their identities for the access
