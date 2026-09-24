@@ -184,3 +184,24 @@ func TestOnlyASerializedKindIsHeld(t *testing.T) {
 		t.Errorf("Hold(no key) = %v, want ErrInvalidJob", err)
 	}
 }
+
+// A job whose lease expired is one the queue no longer believes is running,
+// and a hold does not wait for a reclaimer to say so: the kind's worker may be
+// the thing that is down.
+func TestAHoldDoesNotWaitOnAnExpiredLease(t *testing.T) {
+	const lease = 50 * time.Millisecond
+	kind := newKind(t, true)
+	dead := newClient(t, queue.Config{Kind: kind, Lease: lease})
+	client := newClient(t, queue.Config{Kind: kind, Lease: 30 * time.Second})
+	pool := newPool(t)
+	enqueue(t, pool, queue.Request{Kind: kind, TargetID: "a1", SerialKey: "a"})
+	if running := claim(t, dead); len(running) != 1 {
+		t.Fatalf("the claim = %v, want a1", running)
+	}
+	expireLeases(lease)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	if _, err := client.Hold(ctx, "a", "hold"); err != nil {
+		t.Fatalf("Hold(behind an expired lease) = %v, want the key", err)
+	}
+}

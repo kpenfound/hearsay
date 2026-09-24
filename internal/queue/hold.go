@@ -37,8 +37,11 @@ RETURNING ` + jobColumns + `
 
 // aheadSQL counts the jobs a hold waits for that are still running. A job
 // that stops running cannot run again under the key while the hold stands: a
-// claim skips a key with a running job, and the hold is one.
-const aheadSQL = `SELECT count(*) FROM queue_job WHERE id = ANY($1) AND state = 'running'`
+// claim skips a key with a running job, and the hold is one. A job whose lease
+// has expired is not waited for: the queue has stopped believing its worker is
+// alive, and a hold should not wait on a reclaimer when the kind's worker is
+// down.
+const aheadSQL = `SELECT count(*) FROM queue_job WHERE id = ANY($1) AND state = 'running' AND lease_expires_at > now()`
 
 // Hold takes a serial key of a serialized kind for the caller rather than for
 // a worker: it writes a job for target that is already running, then waits for

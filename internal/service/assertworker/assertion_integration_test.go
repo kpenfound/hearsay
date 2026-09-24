@@ -17,6 +17,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/llm"
+	"github.com/kpenfound/hearsay/internal/queue"
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
 )
 
@@ -139,5 +140,18 @@ func TestAppendAssertionRefusesWhatItCannotSerialize(t *testing.T) {
 	}
 	if !assertworker.IsAssertion(id) || assertworker.IsAssertion(f.issueID) {
 		t.Errorf("IsAssertion(%s, %s) is wrong", id, f.issueID)
+	}
+}
+
+// A topic operation that died holding its scope leaves an assert job for its
+// hold, which the worker finishes without reading anything: the operation
+// committed with the hold's completion or not at all.
+func TestALapsedTopicOperationHoldIsDone(t *testing.T) {
+	pool := newPool(t)
+	src := newSource(t)
+	a := newAsserter(t, pool, src, llm.NewFixtures())
+	job := queue.Job{Kind: l2.AssertKind(), TargetID: l2.OperationTarget + "0123", SerialKey: src, Attempt: 2}
+	if err := a.Handle(t.Context(), job); err != nil {
+		t.Errorf("Handle(a lapsed hold) = %v, want it done", err)
 	}
 }

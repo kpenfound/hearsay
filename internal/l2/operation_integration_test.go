@@ -58,7 +58,11 @@ func rows(t *testing.T, store *l2.Store, scope string) ([]l2.Topic, map[string][
 
 func operate(t *testing.T, pool *pgxpool.Pool, repo config.Repo, req l2.OperationRequest) l2.Operation {
 	t.Helper()
-	op, err := l2.Operate(t.Context(), pool, repo, req)
+	// Bounded, so a scope a bug left held fails here rather than at the
+	// test binary's timeout.
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	op, err := l2.Operate(ctx, pool, repo, req)
 	if err != nil {
 		t.Fatalf("Operate(%+v) = %v", req, err)
 	}
