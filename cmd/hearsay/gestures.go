@@ -115,7 +115,7 @@ func runGestures(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	if err != nil {
 		return err
 	}
-	gv := gestureView{pool: pool, store: v.store, docs: l1.New(pool), reader: v.reader, topics: v}
+	gv := gestureView{pool: pool, store: v.Store(), docs: l1.New(pool), reader: v.Reader(), topics: v}
 	if action == "list" {
 		return gv.list(ctx, stdout, *scope, from, *asJSON)
 	}
