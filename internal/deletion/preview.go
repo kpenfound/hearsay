@@ -33,6 +33,15 @@ type Preview struct {
 	Pins            []string `json:"pins"`
 }
 
+// Counts returns the number of affected objects in each layer.
+func (p Preview) Counts() map[string]int {
+	return map[string]int{
+		"events": len(p.Events), "documents": len(p.Documents),
+		"stances": len(p.Stances), "topics": len(p.Topics),
+		"alias_candidates": len(p.AliasCandidates), "pins": len(p.Pins),
+	}
+}
+
 // Walk uses one read-only snapshot so every layer describes the same database
 // state. The apply command can call this function before making any writes.
 func Walk(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, sel Selector, reason string) (Preview, error) {
@@ -128,7 +137,11 @@ func Walk(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, sel Selecto
 	if p.Topics, err = queryIDs(ctx, tx, `SELECT id FROM l2_topics WHERE opened_by = ANY($1) ORDER BY id`, p.Documents); err != nil {
 		return p, err
 	}
-	if p.AliasCandidates, err = queryIDs(ctx, tx, `SELECT entity_id || ':' || alias FROM l2_alias_candidates WHERE evidence && $1 ORDER BY entity_id, alias`, p.Documents); err != nil {
+	if p.AliasCandidates, err = queryIDs(ctx, tx, `SELECT c.entity_id || ':' || c.alias FROM l2_alias_candidates c
+WHERE c.evidence && $1 OR EXISTS (
+  SELECT 1 FROM l2_alias_votes v WHERE v.entity_id=c.entity_id AND v.alias=c.alias
+  AND (v.doc_id = ANY($1) OR v.pr_doc_id = ANY($1)))
+ORDER BY c.entity_id, c.alias`, p.Documents); err != nil {
 		return p, err
 	}
 	if p.Pins, err = queryIDs(ctx, tx, `SELECT scope || ':' || l1 FROM l2_pins WHERE l1 = ANY($1) ORDER BY scope, l1`, p.Documents); err != nil {

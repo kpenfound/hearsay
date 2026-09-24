@@ -91,6 +91,14 @@ func TestDeletePreviewSelectorsAndNoWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	_, err = pool.Exec(ctx, `INSERT INTO l2_alias_candidates(entity_id,alias,name,acl) VALUES('entity-2','alias-2','other',$1)`, acl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(ctx, `INSERT INTO l2_alias_votes(entity_id,alias,doc_id,pr_doc_id) VALUES('entity-2','alias-2','l1:chat:thread','l1:code:pr')`)
+	if err != nil {
+		t.Fatal(err)
+	}
 	_, err = pool.Exec(ctx, `INSERT INTO l2_pins(scope,l1,pinned_by,pinned_at) VALUES('all','l1:chat:thread','pat',$1)`, when)
 	if err != nil {
 		t.Fatal(err)
@@ -112,8 +120,11 @@ func TestDeletePreviewSelectorsAndNoWrites(t *testing.T) {
 		}
 		return p, out.String()
 	}
-	p, _ := invoke("--event", "evt:chat:reply")
-	if !reflect.DeepEqual(p.Events, []string{"evt:chat:reply"}) || !reflect.DeepEqual(p.Documents, []string{"l1:chat:thread"}) || !reflect.DeepEqual(p.Stances, []string{"stance-1"}) || !reflect.DeepEqual(p.Topics, []string{"topic-1"}) || !reflect.DeepEqual(p.AliasCandidates, []string{"entity-1:alias-1"}) || !reflect.DeepEqual(p.Pins, []string{"all:l1:chat:thread"}) {
+	p, raw := invoke("--event", "evt:chat:reply")
+	if !strings.Contains(raw, `"counts":{"alias_candidates":2,"documents":1,"events":1,"pins":1,"stances":1,"topics":1}`) {
+		t.Fatalf("JSON counts missing: %s", raw)
+	}
+	if !reflect.DeepEqual(p.Events, []string{"evt:chat:reply"}) || !reflect.DeepEqual(p.Documents, []string{"l1:chat:thread"}) || !reflect.DeepEqual(p.Stances, []string{"stance-1"}) || !reflect.DeepEqual(p.Topics, []string{"topic-1"}) || !reflect.DeepEqual(p.AliasCandidates, []string{"entity-1:alias-1", "entity-2:alias-2"}) || !reflect.DeepEqual(p.Pins, []string{"all:l1:chat:thread"}) {
 		t.Fatalf("thread event preview = %+v", p)
 	}
 	p, _ = invoke("--artifact", "chat", "reply")

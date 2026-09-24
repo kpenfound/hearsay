@@ -69,7 +69,10 @@ func runDelete(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		return err
 	}
 	if *asJSON {
-		return json.NewEncoder(stdout).Encode(p)
+		return json.NewEncoder(stdout).Encode(struct {
+			deletion.Preview
+			Counts map[string]int `json:"counts"`
+		}{p, p.Counts()})
 	}
 	fmt.Fprintf(stdout, "Deletion preview (%s)\nReason: %s\n", selectorLabel(p.Selector), p.Reason)
 	for _, layer := range []struct {
