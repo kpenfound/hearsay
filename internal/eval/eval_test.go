@@ -215,6 +215,23 @@ func TestReportOutputs(t *testing.T) {
 			Merges:       eval.Count{Count: 1, Undone: 1, PerTopic: share(0.25)},
 			Splits:       eval.Count{PerTopic: share(0)},
 		},
+		DrillDown: eval.DrillDown{
+			Bundles: 2, WithoutSession: 1,
+			Sections: []eval.Section{
+				{Section: "scope.entities", Served: 2, Followed: 1, Share: share(0.5)},
+				{Section: "anchors", Served: 2, Share: share(0)},
+				{Section: "stances", Served: 2, Followed: 2, Share: share(1)},
+				{Section: "recent", Served: 1, Share: share(0)},
+				{Section: "open_questions"},
+				{Section: "conflicts", Served: 1, Followed: 1, Share: share(1)},
+			},
+			LookedBeyond: eval.LookedBeyond{Search: eval.Beyond{Calls: 4, Beyond: 1, Share: share(0.25)}},
+		},
+		Conflicts: eval.ConflictFlags{Flagged: 4, Verdicts: 2, Real: 1, Spurious: 1, Precision: share(0.5), Coverage: share(0.5), Unflagged: 1},
+		NextActions: eval.NextActions{
+			Actions: 4, Asked: eval.Action{Count: 1, Share: share(0.25)}, Proceeded: eval.Action{Count: 2, Share: share(0.5)},
+			Asserted: eval.Action{Count: 1, Share: share(0.25)}, Unattributed: 1,
+		},
 	}
 	var text bytes.Buffer
 	if err := report.WriteText(&text); err != nil {
@@ -235,12 +252,40 @@ topic merge and split rate
   topics opened  4
   merges         1  0.250 per topic  1 undone
   splits         0  0.000 per topic  0 undone
+
+drill-down rate per bundle section
+  session-linked bundles  2
+  excluded, no session    1
+  scope.entities          1 of 2  50.0%
+  anchors                 0 of 2  0.0%
+  stances                 2 of 2  100.0%
+  recent                  0 of 1  0.0%
+  open_questions          0 of 0  -
+  conflicts               1 of 1  100.0%
+  looked beyond the bundle
+    search   1 of 4  25.0%
+    resolve  0 of 0  -
+
+conflict-flag precision
+  flagged                       4
+  verdicts                      2  1 real  1 spurious
+  precision                     50.0%
+  coverage                      50.0%
+  verdicts on unflagged topics  1
+
+next actions
+  after a bundle              4
+  asked                       1  25.0%
+  proceeded                   2  50.0%
+  asserted                    1  25.0%
+  with no bundle before them  1
 `
 	if text.String() != wantText {
 		t.Errorf("text =\n%s\nwant\n%s", text.String(), wantText)
 	}
 
 	empty := eval.Report{Until: at(100), Ratification: eval.Ratification{Clocks: []eval.Clock{}}}
+	empty.DrillDown, empty.Conflicts, empty.NextActions = eval.SummarizeSessions(nil, "")
 	text.Reset()
 	if err := empty.WriteText(&text); err != nil {
 		t.Fatal(err)
@@ -260,6 +305,33 @@ topic merge and split rate
   topics opened  0
   merges         0  - per topic  0 undone
   splits         0  - per topic  0 undone
+
+drill-down rate per bundle section
+  session-linked bundles  0
+  excluded, no session    0
+  scope.entities          0 of 0  -
+  anchors                 0 of 0  -
+  stances                 0 of 0  -
+  recent                  0 of 0  -
+  open_questions          0 of 0  -
+  conflicts               0 of 0  -
+  looked beyond the bundle
+    search   0 of 0  -
+    resolve  0 of 0  -
+
+conflict-flag precision
+  flagged                       0
+  verdicts                      0  0 real  0 spurious
+  precision                     -
+  coverage                      -
+  verdicts on unflagged topics  0
+
+next actions
+  after a bundle              0
+  asked                       0  -
+  proceeded                   0  -
+  asserted                    0  -
+  with no bundle before them  0
 `
 	if text.String() != wantEmpty {
 		t.Errorf("text of an empty report =\n%s\nwant\n%s", text.String(), wantEmpty)
@@ -289,6 +361,32 @@ topic merge and split rate
     "topics_opened": 4,
     "merges": {"count": 1, "undone": 1, "per_topic": 0.25},
     "splits": {"count": 0, "undone": 0, "per_topic": 0}
+  },
+  "drill_down": {
+    "bundles": 2, "bundles_without_session": 1,
+    "sections": [
+      {"section": "scope.entities", "served": 2, "followed": 1, "share": 0.5},
+      {"section": "anchors", "served": 2, "followed": 0, "share": 0},
+      {"section": "stances", "served": 2, "followed": 2, "share": 1},
+      {"section": "recent", "served": 1, "followed": 0, "share": 0},
+      {"section": "open_questions", "served": 0, "followed": 0, "share": null},
+      {"section": "conflicts", "served": 1, "followed": 1, "share": 1}
+    ],
+    "looked_beyond": {
+      "search": {"calls": 4, "beyond": 1, "share": 0.25},
+      "resolve": {"calls": 0, "beyond": 0, "share": null}
+    }
+  },
+  "conflict_flags": {
+    "flagged": 4, "verdicts": 2, "real": 1, "spurious": 1,
+    "precision": 0.5, "coverage": 0.5, "unflagged_verdicts": 1
+  },
+  "next_actions": {
+    "actions": 4,
+    "asked": {"count": 1, "share": 0.25},
+    "proceeded": {"count": 2, "share": 0.5},
+    "asserted": {"count": 1, "share": 0.25},
+    "unattributed": 1
   }
 }`
 	if err := json.Unmarshal([]byte(wantJSON), &want); err != nil {
@@ -309,7 +407,20 @@ topic merge and split rate
   "time_to_ratification": {"topics": 0, "ratified": 0, "unratified": 0, "unratified_share": null,
     "median_seconds": null, "p90_seconds": null, "ratified_on_arrival": 0, "clocks": []},
   "topic_operations": {"topics_opened": 0,
-    "merges": {"count": 0, "undone": 0, "per_topic": null}, "splits": {"count": 0, "undone": 0, "per_topic": null}}}`
+    "merges": {"count": 0, "undone": 0, "per_topic": null}, "splits": {"count": 0, "undone": 0, "per_topic": null}},
+  "drill_down": {"bundles": 0, "bundles_without_session": 0,
+    "sections": [
+      {"section": "scope.entities", "served": 0, "followed": 0, "share": null},
+      {"section": "anchors", "served": 0, "followed": 0, "share": null},
+      {"section": "stances", "served": 0, "followed": 0, "share": null},
+      {"section": "recent", "served": 0, "followed": 0, "share": null},
+      {"section": "open_questions", "served": 0, "followed": 0, "share": null},
+      {"section": "conflicts", "served": 0, "followed": 0, "share": null}
+    ],
+    "looked_beyond": {"search": {"calls": 0, "beyond": 0, "share": null}, "resolve": {"calls": 0, "beyond": 0, "share": null}}},
+  "conflict_flags": {"flagged": 0, "verdicts": 0, "real": 0, "spurious": 0, "precision": null, "coverage": null, "unflagged_verdicts": 0},
+  "next_actions": {"actions": 0, "asked": {"count": 0, "share": null}, "proceeded": {"count": 0, "share": null},
+    "asserted": {"count": 0, "share": null}, "unattributed": 0}}`
 	if err := json.Unmarshal([]byte(wantEmptyJSON), &want); err != nil {
 		t.Fatal(err)
 	}
