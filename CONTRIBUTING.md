@@ -53,8 +53,8 @@ Two modules share the work. The reusable Go module,
 in the workspace and owns the tests and the `go generate` drift check; it knows
 nothing about Hearsay. `hearsay`, in `.dagger/modules/hearsay/main.dang`, is
 ours and holds everything that module could not know: lint, the integration
-tests, the tidy and image checks, the binary, the image, migrations and the dev
-stack.
+tests, the tidy, image and compose checks, the binary, the image, migrations
+and the dev stack.
 
 | Check | From | Does |
 |---|---|---|
@@ -65,6 +65,7 @@ stack.
 | `hearsay:integration-test` | hearsay | `hearsay migrate up`, then `go test -race -tags=integration ./...`, against a pgvector Postgres |
 | `hearsay:tidy-check` | hearsay | fails if `go mod tidy` would change `go.mod` or `go.sum` |
 | `hearsay:image-check` | hearsay | builds the default and two release platforms; checks the version stamp and publish address without pushing |
+| `hearsay:compose-check` | hearsay | `docker compose config` on `deploy/compose` with `env.example` filled in, held to the shape in `docs/deploy.md`; `hearsay config validate` on its example configuration. No Docker daemon |
 | `dagger-dang-sdk:generate` | Dang SDK | fails if the SDK would regenerate anything under `.dagger` |
 
 `go:lint-all` is off because the Go module pins a `golangci-lint` built with
@@ -92,6 +93,7 @@ dagger api call hearsay image               # the container image hearsay ships 
 dagger api call hearsay migrate --database-url=env:HEARSAY_DATABASE_URL
 dagger api call hearsay playground          # a shell in the runtime, binary on PATH, Postgres beside it
 dagger api call hearsay qa --script '...'   # the same, running a script; returns its output
+dagger api call hearsay compose-smoke       # deploy/compose for real, in a Docker daemon of its own
 dagger api call hearsay go-version          # what go.mod asks for; every Go container uses it
 dagger api call hearsay go-test-base        # the container the Go module receives
 dagger settings go                          # the Go module's settings and their values

@@ -18,6 +18,7 @@ are being built.
 - [docs/connector-contract.md](docs/connector-contract.md) — the L0 event a
   source connector emits, and the interface it implements.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — how to build, test and run it.
+- [docs/deploy.md](docs/deploy.md) — how to deploy it with Docker Compose.
 
 ## Architecture
 
@@ -87,6 +88,10 @@ go build ./...
 go test ./...
 go run ./cmd/hearsay help
 ```
+
+To run it for a team, [docs/deploy.md](docs/deploy.md) deploys the published
+image with Docker Compose: Postgres, the migration job and the four services,
+from [deploy/compose/](deploy/compose/).
 
 The four services — connectors, distiller, assertion worker and API — are
 subcommands of one binary. The API serves the context bundle and the handles a

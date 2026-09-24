@@ -1,6 +1,9 @@
 # busybees state (mail, notes, session transcripts)
 /.bees/
 
+# the compose deployment's secrets (docs/deploy.md)
+/deploy/compose/.env
+
 # build output
 /hearsay
 /dist/
