@@ -150,6 +150,7 @@ wherever the source has something that behaves like one.
 | `agent_session` | An agent session starting or ending | yes | no |
 | `agent_turn` | One turn of an agent session | yes | yes |
 | `tool_call` | A tool call an agent made | yes | no |
+| `next_action` | A consumer's action after a bundle | yes | no |
 | `assertion` | A stance written through `assert` | yes | yes |
 | `audit` | A bundle served or a session's handle call: who asked and ids served | yes | no |
 | `tombstone` | An artifact deleted at the source | no | no |
@@ -926,6 +927,7 @@ even when the old folder has left the allowlist; they contain no note text.
 | Session end | `agent_session` | `<session id>` | `<session id>@end` | stream |
 | Turn | `agent_turn` | `<session id>` | `<session id>@turn:<turn id>` | stream |
 | Tool call | `tool_call` | `<session id>` | `<session id>@call:<call id>` | stream |
+| Next action | `next_action` | `<session id>` | `<session id>@next:<next id>` | stream |
 
 The `agent` connector (`internal/connector/agent`) is a `Pusher` that agents
 post their own session events to, one event per `POST /hooks/<source id>`. It is
@@ -946,7 +948,7 @@ because every revision of an artifact carries the same `time`. When the event
 itself happened (`time` in the request) is `payload.revision.edited_at`, and it
 orders the session's events. Posting an event again writes nothing. Posting the
 same key with different content is answered 409 and writes nothing, because a
-key names one thing that happened. Session, turn and call ids are 1 to 128 bytes
+key names one thing that happened. Session, turn, call and next ids are 1 to 128 bytes
 of letters, digits, `-`, `_`, `.` and `:`.
 
 The container is the agent's session stream, `{kind: stream, native_id: <agent
@@ -954,9 +956,18 @@ id>}`. The source's `containers` are `*` or the agent ids allowed to post. An
 agent that is not allowed is refused with 403, so the event is not dropped
 without the agent knowing. The ACL is two `identity` entries in this source, the
 agent and the person, whose native ids are their principal ids. Nobody else is
-on it. A turn's `text` is `payload.text`. The session id, phase, turn or call id,
-tool name, and a tool call's `input` and `output` are in `payload.native`.
+on it. A turn's `text` is `payload.text`. The session id, phase, turn, call or
+next id, tool name, a tool call's `input` and `output`, and a next action's scope,
+action and verdicts are in `payload.native`.
 None of these kinds is distilled.
+After using a bundle, the consumer posts a `next_action` with the bundle's
+scope and an action of `asked`, `proceeded` or `asserted`. It may include
+conflict verdicts, each with a distinct `topic_id` and `real` or `spurious`
+verdict. `get_session` attributes the action to the latest bundle audit in
+the same session and scope that precedes the action. Its
+`bundle_audit_by_next_action` map names the audit event id for each attributed
+next action event id. An action without an earlier bundle in that scope remains
+in the trace without an attribution.
 
 The responses are 202 with `{"id": "<event id>"}` for an event written or
 already held, 400 for a request that is not a valid event, 401 for a missing
@@ -983,6 +994,13 @@ Content-Type: application/json
 {"on_behalf_of": "kyle", "session": "s-01", "kind": "tool_call", "call": "c-1", "tool": "get_bundle",
  "started_at": "2026-09-23T17:00:00Z", "time": "2026-09-23T17:00:06Z",
  "input": {"scope": "api"}, "output": {"tokens": 1830}}
+```
+
+```json
+{"on_behalf_of": "kyle", "session": "s-01", "kind": "next_action", "next": "1",
+ "started_at": "2026-09-23T17:00:00Z", "time": "2026-09-23T17:00:09Z",
+ "scope": "api", "action": "proceeded",
+ "verdicts": [{"topic_id": "topic:retry-policy", "verdict": "real"}]}
 ```
 
 ```json

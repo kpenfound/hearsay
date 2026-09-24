@@ -96,11 +96,14 @@ const (
 	call = `{"on_behalf_of":"kyle","session":"s-01","kind":"tool_call","call":"c-1","tool":"get_bundle",
 		"started_at":"2026-09-23T17:00:00Z","time":"2026-09-23T17:00:06Z",
 		"input":{"scope":"api"},"output":{"tokens":1830}}`
+	next = `{"on_behalf_of":"kyle","session":"s-01","kind":"next_action","next":"1",
+		"started_at":"2026-09-23T17:00:00Z","time":"2026-09-23T17:00:09Z",
+		"scope":"api","action":"proceeded","verdicts":[{"topic_id":"topic:retry-policy","verdict":"real"}]}`
 	end = `{"agent":"shed","on_behalf_of":"kyle","session":"s-01","kind":"agent_session","phase":"end",
 		"started_at":"2026-09-23T17:00:00Z","time":"2026-09-23T17:10:00Z"}`
 )
 
-// A whole session goes in as four revisions of one artifact, authored by the
+// A whole session goes in as five revisions of one artifact, authored by the
 // agent the token belongs to and readable by it and the person it acted for.
 func TestASessionIsIngested(t *testing.T) {
 	srv, rec := server(t, source())
@@ -117,6 +120,7 @@ func TestASessionIsIngested(t *testing.T) {
 		{"start", start, connector.KindAgentSession, "s-01@start", started, "", `{"session":"s-01","phase":"start"}`},
 		{"a turn", turn, connector.KindAgentTurn, "s-01@turn:1", started.Add(5 * time.Second), "Reading the retry policy before changing it.", `{"session":"s-01","turn":"1"}`},
 		{"a tool call", call, connector.KindToolCall, "s-01@call:c-1", started.Add(6 * time.Second), "", `{"session":"s-01","call":"c-1","tool":"get_bundle","input":{"scope":"api"},"output":{"tokens":1830}}`},
+		{"a next action", next, connector.KindNextAction, "s-01@next:1", started.Add(9 * time.Second), "", `{"session":"s-01","next":"1","scope":"api","action":"proceeded","verdicts":[{"topic_id":"topic:retry-policy","verdict":"real"}]}`},
 		{"end", end, connector.KindAgentSession, "s-01@end", started.Add(10 * time.Minute), "", `{"session":"s-01","phase":"end"}`},
 	}
 	for i, tt := range tests {
@@ -181,7 +185,7 @@ func TestASessionIsIngested(t *testing.T) {
 // Posting an event again is the same event: the same id and the same content,
 // which L0 writes once.
 func TestAReplayIsTheSameEvent(t *testing.T) {
-	for _, body := range []string{start, turn, call, end} {
+	for _, body := range []string{start, turn, call, next, end} {
 		srv, rec := server(t, source())
 		for range 2 {
 			if code, out := post(t, srv.URL, env["SHED_TOKEN"], body); code != http.StatusAccepted {
@@ -192,6 +196,25 @@ func TestAReplayIsTheSameEvent(t *testing.T) {
 		if len(events) != 2 || !reflect.DeepEqual(events[0], events[1]) {
 			t.Errorf("a replay emitted %+v, want the same event twice", events)
 		}
+	}
+}
+
+func TestNextActionVariants(t *testing.T) {
+	for _, tt := range []struct {
+		name, body string
+	}{
+		{"asked without verdicts", strings.Replace(strings.Replace(next, `"proceeded"`, `"asked"`, 1), `,"verdicts":[{"topic_id":"topic:retry-policy","verdict":"real"}]`, ``, 1)},
+		{"asserted with a spurious conflict", strings.Replace(strings.Replace(next, `"proceeded"`, `"asserted"`, 1), `"real"`, `"spurious"`, 1)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, rec := server(t, source())
+			if code, body := post(t, srv.URL, env["SHED_TOKEN"], tt.body); code != http.StatusAccepted {
+				t.Fatalf("POST = %d %s, want 202", code, body)
+			}
+			if events := rec.Events(); len(events) != 1 || events[0].Kind != connector.KindNextAction {
+				t.Fatalf("events = %+v, want one next action", events)
+			}
+		})
 	}
 }
 
@@ -225,6 +248,17 @@ func TestARequestIsRefused(t *testing.T) {
 		{name: "a tool call with no tool", token: env["SHED_TOKEN"], body: strings.Replace(call, `"tool":"get_bundle",`, ``, 1), want: http.StatusBadRequest},
 		{name: "a session phase that is neither start nor end", token: env["SHED_TOKEN"], body: strings.Replace(start, `"start"`, `"middle"`, 1), want: http.StatusBadRequest},
 		{name: "a session event carrying a tool", token: env["SHED_TOKEN"], body: strings.Replace(start, `"phase"`, `"tool":"x","phase"`, 1), want: http.StatusBadRequest},
+		{name: "an unsupported action", token: env["SHED_TOKEN"], body: strings.Replace(next, `"proceeded"`, `"ignored"`, 1), want: http.StatusBadRequest},
+		{name: "a missing scope", token: env["SHED_TOKEN"], body: strings.Replace(next, `"scope":"api",`, ``, 1), want: http.StatusBadRequest},
+		{name: "a blank scope", token: env["SHED_TOKEN"], body: strings.Replace(next, `"scope":"api"`, `"scope":" "`, 1), want: http.StatusBadRequest},
+		{name: "an unsupported verdict", token: env["SHED_TOKEN"], body: strings.Replace(next, `"real"`, `"maybe"`, 1), want: http.StatusBadRequest},
+		{name: "a missing verdict topic", token: env["SHED_TOKEN"], body: strings.Replace(next, `"topic_id":"topic:retry-policy"`, `"topic_id":""`, 1), want: http.StatusBadRequest},
+		{name: "a blank verdict topic", token: env["SHED_TOKEN"], body: strings.Replace(next, `"topic_id":"topic:retry-policy"`, `"topic_id":" "`, 1), want: http.StatusBadRequest},
+		{name: "a missing verdict", token: env["SHED_TOKEN"], body: strings.Replace(next, `,"verdict":"real"`, ``, 1), want: http.StatusBadRequest},
+		{name: "a null verdict", token: env["SHED_TOKEN"], body: strings.Replace(next, `{"topic_id":"topic:retry-policy","verdict":"real"}`, `null`, 1), want: http.StatusBadRequest},
+		{name: "duplicate verdicts", token: env["SHED_TOKEN"], body: strings.Replace(next, `{"topic_id":"topic:retry-policy","verdict":"real"}`, `{"topic_id":"topic:retry-policy","verdict":"real"},{"topic_id":"topic:retry-policy","verdict":"spurious"}`, 1), want: http.StatusBadRequest},
+		{name: "an unknown verdict field", token: env["SHED_TOKEN"], body: strings.Replace(next, `"verdict":"real"`, `"verdict":"real","note":"x"`, 1), want: http.StatusBadRequest},
+		{name: "a next action carrying a turn", token: env["SHED_TOKEN"], body: strings.Replace(next, `"next":"1"`, `"next":"1","turn":"1"`, 1), want: http.StatusBadRequest},
 		{name: "no start time", token: env["SHED_TOKEN"], body: strings.Replace(turn, `"started_at":"2026-09-23T17:00:00Z",`, ``, 1), want: http.StatusBadRequest},
 		{name: "an event before its session started", token: env["SHED_TOKEN"], body: strings.Replace(turn, `17:00:05Z`, `16:59:59Z`, 1), want: http.StatusBadRequest},
 	}
