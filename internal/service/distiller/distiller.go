@@ -15,12 +15,15 @@
 // What a document is, and what may be stored in one, is internal/l1's. What
 // this package owns is the prompts, the schema an answer has to satisfy, and
 // the loops.
+// Health probes are served on :8082 by default; readiness checks the database
+// and schema.
 package distiller
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"sync"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -28,11 +31,15 @@ import (
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/queue"
+	"github.com/kpenfound/hearsay/internal/service"
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
 // Name is the subcommand this service runs as (ADR-0003).
 const Name = "distiller"
+
+// DefaultListen is where distiller serves health probes.
+const DefaultListen = ":8082"
 
 // JobKindName is the queue kind this service consumes. It is a contract with
 // whatever enqueues one, and with an operator reading `queue_job`.
@@ -51,6 +58,10 @@ func JobKind() queue.Kind { return queue.Kind{Name: JobKindName} }
 
 // Deps are what the process builds and hands to [Run].
 type Deps struct {
+	// Listener is an optional pre-bound probe listener, useful in tests.
+	Listener net.Listener
+	// Listen is the probe address when Listener is nil; empty uses DefaultListen.
+	Listen string
 	// Pool is the database (ADR-0004). The caller owns it and closes it.
 	Pool *pgxpool.Pool
 	// LLM is the model tier registry (ADR-0005). The distiller uses the
@@ -84,13 +95,20 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 	if deps.Pool == nil {
 		return errors.New("the distiller needs a database: pass --database-url or set HEARSAY_DATABASE_URL")
 	}
+	addr := deps.Listen
+	if addr == "" {
+		addr = DefaultListen
+	}
+	probes := func(ctx context.Context) error { return service.RunProbes(ctx, Name, addr, deps.Listener, deps.Pool) }
 	if deps.LLM == nil {
 		// No configuration, so there is nothing to distil and no tier to
 		// distil it with. Idling rather than exiting is what makes
 		// `hearsay all` on an empty machine something a person can look at.
 		log := telemetry.Logger(ctx)
 		log.WarnContext(ctx, "no model tiers: nothing is distilled, pass --config")
-		<-ctx.Done()
+		if err := probes(ctx); err != nil {
+			return err
+		}
 		log.InfoContext(ctx, "distiller stopped")
 		return nil
 	}
@@ -125,6 +143,7 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()
 	loops := map[string]func(context.Context) error{
+		"probes": probes,
 		"pump":   pump.Run,
 		"worker": worker.Run,
 	}

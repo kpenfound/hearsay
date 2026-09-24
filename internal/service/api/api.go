@@ -65,9 +65,9 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector/discord"
-	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/llm"
+	"github.com/kpenfound/hearsay/internal/service"
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
@@ -248,34 +248,7 @@ func Handler(calls *Calls, pool *pgxpool.Pool) http.Handler {
 		_, _ = w.Write(body)
 	})
 	mux.Handle("/mcp", MCP(calls))
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		fmt.Fprintln(w, "ok")
-	})
-	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
-		status, detail := http.StatusOK, ""
-		if pool != nil {
-			// The database reachable and its schema acceptable, as one query
-			// (ADR-0006, ADR-0008). The body carries a fixed sentence; the
-			// error is in the log.
-			switch err := db.CheckSchema(r.Context(), pool); {
-			case err == nil:
-			case errors.Is(err, db.ErrSchemaBehind):
-				telemetry.Logger(r.Context()).ErrorContext(r.Context(), "readiness: the database schema is behind this binary", "error", err)
-				status, detail = http.StatusServiceUnavailable, "the database schema is behind this binary: run `hearsay migrate up`"
-			default:
-				telemetry.Logger(r.Context()).ErrorContext(r.Context(), "readiness: the database cannot be reached", "error", err)
-				status, detail = http.StatusServiceUnavailable, "the database is unreachable"
-			}
-		}
-		body, _ := json.Marshal(struct {
-			Status string `json:"status"`
-			Detail string `json:"detail,omitempty"`
-		}{map[bool]string{true: "ok", false: "failed"}[status == http.StatusOK], detail})
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		_, _ = w.Write(body)
-	})
+	service.RegisterProbes(mux, pool)
 	return mux
 }
 

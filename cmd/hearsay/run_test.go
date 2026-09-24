@@ -273,6 +273,31 @@ func TestRun(t *testing.T) {
 			wantErr: "--listen is empty",
 		},
 		{
+			name:    "distiller rejects empty listen",
+			args:    []string{"distiller", "--listen", ""},
+			wantErr: "--listen is empty",
+		},
+		{
+			name:    "assert worker rejects empty listen",
+			args:    []string{"assert-worker", "--listen", ""},
+			wantErr: "--listen is empty",
+		},
+		{
+			name:       "distiller help names probe port",
+			args:       []string{"distiller", "--help"},
+			wantStderr: ":8082",
+		},
+		{
+			name:       "assert worker help names probe port",
+			args:       []string{"assert-worker", "--help"},
+			wantStderr: ":8083",
+		},
+		{
+			name:       "all help names worker probe flags",
+			args:       []string{"all", "--help"},
+			wantStderr: "-assert-worker-listen",
+		},
+		{
 			name:       "a subcommand's --help is not an error",
 			args:       []string{"connectors", "--help"},
 			wantStderr: "-source",
