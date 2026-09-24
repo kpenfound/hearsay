@@ -939,6 +939,35 @@ func TestInitSlackWithoutCredentialsOrGitHub(t *testing.T) {
 	}
 }
 
+func TestInitSlackAmbiguousEmailOnBothSides(t *testing.T) {
+	github := serveFixtures(t, "github", "Bearer gh-token")
+	slack := serveFixtures(t, "slack", "Bearer xoxb-fixture")
+	args := []string{"--github-api-url", github.URL, "--slack-api-url", slack.URL,
+		"--operator", "kyle", "--github-repo", "acme/api,acme/infra", "--operator-github", "kpenfound",
+		"--slack-workspace", "TWORK123", "--slack-channel", "CGOOD123"}
+	dir := t.TempDir()
+	out, err := runInitIn(t, dir, initCall{args: args, env: map[string]string{"HEARSAY_GITHUB_TOKEN": "gh-token", "HEARSAY_SLACK_BOT_TOKEN": "xoxb-fixture"}})
+	if err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "shared@acme.example matches 2 principals and 2 Slack accounts") {
+		t.Errorf("ambiguity note missing: %s", out)
+	}
+	repo, err := config.Load(filepath.Join(dir, "hearsay.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range repo.Principals {
+		if p.ID == "alex" || p.ID == "jordan" {
+			for _, id := range p.Identities {
+				if id.Source == "slack" {
+					t.Errorf("ambiguous email assigned Slack identity %s to %s", id.NativeID, p.ID)
+				}
+			}
+		}
+	}
+}
+
 type failingReader struct{}
 
 func (failingReader) Read([]byte) (int, error) { return 0, errors.New("no entropy") }
