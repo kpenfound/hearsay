@@ -486,6 +486,7 @@ func (s *Store) AppendStance(ctx context.Context, st Stance, distilledAt time.Ti
 		return Stance{}, false, fmt.Errorf("%w: stance %s is on topic %s, which is topic %s now", ErrInvalid, st.ID, st.TopicID, now)
 	}
 	on, args := `s.topic_id = $4`, []any{st.StatedAt, st.ID, st.origin(), st.TopicID}
+	rows := p.rowsOf(st.TopicID)
 	if _, shaped := p.members[st.TopicID]; shaped {
 		histories, err := s.histories(ctx, p, []string{st.TopicID})
 		if err != nil {
@@ -516,8 +517,9 @@ ON CONFLICT (id) DO NOTHING`,
 	}
 	if tag.RowsAffected() == 1 && predecessor != nil {
 		// The predecessor is superseded now, and may be text an operator
-		// deletion was waiting to redact.
-		if err := s.redact(ctx, []string{st.TopicID}); err != nil {
+		// deletion was waiting to redact. It may be on any row the topic
+		// holds stances of.
+		if err := s.redact(ctx, rows); err != nil {
 			return Stance{}, false, err
 		}
 	}

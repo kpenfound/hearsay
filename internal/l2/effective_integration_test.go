@@ -298,3 +298,28 @@ func TestMatchingFindsTopicsAsTheLedgerMakesThem(t *testing.T) {
 		})
 	}
 }
+
+// A deletion repair of a stance a split moved is written on the row the
+// stance was written on, which the split's topic may not have.
+func TestADeletionRepairOfAStanceASplitMovedIsWritten(t *testing.T) {
+	pool := newPool(t)
+	store := l2.New(pool)
+	repo := loadRepo(t, "")
+	ctx := t.Context()
+	scope := unique()
+	a := namedTopic(t, store, scope, "the lock")
+	addStance(t, store, a, putDoc(t, pool, scope, "d1", public, nil), "the queue takes the lock", 1)
+	gone := putDoc(t, pool, scope, "d2", public, nil)
+	moved := addStance(t, store, a, gone, "the keys are separate", 2)
+	split := operate(t, pool, repo, l2.OperationRequest{Kind: l2.OperationSplit, Principal: "kyle", Topic: a.ID, Name: "the keys", Stances: []string{moved.ID}})
+	if _, err := l1.New(pool).Delete(ctx, gone); err != nil {
+		t.Fatal(err)
+	}
+	if written, err := store.RerunDeletedEvidence(ctx, moved.ID, scope); err != nil || !written {
+		t.Fatalf("RerunDeletedEvidence() = %v, %v, want the withdrawal written", written, err)
+	}
+	history, err := store.StanceHistory(ctx, split.Topics[1])
+	if err != nil || len(history) != 1 || !history[0].Retired {
+		t.Errorf("StanceHistory(the split's topic) = %+v, %v, want the moved stance retired by its withdrawal", history, err)
+	}
+}
