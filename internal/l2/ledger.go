@@ -58,7 +58,10 @@ func checkHand(repo config.Repo, scope, id, what, does string) error {
 // scopes are not held.
 //
 // A refused operation writes nothing to the ledger. Nothing here changes a
-// topic or a stance row: what the ledger makes of them is read from it.
+// topic or a stance row: what the ledger makes of them is read from it. A
+// caller already running under the scope's key — the assert job for a GitHub
+// `/hearsay merge` — calls [Store.ApplyOperation] in its own transaction
+// instead.
 func Operate(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, req OperationRequest) (Operation, error) {
 	if err := req.Validate(); err != nil {
 		return Operation{}, err

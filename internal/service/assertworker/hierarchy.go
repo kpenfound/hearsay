@@ -77,7 +77,7 @@ func NewFollower(pool *pgxpool.Pool, repo config.Repo, interval time.Duration, b
 // Run reads the feed until ctx is cancelled, and returns nil when it stops that
 // way. A read that fails is logged and retried at the next tick.
 func (f *Follower) Run(ctx context.Context) error {
-	return follow(ctx, f.interval, f.batch, f.Once, "following the tracker hierarchy failed")
+	return follow(ctx, f.interval, f.batch, f.Once, "tracker hierarchy")
 }
 
 // Once reads one batch of the feed, places what it changed, and returns how

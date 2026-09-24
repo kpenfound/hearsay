@@ -79,7 +79,7 @@ func NewCommandFollower(pool *pgxpool.Pool, repo config.Repo, interval time.Dura
 // Run reads the feed until ctx is cancelled, and returns nil when it stops
 // that way. A read that fails is logged and retried at the next tick.
 func (f *CommandFollower) Run(ctx context.Context) error {
-	return follow(ctx, f.interval, f.batch, f.Once, "following github commands failed")
+	return follow(ctx, f.interval, f.batch, f.Once, "github commands")
 }
 
 // Once reads one batch of the feed, enqueues the commands in it, and returns
@@ -177,8 +177,9 @@ func commandScope(ctx context.Context, graph *l2.Store, repo config.Repo, ev con
 }
 
 // follow is a feed follower's loop: once until a batch comes back short, then
-// wait for the next tick.
-func follow(ctx context.Context, interval time.Duration, batch int, once func(context.Context) (int, error), failed string) error {
+// wait for the next tick. A read that fails is logged as the named follower's
+// and retried at the next tick.
+func follow(ctx context.Context, interval time.Duration, batch int, once func(context.Context) (int, error), follower string) error {
 	log := telemetry.Logger(ctx)
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
@@ -187,7 +188,7 @@ func follow(ctx context.Context, interval time.Duration, batch int, once func(co
 			n, err := once(ctx)
 			if err != nil {
 				if ctx.Err() == nil {
-					log.ErrorContext(ctx, failed, "error", err)
+					log.ErrorContext(ctx, "following the change feed failed", "follower", follower, "error", err)
 				}
 				break
 			}
@@ -321,12 +322,12 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 // read from a document: it is read by everyone who can read the issue, who
 // may not be able to read what the commenter can.
 func (a *Asserter) apply(ctx context.Context, tx pgx.Tx, job queue.Job, ev connector.Event, cmd github.Command, rec *commandRecord) (string, error) {
-	switch {
-	case cmd.Name == CommandRatify || cmd.Name == CommandDemote || cmd.Name == CommandPin:
+	switch cmd.Name {
+	case CommandRatify, CommandDemote, CommandPin:
 		if len(cmd.Args) > 0 {
 			return fmt.Sprintf("`/hearsay %s` takes nothing after it: it acts on the issue or pull request it is written on. Hearsay changed nothing.", cmd.Name), nil
 		}
-	case cmd.Name == CommandMerge:
+	case CommandMerge:
 		if len(cmd.Args) != 2 || cmd.Args[0] == cmd.Args[1] {
 			return "`/hearsay merge` takes two different topic ids, the topic to merge and the topic it goes into, as `hearsay topics list` prints them: `/hearsay merge <topic-id> <topic-id>`. Hearsay changed nothing.", nil
 		}
@@ -391,7 +392,7 @@ func (a *Asserter) gesture(ctx context.Context, tx pgx.Tx, job queue.Job, view *
 		return notYet, nil
 	}
 	noun := "issue"
-	if got.Document.Kind == l1.KindPR {
+	if got.Kind == l1.KindPR {
 		noun = "pull request"
 	}
 	req := l2.GestureRequest{Event: ev.ID, Principal: human.ID, Action: l2.GestureAction(cmd.Name), Documents: []string{doc}}

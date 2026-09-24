@@ -108,6 +108,55 @@ renamed afterwards ([connector contract](connector-contract.md#source-ids)).
 The source id `hearsay` is reserved for Hearsay's own audit and assertion
 events. It is not available to configured sources.
 
+### GitHub source
+
+```yaml
+sources:
+  - id: github
+    type: github
+    containers: [acme/api]        # repositories by full name; `*` is refused
+    settings:
+      since: 2026-01-01           # optional; backfill what changed on or after it
+      # api_url: https://ghe.example/api/v3   # optional; GitHub Enterprise Server
+    secrets:
+      token: HEARSAY_GITHUB_TOKEN
+      webhook_secret: HEARSAY_GITHUB_WEBHOOK_SECRET
+```
+
+The token reads each repository and **writes issue and pull request
+comments**. A fine-grained token or a GitHub App installation needs read
+access to Metadata and Contents, and read and write access to Issues and Pull
+requests; a classic token needs `repo` (`public_repo` for public repositories
+only). Configure the repository's webhook to deliver to the connectors
+service's `/hooks/<source id>`, as `application/json`, with the webhook
+secret, for the events issues, issue_comment, pull_request,
+pull_request_review, pull_request_review_comment, push, repository and
+sub_issues.
+
+A person corrects L2 from an issue or a pull request with a comment whose
+first line is a command:
+
+- `/hearsay ratify` ratifies every live stance drawn from the issue or pull
+  request.
+- `/hearsay demote` demotes them: they are served as contested until a person
+  ratifies them or a newer stance supersedes them.
+- `/hearsay pin` pins the issue or pull request as an anchor in its scope.
+- `/hearsay merge <topic-id> <topic-id>` merges the first topic into the
+  second. It takes the ids `hearsay topics list` prints, not names, and the
+  person has to be able to read both topics.
+
+The commenter's GitHub account has to be one of a configured human's
+`identities`, and the scope's `ratified_by.principals` has to name that human.
+The assertion worker runs each command once, as it was written, and answers it
+with one reply comment saying what it did and how to undo it, or why it did
+nothing. It needs every GitHub source's token in its environment for that, and
+a token that is not set stops it starting. Deleting the command comment undoes
+the command and revises the reply to say so; an undo of a merge that a later
+topic operation builds on is refused, and the reply says which operation to
+undo first. Editing a command comment runs nothing. Hearsay posts nothing else
+to GitHub. Command comments and Hearsay's replies are recorded in L0 but never
+distilled into the issue's or pull request's document.
+
 ### Discord source
 
 Install the bot in the guild with **View Channel**, **Read Message History**,
@@ -588,9 +637,9 @@ names, and a module for each directory at its root (not the dot-directories),
 nested into the hierarchy as above.
 
 It reads a GitHub repository through the source's REST API with the source's
-`token` — the webhook secret is not needed — so the assertion worker's
-environment carries that variable too, and a token that is not set is a startup
-failure. It reads the repository's metadata, the names of its root directories
+`token` — the webhook secret is not needed — which the assertion worker's
+environment carries anyway, to answer comment commands
+([GitHub source](#github-source)). It reads the repository's metadata, the names of its root directories
 on the default branch, and the named file, and nothing else. A `codeowners` file
 that is not there is logged and skipped; a repository the token cannot read
 stops startup. A repository in a source of another type is seeded from this

@@ -19,7 +19,7 @@
 //	  since: 2026-01-01      # optional; backfill what changed on or after it
 //	  api_url: https://ghe.example/api/v3   # optional; GitHub Enterprise Server
 //	secrets:
-//	  token: HEARSAY_GITHUB_TOKEN                    # required; REST calls
+//	  token: HEARSAY_GITHUB_TOKEN                    # required; REST calls and command replies
 //	  webhook_secret: HEARSAY_GITHUB_WEBHOOK_SECRET  # required; delivery signatures
 //
 // The webhook is configured at the source to deliver to the runtime's hook path
@@ -27,6 +27,27 @@
 // secret, for the events issues, issue_comment, pull_request,
 // pull_request_review, pull_request_review_comment, push, repository and
 // sub_issues.
+//
+// The token needs read access to the repositories and **write access to issues
+// and pull requests**: Hearsay answers each `/hearsay` comment command with a
+// reply comment ([Replier]). A fine-grained token or an App installation needs
+// Metadata and Contents read, and Issues and Pull requests read and write; a
+// classic token needs `repo`.
+//
+// # Commands and replies
+//
+// An issue or pull request comment whose first line starts with [CommandWord]
+// — `/hearsay ratify`, `/hearsay demote`, `/hearsay pin`,
+// `/hearsay merge <topic-id> <topic-id>` — is emitted as a `command` event, not
+// a `message`, with the command read from it in `native` ([Command]); an edit
+// of one says it is an edit. A comment carrying [ReplyMarker], which every
+// reply Hearsay posts ends with, is emitted as a [KindReply], an extension
+// kind based on `command`, whatever else it says: that is how the webhook echo
+// of a reply is never read as a command. Both are control traffic that the
+// distiller leaves out of the issue's or pull request's document (ADR-0022).
+// The connector only describes them. The assertion worker runs the commands,
+// and a [Replier] built from the same source configuration posts the replies;
+// the connector never writes to GitHub.
 //
 // # Things to know before changing it
 //
