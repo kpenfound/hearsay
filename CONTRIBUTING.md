@@ -502,8 +502,11 @@ operator: aggregates and ids, never content, so it takes no principal. Time to
 ratification is `l2.Store.Ratifications`, which replays each topic's standing
 through `l2.Stand` over the times its stances, gestures, undos and document
 readings were recorded; the merge and split rate reads the topic ledger. The
-tests set `created_at` on the rows they seed, since the replay reads recorded
-times and not the order rows were written in. A new metric is a new section of
+drill-down rate, conflict-flag precision and next actions read the audits and
+`next_action` events of the window through `l0.Store.Timeline`, and decode
+only their ids and call names. The tests set `created_at` on the rows they
+seed, since the replay reads recorded times and not the order rows were
+written in; a next action's time is its revision's edit time. A new metric is a new section of
 `eval.Report`, and a field of its JSON is never renamed.
 
 ## Search

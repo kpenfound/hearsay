@@ -245,7 +245,12 @@ gesture or by evidence the policy's `ratified_by` ratifies, as median, p90 and
 the share still unratified at `--until`. The topic merge and split rate is the
 merges and splits in `l2_topic_operations` recorded in the window per topic
 the assertion worker opened in it, with undone ones counted and reported
-beside, not netted out. `--json` is the stable form.
+beside, not netted out. The drill-down rate per bundle section, the searches
+and resolves that looked beyond the bundle, conflict-flag precision and the
+next actions come from L0 (`l0.Store.Timeline`): the session-linked bundle and
+handle audits and the agents' `next_action` events, with the bundles served
+without a session counted as excluded. `--scope` is the topic scope key for the
+first two and the bundle scope for these. `--json` is the stable form.
 
 `hearsay delete --event <l0-id>|--artifact <source> <artifact-id>|--author <identity>`
 requires `--reason` and by default previews the forward provenance walk and

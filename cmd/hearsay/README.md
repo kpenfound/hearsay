@@ -15,7 +15,7 @@ The one binary Hearsay ships. Each process is a subcommand of it (ADR-0003).
 | `hearsay aliases list\|confirm <entity> <name>\|reject <entity> <name>` | List candidates and decide their names as a configured human. |
 | `hearsay topics list <scope>\|merge <from> <into>\|split <topic> --stance <id>... --name <name>\|undo <op-id>\|ops` | List a scope's topics and the topic ledger; merge, split and undo as a configured human. |
 | `hearsay gestures ratify\|demote\|pin\|unpin <document>\|undo <gesture-id>\|list` | Record and list human stance and pin gestures. |
-| `hearsay eval [--since <RFC3339>] [--until <RFC3339>] [--scope <id>] [--json]` | The evaluation metrics over a window: time to ratification, topic merge and split rate. Read-only; aggregates and ids only. |
+| `hearsay eval [--since <RFC3339>] [--until <RFC3339>] [--scope <id>] [--json]` | The evaluation metrics over a window: time to ratification, topic merge and split rate, drill-down rate per bundle section, conflict-flag precision and next actions. Read-only; aggregates and ids only. |
 | `hearsay delete --event <l0-id>\|--artifact <source> <artifact-id>\|--author <identity> [--apply]` | Preview deletion provenance; with `--apply`, redact L0 and re-distill what depended on it. |
 | `hearsay delete list\|show <deletion-id>` | The deletions applied and what each rebuilt. Read-only. |
 | `hearsay version` | Version, commit and build date. |
@@ -72,7 +72,8 @@ under the configured authority, and takes no principal: it prints only counts,
 durations, rates and scope and topic ids, never a stance's position, a topic's
 name, L1 text or an L0 payload. The window is `--since` (default: the
 beginning) up to but not including `--until` (default: now); `--scope` narrows
-it to one topic scope key. It takes no action word.
+it to one topic scope key, and the bundles and next actions to the bundle scope
+of that name. It takes no action word.
 
 - *Time to ratification* replays each topic, as the topic ledger makes it now,
   through `l2.Stand`: every stance, gesture and undo recorded before `--until`,
@@ -87,6 +88,22 @@ it to one topic scope key. It takes no action word.
   window, per topic row the assertion worker opened in it (a split's topic is
   not one), and beside each count how many an undo recorded before `--until`
   reversed. Undone operations are in the count, not netted out.
+- *Drill-down rate per bundle section* reads the bundle audits linked to a
+  session and the handle audits of that session. For each section it prints
+  in how many of the bundles that served something in it a `get_l1`, `get_l0`
+  or `stance_history` on one of its ids, or a `search` within it, followed
+  before the next bundle on that scope in the session. It prints how many
+  bundles had no session and were left out, and, as "looked beyond the
+  bundle", how many `search` and `resolve` calls in that stretch returned no
+  id the bundle served. A refused call follows nothing.
+- *Conflict-flag precision* reads the agents' `next_action` events, each
+  attributed to the latest bundle on its scope in its session before it:
+  the flagged conflicts, the verdicts on them (a conflict judged twice keeps
+  the later verdict), precision `real / (real + spurious)`, coverage (verdicts
+  over flagged) and the verdicts on topics the bundle did not flag, which
+  count in neither. *Next actions* prints the attributed actions, the share
+  that `asked`, `proceeded` and `asserted`, and how many had no bundle before
+  them.
 
 `--json` prints the same report as one object: `since` (null for the
 beginning), `until`, `scope` (empty for every scope), `time_to_ratification`
@@ -94,7 +111,14 @@ with `topics`, `ratified`, `unratified`, `unratified_share`,
 `median_seconds`, `p90_seconds`, `ratified_on_arrival` and a `clocks` array
 (`topic`, `scope`, `started`, `ratified`, `seconds`), and
 `topic_operations` with `topics_opened` and `merges` and `splits`, each
-`count`, `undone` and `per_topic`. A ratio with nothing to divide by is null.
+`count`, `undone` and `per_topic`; `drill_down` with `bundles`,
+`bundles_without_session`, a `sections` array (`section`, `served`,
+`followed`, `share`) in a fixed order, and `looked_beyond` with `search` and
+`resolve`, each `calls`, `beyond` and `share`; `conflict_flags` with
+`flagged`, `verdicts`, `real`, `spurious`, `precision`, `coverage` and
+`unflagged_verdicts`; and `next_actions` with `actions`, `asked`,
+`proceeded` and `asserted` (each `count` and `share`) and `unattributed`. A
+ratio with nothing to divide by is null.
 Fields are added, never renamed.
 
 `hearsay delete` takes exactly one selector and requires `--reason` even for a
