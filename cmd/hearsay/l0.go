@@ -20,7 +20,9 @@ import (
 // It is read-only — nothing here writes an event — and it reads the store
 // directly, so `get` prints an event's payload in full. That is what an
 // inspection tool is for; ADR-0008's rule is about log lines, which go to
-// whoever can read the logs rather than to whoever ran the command.
+// whoever can read the logs rather than to whoever ran the command. An event a
+// tombstone covers or an operator deleted is not printed: `get` fails naming
+// the source's tombstone, or the deletion and its operator (ADR-0018).
 func runL0(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, cfg, _ := newFlagSet("l0", stderr)
 	resolveDatabase := databaseFlag(fs, cfg)
@@ -209,8 +211,8 @@ func printEvents(w io.Writer, events []connector.Event) {
 }
 
 // printCounts prints both totals: what was ever ingested, and what a read
-// returns. They differ by exactly what tombstones cover, which is how an
-// append-only store shows that a deletion kept the row.
+// returns. They differ by exactly what tombstones cover and operators deleted,
+// which is how the store shows that a deletion kept the row.
 func printCounts(w io.Writer, counts []l0.Count) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprint(tw, "SOURCE\tKIND\tEVENTS\tVISIBLE\n")

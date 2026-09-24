@@ -13,11 +13,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/deletion"
+	"github.com/kpenfound/hearsay/internal/l0"
 )
 
-func TestDeletePreviewSelectorsAndNoWrites(t *testing.T) {
+// deleteDatabase is a migrated scratch database: the preview test compares the
+// whole of every table before and after, which only a database of its own
+// allows.
+func deleteDatabase(t *testing.T, prefix string) (string, *pgxpool.Pool) {
+	t.Helper()
 	adminURL := os.Getenv("HEARSAY_DATABASE_URL")
 	if adminURL == "" {
 		t.Skip("HEARSAY_DATABASE_URL is not set")
@@ -28,11 +36,19 @@ func TestDeletePreviewSelectorsAndNoWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer admin.Close()
-	name := "delete_preview_" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	name := prefix + strconv.FormatInt(time.Now().UnixNano(), 36)
 	if _, err := admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = admin.Exec(context.Background(), "DROP DATABASE "+name+" WITH (FORCE)") })
+	t.Cleanup(func() {
+		dropper, err := db.Open(context.Background(), adminURL)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer dropper.Close()
+		_, _ = dropper.Exec(context.Background(), "DROP DATABASE "+name+" WITH (FORCE)")
+	})
 	url := swapDatabaseName(adminURL, name)
 	m, err := db.NewMigrator(ctx, url, nil)
 	if err != nil {
@@ -46,7 +62,13 @@ func TestDeletePreviewSelectorsAndNoWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
+	return url, pool
+}
+
+func TestDeletePreviewSelectorsAndNoWrites(t *testing.T) {
+	url, pool := deleteDatabase(t, "delete_preview_")
+	ctx := t.Context()
 	configPath := writeConfig(t, map[string]string{
 		"sources/chat.yaml":   "id: chat\ntype: discord\ncontainers: [team]\n",
 		"sources/code.yaml":   "id: code\ntype: github\ncontainers: [acme/api]\n",
@@ -65,7 +87,7 @@ func TestDeletePreviewSelectorsAndNoWrites(t *testing.T) {
 	}
 	putEvent("evt:chat:thread", "chat", "thread", "thread", "other")
 	putEvent("evt:chat:reply", "chat", "reply", "reply", "u1")
-	_, err = pool.Exec(ctx, `INSERT INTO l0_events(id,source,native_id,kind,artifact,revision_token,revision_edited_at,occurred_at,payload,acl) VALUES('evt:chat:reply@2','chat','reply@2','message','reply','2',$1,$1,'{"artifact":"reply","author":{"source":"chat","kind":"user","native_id":"u1"}}',$2)`, when, acl)
+	_, err := pool.Exec(ctx, `INSERT INTO l0_events(id,source,native_id,kind,artifact,revision_token,revision_edited_at,occurred_at,payload,acl) VALUES('evt:chat:reply@2','chat','reply@2','message','reply','2',$1,$1,'{"artifact":"reply","author":{"source":"chat","kind":"user","native_id":"u1"}}',$2)`, when, acl)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,5 +189,118 @@ func TestDeletePreviewSelectorsAndNoWrites(t *testing.T) {
 		if err := run(ctx, cmd, &out, &stderr); err == nil {
 			t.Errorf("%v unexpectedly succeeded", args)
 		}
+	}
+}
+
+// The acceptance criteria for the operator: applying needs a configured human,
+// named with --principal, and anything else is refused before a write — before
+// the database is even opened. The preview needs none. `l0 get` names an
+// operator deletion and returns no content, and a tombstone keeps its source.
+func TestDeleteApplyNamesAConfiguredHumanOperator(t *testing.T) {
+	url, pool := deleteDatabase(t, "delete_apply_")
+	ctx := t.Context()
+	configPath := writeConfig(t, map[string]string{
+		"sources/chat.yaml":   "id: chat\ntype: discord\ncontainers: [team]\n",
+		"scopes/all.yaml":     "id: all\nsources: [chat]\n",
+		"principals/pat.yaml": "id: pat\nidentities: [{source: chat, native_id: u1}]\n",
+		"principals/bot.yaml": "id: bot\nkind: agent\nclass: worker\nscopes: ['*']\nidentities: [{source: chat, native_id: b1}]\n",
+	})
+	const secret = "tangerine-otter-42"
+	store := l0.New(pool)
+	msg := func(kind connector.Kind, artifact, text string) connector.Event {
+		return connector.Event{
+			Source: "chat", NativeID: artifact, Kind: kind, Time: time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC),
+			Payload: connector.Payload{
+				Artifact: artifact, Text: text,
+				Container: connector.Container{Kind: connector.ContainerChannel, NativeID: "team"},
+				Author:    &connector.Identity{Source: "chat", Kind: connector.IdentityUser, NativeID: "u1"},
+			},
+			ACL: connector.ACL{{Kind: connector.ACLPublic}},
+		}
+	}
+	tombstone := msg(connector.KindTombstone, "m3:tombstone", "")
+	tombstone.Payload.Target, tombstone.Payload.Author = "m3", nil
+	for _, ev := range []connector.Event{msg(connector.KindMessage, "reply", "the passphrase is "+secret), msg(connector.KindMessage, "m3", "gone at the source"), tombstone} {
+		if _, err := store.Append(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot := func() string {
+		t.Helper()
+		var s string
+		if err := pool.QueryRow(ctx, `SELECT jsonb_build_object('l0',(SELECT jsonb_agg(e ORDER BY id) FROM l0_events e),'deletions',(SELECT jsonb_agg(d ORDER BY id) FROM l0_deletions d),'jobs',(SELECT jsonb_agg(q ORDER BY id) FROM queue_job q))::text`).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	before := snapshot()
+	selector := []string{"delete", "--reason", "a pasted secret", "--event", "evt:chat:reply"}
+	nowhere := "postgres://hearsay@nowhere.invalid:1/hearsay"
+	for _, tt := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"no principal", []string{"--database-url", url, "--config", configPath, "--apply"}, "--apply needs --config and --principal"},
+		{"no config", []string{"--database-url", url, "--apply", "--principal", "pat"}, "--apply needs --config and --principal"},
+		{"unknown principal", []string{"--database-url", url, "--config", configPath, "--apply", "--principal", "nobody"}, "unknown principal"},
+		{"agent principal", []string{"--database-url", url, "--config", configPath, "--apply", "--principal", "bot"}, "must be a configured human"},
+		{"principal without apply", []string{"--database-url", url, "--config", configPath, "--principal", "pat"}, "only read with --apply"},
+		// Refused before the database is opened: an unreachable one does not
+		// change the answer.
+		{"agent principal, no database", []string{"--database-url", nowhere, "--config", configPath, "--apply", "--principal", "bot"}, "must be a configured human"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var out, stderr bytes.Buffer
+			err := run(ctx, append(append([]string{}, selector...), tt.args...), &out, &stderr)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("run() = %v, want a refusal saying %q", err, tt.want)
+			}
+			if got := snapshot(); got != before {
+				t.Errorf("a refused apply wrote something:\nbefore %s\nafter  %s", before, got)
+			}
+		})
+	}
+
+	var out, stderr bytes.Buffer
+	if err := run(ctx, append(append([]string{}, selector...), "--database-url", url), &out, &stderr); err != nil {
+		t.Fatalf("the preview without --principal = %v", err)
+	}
+	if got := snapshot(); got != before {
+		t.Fatal("the preview wrote something")
+	}
+
+	out.Reset()
+	if err := run(ctx, append(append([]string{}, selector...), "--database-url", url, "--config", configPath, "--apply", "--principal", "pat", "--json"), &out, &stderr); err != nil {
+		t.Fatalf("apply = %v", err)
+	}
+	var applied deletion.Applied
+	if err := json.Unmarshal(out.Bytes(), &applied); err != nil {
+		t.Fatalf("apply --json printed %s: %v", out.String(), err)
+	}
+	var operator string
+	if err := pool.QueryRow(ctx, `SELECT operator FROM l0_deletions WHERE id = $1`, applied.Deletion).Scan(&operator); err != nil || operator != "pat" || applied.Operator != "pat" {
+		t.Errorf("recorded operator = %q, %v; printed %q; want pat", operator, err, applied.Operator)
+	}
+	if strings.Contains(snapshot(), secret) {
+		t.Error("the secret is still in L0")
+	}
+
+	get := func(id string) (string, error) {
+		t.Helper()
+		var out, stderr bytes.Buffer
+		err := run(ctx, []string{"l0", "get", id, "--database-url", url}, &out, &stderr)
+		return out.String(), err
+	}
+	printed, err := get("evt:chat:reply")
+	if err == nil || !strings.Contains(err.Error(), applied.Deletion) || !strings.Contains(err.Error(), "by pat") ||
+		!strings.Contains(err.Error(), "deleted by an operator") || strings.Contains(err.Error(), "tombstone") {
+		t.Errorf("l0 get <deleted> = %v, want the deletion %s by pat and no tombstone", err, applied.Deletion)
+	}
+	if strings.Contains(printed, secret) || (err != nil && strings.Contains(err.Error(), secret)) {
+		t.Errorf("l0 get <deleted> printed the content: %s %v", printed, err)
+	}
+	if _, err := get("evt:chat:m3"); err == nil || !strings.Contains(err.Error(), "at source chat by evt:chat:m3:tombstone") || strings.Contains(err.Error(), "operator") {
+		t.Errorf("l0 get <tombstoned> = %v, want the source's tombstone and no operator", err)
 	}
 }

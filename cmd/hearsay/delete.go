@@ -18,8 +18,10 @@ func runDelete(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	resolveDatabase := databaseFlag(fs, cfg)
 	event := fs.String("event", "", "L0 event id")
 	author := fs.String("author", "", "configured principal or source:native-id")
-	reason := fs.String("reason", "", "reason for deletion (required for preview)")
-	asJSON := fs.Bool("json", false, "print a JSON preview")
+	reason := fs.String("reason", "", "reason for deletion (required, preview or not)")
+	asJSON := fs.Bool("json", false, "print the preview, or what was applied, as JSON")
+	apply := fs.Bool("apply", false, "delete: redact the covered L0 events and re-distill what depended on them")
+	operator := fs.String("principal", "", "with --apply: the configured human principal applying the deletion")
 	// flag.FlagSet consumes one value, whereas --artifact has two. Extract its
 	// pair first and let parseWords handle all remaining flags in any position.
 	var artifactSource, artifactID string
@@ -51,10 +53,23 @@ func runDelete(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	if *configPath == "" && *author != "" && !strings.Contains(*author, ":") {
 		return errors.New("--author requires --config")
 	}
+	// Who applies a deletion is settled before anything is opened: the
+	// operator is a configured human, named, and never inferred.
+	if !*apply && *operator != "" {
+		return errors.New("--principal is only read with --apply: a preview needs no operator")
+	}
+	if *apply && (*configPath == "" || *operator == "") {
+		return errors.New("--apply needs --config and --principal <human-id>")
+	}
 	var repo config.Repo
 	if *configPath != "" {
 		repo, err = config.Load(*configPath)
 		if err != nil {
+			return err
+		}
+	}
+	if *apply {
+		if err := deletion.CheckOperator(repo, *operator); err != nil {
 			return err
 		}
 	}
@@ -64,7 +79,21 @@ func runDelete(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		return err
 	}
 	defer pool.Close()
-	p, err := deletion.Walk(ctx, pool, repo, deletion.Selector{Event: *event, ArtifactSource: artifactSource, ArtifactID: artifactID, Author: *author}, *reason)
+	sel := deletion.Selector{Event: *event, ArtifactSource: artifactSource, ArtifactID: artifactID, Author: *author}
+	if *apply {
+		applied, err := deletion.Apply(ctx, pool, repo, sel, *reason, *operator)
+		if err != nil {
+			return err
+		}
+		if *asJSON {
+			return json.NewEncoder(stdout).Encode(applied)
+		}
+		fmt.Fprintf(stdout, "Deletion %s applied (%s) by %s\nReason: %s\n", applied.Deletion, selectorLabel(sel), applied.Operator, *reason)
+		printIDs(stdout, "L0 events redacted", applied.Events)
+		printIDs(stdout, "L1 documents queued for re-distillation", applied.Documents)
+		return nil
+	}
+	p, err := deletion.Walk(ctx, pool, repo, sel, *reason)
 	if err != nil {
 		return err
 	}
@@ -82,12 +111,16 @@ func runDelete(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		{"L0 events", p.Events}, {"L1 documents", p.Documents}, {"L2 stances", p.Stances},
 		{"L2 topics", p.Topics}, {"Alias candidates", p.AliasCandidates}, {"Pins", p.Pins},
 	} {
-		fmt.Fprintf(stdout, "%s (%d):\n", layer.name, len(layer.ids))
-		for _, id := range layer.ids {
-			fmt.Fprintf(stdout, "  %s\n", id)
-		}
+		printIDs(stdout, layer.name, layer.ids)
 	}
 	return nil
+}
+
+func printIDs(w io.Writer, name string, ids []string) {
+	fmt.Fprintf(w, "%s (%d):\n", name, len(ids))
+	for _, id := range ids {
+		fmt.Fprintf(w, "  %s\n", id)
+	}
 }
 
 func selectorLabel(s deletion.Selector) string {
