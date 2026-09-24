@@ -180,7 +180,7 @@ var calls = []call{
 		schema(`{"scope":{"type":"string","description":"the entity id the bundle is for, such as tracker:github:acme/api#12"},"directive":{"type":"string","description":"L0 event id of the triggering message"}}`, "scope")}, getBundle},
 	{Tool{"resolve", "The entity ids a piece of text names, by alias and by path.",
 		schema(`{"text":{"type":"string"}}`, "text")}, resolve},
-	{Tool{"stance_history", "Every stance on a topic the caller may read, oldest first, with the topic's current stance and its tier: ratified, inferred or contested.",
+	{Tool{"stance_history", "Every stance on a topic the caller may read, oldest first, with the topic's current stance and its tier: ratified, inferred or contested. A topic merged into another answers as that one, and the merges and splits that shaped it are listed.",
 		schema(`{"topic":{"type":"string","description":"a topic id, from a bundle's topic_id"}}`, "topic")}, stanceHistory},
 	{Tool{"get_l1", "One L1 document by id.",
 		schema(`{"id":{"type":"string"}}`, "id")}, getL1},
