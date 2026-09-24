@@ -140,7 +140,7 @@ func TestDiscordReactionGestures(t *testing.T) {
 		target string
 		want   int
 	}{
-		{"gesture:" + ratify.ID, 1},
+		{"gesture:" + ratify.ID, 0}, // L0's feed hides a reaction already tombstoned.
 		{"gesture:" + tombstone.ID, 1},
 		{"gesture:" + connector.EventID(src, message.NativeID), 0},
 	} {

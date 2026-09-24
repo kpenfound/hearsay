@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/discord"
@@ -31,10 +32,12 @@ type GestureFollower struct {
 	repo config.Repo
 }
 
+// NewGestureFollower builds the Discord reaction feed reader.
 func NewGestureFollower(pool *pgxpool.Pool, repo config.Repo) *GestureFollower {
 	return &GestureFollower{pool: pool, repo: repo}
 }
 
+// Run follows the feed until the context is cancelled.
 func (f *GestureFollower) Run(ctx context.Context) error {
 	tick := time.NewTicker(DefaultFollowInterval)
 	defer tick.Stop()
@@ -57,6 +60,7 @@ func (f *GestureFollower) Run(ctx context.Context) error {
 	}
 }
 
+// Once enqueues one batch of changes and saves its cursor atomically.
 func (f *GestureFollower) Once(ctx context.Context) (int, error) {
 	from, err := l0.NewCursors(f.pool).Load(ctx, gestureConsumer)
 	if err != nil {
@@ -110,7 +114,8 @@ func (a *Asserter) applyDiscordGesture(ctx context.Context, job queue.Job) error
 	}
 	var req l2.GestureRequest
 	var actorID string
-	if ev.Kind == connector.KindTombstone {
+	switch ev.Kind {
+	case connector.KindTombstone:
 		if !strings.Contains(ev.Payload.Target, ":reaction:") {
 			return nil
 		}
@@ -122,7 +127,7 @@ func (a *Asserter) applyDiscordGesture(ctx context.Context, job queue.Job) error
 			return err
 		}
 		req = l2.GestureRequest{Event: ev.ID, Principal: g.Principal, Action: l2.GestureUndo, Undoes: g.Event}
-	} else if ev.Kind == connector.KindReaction {
+	case connector.KindReaction:
 		var native struct {
 			Emoji string `json:"emoji"`
 		}
@@ -169,7 +174,7 @@ func (a *Asserter) applyDiscordGesture(ctx context.Context, job queue.Job) error
 		if len(req.Documents) == 0 {
 			return fmt.Errorf("reaction %s awaits its containing L1 document", ev.ID)
 		}
-	} else {
+	default:
 		return nil
 	}
 	return pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) error {
