@@ -13,6 +13,7 @@ The one binary Hearsay ships. Each process is a subcommand of it (ADR-0003).
 | `hearsay migrate up\|status\|up-to <n>\|down` | Schema migrations, then exit. `down` refuses without `--i-know`. |
 | `hearsay l0 list\|get <id>\|count\|tail` | Inspect the L0 event store. Read-only. |
 | `hearsay aliases list\|confirm <entity> <name>\|reject <entity> <name>` | List candidates and decide their names as a configured human. |
+| `hearsay topics list <scope>\|merge <from> <into>\|split <topic> --stance <id>... --name <name>\|undo <op-id>\|ops` | List a scope's topics and the topic ledger; merge, split and undo as a configured human. |
 | `hearsay delete --event <l0-id>\|--artifact <source> <artifact-id>\|--author <identity> [--apply]` | Preview deletion provenance; with `--apply`, redact L0 and re-distill what depended on it. |
 | `hearsay delete list\|show <deletion-id>` | The deletions applied and what each rebuilt. Read-only. |
 | `hearsay version` | Version, commit and build date. |
@@ -20,6 +21,36 @@ The one binary Hearsay ships. Each process is a subcommand of it (ADR-0003).
 `hearsay aliases` requires `--config` and `--principal <human-id>`. Its list shows
 entity, name, state and vote count only where that human may read every current
 evidence document. Confirm and reject take the entity id and name shown by list.
+
+`hearsay topics` requires `--config` and `--principal <human-id>`, a configured
+human; an unknown id, an agent or a team is refused before the database is
+opened. It reads what the API's `stance_history` would serve that person: the
+topics as the topic ledger makes them now, within their reach, where the current
+access lists of the evidence allow them
+([ADR-0021](../../docs/adr/0021-reads-follow-the-topic-ledger.md)). A topic, a
+stance or an operation they may not read is refused with the same message as
+one that does not exist.
+
+- `list <scope>` prints each readable topic in the scope, oldest first: id,
+  the number of stances in its history the person may read, and name. A scope
+  with nothing readable prints the header alone, as an unknown scope does.
+- `merge <from> <into>` folds the first topic into the second; `split <topic>
+  --stance <id>... --name <name>` moves the named stances, each one the person
+  may read on that topic, onto a new topic; `undo <op-id>` reverses one merge
+  or split. Each prints the id of the operation it recorded and nothing else.
+  They go through `l2.Operate`
+  ([ADR-0020](../../docs/adr/0020-topic-operations-are-a-ledger-held-on-the-scope-key.md)),
+  which refuses a person the scope's authority policy does not let ratify by
+  hand (`ratified_by.principals`). An undo that later operations in force are
+  in the way of fails naming the ones the person may read. There is no dry run:
+  every operation can be undone.
+- `ops [--scope <scope>] [--since <RFC3339>] [--json]` prints the ledger the
+  person may read, oldest first: id, time, kind, scope, principal, the
+  operation an undo reverses, the undo that reversed it (`-` for none), the
+  topics it covers, the covered stances they may read, and a split's new name.
+  An operation is readable when every topic it covers reads, now, as a topic
+  they may read. `--json` prints an array of objects with the same fields
+  (`undone` is true once an undo reversed it).
 
 `hearsay delete` takes exactly one selector and requires `--reason` even for a
 preview. `--artifact` covers every revision. `--author` takes a configured
@@ -50,11 +81,11 @@ database's. The status is `complete` once every queued document is rebuilt and
 no `distill` or `assert` job on what the rebuild touched is still to run, and
 `rebuilding` until then.
 
-`migrate`, `config`, `l0`, `aliases` and `delete list|show` take an action word, and flags go on either side of
+`migrate`, `config`, `l0`, `aliases`, `topics` and `delete list|show` take an action word, and flags go on either side of
 it and after its argument: `hearsay l0 get <id> --database-url x` and
 `hearsay l0 --database-url x get <id>` are the same command. Each action reads
 its own flags — `l0 list` and `l0 tail` take `--source`, `--kind` and
-`--artifact`, `migrate down` takes `--i-know` — and a flag an action does not
+`--artifact`, `migrate down` takes `--i-know`, `topics split` takes `--stance` and `--name` — and a flag an action does not
 read is an error rather than a no-op, the same way a stray argument is: a filter
 silently dropped is a wrong answer nobody has a reason to doubt.
 
@@ -66,7 +97,7 @@ and no arguments, and say so rather than ignoring what they were given. The
 
 `--database-url` points at Postgres, and also reads `HEARSAY_DATABASE_URL`,
 which is the one to prefer: a URL on a command line puts its password in the
-process list. It is on every subcommand that uses a database — `migrate`, `l0`, `aliases`, `delete`,
+process list. It is on every subcommand that uses a database — `migrate`, `l0`, `aliases`, `topics`, `delete`,
 `all` and the four services — and every one of them refuses to start without
 it.
 

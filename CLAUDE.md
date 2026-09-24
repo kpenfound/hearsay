@@ -126,8 +126,9 @@ key (`queue.Client.Hold`), with no topic or stance row changed
 Every read and the assertion worker's matching follow the ledger: a topic
 merged away reads, and is written to, as the topic it went into, and a split's
 topic is a topic of its own that gets a row when its first new stance lands
-([ADR-0021](docs/adr/0021-reads-follow-the-topic-ledger.md)). No command calls
-`Operate` yet.
+([ADR-0021](docs/adr/0021-reads-follow-the-topic-ledger.md)). `hearsay topics`
+is the one command that calls `Operate`; the Discord and GitHub gestures will
+call it too.
 
 Migrations are `go run ./cmd/hearsay migrate up|status|up-to <n>|down`, or
 `dagger api call hearsay migrate --database-url=...` against a database. They are
@@ -169,6 +170,15 @@ needs Postgres and refuses without it.
 `hearsay l0 list|get <id>|count|tail` inspects the event store — what a source
 has ingested, an artifact's history, and the change feed the distiller
 consumes.
+
+`hearsay topics list <scope>|merge <from> <into>|split <topic> --stance <id>... --name <name>|undo <op-id>|ops`
+needs `--config` and `--principal <human-id>`, a configured human, never an
+agent. It reads what `stance_history` would serve that person — the topics as
+the ledger makes them now, filtered by reach and current access lists — and a
+topic, stance or operation they may not read is refused exactly as one that
+does not exist. `merge`, `split` and `undo` print the id of the operation
+`l2.Operate` recorded, and the scope's `ratified_by.principals` decides who may
+run them. `ops [--scope] [--since <RFC3339>] [--json]` lists the ledger.
 
 `hearsay delete --event <l0-id>|--artifact <source> <artifact-id>|--author <identity>`
 requires `--reason` and by default previews the forward provenance walk and
