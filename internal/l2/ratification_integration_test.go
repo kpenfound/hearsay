@@ -97,11 +97,12 @@ func TestRatificationsReplayStandingOverTheRecordedTimes(t *testing.T) {
 	ratify(undoneDoc, 5)
 
 	// Ratified by evidence: a merged pull request's stance written at hour 4
-	// outranks the chat thread's and ratifies on its own.
+	// outranks the chat thread's and ratifies on its own. Nothing recorded
+	// reading the pull request, so its class counts throughout; what keeps it
+	// from ratifying the topic at hour 0 is that its stance was not written.
 	byEvidence := namedTopic(t, store, "eng", "by evidence")
 	written(byEvidence, chat(), "ship it on friday", 1, 0)
 	merged := putPR("acme/api#1", config.ArtifactMergedPR)
-	read(merged, 4)
 	written(byEvidence, merged, "ship it on monday", 2, 4)
 
 	// A pull request read open at hour 0 and read again merged at hour 6:
