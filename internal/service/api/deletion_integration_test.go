@@ -86,7 +86,7 @@ func TestSourceTombstoneWithdrawsEvidenceAndKeepsSurvivorsReadable(t *testing.T)
 		if _, err := l1.New(w.pool).Get(ctx, docID); err == nil {
 			t.Fatal("the tombstoned L1 document remains")
 		}
-		rows, err := w.pool.Query(ctx, `SELECT target_id, serial_key FROM queue_job WHERE kind = $1 AND target_id LIKE 'withdraw:%' AND state = 'pending'`, l2.AssertKindName)
+		rows, err := w.pool.Query(ctx, `SELECT target_id, serial_key FROM queue_job WHERE kind = $1 AND serial_key = $2 AND target_id LIKE 'withdraw:%' AND state = 'pending'`, l2.AssertKindName, w.src)
 		if err != nil {
 			t.Fatal(err)
 		}
