@@ -62,6 +62,81 @@ only one of them would be read and the other would go missing in silence.
 - An empty file is an error. It is either a half-finished edit or a file
   somebody meant to delete.
 
+## Starting with `hearsay init`
+
+`hearsay init` writes the single file for a team on GitHub, Discord and Google
+Drive, and a separate env file for the secrets it names. It needs no database,
+and what it writes passes `hearsay config validate`.
+
+```sh
+hearsay init                          # asks, on a terminal
+hearsay init --no-input --operator kyle --operator-github kpenfound \
+  --github-repo acme/api,acme/infra \
+  --discord-guild 824100000000000000 --discord-channel 824100000000000001 \
+  --drive-folder 1AbCdEfGhIjKlMnOpQrStUvWxYz
+```
+
+Every question has a flag, and answering it at the prompt is the same as
+passing the flag: a list is comma-separated or the flag repeated, and an empty
+answer skips a source. Without a terminal, or with `--no-input`, nothing is
+asked and what no flag gives is skipped.
+
+| Flag | Question |
+|---|---|
+| `--operator` | Your principal id. Required. |
+| `--operator-name` | Your name. |
+| `--github-repo` | The repositories, `owner/name`. None skips GitHub. |
+| `--operator-github` | Your GitHub login. |
+| `--discord-guild` | The Discord server's id. None skips Discord. |
+| `--discord-channel` | The parent channels to ingest, by id. Required with a guild. |
+| `--operator-discord` | Your Discord user id. |
+| `--drive-folder` | The Drive folders to ingest, by id. None skips Drive. |
+| `--operator-email` | The Google account Drive shares with you. |
+
+It writes `hearsay.yaml` (`--out`) and `hearsay.env` (`--env-file`), and
+refuses if either exists, writing neither, unless `--force` is given. The
+configuration holds:
+
+- a source per service, with the ids `github`, `discord` and `drive`, its
+  containers and its secrets named `HEARSAY_GITHUB_TOKEN`,
+  `HEARSAY_GITHUB_WEBHOOK_SECRET`, `HEARSAY_DISCORD_TOKEN` and
+  `HEARSAY_DRIVE_CREDENTIALS`;
+- a scope per repository, named after it (`owner-name` where two share a
+  name), whose tracker is the repository and whose entity is its
+  `code:owner/name` project, taking all of Discord and Drive; without GitHub,
+  one scope `team` over every source;
+- a human principal for you, and one per person GitHub names, each with a
+  `token_env`;
+- the built-in authority default and the shipped `llm:` tiers, written out, so
+  the file says what applies.
+
+**Who is on the team** is read from the sources, with credentials init takes
+from the same variables the configuration names, and writes nowhere:
+
+- `HEARSAY_GITHUB_TOKEN` set, every collaborator of the repositories, bots
+  aside, becomes a principal: the login, lowercased, is the id, and the login
+  and node id are the GitHub identity. Unset, you are the only principal.
+- `HEARSAY_DISCORD_TOKEN` set as well, a collaborator whose GitHub profile
+  links a Discord account (`https://discord.com/users/<id>`) that is a member
+  of the guild gets that Discord identity. Discord shows a bot no email and no
+  linked accounts, so this is the one match the sources give; a Discord name
+  that equals a GitHub login is not one.
+- `HEARSAY_DRIVE_CREDENTIALS` set as well, a collaborator whose public GitHub
+  email is an address a configured folder is shared with gets that Drive
+  identity.
+- An account two collaborators claim is written on neither, and init says so.
+  What you say about your own accounts is written as you said it.
+
+A collaborator whose login is the id you chose for yourself is refused rather
+than assumed to be you: give that login as `--operator-github` if it is yours.
+
+**The env file** is mode 0600. It holds a random 256-bit API token for every
+principal written, and an empty entry, with a line on where to get it, for
+every source credential and for `ANTHROPIC_API_KEY`. Fill those in before
+starting Hearsay; the file is `KEY=value` lines, for a shell's
+`set -a; . ./hearsay.env` or a compose file's `env_file`. Keep it out of the
+configuration repository.
+
 ## When configuration is read
 
 **At startup, once.** Every process reads it, validates it and either starts or

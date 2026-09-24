@@ -21,6 +21,19 @@ The one binary Hearsay ships. Each process is a subcommand of it (ADR-0003).
 | `hearsay delete list\|show <deletion-id>` | The deletions applied and what each rebuilt. Read-only. |
 | `hearsay version` | Version, commit and build date. |
 
+`hearsay init` writes a new team's single-file configuration (`--out`, default
+`hearsay.yaml`) and a mode-0600 env file (`--env-file`, default `hearsay.env`)
+holding a generated API token per principal and an empty entry for every
+other secret the configuration names. It asks on a terminal, and every
+question has a flag; `--no-input` never asks. It takes the credentials it
+reads the sources with from `HEARSAY_GITHUB_TOKEN`, `HEARSAY_DISCORD_TOKEN`
+and `HEARSAY_DRIVE_CREDENTIALS`, and writes none of them. It refuses to
+overwrite either file without `--force`, and writes neither when it refuses.
+`--github-api-url` names a GitHub Enterprise Server; `--discord-api-url` and
+`--drive-api-url` point at local fixtures. The questions, and who is seeded
+from what, are in
+[docs/config.md](../../docs/config.md#starting-with-hearsay-init).
+
 `hearsay aliases` requires `--config` and `--principal <human-id>`. Its list shows
 entity, name, state and vote count only where that human may read every current
 evidence document. Confirm and reject take the entity id and name shown by list.

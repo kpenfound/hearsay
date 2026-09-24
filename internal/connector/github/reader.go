@@ -20,7 +20,8 @@ import (
 // the names of the directories at the root of the default branch, and a file
 // somebody named in configuration (a CODEOWNERS file). It is not a connector and
 // emits nothing; the assertion worker builds one per GitHub source a `code/`
-// entry names (docs/config.md#code).
+// entry names (docs/config.md#code), and `hearsay init` builds one to list who
+// is on a team ([Reader.Collaborators]).
 //
 // Hearsay holds no code, so this is the whole of what it reads from a
 // repository's tree: the root listing, which carries names and types but no
