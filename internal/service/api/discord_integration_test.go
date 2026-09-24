@@ -92,7 +92,7 @@ func newDiscordWorld(t *testing.T) *discordWorld {
 		"principals/p.yaml": fmt.Sprintf("- id: kyle\n  identities: [{source: %[1]s, native_id: \"11\"}]\n"+
 			"- id: sam\n  identities: [{source: %[1]s, native_id: \"12\"}]\n"+
 			"- id: viv\n  identities: [{source: %[1]s, native_id: \"13\"}]\n"+
-			"- id: shed\n  kind: agent\n  class: worker\n  scopes: [%[2]s]\n  identities: [{source: %[1]s, native_id: \"14\"}]\n", w.src, w.scope),
+			"- id: shed\n  kind: agent\n  class: worker\n  scopes: [code:%[1]s]\n  identities: [{source: %[1]s, native_id: \"14\"}]\n", w.src),
 		"authority/a.yaml": "scope: \"*\"\nratified_by:\n  principals: [kyle, sam]\n",
 	}
 	for name, body := range files {
