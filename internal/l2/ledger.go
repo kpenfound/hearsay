@@ -84,16 +84,7 @@ func Operate(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, req Oper
 	}
 	var op Operation
 	err = pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		w := New(tx)
-		state, err := w.scopeState(ctx, scope)
-		if err != nil {
-			return err
-		}
-		decided, err := state.Decide(req)
-		if err != nil {
-			return err
-		}
-		if op, err = w.appendOperation(ctx, decided); err != nil {
+		if op, err = New(tx).operate(ctx, scope, req); err != nil {
 			return err
 		}
 		held, err := client.CompleteIn(ctx, tx, job)
@@ -113,6 +104,41 @@ func Operate(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, req Oper
 		return Operation{}, err
 	}
 	return op, nil
+}
+
+// ApplyOperation is [Operate] in the transaction the store runs on, which
+// must hold the serial key scope names: an assert job that runs a person's
+// command, whose record commits with the operation. An operation on topics in
+// another scope is refused, as is one [Operate] would refuse.
+func (s *Store) ApplyOperation(ctx context.Context, repo config.Repo, scope string, req OperationRequest) (Operation, error) {
+	if err := req.Validate(); err != nil {
+		return Operation{}, err
+	}
+	in, err := s.operationScope(ctx, req)
+	if err != nil {
+		return Operation{}, err
+	}
+	if in != scope {
+		return Operation{}, fmt.Errorf("%w: the %s is in scope %q, and is being recorded under %q", ErrInvalid, req.Kind, in, scope)
+	}
+	if err := CheckOperator(repo, scope, req.Principal); err != nil {
+		return Operation{}, err
+	}
+	return s.operate(ctx, scope, req)
+}
+
+// operate decides a request against the scope's ledger and appends it, in the
+// transaction holding the scope's key.
+func (s *Store) operate(ctx context.Context, scope string, req OperationRequest) (Operation, error) {
+	state, err := s.scopeState(ctx, scope)
+	if err != nil {
+		return Operation{}, err
+	}
+	decided, err := state.Decide(req)
+	if err != nil {
+		return Operation{}, err
+	}
+	return s.appendOperation(ctx, decided)
 }
 
 func operationTarget() (string, error) {

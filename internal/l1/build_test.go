@@ -343,6 +343,36 @@ func TestBuildLeavesOutAReplyThatSharesNoGrant(t *testing.T) {
 	}
 }
 
+// A command a person gave Hearsay in the conversation, and Hearsay's reply to
+// it, are control traffic: neither is part of the document, its text, its
+// provenance or its participants (ADR-0022).
+func TestBuildLeavesOutCommandsAndReplies(t *testing.T) {
+	resolver := testPrincipals(t)
+	root, children := pullRequest()
+	command := reply(event(connector.KindCommand, repo+"#31:comment:90", at(7), who("u2", "samr"),
+		"", "/hearsay ratify"), repo+"#31")
+	answer := reply(event("github.reply", repo+"#31:comment:91", at(8), agent("b1", "shed-bot"),
+		"", "Ratified 2 stances."), repo+"#31")
+	answer.Payload.BaseKind = connector.KindCommand
+
+	want, err := l1.Build(l1.Input{Root: root, Children: children, Resolver: resolver, Repo: testRepo})
+	if err != nil {
+		t.Fatalf("Build() = %v", err)
+	}
+	got, err := l1.Build(l1.Input{Root: root, Children: append(slices.Clone(children), command, answer), Resolver: resolver, Repo: testRepo})
+	if err != nil {
+		t.Fatalf("Build() with a command and a reply = %v", err)
+	}
+	if !slices.Equal(got.L0Refs, want.L0Refs) || got.RawText != want.RawText || len(got.Participants) != len(want.Participants) || !got.Time.LastActivity.Equal(want.Time.LastActivity) {
+		t.Errorf("Build() with a command and a reply = %+v, want the document without them %+v", got, want)
+	}
+	for _, text := range []string{"/hearsay", "Ratified"} {
+		if strings.Contains(got.RawText, text) {
+			t.Errorf("RawText quotes %q:\n%s", text, got.RawText)
+		}
+	}
+}
+
 // An artifact that makes no document of its own is not an error to be retried;
 // it is a job with nothing to do.
 func TestBuildRefusesAnArtifactThatIsPartOfAnotherDocument(t *testing.T) {

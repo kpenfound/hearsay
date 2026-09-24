@@ -422,6 +422,9 @@ type commentNative struct {
 	ID int64 `json:"id"`
 }
 
+// commentEvent is an issue or pull request comment: a `message`, or, where it
+// is a `/hearsay` command or Hearsay's reply to one, a `command` or a
+// [KindReply] ([controlEvent]).
 func (v view) commentEvent(cm comment) (connector.Event, error) {
 	artifact, parent, err := v.commentOn(cm)
 	if err != nil {
@@ -435,7 +438,8 @@ func (v view) commentEvent(cm comment) (connector.Event, error) {
 	ev.Payload.Text = cm.Body
 	ev.Payload.Author = v.identity(cm.User)
 	ev.Payload.Parent, ev.Payload.Thread = parent, parent
-	return ev, nil
+	n, _ := numberFrom(cm.IssueURL, "/issues/")
+	return controlEvent(ev, cm, n, v.repo)
 }
 
 type reviewCommentNative struct {

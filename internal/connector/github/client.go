@@ -1,6 +1,7 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,8 +16,8 @@ import (
 // budget.
 const maxResponse = 32 << 20
 
-// client is the part of GitHub's REST API the connector calls: authenticated
-// GETs.
+// client is the part of GitHub's REST API Hearsay calls: authenticated GETs,
+// and the POST and PATCH a [Replier] answers a command with.
 type client struct {
 	base  *url.URL
 	token string
@@ -25,12 +26,17 @@ type client struct {
 
 // statusError is a REST call GitHub answered with something other than success.
 type statusError struct {
+	method string
 	path   string
 	status int
 }
 
 func (e *statusError) Error() string {
-	return fmt.Sprintf("GET %s: GitHub answered %d %s", e.path, e.status, http.StatusText(e.status))
+	method := e.method
+	if method == "" {
+		method = http.MethodGet
+	}
+	return fmt.Sprintf("%s %s: GitHub answered %d %s", method, e.path, e.status, http.StatusText(e.status))
 }
 
 // get fetches rel — a path and query relative to the API's base URL — into v,
@@ -92,4 +98,36 @@ func hasNext(header string) bool {
 		}
 	}
 	return false
+}
+
+// send makes a write — rel relative to the API's base URL, in as its JSON
+// body — and decodes GitHub's answer into out, when it is a success.
+func (c *client) send(ctx context.Context, method, rel string, in, out any) error {
+	body, err := json.Marshal(in)
+	if err != nil {
+		return fmt.Errorf("encoding %s %s: %w", method, rel, err)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.base.String()+rel, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("building %s %s: %w", method, rel, err)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("User-Agent", "hearsay")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("%s %s: %w", method, rel, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponse))
+		return &statusError{method: method, path: rel, status: resp.StatusCode}
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponse)).Decode(out); err != nil {
+		return fmt.Errorf("decoding %s %s: %w", method, rel, err)
+	}
+	return nil
 }

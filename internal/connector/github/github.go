@@ -270,6 +270,8 @@ func (c *Connector) Describe() connector.Descriptor {
 		Kinds: []connector.Kind{
 			connector.KindIssue,
 			connector.KindMessage,
+			connector.KindCommand,
+			KindReply,
 			connector.KindPullRequest,
 			connector.KindReview,
 			connector.KindReviewComment,
