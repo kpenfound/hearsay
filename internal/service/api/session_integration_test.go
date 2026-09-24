@@ -181,6 +181,22 @@ func TestAssertionTracesToSessionAndBundles(t *testing.T) {
 	if len(after.Events) != before+3 {
 		t.Errorf("session grew after unlinked handles: %d events", len(after.Events))
 	}
+	// The audit event exists, but its ACL deliberately prevents get_l0 from
+	// serving it. The refusal must not repeat its id in another audit.
+	if status, _ := w.post(t, "/v1/get_l0", withSession, string(mustJSON(t, map[string]any{"id": trace.Events[3].ID}))); status != http.StatusNotFound {
+		t.Errorf("get_l0 of a closed audit = %d, want 404", status)
+	}
+	var refused api.SessionTrace
+	if err := json.Unmarshal(w.http(t, kyle, "get_session", args), &refused); err != nil {
+		t.Fatal(err)
+	}
+	var refusal api.AuditRecord
+	if err := json.Unmarshal(refused.Events[len(refused.Events)-1].Payload.Native, &refusal); err != nil {
+		t.Fatal(err)
+	}
+	if len(refused.Events) != len(after.Events)+1 || refusal.Call != "get_l0" || refusal.Status != http.StatusNotFound || len(refusal.TargetIDs) != 0 {
+		t.Errorf("refused audit = %+v in %d events", refusal, len(refused.Events))
+	}
 	if status, _ := w.post(t, "/v1/get_session", sam, string(mustJSON(t, args))); status != http.StatusNotFound {
 		t.Errorf("Sam follows Kyle's session: %d", status)
 	}
