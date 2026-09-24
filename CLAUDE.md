@@ -132,7 +132,7 @@ call it too.
 
 A person's ratify, demote and pin, and the undo of one, are `l2.RecordGesture`
 (or `l2.Store.ApplyGesture` inside a job already holding the key): one row in
-the `l2_gestures` ledger, keyed by the L0 event the gesture came from so a retry
+the `l2_gestures` ledger, keyed by the source L0 event or a CLI-generated event id so a retry
 records nothing, recorded under the same serial key and authorized as an
 operation is. A ratify or a demote applies to the live stances drawn from the
 documents it names and changes no stance row; `l2.Store.Assess`, and so every
@@ -141,7 +141,7 @@ and a demoted one as `contested` until a ratification or a newer stance. A pin
 writes `l2_pins`
 ([ADR-0023](docs/adr/0023-human-gestures-are-a-ledger-every-standing-reads.md)).
 Parsing a source's reaction or command into a request is the connector work
-items'; nothing in this build calls it yet.
+items'. The CLI calls `RecordGesture` directly.
 
 Migrations are `go run ./cmd/hearsay migrate up|status|up-to <n>|down`, or
 `dagger api call hearsay migrate --database-url=...` against a database. They are
@@ -192,6 +192,14 @@ topic, stance or operation they may not read is refused exactly as one that
 does not exist. `merge`, `split` and `undo` print the id of the operation
 `l2.Operate` recorded, and the scope's `ratified_by.principals` decides who may
 run them. `ops [--scope] [--since <RFC3339>] [--json]` lists the ledger.
+
+`hearsay gestures ratify|demote|pin|unpin <l1-document-id>|undo <gesture-id>|list`
+requires `--config` and `--principal <human-id>`. Writes also accept
+`--artifact <source> <artifact-id>` instead of a document id, print the new
+gesture id, and use the shared L2 gesture ledger and scope authority. Hidden
+targets and ledger records read as missing. `list [--scope] [--since
+<RFC3339>] [--json]` filters the ledger by the person's current reach and
+evidence access. Topic merge is in `hearsay topics merge`.
 
 `hearsay delete --event <l0-id>|--artifact <source> <artifact-id>|--author <identity>`
 requires `--reason` and by default previews the forward provenance walk and

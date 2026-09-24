@@ -31,7 +31,7 @@ L0 and L1 are flat. L2 is the graph. LLM work happens at write time (L0 to L1, L
 
 ## L0: events
 
-Every source connector writes L0 only. An event is `{id, source, native_id, kind, time, payload (JSONB), acl}`. Sources include Slack threads and messages, GitHub issues, PRs, reviews and commits, meeting transcripts from Drive, wiki pages, tracker tickets, and agent session events (start, end, tool calls, assertions). Human gestures are also L0 events; the narrow source-reply exception belongs to runtime components, not connectors ([ADR-0022](adr/0022-human-gestures-and-command-replies.md)).
+Every source connector writes L0 only. An event is `{id, source, native_id, kind, time, payload (JSONB), acl}`. Sources include Slack threads and messages, GitHub issues, PRs, reviews and commits, meeting transcripts from Drive, wiki pages, tracker tickets, and agent session events (start, end, tool calls, assertions). Source gestures are also L0 events; CLI gestures go directly through the shared L2 gesture ledger with a generated event id as the idempotency key. The narrow source-reply exception belongs to runtime components, not connectors ([ADR-0022](adr/0022-human-gestures-and-command-replies.md)).
 
 Agent activity is a first-class source. An agent's tool calls and proposals enter L0 so that later assertions can trace back to what the agent retrieved and chose.
 

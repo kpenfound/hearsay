@@ -14,6 +14,7 @@ The one binary Hearsay ships. Each process is a subcommand of it (ADR-0003).
 | `hearsay l0 list\|get <id>\|count\|tail` | Inspect the L0 event store. Read-only. |
 | `hearsay aliases list\|confirm <entity> <name>\|reject <entity> <name>` | List candidates and decide their names as a configured human. |
 | `hearsay topics list <scope>\|merge <from> <into>\|split <topic> --stance <id>... --name <name>\|undo <op-id>\|ops` | List a scope's topics and the topic ledger; merge, split and undo as a configured human. |
+| `hearsay gestures ratify\|demote\|pin\|unpin <document>\|undo <gesture-id>\|list` | Record and list human stance and pin gestures. |
 | `hearsay delete --event <l0-id>\|--artifact <source> <artifact-id>\|--author <identity> [--apply]` | Preview deletion provenance; with `--apply`, redact L0 and re-distill what depended on it. |
 | `hearsay delete list\|show <deletion-id>` | The deletions applied and what each rebuilt. Read-only. |
 | `hearsay version` | Version, commit and build date. |
@@ -52,6 +53,19 @@ one that does not exist.
   they may read. `--json` prints an array of objects with the same fields
   (`undone` is true once an undo reversed it).
 
+`hearsay gestures` requires `--config` and `--principal <human-id>`. `ratify`,
+`demote`, `pin` and `unpin` take one L1 document id, or `--artifact <source>
+<artifact-id>` in place of the id. An artifact gesture covers every L1 document
+made from that artifact. Ratify and demote cover every live stance drawn from
+the document; pin and unpin act on its scope. The scope's
+`ratified_by.principals` policy authorizes each write. Every write prints its
+gesture record id; `undo <gesture-id>` reverses a gesture. `unpin` undoes all
+active pins on the document and prints each undo record id. Missing and unreadable targets or records
+are reported alike. `list [--scope <scope>] [--since <RFC3339>] [--json]`
+shows the ledger oldest first, within the person's current reach and evidence
+access. Stance ids the person cannot read are omitted from the listing.
+Topic merge remains in `hearsay topics merge`.
+
 `hearsay delete` takes exactly one selector and requires `--reason` even for a
 preview. `--artifact` covers every revision. `--author` takes a configured
 principal (with `--config`) or `source:native-id` (or `source:@handle`); a
@@ -83,7 +97,7 @@ database's. The status is `complete` once every queued document is rebuilt and
 no `distill` or `assert` job on what the rebuild touched is still to run, and
 `rebuilding` until then.
 
-`migrate`, `config`, `l0`, `aliases`, `topics` and `delete list|show` take an action word, and flags go on either side of
+`migrate`, `config`, `l0`, `aliases`, `topics`, `gestures` and `delete list|show` take an action word, and flags go on either side of
 it and after its argument: `hearsay l0 get <id> --database-url x` and
 `hearsay l0 --database-url x get <id>` are the same command. Each action reads
 its own flags — `l0 list` and `l0 tail` take `--source`, `--kind` and
@@ -99,7 +113,7 @@ and no arguments, and say so rather than ignoring what they were given. The
 
 `--database-url` points at Postgres, and also reads `HEARSAY_DATABASE_URL`,
 which is the one to prefer: a URL on a command line puts its password in the
-process list. It is on every subcommand that uses a database — `migrate`, `l0`, `aliases`, `topics`, `delete`,
+process list. It is on every subcommand that uses a database — `migrate`, `l0`, `aliases`, `topics`, `gestures`, `delete`,
 `all` and the four services — and every one of them refuses to start without
 it.
 
