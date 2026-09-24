@@ -94,6 +94,7 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 	}
 	asserter.WithReplies(deps.Replies)
 	follower := NewFollower(deps.Pool, cfg.Repo, 0, 0)
+	gestures := NewGestureFollower(deps.Pool, cfg.Repo)
 	commands := NewCommandFollower(deps.Pool, cfg.Repo, 0, 0)
 	log.InfoContext(ctx, "assertion worker started", "config_digest", cfg.Repo.Digest, "swept", enqueued)
 
@@ -104,6 +105,7 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 	loops := map[string]func(context.Context) error{
 		"worker":    worker.Run,
 		"hierarchy": follower.Run,
+		"gestures":  gestures.Run,
 		"commands":  commands.Run,
 	}
 	errs := make([]error, 0, len(loops))

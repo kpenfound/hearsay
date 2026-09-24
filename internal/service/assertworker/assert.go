@@ -14,6 +14,8 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/connector/discord"
+	"github.com/kpenfound/hearsay/internal/connector/github"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
@@ -106,15 +108,34 @@ type Result struct {
 //
 // A job whose target is an `assertion` event is an agent's stance, appended
 // with no model call ([AppendAssertion]). One whose target is a gesture's
-// event ([l2.GestureTarget]) is a GitHub `/hearsay` command, or the deletion of
-// one, run and answered with no model call ([CommandFollower]). One whose
+// event ([l2.GestureTarget]) is a Discord reaction or GitHub `/hearsay`
+// command, or the deletion of one, handled by its source with no model call.
+// One whose
 // target is a topic
 // operation's ([l2.OperationTarget]) or a gesture's ([l2.GestureHoldTarget]) is
 // a hold that outlived its process, and is done.
 func (a *Asserter) Handle(ctx context.Context, job queue.Job) error {
 	log := telemetry.Logger(ctx)
 	if strings.HasPrefix(job.TargetID, l2.GestureTarget) {
-		return a.githubGesture(ctx, job)
+		id := strings.TrimPrefix(job.TargetID, l2.GestureTarget)
+		ev, err := a.events.Get(ctx, id)
+		if errors.Is(err, l0.ErrNotFound) || errors.Is(err, l0.ErrRetracted) || errors.Is(err, l0.ErrDeleted) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		src, ok := a.repo.Source(ev.Source)
+		if !ok {
+			return nil
+		}
+		switch src.Type {
+		case discord.Type:
+			return a.applyDiscordGesture(ctx, job)
+		case github.Type:
+			return a.githubGesture(ctx, job)
+		}
+		return nil
 	}
 	if strings.HasPrefix(job.TargetID, l2.OperationTarget) || strings.HasPrefix(job.TargetID, l2.GestureHoldTarget) {
 		// A topic operation or a gesture held the scope under this job and

@@ -149,6 +149,9 @@ bundle and `stance_history`, serves a ratified current stance as `ratified`
 and a demoted one as `contested` until a ratification or a newer stance. A pin
 writes `l2_pins`
 ([ADR-0023](docs/adr/0023-human-gestures-are-a-ledger-every-standing-reads.md)).
+The assertion worker interprets Discord reaction L0 events and their
+tombstones as gestures through this ledger. It resolves the actor and the
+containing L1 thread or burst without writing to Discord.
 Parsing a source's reaction or command into a request is the connector work
 items'. The CLI and Discord's `/hearsay pin` call `RecordGesture` directly.
 
