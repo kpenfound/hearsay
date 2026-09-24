@@ -52,6 +52,52 @@ func newPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
+func newScratchPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	adminURL := os.Getenv("HEARSAY_DATABASE_URL")
+	if adminURL == "" {
+		t.Skip("HEARSAY_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	admin, err := db.Open(ctx, adminURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	name := "distiller_none_" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		dropper, err := db.Open(ctx, adminURL)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer dropper.Close()
+		_, _ = dropper.Exec(ctx, "DROP DATABASE "+name+" WITH (FORCE)")
+	})
+	base, query, hasQuery := strings.Cut(adminURL, "?")
+	url := base[:strings.LastIndex(base, "/")+1] + name
+	if hasQuery {
+		url += "?" + query
+	}
+	m, err := db.NewMigrator(ctx, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Up(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_ = m.Close()
+	pool, err := db.Connect(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
 // sources keeps tests out of each other's way: the database outlives one test,
 // and L0 is append-only, so a test takes a source id nothing else uses rather
 // than truncating a table another test is reading.
@@ -391,6 +437,92 @@ func TestANewEventRedistillsTheDocument(t *testing.T) {
 	// The artifact's own time does not move: it happened when it happened.
 	if !after.Time.Created.Equal(before.Time.Created) {
 		t.Errorf("Created moved from %s to %s", before.Time.Created, after.Time.Created)
+	}
+}
+
+func TestRedistillingToNoneWithdrawsTheOldStance(t *testing.T) {
+	pool := newScratchPool(t)
+	src := newSource(t)
+	ingest(t, pool, fixtureEvents(src))
+	d := newDistiller(t, pool, src)
+	docID := l1.DocID(src, repo+"#12")
+	first, err := d.Distill(t.Context(), docID)
+	if err != nil || !first.Written || !first.Asserting {
+		t.Fatalf("first Distill = %+v, %v", first, err)
+	}
+	stored, err := l1.New(pool).Get(t.Context(), docID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph := l2.New(pool)
+	topicID := l2.TopicID("api", docID, 0, "lock order")
+	if _, err := graph.OpenTopic(t.Context(), l2.Topic{ID: topicID, Scope: "api", Name: "lock order", OpenedBy: docID, ACL: public}); err != nil {
+		t.Fatal(err)
+	}
+	old, _, err := graph.AppendStance(t.Context(), l2.Stance{
+		ID:      l2.StanceID(topicID, docID, "take the lock first", stored.DistilledAt, l2.TierInferred),
+		TopicID: topicID, Position: "take the lock first", Evidence: []string{docID},
+		StatedAt: stored.Time.LastActivity, Tier: l2.TierInferred, ACL: public,
+	}, stored.DistilledAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := queue.New(pool, queue.Config{Kind: l2.AssertKind()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The old asserting job represents the stance recorded above.
+	jobs, err := client.Claim(t.Context())
+	if err != nil || len(jobs) != 1 || jobs[0].TargetID != docID {
+		t.Fatalf("first assertion jobs = %+v, %v", jobs, err)
+	}
+	if _, err := client.Complete(t.Context(), jobs[0]); err != nil {
+		t.Fatal(err)
+	}
+
+	ingest(t, pool, []connector.Event{issueWithoutDecision(src)})
+	second, err := d.Distill(t.Context(), docID)
+	if err != nil || !second.Written || second.Asserting {
+		t.Fatalf("second Distill = %+v, %v", second, err)
+	}
+	updated, err := l1.New(pool).Get(t.Context(), docID)
+	if err != nil || updated.Body.OutcomeKind != l1.OutcomeNone {
+		t.Fatalf("updated outcome = %q, %v", updated.Body.OutcomeKind, err)
+	}
+	jobs, err = client.Claim(t.Context())
+	if err != nil || len(jobs) != 1 || jobs[0].TargetID != l2.WithdrawalTarget+old.ID {
+		t.Fatalf("repair jobs = %+v, %v", jobs, err)
+	}
+	registry, err := llm.NewFake(testRepo(src).LLM, loadFixtures(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, err := assertworker.New(pool, registry, testConfig(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.Handle(t.Context(), jobs[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Complete(t.Context(), jobs[0]); err != nil {
+		t.Fatal(err)
+	}
+	history, err := graph.StanceHistory(t.Context(), topicID)
+	if err != nil || len(history) != 2 || history[1].Supersedes != old.ID || !history[1].Withdrawn {
+		t.Fatalf("stance history = %+v, %v", history, err)
+	}
+	if current, ok := l2.Current(history); ok {
+		t.Errorf("current stance = %+v, want none", current)
+	}
+	third, err := d.Distill(t.Context(), docID)
+	if err != nil || third.Written {
+		t.Fatalf("repeat Distill = %+v, %v", third, err)
+	}
+	if err := worker.Handle(t.Context(), jobs[0]); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := graph.StanceHistory(t.Context(), topicID); err != nil || len(again) != 2 {
+		t.Fatalf("history after retry = %+v, %v", again, err)
 	}
 }
 

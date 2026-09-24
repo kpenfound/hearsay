@@ -55,12 +55,12 @@ text that is no longer current (ADR-0019, below).
   is *retired* (`RetiredSQL`, [Current]): never a topic's current stance, and
   never a predecessor again. A new document version writes a supersession even
   if it takes the same position.
-- **L1 deletion repairs L2 on the topic's serial key.** The distiller enqueues
-  an assertion job for each live stance that cited a deleted document. The
-  worker supersedes it with the same position and surviving citations, or an
-  explicit `evidence deleted` withdrawal when none remain. Withdrawals stay in
-  history but never stand as a current position. The original citation ids
-  remain on a withdrawal for provenance.
+- **Lost L1 support repairs L2 on the topic's serial key.** The distiller enqueues
+  a repair job for each live stance that cited a deleted document or a changed
+  document whose outcome no longer asserts. The worker supersedes it with the
+  same position and still asserting citations, or an explicit withdrawal when
+  none remain. Withdrawals stay in history but never stand as a current
+  position. The original citation ids remain on a withdrawal for provenance.
 - **An operator deletion redacts text; a tombstone does not** ([RedactDeleted],
   [ADR-0019](../../docs/adr/0019-operator-deletion-redacts-superseded-l2-text.md)).
   The distiller records each document an operator deletion rebuilt in

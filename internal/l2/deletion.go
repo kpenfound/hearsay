@@ -18,6 +18,16 @@ const WithdrawalTarget = "withdraw:"
 // EnqueueDeletedEvidence schedules each live stance affected by an L1 deletion
 // on its topic's serial key. The caller uses the transaction that deleted L1.
 func EnqueueDeletedEvidence(ctx context.Context, tx pgx.Tx, docIDs []string) error {
+	return enqueueUnsupportedEvidence(ctx, tx, docIDs)
+}
+
+// EnqueueNonassertingEvidence repairs live stances after a changed document
+// stops asserting. The caller has already stored the new L1 outcome in tx.
+func EnqueueNonassertingEvidence(ctx context.Context, tx pgx.Tx, docID string) error {
+	return enqueueUnsupportedEvidence(ctx, tx, []string{docID})
+}
+
+func enqueueUnsupportedEvidence(ctx context.Context, tx pgx.Tx, docIDs []string) error {
 	if len(docIDs) == 0 {
 		return nil
 	}
@@ -25,7 +35,7 @@ func EnqueueDeletedEvidence(ctx context.Context, tx pgx.Tx, docIDs []string) err
 JOIN l2_topics t ON t.id = s.topic_id
 WHERE s.evidence && $1::text[] AND NOT s.withdrawn AND NOT `+RetiredSQL, docIDs)
 	if err != nil {
-		return fmt.Errorf("finding stances with deleted evidence: %w", err)
+		return fmt.Errorf("finding stances with unsupported evidence: %w", err)
 	}
 	type affected struct{ id, scope string }
 	var found []affected
@@ -51,7 +61,7 @@ WHERE s.evidence && $1::text[] AND NOT s.withdrawn AND NOT `+RetiredSQL, docIDs)
 }
 
 // RerunDeletedEvidence replaces a live stance with one supported by the
-// surviving citations, or with an explicit withdrawal if none survive. The
+// still asserting citations, or with an explicit withdrawal if none survive. The
 // assertion worker calls it under the topic's serialized scope key.
 func (s *Store) RerunDeletedEvidence(ctx context.Context, stanceID, scope string) (bool, error) {
 	var live bool
@@ -67,7 +77,7 @@ FROM l2_stances s JOIN l2_topics t ON t.id = s.topic_id WHERE s.id = $1`, stance
 	if err != nil {
 		return false, err
 	}
-	rows, err := s.db.Query(ctx, `SELECT id FROM l1_docs WHERE id = ANY($1)`, st.Evidence)
+	rows, err := s.db.Query(ctx, `SELECT id FROM l1_docs WHERE id = ANY($1) AND outcome_kind IN ('decided', 'proposed', 'resolved')`, st.Evidence)
 	if err != nil {
 		return false, err
 	}
@@ -95,6 +105,13 @@ FROM l2_stances s JOIN l2_topics t ON t.id = s.topic_id WHERE s.id = $1`, stance
 	if withdrawn {
 		evidence = st.Evidence // provenance remains in the historical row
 		position = "evidence deleted"
+		var nonasserting bool
+		if err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM l1_docs WHERE id = ANY($1))`, st.Evidence).Scan(&nonasserting); err != nil {
+			return false, err
+		}
+		if nonasserting {
+			position = "evidence no longer asserts"
+		}
 	}
 	acl, err := json.Marshal(st.ACL)
 	if err != nil {
@@ -107,7 +124,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), $12)
 ON CONFLICT (id) DO NOTHING`, id, st.TopicID, position, st.Author, st.StatedAt,
 		evidence, st.ID, st.Tier, acl, nullableJudgement(JudgementRestates), st.Assertion, withdrawn)
 	if err != nil {
-		return false, fmt.Errorf("superseding stance %s after evidence deletion: %w", st.ID, err)
+		return false, fmt.Errorf("superseding stance %s after evidence withdrawal: %w", st.ID, err)
 	}
 	if err := s.redact(ctx, []string{st.TopicID}); err != nil {
 		return false, err
@@ -123,8 +140,8 @@ const Redacted = "[redacted]"
 // is superseded and was written before an operator deletion rebuilt one of its
 // documents: its text may have been read from what the operator deleted. A
 // stance still current keeps its text until something supersedes it, since a
-// stance is never overwritten while it stands. A withdrawal says only
-// `evidence deleted` and is left alone. The earliest deletion is the one
+// stance is never overwritten while it stands. A withdrawal uses a fixed
+// reason and is left alone. The earliest deletion is the one
 // named.
 const redactStancesSQL = `
 UPDATE l2_stances s SET position = $2, redacted_by = r.deletion

@@ -134,6 +134,11 @@ func (d *Distiller) distillMeeting(ctx context.Context, result Result, root conn
 					return err
 				}
 				result.Asserting = result.Asserting || asserting
+				if !asserting {
+					if err := l2.EnqueueNonassertingEvidence(ctx, tx, segment.ID); err != nil {
+						return err
+					}
+				}
 			}
 		}
 		return rebuilt(ctx, tx, ids, removed)
