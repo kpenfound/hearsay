@@ -38,20 +38,42 @@ func addStance(t *testing.T, store *l2.Store, topic l2.Topic, doc, position stri
 	return stored
 }
 
-// rows is every topic and stance row of a scope, as the tables hold them.
-func rows(t *testing.T, store *l2.Store, scope string) ([]l2.Topic, map[string][]l2.Stance) {
+// rows is every topic and stance row of a scope, as the tables hold them:
+// reads follow the ledger, so this reads the tables.
+func rows(t *testing.T, pool *pgxpool.Pool, scope string) ([]l2.Topic, map[string][]l2.Stance) {
 	t.Helper()
-	topics, err := store.Topics(t.Context(), scope)
+	var topics []l2.Topic
+	rows, err := pool.Query(t.Context(), `SELECT id, scope, name, opened_by, about, join_keys, created_at FROM l2_topics
+WHERE scope = $1 ORDER BY id`, scope)
 	if err != nil {
-		t.Fatalf("Topics() = %v", err)
+		t.Fatalf("reading the topic rows: %v", err)
 	}
-	ids := make([]string, len(topics))
-	for i, topic := range topics {
-		ids[i] = topic.ID
+	for rows.Next() {
+		var topic l2.Topic
+		if err := rows.Scan(&topic.ID, &topic.Scope, &topic.Name, &topic.OpenedBy, &topic.About, &topic.JoinKeys, &topic.CreatedAt); err != nil {
+			t.Fatalf("reading the topic rows: %v", err)
+		}
+		topics = append(topics, topic)
 	}
-	stances, err := store.StanceHistories(t.Context(), ids)
+	if err := rows.Err(); err != nil {
+		t.Fatalf("reading the topic rows: %v", err)
+	}
+	stances := map[string][]l2.Stance{}
+	rows, err = pool.Query(t.Context(), `SELECT s.id, s.topic_id, s.position, coalesce(s.supersedes, ''), s.withdrawn, s.evidence, s.created_at
+FROM l2_stances s JOIN l2_topics t ON t.id = s.topic_id WHERE t.scope = $1 ORDER BY s.id`, scope)
 	if err != nil {
-		t.Fatalf("StanceHistories() = %v", err)
+		t.Fatalf("reading the stance rows: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var st l2.Stance
+		if err := rows.Scan(&st.ID, &st.TopicID, &st.Position, &st.Supersedes, &st.Withdrawn, &st.Evidence, &st.CreatedAt); err != nil {
+			t.Fatalf("reading the stance rows: %v", err)
+		}
+		stances[st.TopicID] = append(stances[st.TopicID], st)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("reading the stance rows: %v", err)
 	}
 	return topics, stances
 }
@@ -93,7 +115,7 @@ func TestMergeSplitAndUndoAreRecordedAndTheRowsStay(t *testing.T) {
 	b1 := addStance(t, store, b, "l1:s:b1", "the engine takes the lock", 2)
 	b2 := addStance(t, store, b, "l1:s:b2", "the engine keeps the lock", 3)
 	other := namedTopic(t, store, elsewhere, "the lock")
-	beforeTopics, beforeStances := rows(t, store, scope)
+	beforeTopics, beforeStances := rows(t, pool, scope)
 
 	merged := operate(t, pool, repo, l2.OperationRequest{Kind: l2.OperationMerge, Principal: "kyle", Into: a.ID, From: b.ID})
 	if merged.ID == 0 || merged.Kind != l2.OperationMerge || merged.Scope != scope || merged.Principal != "kyle" ||
@@ -154,7 +176,7 @@ func TestMergeSplitAndUndoAreRecordedAndTheRowsStay(t *testing.T) {
 	}
 
 	// The rows every operation was about are as they were.
-	afterTopics, afterStances := rows(t, store, scope)
+	afterTopics, afterStances := rows(t, pool, scope)
 	if !topicsEqual(beforeTopics, afterTopics) || !stancesEqual(beforeStances, afterStances) {
 		t.Errorf("the rows changed:\nbefore %+v %+v\nafter  %+v %+v", beforeTopics, beforeStances, afterTopics, afterStances)
 	}
@@ -207,8 +229,13 @@ func TestASplitsTopicCanBeOperatedOn(t *testing.T) {
 	if !slices.Equal(merged.Stances, []string{a2.ID}) {
 		t.Errorf("the merge of the split's topic covers %v, want %v", merged.Stances, []string{a2.ID})
 	}
-	if _, err := store.Topic(t.Context(), split.Topics[1]); !errors.Is(err, l2.ErrNotFound) {
-		t.Errorf("Topic(the split's topic) = %v, want no row", err)
+	var row bool
+	if err := pool.QueryRow(t.Context(), `SELECT EXISTS (SELECT 1 FROM l2_topics WHERE id = $1)`, split.Topics[1]).Scan(&row); err != nil || row {
+		t.Errorf("the split's topic has a row = %v, %v, want none", row, err)
+	}
+	// Merged away, it reads as the topic it went into.
+	if got, err := store.Topic(t.Context(), split.Topics[1]); err != nil || got.ID != c.ID {
+		t.Errorf("Topic(the split's topic) = %+v, %v, want %s", got, err, c.ID)
 	}
 }
 

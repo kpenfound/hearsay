@@ -188,17 +188,37 @@ type ScopeState struct {
 type arrangement struct {
 	live    map[string]bool
 	stances map[string]string
-	// mergedBy is the operation that merged a topic away.
+	// mergedBy is the operation that merged a topic away, and into the topic
+	// it went into.
 	mergedBy map[string]int64
+	into     map[string]string
+	// source is the topic each split in the ledger, in force or not, took its
+	// stances from, keyed by the topic it created.
+	source map[string]string
 }
 
 // arrange replays the operations in force, oldest first, over the rows. An
 // undo is only allowed where nothing later in force touches what it reverses,
 // so leaving an undone operation out of the replay is reversing it.
+//
+// A split's topic has no row until a stance is written on it after the split
+// ([Store.Target]). Such a row is a topic only while a split that creates it is
+// in force: before that, and once it is undone, the stances written on it are
+// on the topic the split took its stances from, as that topic is now.
 func (s ScopeState) arrange() arrangement {
-	a := arrangement{live: map[string]bool{}, stances: map[string]string{}, mergedBy: map[string]int64{}}
+	a := arrangement{
+		live: map[string]bool{}, stances: map[string]string{},
+		mergedBy: map[string]int64{}, into: map[string]string{}, source: map[string]string{},
+	}
+	for _, op := range s.Operations {
+		if op.Kind == OperationSplit {
+			a.source[op.Topics[1]] = op.Topics[0]
+		}
+	}
 	for _, t := range s.Topics {
-		a.live[t] = true
+		if _, split := a.source[t]; !split {
+			a.live[t] = true
+		}
 	}
 	for st, t := range s.Stances {
 		a.stances[st] = t
@@ -216,16 +236,45 @@ func (s ScopeState) arrange() arrangement {
 				}
 			}
 			delete(a.live, from)
-			a.mergedBy[from] = op.ID
+			a.mergedBy[from], a.into[from] = op.ID, into
 		case OperationSplit:
 			for _, st := range op.Stances {
 				a.stances[st] = op.Topics[1]
 			}
 			a.live[op.Topics[1]] = true
 			delete(a.mergedBy, op.Topics[1])
+			delete(a.into, op.Topics[1])
+		}
+	}
+	for st, t := range a.stances {
+		if !a.live[t] {
+			a.stances[st] = a.effective(t)
 		}
 	}
 	return a
+}
+
+// effective is the topic a topic is now: itself while it stands, the topic a
+// merge put it into, and for a split's topic that does not stand, the topic
+// the split took its stances from, each as it is now in turn. A topic the
+// scope does not know is itself.
+func (a arrangement) effective(topic string) string {
+	for seen := map[string]bool{}; !seen[topic]; {
+		seen[topic] = true
+		if a.live[topic] {
+			return topic
+		}
+		if into, ok := a.into[topic]; ok {
+			topic = into
+			continue
+		}
+		if from, ok := a.source[topic]; ok {
+			topic = from
+			continue
+		}
+		return topic
+	}
+	return topic
 }
 
 // on is the stances the arrangement puts on a topic, sorted.

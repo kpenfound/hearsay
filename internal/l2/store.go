@@ -260,23 +260,6 @@ WHERE id = $1`, id, orEmpty(about), orEmpty(joinKeys))
 	return nil
 }
 
-// Topic returns one topic by id.
-func (s *Store) Topic(ctx context.Context, id string) (Topic, error) {
-	t, err := scanTopic(s.db.QueryRow(ctx, `SELECT `+topicColumns+` FROM l2_topics t WHERE t.id = $1`, id))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Topic{}, fmt.Errorf("%w: topic %s", ErrNotFound, id)
-	}
-	if err != nil {
-		return Topic{}, fmt.Errorf("reading topic %s: %w", id, err)
-	}
-	return t, nil
-}
-
-// Topics returns every topic in one scope, oldest first.
-func (s *Store) Topics(ctx context.Context, scope string) ([]Topic, error) {
-	return s.topics(ctx, `SELECT `+topicColumns+` FROM l2_topics t WHERE t.scope = $1 ORDER BY t.created_at, t.id`, scope)
-}
-
 // readableBy is the predicate, over an access-list column, that everyone who
 // may read a document may read what carries it: the list is public, or it
 // carries every grant the document's does — an entry is compared on kind,
@@ -298,28 +281,35 @@ OR (NOT EXISTS (SELECT 1 FROM l1_docs o WHERE o.id = t.opened_by)
 
 // TopicsByJoinKeys is the first half of topic matching: the topics in one scope
 // that share a join key with a document and that its readers may read, most
-// shared keys first, then oldest.
+// shared keys first, then oldest. They are topics as the ledger makes them
+// now ([Store.TopicsOver]): a row merged away is found as the topic it went
+// into, once, and a split's topic by the row it took its stances from.
 func (s *Store) TopicsByJoinKeys(ctx context.Context, scope string, keys []string, readers connector.ACL, limit int) ([]Topic, error) {
 	if len(keys) == 0 || limit <= 0 {
 		return []Topic{}, nil
 	}
-	return s.topics(ctx, `
+	rows, err := s.topics(ctx, `
 SELECT `+topicColumns+` FROM l2_topics t
 WHERE t.scope = $1 AND t.join_keys && $2::text[] AND `+topicReadableBy("$3")+`
 ORDER BY cardinality(ARRAY(SELECT unnest(t.join_keys) INTERSECT SELECT unnest($2::text[]))) DESC, t.created_at, t.id
 LIMIT $4`, scope, keys, aclJSON(readers), limit)
+	if err != nil {
+		return nil, err
+	}
+	return s.matchable(ctx, rows, readers, limit, nil)
 }
 
 // TopicsBySimilarity is the second half: the topics in one scope whose evidence
 // is nearest the document by embedding, within a cosine distance, excluding the
 // ones already found. It reads the vectors #50 stores on L1 and makes no model
 // call, and it finds nothing for a document that has not been embedded — which
-// is every document in a deployment with no `embed` tier.
+// is every document in a deployment with no `embed` tier. Like
+// [Store.TopicsByJoinKeys] it finds topics as the ledger makes them now.
 func (s *Store) TopicsBySimilarity(ctx context.Context, scope, docID string, readers connector.ACL, maxDistance float64, limit int, exclude []string) ([]Topic, error) {
 	if limit <= 0 {
 		return []Topic{}, nil
 	}
-	return s.topics(ctx, `
+	rows, err := s.topics(ctx, `
 SELECT `+topicColumns+` FROM l2_topics t
 JOIN l2_stances s ON s.topic_id = t.id
 JOIN l1_docs d ON d.id = s.evidence[1]
@@ -330,6 +320,10 @@ GROUP BY t.id
 HAVING min(d.embedding <=> q.embedding) <= $3
 ORDER BY min(d.embedding <=> q.embedding), t.id
 LIMIT $4`, scope, docID, maxDistance, limit, orEmpty(exclude), aclJSON(readers))
+	if err != nil {
+		return nil, err
+	}
+	return s.matchable(ctx, rows, readers, limit, exclude)
 }
 
 // EvidenceReadableBy reports whether everyone who may read a document may read
@@ -404,24 +398,36 @@ func aclJSON(acl connector.ACL) string {
 
 // --- stances ---
 
-const stanceColumns = `id, topic_id, position, author, stated_at, evidence, coalesce(supersedes, ''), tier, acl, created_at, judgement, coalesce(assertion, ''), withdrawn`
+// stanceColumns reads a stance aliased `s`, with whether a later reading of
+// its own origin retired it and the rows of the stances on either end of its
+// supersession edges, which is what a read needs to place those edges
+// ([projection.stance]).
+const stanceColumns = `s.id, s.topic_id, s.position, s.author, s.stated_at, s.evidence, coalesce(s.supersedes, ''),
+    s.tier, s.acl, s.created_at, s.judgement, coalesce(s.assertion, ''), s.withdrawn, ` + RetiredSQL + `,
+    coalesce((SELECT p.topic_id FROM l2_stances p WHERE p.id = s.supersedes), ''),
+    ARRAY(SELECT n.id FROM l2_stances n WHERE n.supersedes = s.id ORDER BY n.id),
+    ARRAY(SELECT n.topic_id FROM l2_stances n WHERE n.supersedes = s.id ORDER BY n.id)`
 
 // RetiredSQL is the predicate, over a stance aliased `s`, that a later reading
-// of its own document replaced it: a stance from the same origin on the same
-// topic supersedes it. A stance an agent asserted cites documents but was not
-// read from them, so it neither retires nor is retired by their readings. A
-// retired stance is never a topic's current one, and never a predecessor
-// again. It reads through the topic's index, not the whole table. [Current] and
-// [Stand] apply the same rule to a history already read.
+// of its own document replaced it: a stance from the same origin supersedes
+// it. A stance an agent asserted cites documents but was not read from them,
+// so it neither retires nor is retired by their readings. A retired stance is
+// never a topic's current one, and never a predecessor again. The stance that
+// retired it can be on another topic now — a split can move one and not the
+// other — and it is still retired: its document was read again. It reads
+// through the supersedes index, not the whole table. [Current] and [Stand]
+// apply the same rule to a history already read.
 //
 // A stance's origin is its assertion event, or its first piece of evidence
 // (Stance.origin): coalesce(assertion, evidence[1]).
 const RetiredSQL = `EXISTS (
     SELECT 1 FROM l2_stances n
-    WHERE n.topic_id = s.topic_id AND n.supersedes = s.id
+    WHERE n.supersedes = s.id
       AND coalesce(n.assertion, n.evidence[1]) = coalesce(s.assertion, s.evidence[1]))`
 
-// predecessorSQL is the stance a new one supersedes.
+// predecessorSQL is the stance a new one supersedes, among the stances on its
+// topic, which %s selects: the rows of a topic no operation shaped, or the
+// stances the ledger puts on one it did.
 //
 // A document that already holds a live stance on the topic is being read again
 // in a new version, and the new stance replaces that one, whenever either was
@@ -436,9 +442,9 @@ const RetiredSQL = `EXISTS (
 // point at it. A stance is never overwritten.
 const predecessorSQL = `
 SELECT s.id FROM l2_stances s
-WHERE s.topic_id = $1 AND s.id <> $3 AND NOT s.withdrawn AND (coalesce(s.assertion, s.evidence[1]) = $4 OR s.stated_at <= $2)
+WHERE %s AND s.id <> $2 AND NOT s.withdrawn AND (coalesce(s.assertion, s.evidence[1]) = $3 OR s.stated_at <= $1)
   AND NOT ` + RetiredSQL + `
-ORDER BY coalesce(s.assertion, s.evidence[1]) = $4 DESC, s.stated_at DESC, s.created_at DESC, s.id DESC
+ORDER BY coalesce(s.assertion, s.evidence[1]) = $3 DESC, s.stated_at DESC, s.created_at DESC, s.id DESC
 LIMIT 1`
 
 // AppendStance adds a stance to its topic, superseding the one before it — its
@@ -449,6 +455,10 @@ LIMIT 1`
 // ([AssertionStanceID]), where distilledAt is not used. The same reading is not
 // written twice and is returned as first stored; a new reading can supersede it
 // even when the position is unchanged.
+//
+// The topic is one as the ledger makes it now, with a row ([Store.Target]): a
+// topic merged away is refused, and the predecessor is chosen from every
+// stance the topic holds, whichever row it was written on.
 //
 // The predecessor is read and the row written in two statements, which is safe
 // only because one scope's writes are serialized (ADR-0007); the caller runs it
@@ -468,8 +478,27 @@ func (s *Store) AppendStance(ctx context.Context, st Stance, distilledAt time.Ti
 	case distilledAt.IsZero() || st.ID != StanceID(st.TopicID, st.Evidence[0], st.Position, distilledAt, st.Tier):
 		return Stance{}, false, fmt.Errorf("%w: stance %s is not the id derived from its topic, document, position, version and tier", ErrInvalid, st.ID)
 	}
+	p, err := s.project(ctx, []string{st.TopicID})
+	if err != nil {
+		return Stance{}, false, err
+	}
+	if now := p.topicOf(st.TopicID); now != st.TopicID {
+		return Stance{}, false, fmt.Errorf("%w: stance %s is on topic %s, which is topic %s now", ErrInvalid, st.ID, st.TopicID, now)
+	}
+	on, args := `s.topic_id = $4`, []any{st.StatedAt, st.ID, st.origin(), st.TopicID}
+	if _, shaped := p.members[st.TopicID]; shaped {
+		histories, err := s.histories(ctx, p, []string{st.TopicID})
+		if err != nil {
+			return Stance{}, false, err
+		}
+		ids := []string{}
+		for _, h := range histories[st.TopicID] {
+			ids = append(ids, h.ID)
+		}
+		on, args[3] = `s.id = ANY($4::text[])`, ids
+	}
 	var predecessor *string
-	err := s.db.QueryRow(ctx, predecessorSQL, st.TopicID, st.StatedAt, st.ID, st.origin()).Scan(&predecessor)
+	err = s.db.QueryRow(ctx, fmt.Sprintf(predecessorSQL, on), args...).Scan(&predecessor)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return Stance{}, false, fmt.Errorf("finding what stance %s supersedes: %w", st.ID, err)
 	}
@@ -499,43 +528,59 @@ ON CONFLICT (id) DO NOTHING`,
 	return stored, tag.RowsAffected() == 1, nil
 }
 
-// Stance returns one stance by id.
+// Stance returns one stance by id, on the topic it is on now.
 func (s *Store) Stance(ctx context.Context, id string) (Stance, error) {
-	return s.stance(ctx, `SELECT `+stanceColumns+` FROM l2_stances WHERE id = $1`, id)
-}
-
-func (s *Store) stance(ctx context.Context, sql string, args ...any) (Stance, error) {
-	st, err := scanStance(s.db.QueryRow(ctx, sql, args...))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Stance{}, fmt.Errorf("%w: stance", ErrNotFound)
-	}
+	rows, err := s.stanceRows(ctx, `SELECT `+stanceColumns+` FROM l2_stances s WHERE s.id = $1`, id)
 	if err != nil {
-		return Stance{}, fmt.Errorf("reading a stance: %w", err)
+		return Stance{}, err
 	}
-	return st, nil
+	if len(rows) == 0 {
+		return Stance{}, fmt.Errorf("%w: stance %s", ErrNotFound, id)
+	}
+	placed, err := s.placed(ctx, rows)
+	if err != nil {
+		return Stance{}, err
+	}
+	return placed[0], nil
 }
 
-// StanceHistory is design.md's stance_history(topic): every stance on a topic,
-// in the order they were stated.
+// StanceHistory is design.md's stance_history(topic): every stance on a topic
+// as the ledger makes it now, in the order they were stated. A topic merged
+// away has the history of the topic it went into.
 func (s *Store) StanceHistory(ctx context.Context, topicID string) ([]Stance, error) {
-	return s.stances(ctx, `SELECT `+stanceColumns+` FROM l2_stances WHERE topic_id = $1
-ORDER BY stated_at, created_at, id`, topicID)
+	histories, err := s.StanceHistories(ctx, []string{topicID})
+	if err != nil {
+		return nil, err
+	}
+	if h, ok := histories[topicID]; ok {
+		return h, nil
+	}
+	return []Stance{}, nil
 }
 
-// StanceHistories is [Store.StanceHistory] for many topics in one statement,
-// keyed by topic id. A topic with no stance has no entry.
+// StanceHistories is [Store.StanceHistory] for many topics, keyed by the
+// topic ids asked for. A topic with no stance has no entry.
 func (s *Store) StanceHistories(ctx context.Context, topicIDs []string) (map[string][]Stance, error) {
 	out := map[string][]Stance{}
 	if len(topicIDs) == 0 {
 		return out, nil
 	}
-	stances, err := s.stances(ctx, `SELECT `+stanceColumns+` FROM l2_stances WHERE topic_id = ANY($1)
-ORDER BY topic_id, stated_at, created_at, id`, topicIDs)
+	p, err := s.project(ctx, topicIDs)
 	if err != nil {
 		return nil, err
 	}
-	for _, st := range stances {
-		out[st.TopicID] = append(out[st.TopicID], st)
+	now := make([]string, len(topicIDs))
+	for i, id := range topicIDs {
+		now[i] = p.topicOf(id)
+	}
+	histories, err := s.histories(ctx, p, sortedUnique(now))
+	if err != nil {
+		return nil, err
+	}
+	for i, id := range topicIDs {
+		if h, ok := histories[now[i]]; ok {
+			out[id] = h
+		}
 	}
 	return out, nil
 }
@@ -632,20 +677,34 @@ func (s *Store) Assess(ctx context.Context, authority config.Authority, reader l
 	return out, nil
 }
 
-// StancesFrom is every stance read from one document, oldest first. A stance
-// an agent asserted citing it was not read from it, and is not among them.
+// StancesFrom is every stance read from one document, oldest first, each on
+// the topic it is on now. A stance an agent asserted citing it was not read
+// from it, and is not among them.
 func (s *Store) StancesFrom(ctx context.Context, docID string) ([]Stance, error) {
-	return s.stances(ctx, `SELECT `+stanceColumns+` FROM l2_stances WHERE evidence[1] = $1 AND assertion IS NULL
-ORDER BY stated_at, created_at, id`, docID)
+	rows, err := s.stanceRows(ctx, `SELECT `+stanceColumns+` FROM l2_stances s WHERE s.evidence[1] = $1 AND s.assertion IS NULL
+ORDER BY s.stated_at, s.created_at, s.id`, docID)
+	if err != nil {
+		return nil, err
+	}
+	return s.placed(ctx, rows)
 }
 
-func (s *Store) stances(ctx context.Context, sql string, args ...any) ([]Stance, error) {
+// stanceRow is a stance as its row holds it, with the rows of the stances on
+// either end of its supersession edges.
+type stanceRow struct {
+	Stance
+	supersedesTopic string
+	successors      []string
+	successorTopics []string
+}
+
+func (s *Store) stanceRows(ctx context.Context, sql string, args ...any) ([]stanceRow, error) {
 	rows, err := s.db.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing stances: %w", err)
 	}
 	defer rows.Close()
-	out := []Stance{}
+	out := []stanceRow{}
 	for rows.Next() {
 		st, err := scanStance(rows)
 		if err != nil {
@@ -659,24 +718,26 @@ func (s *Store) stances(ctx context.Context, sql string, args ...any) ([]Stance,
 	return out, nil
 }
 
-func scanStance(row scanner) (Stance, error) {
-	var st Stance
+func scanStance(row scanner) (stanceRow, error) {
+	var r stanceRow
+	st := &r.Stance
 	var tier string
 	var judgement *string
 	var acl []byte
 	if err := row.Scan(&st.ID, &st.TopicID, &st.Position, &st.Author, &st.StatedAt, &st.Evidence,
-		&st.Supersedes, &tier, &acl, &st.CreatedAt, &judgement, &st.Assertion, &st.Withdrawn); err != nil {
-		return Stance{}, err
+		&st.Supersedes, &tier, &acl, &st.CreatedAt, &judgement, &st.Assertion, &st.Withdrawn, &st.Retired,
+		&r.supersedesTopic, &r.successors, &r.successorTopics); err != nil {
+		return stanceRow{}, err
 	}
 	st.Tier = Tier(tier)
 	if judgement != nil {
 		st.Judgement = Judgement(*judgement)
 	}
 	if err := json.Unmarshal(acl, &st.ACL); err != nil {
-		return Stance{}, fmt.Errorf("decoding the acl of stance %s: %w", st.ID, err)
+		return stanceRow{}, fmt.Errorf("decoding the acl of stance %s: %w", st.ID, err)
 	}
 	st.StatedAt, st.CreatedAt = st.StatedAt.UTC(), st.CreatedAt.UTC()
-	return st, nil
+	return r, nil
 }
 
 func nullableJudgement(j Judgement) *string {

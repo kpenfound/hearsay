@@ -47,6 +47,13 @@ func AppendAssertion(ctx context.Context, pool *pgxpool.Pool, authority config.A
 	written := false
 	err = pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		w := l2.New(tx)
+		// Its stance's id is derived from the topic it is written on, which
+		// an operation can change between two runs of one job.
+		if done, err := w.AssertionAppended(ctx, ev.ID); err != nil || done {
+			return err
+		}
+		// The topic the agent named as it is now: one merged away since is
+		// the topic it went into.
 		topic, err := w.Topic(ctx, as.Topic)
 		if err != nil {
 			return err
@@ -55,6 +62,9 @@ func AppendAssertion(ctx context.Context, pool *pgxpool.Pool, authority config.A
 			// The queue serializes on the job's key, and a topic is only
 			// written under its own (l2.ScopeKey).
 			return fmt.Errorf("assertion %s is on topic %s in scope %q, but was enqueued under %q", eventID, topic.ID, topic.Scope, scope)
+		}
+		if topic, err = w.Target(ctx, topic.ID, ev.ACL, as.Evidence[0]); err != nil {
+			return err
 		}
 		_, written, err = w.AppendStance(ctx, l2.Stance{
 			ID:        l2.AssertionStanceID(topic.ID, ev.ID),

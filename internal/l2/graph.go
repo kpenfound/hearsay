@@ -68,9 +68,15 @@ type Topic struct {
 	// now: a read decides that from the document's current access list
 	// ([Access]).
 	ACL connector.ACL
-	// OpenedBy is the L1 document the topic was opened from.
+	// OpenedBy is the L1 document the topic was opened from. A read of a
+	// split's topic leaves it empty: no document opened it.
 	OpenedBy  string
 	CreatedAt time.Time
+	// Operations are, on a read, the merges and splits in force that shaped
+	// the topic, oldest first: a merge into it or of a topic merged into it,
+	// the split that created it, and a split that moved stances off it
+	// ([Store.Topic]). Nothing writes them on the row.
+	Operations []Operation
 }
 
 // Validate reports a topic the store refuses.
@@ -126,6 +132,20 @@ type Stance struct {
 	// ([Access]).
 	ACL       connector.ACL
 	CreatedAt time.Time
+
+	// The rest is set on a read, from the ledger and the other rows, and never
+	// written.
+
+	// Retired reports that a later reading of the stance's own origin
+	// superseded it, on whatever topic that reading is now ([RetiredSQL]).
+	Retired bool
+	// SupersedesTopic is the topic the stance Supersedes names is on now,
+	// where that is not this stance's topic: the edge crosses a split, or a
+	// merge since undone. Empty where the edge stays on the topic.
+	SupersedesTopic string
+	// SupersededAcross are the stances on other topics now that supersede this
+	// one: the same crossing edges, seen from this end.
+	SupersededAcross []StanceRef
 }
 
 // Validate reports a stance the store refuses.
@@ -198,7 +218,7 @@ func retiredIn(history []Stance) map[string]bool {
 	}
 	retired := map[string]bool{}
 	for _, st := range history {
-		if st.Withdrawn {
+		if st.Withdrawn || st.Retired {
 			retired[st.ID] = true
 		}
 		if st.Supersedes != "" && from[st.Supersedes] == st.origin() {
