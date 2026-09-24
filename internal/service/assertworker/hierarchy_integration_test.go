@@ -189,6 +189,7 @@ func TestASubIssueInheritsItsParentsStances(t *testing.T) {
 	f := assertworker.NewFollower(pool, repo, time.Millisecond, l0.MaxLimit)
 	for _, step := range steps {
 		var held pgx.Tx
+		var released chan struct{}
 		if step.file == "issues.edited.sub_issue" {
 			// Hold the feed head while the first delivery commits. This
 			// reproduces the zero-read window that parallel integration tests
@@ -201,12 +202,19 @@ func TestASubIssueInheritsItsParentsStances(t *testing.T) {
 			if err := tx.QueryRow(t.Context(), `SELECT pg_current_xact_id()::text`).Scan(&xid); err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+			t.Cleanup(func() {
+				if released != nil {
+					<-released
+				}
+				_ = tx.Rollback(context.Background())
+			})
 			held = tx
 		}
 		gh.deliver(step.event, step.file)
 		if held != nil {
+			released = make(chan struct{})
 			go func() {
+				defer close(released)
 				time.Sleep(100 * time.Millisecond)
 				_ = held.Rollback(context.Background())
 			}()
