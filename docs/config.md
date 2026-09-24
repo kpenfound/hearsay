@@ -363,8 +363,9 @@ in the workspace's settings or in any `app.slack.com/client/T…` URL.
 A `D…` (direct message) or `G…` (private channel or group DM) id fails at
 startup. Private channels created since 2021 have `C…` ids too, so on every
 connection the connector reads each channel with `conversations.info`: a
-private, direct-message or Slack Connect channel stops the source with failed
-health, and the fix is to take it out of `containers` and restart. A channel the
+direct-message or Slack Connect channel stops the source with failed
+health. A private or archived channel triggers a durable ACL re-sync of its
+prior content; the app may lose access to new messages there. A channel the
 app is not in is reported as degraded health and checked again on the next
 connection. Messages from any other workspace are dropped.
 

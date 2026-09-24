@@ -839,8 +839,8 @@ else.
 
 | Artifact | kind | artifact id | native_id | container |
 |---|---|---|---|---|
-| Message or thread reply | `message` | `<channel id>/<ts>` | `<artifact>@<content hash>+perm:public` | channel `<channel id>` |
-| Reaction | `reaction` | `<channel id>/<ts>:reaction:<user id>:<name>` | same | channel |
+| Message or thread reply | `message` | `<channel id>/<ts>` | `<artifact>@<content hash>+perm:public` (or `perm:private` after re-sync) | channel `<channel id>` |
+| Reaction | `reaction` | `<channel id>/<ts>:reaction:<user id>:<name>` | same, or `<artifact>@perm:private` when restricted | channel |
 | Deleted message | `tombstone` | `<channel id>/<ts>:tombstone` | same, with `target` `<channel id>/<ts>` | channel |
 | Removed reaction | `tombstone` | `<reaction artifact>:tombstone` | same, with `target` `<reaction artifact>` | channel |
 

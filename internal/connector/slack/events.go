@@ -14,9 +14,8 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector"
 )
 
-// permPublic is the permission part of every revision token. Only public
-// channels are ingested, so it is constant in this version; it is in the
-// token so that an ACL change can be a new revision (docs/connector-contract.md).
+// permPublic is the permission part of a public message revision token. A
+// visibility change uses perm:private so ACL re-sync is a new revision.
 const permPublic = "perm:public"
 
 // callback is an Events API payload, as a Socket Mode envelope carries it.
@@ -222,7 +221,7 @@ func (c *Connector) event(kind connector.Kind, artifact, channel string, at time
 }
 
 func (c *Connector) emit(ctx context.Context, sink connector.Sink, ev connector.Event) error {
-	if ev.ACL[0].Kind != connector.ACLPublic && ev.Payload.Revision == nil && ev.Kind == connector.KindReaction {
+	if ev.ACL[0].Kind != connector.ACLPublic && ev.Payload.Revision == nil {
 		ev.NativeID += "@perm:private"
 		ev.Payload.Revision = &connector.Revision{Token: "perm:private"}
 	}

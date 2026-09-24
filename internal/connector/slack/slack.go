@@ -3,8 +3,8 @@
 // deployment needs no public ingress and no request URL.
 //
 // A source names the workspace in settings `team` (its `T…` id) and its
-// channels in `containers`, by channel id (`C…`). Only public channels are
-// ingested in this version. A `D…` (direct message) or `G…` (private channel or
+// channels in `containers`, by channel id (`C…`). Configure public channels;
+// when one becomes private or archived, its prior content is restricted. A `D…` (direct message) or `G…` (private channel or
 // group direct message) container, or `*`, fails construction, and so a
 // configuration naming one does not start. Private channels created since 2021
 // have `C…` ids too, so every connection first reads each configured channel

@@ -167,6 +167,10 @@ func TestArchiveTransitionRequestsResyncBeforeAckAndRetries(t *testing.T) {
 		if err := ws.ReadJSON(&ack); err != nil {
 			t.Errorf("no ack after request: %v", err)
 		}
+		_ = ws.WriteJSON(map[string]any{"type": "events_api", "envelope_id": "three", "payload": map[string]any{"type": "event_callback", "team_id": "T0001", "event": map[string]any{"type": "message", "channel": public, "channel_type": "channel", "subtype": "message_deleted", "deleted_ts": "1758700000.000100"}}})
+		if err := ws.ReadJSON(&ack); err != nil {
+			t.Errorf("no ack for restricted tombstone: %v", err)
+		}
 	})
 	c, err := slack.New(fake.resolved())
 	if err != nil {
@@ -181,6 +185,9 @@ func TestArchiveTransitionRequestsResyncBeforeAckAndRetries(t *testing.T) {
 	}
 	if sink.requests != 2 {
 		t.Errorf("requests = %d, want retry", sink.requests)
+	}
+	if events := sink.Events(); len(events) != 1 || events[0].ACL[0].Kind != connector.ACLGroup || events[0].Payload.Revision.Token != "perm:private" {
+		t.Errorf("restricted tombstone = %+v", events)
 	}
 	publicNow, err := c.Public(t.Context(), public)
 	if err != nil || publicNow {
