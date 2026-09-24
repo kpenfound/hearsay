@@ -221,8 +221,8 @@ type Hidden interface {
 // that quotes the comment would keep it. A tombstone for an artifact L0 holds
 // nothing of belongs to no document.
 //
-// That is deletion's first step and not the whole of it: walking provenance
-// forward from an L1 document to the L2 objects built on it is issue #23.
+// Distillation then deletes or re-reads L1, and deletion enqueues the affected
+// L2 stances on their serialized scope keys.
 func TargetOf(ctx context.Context, ev connector.Event, hidden Hidden) (string, bool, error) {
 	if ev.Kind != connector.KindTombstone && ev.Payload.BaseKind != connector.KindTombstone {
 		target, ok := targetOf(ev)

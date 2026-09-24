@@ -114,11 +114,14 @@ func (d *Distiller) distillMeeting(ctx context.Context, result Result, root conn
 		ids[i] = segment.ID
 	}
 	err = pgx.BeginFunc(ctx, d.pool, func(tx pgx.Tx) error {
-		removed, err := tx.Exec(ctx, `DELETE FROM l1_docs WHERE source = $1 AND kind = $2 AND left(source_native_id, length($3)) = $3 AND NOT (id = ANY($4))`, root.Source, l1.KindMeetingSegment, l1.MeetingSegmentPrefix(root.Payload.Artifact), ids)
+		removed, err := deleteDerived(ctx, tx, `DELETE FROM l1_docs WHERE source = $1 AND kind = $2 AND left(source_native_id, length($3)) = $3 AND NOT (id = ANY($4))`, root.Source, l1.KindMeetingSegment, l1.MeetingSegmentPrefix(root.Payload.Artifact), ids)
 		if err != nil {
 			return fmt.Errorf("reconciling segments of %s: %w", result.DocID, err)
 		}
-		result.Deleted = removed.RowsAffected() > 0
+		result.Deleted = len(removed) > 0
+		if err := l2.EnqueueDeletedEvidence(ctx, tx, removed); err != nil {
+			return err
+		}
 		for _, segment := range segments {
 			written, err := l1.New(tx).Put(ctx, segment)
 			if err != nil {

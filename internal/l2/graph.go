@@ -110,6 +110,9 @@ type Stance struct {
 	// cited, none of which it was read from, and its authority is its own
 	// ([AssertedEvidence]) rather than that of what it cites.
 	Assertion string
+	// Withdrawn marks a history entry made when none of its evidence survives.
+	// Its position explains the change, but it cannot be a current position.
+	Withdrawn bool
 	// Supersedes is the stance this one replaced on its topic, empty for the
 	// first.
 	Supersedes string
@@ -179,7 +182,7 @@ func (s Stance) origin() string {
 func Current(history []Stance) (Stance, bool) {
 	retired := retiredIn(history)
 	for i := len(history) - 1; i >= 0; i-- {
-		if !retired[history[i].ID] {
+		if !retired[history[i].ID] && !history[i].Withdrawn {
 			return history[i], true
 		}
 	}
@@ -195,6 +198,9 @@ func retiredIn(history []Stance) map[string]bool {
 	}
 	retired := map[string]bool{}
 	for _, st := range history {
+		if st.Withdrawn {
+			retired[st.ID] = true
+		}
 		if st.Supersedes != "" && from[st.Supersedes] == st.origin() {
 			retired[st.Supersedes] = true
 		}

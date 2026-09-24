@@ -54,6 +54,12 @@ corrupt.
   is *retired* (`RetiredSQL`, [Current]): never a topic's current stance, and
   never a predecessor again. A new document version writes a supersession even
   if it takes the same position.
+- **L1 deletion repairs L2 on the topic's serial key.** The distiller enqueues
+  an assertion job for each live stance that cited a deleted document. The
+  worker supersedes it with the same position and surviving citations, or an
+  explicit `evidence deleted` withdrawal when none remain. Withdrawals stay in
+  history but never stand as a current position. The original citation ids
+  remain on a withdrawal for provenance.
 - **Otherwise supersession follows `stated_at`, the evidence's time.** A
   document read late supersedes the newest live stance before it and is
   superseded by nothing, so the chain forks; the later stance is never
@@ -63,9 +69,10 @@ corrupt.
   model call. Topic and stance ids are derived from what produced them, and the
   store refuses a stance id that is not [StanceID] of its topic, document,
   position, document version and tier (for an asserted stance,
-  [AssertionStanceID] of its topic and event). The primary key skips a retry of
-  the same reading, while a new version or tier records another stance even if
-  the position is worded the same way.
+  [AssertionStanceID] of its topic and event). A deletion repair derives its
+  id from the predecessor and surviving evidence. The primary key skips a
+  retry of the same reading or repair, while a new version or tier records
+  another stance even if the position is worded the same way.
 - **An asserted stance is read from an event, not from what it cites.** A
   stance an agent writes through the API's `assert` call records its L0
   `assertion` event (`Stance.Assertion`); its evidence is the documents the
@@ -76,18 +83,19 @@ corrupt.
   ([AssertedEvidence]), whatever it cites — citing a merged pull request does
   not lend an agent a merged pull request's authority.
 - **Who may read a topic or a stance is decided from L1 as it is now**
-  ([Access]): a topic by the document that opened it, a stance by every piece
-  of its evidence, each still in L1 and readable. The `acl` written on a topic
+  ([Access]): a topic by its opening document while it exists, then by a live
+  surviving stance; a stance by every piece of its evidence, each still in L1
+  and readable. The `acl` written on a topic
   or a stance is what its first document allowed when the worker read it; a
   second piece of evidence, an ACL re-sync (ADR-0013) or a retraction is not in
-  it, so no read authorizes on it. A document that is gone fails closed.
-  Reach is decided from the same read: a topic is in reach when what it is
-  about and its opening document are, a stance when all its evidence is.
+  it, so no read authorizes on it. A stance whose evidence is gone fails closed.
+  Reach is decided from the same read.
   `Descendants` and `LinkedCode` are what a reach is expanded over
   (`principal.Reach`).
 - **A topic is only offered to a document everyone who may read it may read the
-  topic too** (`topicReadableBy`): its opening document's current access list
-  is public, or carries every grant of the document's, compared without labels.
+  topic too** (`topicReadableBy`): its opening document's current access list,
+  or a surviving live stance when the opener is gone, is public or carries
+  every grant of the document's, compared without labels.
   Otherwise a private topic's name reaches a prompt about a public document and
   the stance it produces. Its current position is shown only where every piece
   of that position's evidence passes the same test

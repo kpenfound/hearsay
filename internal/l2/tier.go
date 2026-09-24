@@ -81,7 +81,7 @@ func Stand(in TierInputs) (Standing, bool) {
 	retired := retiredIn(in.History)
 	var live []Stance
 	for _, st := range in.History {
-		if !retired[st.ID] {
+		if !retired[st.ID] && !st.Withdrawn {
 			live = append(live, st)
 		}
 	}
