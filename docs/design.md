@@ -306,6 +306,13 @@ Log every bundle and what the consumer did next.
 
 Without these the distillation is just confident.
 
+`hearsay eval [--since] [--until] [--scope] [--json]` prints the metrics over a window, as aggregates and scope and topic ids only: never a stance position, a topic name, L1 text or an L0 payload. The two metrics that need only the L2 ledgers come from them:
+
+- **Time to ratification** comes from the stance history and the gesture ledger (`l2_stances`, `l2_gestures`), with standing computed by the same rule every read serves under the authority configured now, not from the tier stored on a stance row. Each topic, as the topic ledger makes it now, is replayed over what was recorded before the window's end: the stances written, the ratifications and demotions in force, and each document's artifact class as L1 holds it from the moment the assertion worker read that version. The clock starts the first time the topic stands at a stance that is not ratified and stops the first time it stands ratified after that, by a person's ratification or by evidence `ratified_by` ratifies on its own. A topic counts in the window its clock started in; the median and p90 are over those that stopped before the window's end, and the share still unratified is over all of them.
+- **Topic merge and split rate** comes from the topic ledger (`l2_topic_operations`): the merges and splits recorded in the window, divided by the topics the assertion worker opened in it. An undone operation still counts, and how many were undone is reported beside the count.
+
+Drill-down rate and conflict-flag precision are not printed yet: they will come from the session-linked bundle audits and the consumer's next-action reports.
+
 ## Relationship to existing work
 
 Agent memory layers (Mem0, Zep/Graphiti, Letta, Cognee, Neo4j Agent Memory) persist what an agent saw across sessions. They are agent-centric, do not ingest team communication, and have no stance or decision model. Enterprise knowledge systems (Cerebras Knowledge, Onyx, Glean) federate sources into search and stop at L1. Hearsay borrows Cerebras' one-table ingest, thread distillation, and hybrid retrieval for L1, and Neo4j's idea that agent reasoning is itself memory for L0. The stance history, provenance-driven deletion, and permission-filtered bundles are the parts nothing else does.

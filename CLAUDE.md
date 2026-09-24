@@ -233,6 +233,20 @@ targets and ledger records read as missing. `list [--scope] [--since
 <RFC3339>] [--json]` filters the ledger by the person's current reach and
 evidence access. Topic merge is in `hearsay topics merge`.
 
+`hearsay eval [--since <RFC3339>] [--until <RFC3339>] [--scope <id>] [--json]`
+needs `--config`, because standing is computed under the configured authority,
+and a database; it takes no principal and writes nothing. It prints the
+evaluation metrics over the window (`internal/eval`) as aggregates and ids
+only — never a position, a topic name, L1 text or an L0 payload. Time to
+ratification replays each topic as the ledger makes it now through `l2.Stand`
+over what was recorded before `--until` (`l2.Store.Ratifications`): from its
+first moment standing unratified to its first moment standing ratified, by
+gesture or by evidence the policy's `ratified_by` ratifies, as median, p90 and
+the share still unratified at `--until`. The topic merge and split rate is the
+merges and splits in `l2_topic_operations` recorded in the window per topic
+the assertion worker opened in it, with undone ones counted and reported
+beside, not netted out. `--json` is the stable form.
+
 `hearsay delete --event <l0-id>|--artifact <source> <artifact-id>|--author <identity>`
 requires `--reason` and by default previews the forward provenance walk and
 writes nothing. `--author` takes a configured principal or a source identity, and
@@ -261,6 +275,7 @@ One binary, four services, layers underneath (ADR-0003).
 | `cmd/hearsay` | Subcommands. Flags, config, dependencies, then `Run`. Nothing else. |
 | `internal/service` | The four processes, one subpackage each. Every one exposes `Run(ctx, cfg, deps) error`. |
 | `internal/l0` … `internal/l3` | The four layers: events, documents, graph, derived views. |
+| `internal/eval` | The evaluation metrics `hearsay eval` prints. |
 | `internal/bundle` | Context bundle assembly — the primary read. |
 | `internal/connector` | The connector contract and runtime. |
 | `internal/llm` | Provider abstraction and the `distill`/`assert`/`embed` tiers. |

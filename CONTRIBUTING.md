@@ -490,6 +490,22 @@ Stance ids for `split` come from `stance_history`. There is no dry run; undo
 is how a mistake is taken back, and an undo that a later operation still in
 force is in the way of fails until that one is undone.
 
+## Evaluation
+
+```sh
+go run ./cmd/hearsay eval --config ./config
+go run ./cmd/hearsay eval --scope api --since 2026-09-01T00:00:00Z --until 2026-09-24T00:00:00Z --json --config ./config
+```
+
+`hearsay eval` prints the evaluation metrics (`internal/eval`) for an
+operator: aggregates and ids, never content, so it takes no principal. Time to
+ratification is `l2.Store.Ratifications`, which replays each topic's standing
+through `l2.Stand` over the times its stances, gestures, undos and document
+readings were recorded; the merge and split rate reads the topic ledger. The
+tests set `created_at` on the rows they seed, since the replay reads recorded
+times and not the order rows were written in. A new metric is a new section of
+`eval.Report`, and a field of its JSON is never renamed.
+
 ## Search
 
 `l1.Store.Search` is hybrid retrieval over the document table and the whole of
