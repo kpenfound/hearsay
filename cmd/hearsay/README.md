@@ -13,11 +13,20 @@ The one binary Hearsay ships. Each process is a subcommand of it (ADR-0003).
 | `hearsay migrate up\|status\|up-to <n>\|down` | Schema migrations, then exit. `down` refuses without `--i-know`. |
 | `hearsay l0 list\|get <id>\|count\|tail` | Inspect the L0 event store. Read-only. |
 | `hearsay aliases list\|confirm <entity> <name>\|reject <entity> <name>` | List candidates and decide their names as a configured human. |
+| `hearsay delete --event <l0-id>\|--artifact <source> <artifact-id>\|--author <identity>` | Preview deletion provenance only. Writes nothing. |
 | `hearsay version` | Version, commit and build date. |
 
 `hearsay aliases` requires `--config` and `--principal <human-id>`. Its list shows
 entity, name, state and vote count only where that human may read every current
 evidence document. Confirm and reject take the entity id and name shown by list.
+
+`hearsay delete` takes exactly one selector and requires `--reason` even for a
+preview. `--artifact` covers every revision. `--author` takes a configured
+principal (with `--config`) or `source:native-id` (or `source:@handle`); a
+principal expands to all configured source identities. The summary names the
+covered L0 events, dependent L1 documents and L2 stances, topics, alias
+candidates and pins. `--json` prints the same walk as a JSON object. This
+command only previews; it has no apply mode yet.
 
 `migrate`, `config`, `l0` and `aliases` take an action word, and flags go on either side of
 it and after its argument: `hearsay l0 get <id> --database-url x` and
@@ -35,7 +44,7 @@ and no arguments, and say so rather than ignoring what they were given. The
 
 `--database-url` points at Postgres, and also reads `HEARSAY_DATABASE_URL`,
 which is the one to prefer: a URL on a command line puts its password in the
-process list. It is on every subcommand that uses a database — `migrate`, `l0`, `aliases`,
+process list. It is on every subcommand that uses a database — `migrate`, `l0`, `aliases`, `delete`,
 `all` and the four services — and every one of them refuses to start without
 it.
 
