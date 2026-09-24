@@ -293,18 +293,20 @@ func TestTopicsCommands(t *testing.T) {
 		if got, want := ids(opsJSON("sam")), []int64{merge.ID, split.ID}; !slices.Equal(got, want) {
 			t.Errorf("sam's ops = %v, want %v: kyle's split is not theirs to read", got, want)
 		}
+		// kyle's split is also in the way of undoing sam's, and it is all
+		// that is: sam is told there is a conflict, and nothing about it.
+		msg := mustFail("sam", "undo", fmt.Sprint(split.ID))
+		if !strings.Contains(msg, "conflicting topic operation") || !strings.Contains(msg, "still in force") || strings.Contains(msg, fmt.Sprint("operation ", private.ID)) {
+			t.Errorf("sam's undo under a split they may not read = %s, want a conflict naming no operation", msg)
+		}
+		undoPrivate := recorded("kyle", "undo", fmt.Sprint(private.ID))
 		undoSplit := recorded("sam", "undo", fmt.Sprint(split.ID))
 		if undoSplit.Kind != l2.OperationUndo || undoSplit.Undoes != split.ID || undoSplit.Principal != "sam" {
 			t.Errorf("the undo recorded %+v", undoSplit)
 		}
-		msg := mustFail("sam", "undo", fmt.Sprint(merge.ID))
-		if !strings.Contains(msg, "conflicting topic operation") || !strings.Contains(msg, "still in force") || strings.Contains(msg, fmt.Sprint(private.ID)) {
-			t.Errorf("sam's undo under a split they may not read = %s, want a conflict naming no operation", msg)
-		}
 		if msg := mustFail("sam", "undo", fmt.Sprint(undoSplit.ID)); !strings.Contains(msg, "an undo is not undone") {
 			t.Errorf("an undo of an undo = %s", msg)
 		}
-		undoPrivate := recorded("kyle", "undo", fmt.Sprint(private.ID))
 		undoMerge := recorded("kyle", "undo", fmt.Sprint(merge.ID))
 		if msg := mustFail("kyle", "undo", fmt.Sprint(merge.ID)); !strings.HasSuffix(msg, fmt.Sprintf("already undone by: operation %d", undoMerge.ID)) {
 			t.Errorf("a second undo = %s", msg)
