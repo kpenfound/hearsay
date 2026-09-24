@@ -1,6 +1,6 @@
 # 22. Human gestures enter L0; only explicit commands receive source replies
 
-- Status: accepted
+- Status: accepted; the assertion worker does not interpret Discord slash commands, which the interaction adapter applies itself ([ADR-0024](0024-discord-commands-are-applied-by-the-interaction-adapter.md))
 - Date: 2026-09-24
 
 ## Context
