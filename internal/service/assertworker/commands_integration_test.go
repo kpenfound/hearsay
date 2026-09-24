@@ -255,6 +255,24 @@ func (c *commands) operations() []l2.Operation {
 	return ops
 }
 
+// followUntil runs the follower until it has enqueued the job for last. The
+// feed holds events back while any transaction in the cluster is open, so one
+// read may return nothing; and it is read in order, so once last's job is
+// there every event appended before it has been read.
+func (c *commands) followUntil(f *assertworker.CommandFollower, last connector.Event) {
+	c.t.Helper()
+	waitFor(c.t, "the follower to read "+last.ID, func() bool {
+		if _, err := f.Once(c.t.Context()); err != nil {
+			c.t.Fatalf("Once() = %v", err)
+		}
+		var n int
+		if err := c.pool.QueryRow(c.t.Context(), `SELECT count(*) FROM queue_job WHERE target_id = $1`, l2.GestureTarget+last.ID).Scan(&n); err != nil {
+			c.t.Fatal(err)
+		}
+		return n > 0
+	})
+}
+
 func commentID(t *testing.T, ev connector.Event) int64 {
 	t.Helper()
 	cmd, err := github.CommandOf(ev)
@@ -412,16 +430,17 @@ func TestOnlyCommandsAreRun(t *testing.T) {
 	for _, ev := range []connector.Event{message, echo} {
 		c.mustHandle(ev)
 	}
-	follower := assertworker.NewCommandFollower(c.pool, c.repo, 0, 0)
-	if _, err := follower.Once(t.Context()); err != nil {
+	if c.replies.posts != 0 || len(c.gestures()) != 0 {
+		t.Errorf("replies = %d, gestures = %d, want nothing for a comment and an echo", c.replies.posts, len(c.gestures()))
+	}
+	command := c.comment(12, "u1", "/hearsay pin")
+	c.followUntil(assertworker.NewCommandFollower(c.pool, c.repo, 0, 0), command)
+	var queued []string
+	if err := c.pool.QueryRow(t.Context(), `SELECT array_agg(target_id) FROM queue_job WHERE target_id LIKE 'gesture:%'`).Scan(&queued); err != nil {
 		t.Fatal(err)
 	}
-	var queued int
-	if err := c.pool.QueryRow(t.Context(), `SELECT count(*) FROM queue_job WHERE target_id LIKE 'gesture:%'`).Scan(&queued); err != nil {
-		t.Fatal(err)
-	}
-	if queued != 0 || c.replies.posts != 0 || len(c.gestures()) != 0 {
-		t.Errorf("queued = %d, replies = %d, gestures = %d, want nothing for a comment and an echo", queued, c.replies.posts, len(c.gestures()))
+	if len(queued) != 1 || queued[0] != l2.GestureTarget+command.ID {
+		t.Errorf("queued = %q, want only the command after the comment and the echo", queued)
 	}
 }
 
@@ -448,18 +467,14 @@ func TestTheCommandFollowerEnqueuesCommandsAndTheirDeletions(t *testing.T) {
 	message := c.comment(12, "u1", "Agreed.")
 
 	follower := assertworker.NewCommandFollower(pool, c.repo, 0, 0)
-	if _, err := follower.Once(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	deleted := []connector.Event{c.delete(ratify), c.delete(merge), c.delete(message)}
-	if _, err := follower.Once(t.Context()); err != nil {
-		t.Fatal(err)
-	}
+	c.followUntil(follower, merge)
+	deleted := []connector.Event{c.delete(ratify), c.delete(message), c.delete(merge)}
+	c.followUntil(follower, deleted[2])
 	want := map[string]string{
 		l2.GestureTarget + ratify.ID:     c.src,
 		l2.GestureTarget + merge.ID:      "elsewhere",
 		l2.GestureTarget + deleted[0].ID: c.src,
-		l2.GestureTarget + deleted[1].ID: "elsewhere",
+		l2.GestureTarget + deleted[2].ID: "elsewhere",
 	}
 	rows, err := pool.Query(t.Context(), `SELECT target_id, serial_key FROM queue_job WHERE target_id LIKE 'gesture:%'`)
 	if err != nil {
@@ -477,7 +492,7 @@ func TestTheCommandFollowerEnqueuesCommandsAndTheirDeletions(t *testing.T) {
 		t.Fatal(rows.Err())
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("queued = %v, want %v (not %s, an edit, nor %s, a comment)", got, want, edited.ID, deleted[2].ID)
+		t.Errorf("queued = %v, want %v (not %s, an edit, nor %s, a comment)", got, want, edited.ID, deleted[1].ID)
 	}
 }
 
