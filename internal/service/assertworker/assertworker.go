@@ -173,8 +173,8 @@ func SeedEntities(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, rea
 
 // Sweep enqueues an assert job for every document whose outcome enters the
 // pipeline and whose current version has not been read, and for every
-// `assertion` event no stance was appended from, and returns how many it asked
-// for. It is what makes a restart pick up documents written before the
+// `assertion` event no stance was appended from, and for every GitHub command
+// whose reply is still owed, and returns how many it asked for. It is what makes a restart pick up documents written before the
 // worker was deployed and jobs that failed for good. A pending job for a
 // document collapses the enqueue (ADR-0007), so sweeping twice costs a
 // statement per document and no model call.
@@ -206,7 +206,11 @@ func Sweep(ctx context.Context, pool *pgxpool.Pool, repo config.Repo) (int, erro
 		enqueued++
 	}
 	assertions, err := sweepAssertions(ctx, pool)
-	return enqueued + assertions, err
+	if err != nil {
+		return enqueued + assertions, err
+	}
+	replies, err := sweepReplies(ctx, pool)
+	return enqueued + assertions + replies, err
 }
 
 // sweepAssertions enqueues a job for every `assertion` event no stance was

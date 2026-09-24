@@ -602,3 +602,61 @@ func TestACommandWaitsForItsDocument(t *testing.T) {
 		t.Errorf("reply = %q, want it to say the issue is not distilled yet", reply)
 	}
 }
+
+// A command whose reply could not be posted in all its job's attempts, or
+// whose reply was not revised after it was deleted, is put back on the queue
+// at startup, under the scope it ran under; one that has been answered is not.
+func TestStartupSweepsTheRepliesStillOwed(t *testing.T) {
+	c := newCommands(t, scratchPool(t))
+	answered := c.comment(12, "u1", "/hearsay pin")
+	c.mustHandle(answered)
+	c.replies.fail = errors.New("GitHub is down")
+	unanswered := c.comment(12, "u1", "/hearsay ratify")
+	if err := c.handle(unanswered); err == nil {
+		t.Fatal("Handle() with GitHub down = nil, want an error")
+	}
+	tomb := c.delete(answered)
+	if err := c.handle(tomb); err == nil {
+		t.Fatal("Handle(the deletion) with GitHub down = nil, want an error")
+	}
+	queued := func() map[string]string {
+		t.Helper()
+		rows, err := c.pool.Query(t.Context(), `SELECT target_id, serial_key FROM queue_job WHERE target_id LIKE 'gesture:%' AND state = 'pending'`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		got := map[string]string{}
+		for rows.Next() {
+			var target, key string
+			if err := rows.Scan(&target, &key); err != nil {
+				t.Fatal(err)
+			}
+			got[target] = key
+		}
+		return got
+	}
+	if _, err := assertworker.Sweep(t.Context(), c.pool, c.repo); err != nil {
+		t.Fatalf("Sweep() = %v", err)
+	}
+	want := map[string]string{l2.GestureTarget + unanswered.ID: c.src, l2.GestureTarget + tomb.ID: c.src}
+	if got := queued(); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("queued = %v, want %v", got, want)
+	}
+
+	c.replies.fail = nil
+	c.mustHandle(unanswered)
+	c.mustHandle(tomb)
+	if _, err := c.pool.Exec(t.Context(), `DELETE FROM queue_job WHERE target_id LIKE 'gesture:%'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := assertworker.Sweep(t.Context(), c.pool, c.repo); err != nil {
+		t.Fatalf("Sweep() = %v", err)
+	}
+	if got := queued(); len(got) != 0 {
+		t.Errorf("queued = %v, want nothing once every reply is posted and revised", got)
+	}
+	if c.replies.posts != 2 || c.replies.revises != 1 {
+		t.Errorf("posts = %d, revises = %d, want 2 and 1", c.replies.posts, c.replies.revises)
+	}
+}

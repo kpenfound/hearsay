@@ -14,6 +14,9 @@ CREATE TABLE github_command_replies (
     event text PRIMARY KEY CHECK (event LIKE 'evt:%'),
     source text NOT NULL CHECK (source <> ''),
     artifact text NOT NULL CHECK (artifact <> ''),
+    -- The serial key it ran under, which a job that still owes its reply is
+    -- enqueued under again at startup.
+    scope text NOT NULL CHECK (scope <> ''),
     -- Where the reply goes: the issue or pull request the command was written
     -- on, the command comment's id, which the reply names, and when it was
     -- written, which bounds the search for a reply already posted.
@@ -44,6 +47,10 @@ CREATE TABLE github_command_replies (
 );
 
 CREATE UNIQUE INDEX github_command_replies_artifact_idx ON github_command_replies (source, artifact);
+-- What startup looks for: a reply not posted, or not yet revised to say the
+-- command was undone.
+CREATE INDEX github_command_replies_owed_idx ON github_command_replies (event)
+    WHERE reply IS NULL OR (undo_event IS NOT NULL AND NOT undo_revised);
 
 -- +goose Down
 

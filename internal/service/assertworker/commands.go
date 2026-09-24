@@ -208,6 +208,7 @@ func follow(ctx context.Context, interval time.Duration, batch int, once func(co
 // the reply that says so.
 type commandRecord struct {
 	Event, Source, Artifact string
+	Scope                   string
 	Repo                    string
 	Issue                   int
 	Comment                 int64
@@ -229,7 +230,7 @@ func (r commandRecord) text() string {
 	return r.Body + "\n\n" + r.UndoBody
 }
 
-const commandColumns = `event, source, artifact, repository, issue, comment, commented_at, coalesce(principal, ''),
+const commandColumns = `event, source, artifact, scope, repository, issue, comment, commented_at, coalesce(principal, ''),
     coalesce(gesture, 0), coalesce(operation, 0), body, coalesce(reply, 0), coalesce(undo_event, ''),
     coalesce(undo_body, ''), undo_revised`
 
@@ -241,7 +242,7 @@ func commandRun(ctx context.Context, q l2.Querier, source, artifact string, lock
 		sql += ` FOR UPDATE`
 	}
 	var r commandRecord
-	err := q.QueryRow(ctx, sql, source, artifact).Scan(&r.Event, &r.Source, &r.Artifact, &r.Repo, &r.Issue, &r.Comment,
+	err := q.QueryRow(ctx, sql, source, artifact).Scan(&r.Event, &r.Source, &r.Artifact, &r.Scope, &r.Repo, &r.Issue, &r.Comment,
 		&r.CommentedAt, &r.Principal, &r.Gesture, &r.Operation, &r.Body, &r.Reply, &r.UndoEvent, &r.UndoBody, &r.UndoRevised)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return commandRecord{}, false, nil
@@ -285,16 +286,16 @@ func (a *Asserter) runCommand(ctx context.Context, job queue.Job, ev connector.E
 	if !found {
 		err = pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) error {
 			rec = commandRecord{
-				Event: ev.ID, Source: ev.Source, Artifact: ev.Payload.Artifact, Repo: cmd.Repo, Issue: cmd.Issue,
+				Event: ev.ID, Source: ev.Source, Artifact: ev.Payload.Artifact, Scope: job.SerialKey, Repo: cmd.Repo, Issue: cmd.Issue,
 				Comment: cmd.Comment, CommentedAt: ev.Time,
 			}
 			if rec.Body, err = a.apply(ctx, tx, job, ev, cmd, &rec); err != nil {
 				return err
 			}
 			_, err := tx.Exec(ctx, `
-INSERT INTO github_command_replies (event, source, artifact, repository, issue, comment, commented_at, principal, gesture, operation, body)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-				rec.Event, rec.Source, rec.Artifact, rec.Repo, rec.Issue, rec.Comment, rec.CommentedAt,
+INSERT INTO github_command_replies (event, source, artifact, scope, repository, issue, comment, commented_at, principal, gesture, operation, body)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+				rec.Event, rec.Source, rec.Artifact, rec.Scope, rec.Repo, rec.Issue, rec.Comment, rec.CommentedAt,
 				nullable(rec.Principal), nullable(rec.Gesture), nullable(rec.Operation), rec.Body)
 			if err != nil {
 				return fmt.Errorf("recording the command %s: %w", ev.ID, err)
@@ -606,6 +607,40 @@ func (a *Asserter) answer(ctx context.Context, rec commandRecord) error {
 		return fmt.Errorf("recording the revised reply to %s: %w", rec.Event, err)
 	}
 	return nil
+}
+
+// sweepReplies enqueues the job again for every command whose reply is still
+// owed — not posted, or not revised since the command was deleted — because
+// its job ran out of attempts, perhaps while GitHub was down. A pending job
+// collapses the enqueue.
+func sweepReplies(ctx context.Context, pool *pgxpool.Pool) (int, error) {
+	rows, err := pool.Query(ctx, `
+SELECT CASE WHEN reply IS NULL THEN event ELSE undo_event END, scope
+  FROM github_command_replies
+ WHERE reply IS NULL OR (undo_event IS NOT NULL AND NOT undo_revised)`)
+	if err != nil {
+		return 0, fmt.Errorf("reading the replies owed to github commands: %w", err)
+	}
+	type owed struct{ event, scope string }
+	var all []owed
+	for rows.Next() {
+		var o owed
+		if err := rows.Scan(&o.event, &o.scope); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("reading the replies owed to github commands: %w", err)
+		}
+		all = append(all, o)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("reading the replies owed to github commands: %w", err)
+	}
+	for i, o := range all {
+		if _, err := queue.Enqueue(ctx, pool, queue.Request{Kind: l2.AssertKind(), TargetID: l2.GestureTarget + o.event, SerialKey: o.scope}); err != nil {
+			return i, err
+		}
+	}
+	return len(all), nil
 }
 
 // githubGesture is the assert job for a GitHub command event or the tombstone
