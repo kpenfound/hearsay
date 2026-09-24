@@ -49,6 +49,13 @@ func renderEnv(sources []source, tokens []pair) ([]byte, []string) {
 			blank(EnvDiscordToken,
 				"Discord: the bot token, from the application's Bot page in the Discord developer portal",
 				"(https://discord.com/developers/applications). Turn on the Message Content intent there too.")
+		case SourceSlack:
+			blank(EnvSlackAppToken,
+				"Slack: create the app from the manifest in internal/connector/slack/slack.go; under Basic Information",
+				"generate an app-level token (xapp-…) with connections:write for Socket Mode.")
+			blank(EnvSlackBotToken,
+				"Slack: install that app, then copy its Bot User OAuth Token (xoxb-…). Invite it to each",
+				"public channel. For init email matching, also grant users:read and users:read.email.")
 		case SourceDrive:
 			blank(EnvDriveCredentials,
 				"Google Drive: a service account's JSON key, on one line inside single quotes. Create it in the",

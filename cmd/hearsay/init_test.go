@@ -60,6 +60,9 @@ func serveFixtures(t *testing.T, name, auth string) *fixtures {
 			return
 		}
 		file := filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(r.URL.Path, "/")))
+		if name == "slack" && r.URL.Path == "/conversations.info" {
+			file += "." + r.FormValue("channel")
+		}
 		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 		body, err := os.ReadFile(pageFile(file, page))
 		if err != nil {
@@ -154,7 +157,7 @@ var teamFlags = []string{
 
 // teamAnswers are the same answers typed at the prompts, one line each, in
 // the order init asks. The name is left empty, as it is by the flags.
-const teamAnswers = "kyle\n\nacme/api, acme/infra\nkpenfound\n824100000000000000\n824100000000000001,824100000000000002\n\n1EngFolder,1MeetingsFolder\n\n"
+const teamAnswers = "kyle\n\nacme/api, acme/infra\nkpenfound\n824100000000000000\n824100000000000001,824100000000000002\n\n\n1EngFolder,1MeetingsFolder\n\n"
 
 // sequence is a reproducible stand-in for crypto/rand: every byte is the
 // next one, so tokens differ from each other and are the same on every run.
@@ -550,19 +553,19 @@ func TestInitPromptsAndFlagsAgree(t *testing.T) {
 		{
 			name:      "every answer typed",
 			stdin:     teamAnswers,
-			wantAsked: []string{"operator", "operator-name", "github-repo", "operator-github", "discord-guild", "discord-channel", "operator-discord", "drive-folder", "operator-email"},
+			wantAsked: []string{"operator", "operator-name", "github-repo", "operator-github", "discord-guild", "discord-channel", "operator-discord", "slack-workspace", "drive-folder", "operator-email"},
 		},
 		{
 			name:  "a wrong answer is asked again",
 			stdin: strings.Replace(teamAnswers, "acme/api, acme/infra\n", "acme\nacme/api, acme/infra\n", 1),
 			wantAsked: []string{"operator", "operator-name", "github-repo", "github-repo", "operator-github", "discord-guild", "discord-channel",
-				"operator-discord", "drive-folder", "operator-email"},
+				"operator-discord", "slack-workspace", "drive-folder", "operator-email"},
 		},
 		{
 			name:      "flags for some, prompts for the rest",
 			args:      []string{"--operator", "kyle", "--github-repo", "acme/api", "--github-repo", "acme/infra", "--drive-folder", "1EngFolder,1MeetingsFolder"},
-			stdin:     "\nkpenfound\n824100000000000000\n824100000000000001,824100000000000002\n\n\n",
-			wantAsked: []string{"operator-name", "operator-github", "discord-guild", "discord-channel", "operator-discord", "operator-email"},
+			stdin:     "\nkpenfound\n824100000000000000\n824100000000000001,824100000000000002\n\n\n\n",
+			wantAsked: []string{"operator-name", "operator-github", "discord-guild", "discord-channel", "operator-discord", "slack-workspace", "operator-email"},
 		},
 	}
 	for _, tt := range tests {
@@ -815,6 +818,153 @@ func TestInitTokens(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(failing); len(entries) > 0 {
 		t.Errorf("init wrote %v, want nothing", entries)
+	}
+}
+
+func TestInitSlackPromptsFlagsAndEmailMatches(t *testing.T) {
+	github := serveFixtures(t, "github", "Bearer gh-token")
+	slack := serveFixtures(t, "slack", "Bearer xoxb-fixture")
+	base := []string{"--github-api-url", github.URL, "--slack-api-url", slack.URL,
+		"--operator", "kyle", "--github-repo", "acme/api", "--operator-github", "kpenfound"}
+	flags := append(slices.Clone(base), "--slack-workspace", "TWORK123", "--slack-channel", "CGOOD123")
+	env := map[string]string{"HEARSAY_GITHUB_TOKEN": "gh-token", "HEARSAY_SLACK_BOT_TOKEN": "xoxb-fixture"}
+	byFlags := t.TempDir()
+	if out, err := runInitIn(t, byFlags, initCall{args: flags, env: env}); err != nil {
+		t.Fatalf("flags: %v\n%s", err, out)
+	}
+	byPrompts := t.TempDir()
+	answers := "\n\nTWORK123\nCGOOD123\n\n\n"
+	out, err := runInitIn(t, byPrompts, initCall{args: base, env: env, terminal: true, stdin: answers})
+	if err != nil {
+		t.Fatalf("prompts: %v\n%s", err, out)
+	}
+	for _, name := range []string{"hearsay.yaml", "hearsay.env"} {
+		if got, want := mustRead(t, filepath.Join(byPrompts, name)), mustRead(t, filepath.Join(byFlags, name)); !bytes.Equal(got, want) {
+			t.Errorf("%s differs from flags", name)
+		}
+	}
+	if !strings.Contains(out, "[--slack-workspace]") || !strings.Contains(out, "[--slack-channel]") {
+		t.Errorf("Slack prompts absent: %s", out)
+	}
+	repo, err := config.Load(filepath.Join(byFlags, "hearsay.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sourceIDs(repo); !slices.Equal(got, []string{"github", "slack"}) {
+		t.Errorf("sources = %q", got)
+	}
+	if got := repo.Sources[1].Secrets; got["app_token"] != "HEARSAY_SLACK_APP_TOKEN" || got["bot_token"] != "HEARSAY_SLACK_BOT_TOKEN" {
+		t.Errorf("Slack secrets = %v", got)
+	}
+	for _, scope := range repo.Scopes {
+		if !slices.ContainsFunc(scope.Sources, func(s config.ScopeSource) bool { return s.Source == "slack" }) {
+			t.Errorf("scope %s lacks Slack", scope.ID)
+		}
+	}
+	want := map[string]string{"kyle": "UKYLE123", "robinok": "UROBIN12"}
+	for _, person := range repo.Principals {
+		var id string
+		for _, ident := range person.Identities {
+			if ident.Source == "slack" {
+				id = ident.NativeID
+			}
+		}
+		if id != want[person.ID] {
+			t.Errorf("%s Slack identity = %q, want %q", person.ID, id, want[person.ID])
+		}
+	}
+	_, vars := readEnv(t, filepath.Join(byFlags, "hearsay.env"))
+	if vars["HEARSAY_SLACK_APP_TOKEN"] != "" || vars["HEARSAY_SLACK_BOT_TOKEN"] != "" {
+		t.Errorf("Slack credentials were written: %v", vars)
+	}
+	if bytes.Contains(mustRead(t, filepath.Join(byFlags, "hearsay.env")), []byte("xoxb-fixture")) {
+		t.Error("fetched credential was written")
+	}
+	if st, err := os.Stat(filepath.Join(byFlags, "hearsay.env")); err != nil || st.Mode().Perm() != 0o600 {
+		t.Errorf("env mode: %v, %v", st, err)
+	}
+}
+
+func TestInitSlackSkippedNoInputAndPrivateChannel(t *testing.T) {
+	base := []string{"--operator", "kyle", "--github-repo", "acme/api", "--operator-github", "kpenfound"}
+	if out, err := runInitIn(t, t.TempDir(), initCall{args: append([]string{"--no-input"}, base...), terminal: true}); err != nil || strings.Contains(out, "[--slack-") {
+		t.Errorf("skipped Slack: %v\n%s", err, out)
+	}
+	bad := append(slices.Clone(base), "--slack-workspace", "TWORK123")
+	if _, err := runInitIn(t, t.TempDir(), initCall{args: bad}); err == nil || !strings.Contains(err.Error(), "slack-channel") {
+		t.Errorf("missing channels = %v", err)
+	}
+	bad = append(slices.Clone(base), "--slack-channel", "CGOOD123")
+	if _, err := runInitIn(t, t.TempDir(), initCall{args: bad}); err == nil || !strings.Contains(err.Error(), "Slack is skipped") {
+		t.Errorf("orphaned channel = %v", err)
+	}
+	slack := serveFixtures(t, "slack", "Bearer xoxb-fixture")
+	bad = append(slices.Clone(base), "--slack-api-url", slack.URL, "--slack-workspace", "TWORK123", "--slack-channel", "CPRIVATE1")
+	dir := t.TempDir()
+	_, err := runInitIn(t, dir, initCall{args: bad, env: map[string]string{"HEARSAY_SLACK_BOT_TOKEN": "xoxb-fixture"}})
+	if err == nil || !strings.Contains(err.Error(), "private channel") {
+		t.Errorf("private channel = %v", err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Errorf("wrote files for private channel: %v", entries)
+	}
+}
+
+func TestInitSlackWithoutCredentialsOrGitHub(t *testing.T) {
+	args := []string{"--operator", "kyle", "--operator-slack", "UKYLE123", "--slack-workspace", "TWORK123", "--slack-channel", "CGOOD123"}
+	dir := t.TempDir()
+	out, err := runInitIn(t, dir, initCall{args: args})
+	if err != nil {
+		t.Fatalf("Slack alone: %v\n%s", err, out)
+	}
+	repo, err := config.Load(filepath.Join(dir, "hearsay.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(sourceIDs(repo), []string{"slack"}) || !slices.Equal(scopeIDs(repo), []string{"team"}) {
+		t.Errorf("source/scope = %q/%q", sourceIDs(repo), scopeIDs(repo))
+	}
+	if got := identities(repo.Principals[0]); !slices.Equal(got, []string{"slack/UKYLE123/"}) {
+		t.Errorf("operator identity = %q", got)
+	}
+	if !strings.Contains(out, "channels were not verified") {
+		t.Errorf("missing credential note absent: %s", out)
+	}
+	_, vars := readEnv(t, filepath.Join(dir, "hearsay.env"))
+	if _, ok := vars["HEARSAY_SLACK_APP_TOKEN"]; !ok {
+		t.Error("app variable absent")
+	}
+	if _, ok := vars["HEARSAY_SLACK_BOT_TOKEN"]; !ok {
+		t.Error("bot variable absent")
+	}
+}
+
+func TestInitSlackAmbiguousEmailOnBothSides(t *testing.T) {
+	github := serveFixtures(t, "github", "Bearer gh-token")
+	slack := serveFixtures(t, "slack", "Bearer xoxb-fixture")
+	args := []string{"--github-api-url", github.URL, "--slack-api-url", slack.URL,
+		"--operator", "kyle", "--github-repo", "acme/api,acme/infra", "--operator-github", "kpenfound",
+		"--slack-workspace", "TWORK123", "--slack-channel", "CGOOD123"}
+	dir := t.TempDir()
+	out, err := runInitIn(t, dir, initCall{args: args, env: map[string]string{"HEARSAY_GITHUB_TOKEN": "gh-token", "HEARSAY_SLACK_BOT_TOKEN": "xoxb-fixture"}})
+	if err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "shared@acme.example matches 2 principals and 2 Slack accounts") {
+		t.Errorf("ambiguity note missing: %s", out)
+	}
+	repo, err := config.Load(filepath.Join(dir, "hearsay.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range repo.Principals {
+		if p.ID == "alex" || p.ID == "jordan" {
+			for _, id := range p.Identities {
+				if id.Source == "slack" {
+					t.Errorf("ambiguous email assigned Slack identity %s to %s", id.NativeID, p.ID)
+				}
+			}
+		}
 	}
 }
 

@@ -9,7 +9,7 @@ The one binary Hearsay ships. Each process is a subcommand of it (ADR-0003).
 | `hearsay assert-worker` | The assertion worker. L1 to L2. |
 | `hearsay api` | The read and assert API. |
 | `hearsay all` | All four in one process. Local development only. |
-| `hearsay init [--github-repo owner/name]... [--discord-guild id --discord-channel id...] [--drive-folder id]... [--force]` | Write a new team's single-file `hearsay.yaml` and a mode-0600 env file for its secrets. Prompts on a terminal; every prompt has a flag. No database. |
+| `hearsay init [--github-repo owner/name]... [--discord-guild id --discord-channel id...] [--slack-workspace id --slack-channel id...] [--drive-folder id]... [--force]` | Write a new team's single-file `hearsay.yaml` and a mode-0600 env file for its secrets. Prompts on a terminal; every prompt has a flag. No database. |
 | `hearsay config validate [path]` | Check a configuration repository. Prints every problem, with file and line. |
 | `hearsay migrate up\|status\|up-to <n>\|down` | Schema migrations, then exit. `down` refuses without `--i-know`. |
 | `hearsay l0 list\|get <id>\|count\|tail` | Inspect the L0 event store. Read-only. |
@@ -28,10 +28,10 @@ holding a generated API token per principal and an empty entry for every
 other secret the configuration names. It asks on a terminal, and every
 question has a flag; `--no-input` never asks. It takes the credentials it
 reads the sources with from `HEARSAY_GITHUB_TOKEN`, `HEARSAY_DISCORD_TOKEN`
-and `HEARSAY_DRIVE_CREDENTIALS`, and writes none of them. It refuses to
+`HEARSAY_SLACK_BOT_TOKEN` and `HEARSAY_DRIVE_CREDENTIALS`, and writes none of them. It refuses to
 overwrite either file without `--force`, and writes neither when it refuses.
 `--github-api-url` names a GitHub Enterprise Server; `--discord-api-url` and
-`--drive-api-url` point at local fixtures. The questions, and who is seeded
+`--drive-api-url` and `--slack-api-url` point at local fixtures. The questions, and who is seeded
 from what, are in
 [docs/config.md](../../docs/config.md#starting-with-hearsay-init).
 

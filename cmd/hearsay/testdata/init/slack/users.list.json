@@ -1,0 +1,8 @@
+{"ok":true,"members":[
+{"id":"UKYLE123","profile":{"email":"KYLE@ACME.EXAMPLE"}},
+{"id":"UROBIN12","profile":{"email":"robin@acme.example"}},
+{"id":"UALEX123","profile":{"email":"shared@acme.example"}},
+{"id":"UJORDAN1","profile":{"email":"shared@acme.example"}},
+{"id":"UBOT1234","is_bot":true,"profile":{"email":"sam@acme.example"}},
+{"id":"UNOMAIL1","profile":{}}
+],"response_metadata":{"next_cursor":""}}
