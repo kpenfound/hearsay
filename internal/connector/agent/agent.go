@@ -66,6 +66,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -332,7 +333,7 @@ func (c *Connector) event(agent string, req Request) (connector.Event, error) {
 		if !validKey(req.Next) {
 			return connector.Event{}, badRequest("a next_action has a next id of 1 to %d bytes of letters, digits, -, _, . and :", maxKey)
 		}
-		if req.Scope == "" || (req.Action != "asked" && req.Action != "proceeded" && req.Action != "asserted") {
+		if strings.TrimSpace(req.Scope) == "" || (req.Action != "asked" && req.Action != "proceeded" && req.Action != "asserted") {
 			return connector.Event{}, badRequest("a next_action has a scope and action of asked, proceeded or asserted")
 		}
 		if req.Phase != "" || req.Turn != "" || req.Call != "" || req.Tool != "" || req.Text != "" || req.Input != nil || req.Output != nil {
@@ -340,7 +341,7 @@ func (c *Connector) event(agent string, req Request) (connector.Event, error) {
 		}
 		seen := make(map[string]bool, len(req.Verdicts))
 		for _, verdict := range req.Verdicts {
-			if verdict.TopicID == "" || (verdict.Verdict != "real" && verdict.Verdict != "spurious") || seen[verdict.TopicID] {
+			if strings.TrimSpace(verdict.TopicID) == "" || (verdict.Verdict != "real" && verdict.Verdict != "spurious") || seen[verdict.TopicID] {
 				return connector.Event{}, badRequest("each verdict needs a distinct topic_id and a verdict of real or spurious")
 			}
 			seen[verdict.TopicID] = true
