@@ -330,6 +330,7 @@ const (
 	KindAgentSession  Kind = "agent_session"  // an agent session starting or ending
 	KindAgentTurn     Kind = "agent_turn"     // one turn of an agent session
 	KindToolCall      Kind = "tool_call"      // a tool call an agent made
+	KindNextAction    Kind = "next_action"    // what an agent did after a served bundle
 	KindAssertion     Kind = "assertion"      // a stance written through assert()
 	KindAudit         Kind = "audit"          // a bundle served or a session handle call
 	KindTombstone     Kind = "tombstone"      // an artifact deleted at the source
@@ -368,6 +369,7 @@ var coreKinds = map[Kind]kindRule{
 	KindAgentSession:  {requiresAuthor: true},
 	KindAgentTurn:     {requiresAuthor: true, requiresContent: true},
 	KindToolCall:      {requiresAuthor: true},
+	KindNextAction:    {requiresAuthor: true},
 	KindAssertion:     {requiresAuthor: true, requiresContent: true},
 	KindAudit:         {requiresAuthor: true},
 	KindTombstone:     {},
