@@ -133,8 +133,8 @@ the `hearsay.env` that `hearsay init` wrote, plus the deployment block of
 | `HEARSAY_LOG_LEVEL`, `HEARSAY_LOG_FORMAT` | all four services | Optional. `info` and JSON (the format when there is no terminal) by default. |
 | `HEARSAY_INSTANCE` | all four services | Optional. The replica name on every log line; the container's hostname by default. |
 
-The source-credential names are the ones `hearsay init` writes, and for Slack
-and the generic tracker the ones [docs/config.md](config.md#sources) uses. A configuration
+The source-credential names are the ones `hearsay init` writes, and for the
+generic tracker the one [docs/config.md](config.md#generic-tracker-source) uses. A configuration
 can name any variable in `secrets:` and `token_env`, and whatever it names is
 what the services read. Every service receives all of `.env`, because only the
 configuration knows which names it uses.
