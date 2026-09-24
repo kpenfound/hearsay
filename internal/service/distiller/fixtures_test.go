@@ -131,6 +131,18 @@ func laterComment(src string) connector.Event {
 // retractedComment is the issue comment a test deletes at the source.
 const retractedComment = repo + "#12:comment:1"
 
+// pastedSecret is what samr pastes into the issue, and secretComment the
+// comment that carries it: the one an operator deletes from Hearsay.
+const (
+	pastedSecret    = "tangerine-otter-42"
+	secretCommentID = repo + "#12:comment:3"
+)
+
+func secretComment(src string) connector.Event {
+	return reply(event(src, connector.KindMessage, secretCommentID, at(2).Add(30*time.Minute), who(src, "u2", "samr"),
+		"", "For staging, the vault passphrase is "+pastedSecret+"."), repo+"#12")
+}
+
 // without is a state of the repository with every event of one artifact gone,
 // which is what L0 reads as once a tombstone covers it.
 func without(events []connector.Event, artifact string) []connector.Event {
@@ -213,6 +225,19 @@ var answersAfterRetraction = map[string]map[string]any{
 		"question":       "Should the engine take the lock before writing?",
 		"outcome":        "The author proposed taking the lock before the write.",
 		"outcome_kind":   "proposed",
+		"open_questions": []string{"Does the job queue have the same problem?"},
+	},
+}
+
+// answersWithSecret are the replies while the pasted secret is on the issue.
+// The model repeats it, so the document's text holds it as well as its raw
+// text, and an operator deletion has to take it out of both.
+var answersWithSecret = map[string]map[string]any{
+	issueID: {
+		"summary":        "The engine writes before taking the lock, which races with the job queue. Two people confirmed it, the author said they would send a change, and samr shared the staging vault passphrase " + pastedSecret + ".",
+		"question":       "Should the engine take the lock before writing?",
+		"outcome":        "The team agreed the lock has to be taken before the write.",
+		"outcome_kind":   "decided",
 		"open_questions": []string{"Does the job queue have the same problem?"},
 	},
 }
@@ -341,14 +366,16 @@ type fixtureState struct {
 }
 
 // fixtureStates are the states of the fixture repository a test distils: as it
-// first arrives, after a later comment lands on the change proposal, and after
-// a comment on the issue is deleted at the source.
+// first arrives, after a later comment lands on the change proposal, after a
+// comment on the issue is deleted at the source, and with a secret pasted on
+// the issue — which, once an operator deletes it, is the first state again.
 func fixtureStates() []fixtureState {
 	base := fixtureEvents(source)
 	return []fixtureState{
 		{events: base},
 		{events: append(append([]connector.Event{}, base...), laterComment(source))},
 		{events: without(base, retractedComment), answers: answersAfterRetraction},
+		{events: append(append([]connector.Event{}, base...), secretComment(source)), answers: answersWithSecret},
 	}
 }
 

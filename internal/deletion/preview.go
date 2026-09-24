@@ -43,11 +43,28 @@ func (p Preview) Counts() map[string]int {
 }
 
 // Walk uses one read-only snapshot so every layer describes the same database
-// state. The apply command can call this function before making any writes.
+// state. [Apply] runs the same walk inside its write transaction.
 func Walk(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, sel Selector, reason string) (Preview, error) {
-	p := Preview{Selector: sel, Reason: reason, Events: []string{}, Documents: []string{}, Stances: []string{}, Topics: []string{}, AliasCandidates: []string{}, Pins: []string{}}
+	p := emptyPreview(sel, reason)
+	if err := check(sel, reason); err != nil {
+		return p, err
+	}
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return p, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	return walk(ctx, tx, repo, sel, reason)
+}
+
+func emptyPreview(sel Selector, reason string) Preview {
+	return Preview{Selector: sel, Reason: reason, Events: []string{}, Documents: []string{}, Stances: []string{}, Topics: []string{}, AliasCandidates: []string{}, Pins: []string{}}
+}
+
+// check refuses a selector or reason before any database is touched.
+func check(sel Selector, reason string) error {
 	if strings.TrimSpace(reason) == "" {
-		return p, fmt.Errorf("--reason is required")
+		return fmt.Errorf("--reason is required")
 	}
 	n := 0
 	if sel.Event != "" {
@@ -56,26 +73,29 @@ func Walk(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, sel Selecto
 	if sel.ArtifactSource != "" || sel.ArtifactID != "" {
 		n++
 		if !connector.ValidSourceID(sel.ArtifactSource) || sel.ArtifactID == "" {
-			return p, fmt.Errorf("--artifact needs a valid source and artifact id")
+			return fmt.Errorf("--artifact needs a valid source and artifact id")
 		}
 	}
 	if sel.Author != "" {
 		n++
 	}
 	if n != 1 {
-		return p, fmt.Errorf("give exactly one of --event, --artifact, or --author")
+		return fmt.Errorf("give exactly one of --event, --artifact, or --author")
 	}
 	if sel.Event != "" {
 		if _, _, err := connector.ParseEventID(sel.Event); err != nil {
-			return p, err
+			return err
 		}
 	}
-	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return p, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	var rows pgx.Rows
+	return nil
+}
+
+func walk(ctx context.Context, tx pgx.Tx, repo config.Repo, sel Selector, reason string) (Preview, error) {
+	p := emptyPreview(sel, reason)
+	var (
+		rows pgx.Rows
+		err  error
+	)
 	switch {
 	case sel.Event != "":
 		rows, err = tx.Query(ctx, `SELECT id FROM l0_events WHERE id=$1 ORDER BY id`, sel.Event)

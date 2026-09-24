@@ -13,7 +13,7 @@ The one binary Hearsay ships. Each process is a subcommand of it (ADR-0003).
 | `hearsay migrate up\|status\|up-to <n>\|down` | Schema migrations, then exit. `down` refuses without `--i-know`. |
 | `hearsay l0 list\|get <id>\|count\|tail` | Inspect the L0 event store. Read-only. |
 | `hearsay aliases list\|confirm <entity> <name>\|reject <entity> <name>` | List candidates and decide their names as a configured human. |
-| `hearsay delete --event <l0-id>\|--artifact <source> <artifact-id>\|--author <identity>` | Preview deletion provenance only. Writes nothing. |
+| `hearsay delete --event <l0-id>\|--artifact <source> <artifact-id>\|--author <identity> [--apply]` | Preview deletion provenance; with `--apply`, redact L0 and re-distill what depended on it. |
 | `hearsay version` | Version, commit and build date. |
 
 `hearsay aliases` requires `--config` and `--principal <human-id>`. Its list shows
@@ -25,8 +25,20 @@ preview. `--artifact` covers every revision. `--author` takes a configured
 principal (with `--config`) or `source:native-id` (or `source:@handle`); a
 principal expands to all configured source identities. The summary names the
 covered L0 events, dependent L1 documents and L2 stances, topics, alias
-candidates and pins. `--json` prints the same walk as a JSON object. This
-command only previews; it has no apply mode yet.
+candidates and pins. `--json` prints the same walk as a JSON object. The
+preview is the default and writes nothing.
+
+`--apply` deletes, and needs `--config` and `--principal <human-id>`, a human
+principal in that configuration. A missing flag, an unknown id or an agent is
+refused before the database is opened, and `--principal` without `--apply` is
+an error. One transaction records the deletion with the principal as operator,
+redacts the covered L0 events in place, writes a `deletion` event under source
+`hearsay`, and enqueues a `distill` job for every L1 document the walk found
+([ADR-0018](../../docs/adr/0018-operator-deletion-redacts-l0-in-place.md)).
+It prints the deletion id, the events redacted and the documents queued, or
+with `--json` the same as an object. Events an earlier deletion already covered
+are left alone. `hearsay l0 get` on a deleted event fails naming the deletion
+and operator, and prints no content.
 
 `migrate`, `config`, `l0` and `aliases` take an action word, and flags go on either side of
 it and after its argument: `hearsay l0 get <id> --database-url x` and

@@ -9,11 +9,18 @@ reading an event back by id for a provenance walk.
 `Store` implements `connector.Sink`, so a connector's `Emit` writes here. Three
 things about it are worth knowing before you use it:
 
-- **Nothing is ever updated.** An edit arrives as a new event, because the
-  revision token is part of the native id and so part of the derived event id.
-  Re-emitting an unchanged event writes nothing; re-emitting an id with
-  different content is a connector breaking the contract, and returns
-  `ErrRewrite` rather than overwriting the row.
+- **Nothing is ever updated, with one exception.** An edit arrives as a new
+  event, because the revision token is part of the native id and so part of the
+  derived event id. Re-emitting an unchanged event writes nothing; re-emitting
+  an id with different content is a connector breaking the contract, and
+  returns `ErrRewrite` rather than overwriting the row. The exception is an
+  operator deletion, `Delete`, which redacts the covered rows' payloads in
+  place in the caller's transaction, records the deletion in `l0_deletions`,
+  and writes a `deletion` event under source `hearsay`
+  ([ADR-0018](../../docs/adr/0018-operator-deletion-redacts-l0-in-place.md)).
+  Every read hides a deleted row, `Get` says `ErrDeleted` (never
+  `ErrRetracted`), and `Append` drops and counts a replay of one instead of
+  calling it a rewrite.
 - **A deletion is a tombstone.** A tombstone event names the artifact it
   retracts. Revisions ingested before it are hidden — `Get` says
   `ErrRetracted`, `List` and `Changes` leave them out, and `Counts` shows

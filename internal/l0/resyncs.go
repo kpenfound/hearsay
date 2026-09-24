@@ -154,7 +154,7 @@ func (s *Store) Exposed(ctx context.Context, source string) ([]connector.Exposur
 SELECT e.payload->'container'->>'native_id', max(e.ingested_at)
   FROM (SELECT DISTINCT ON (e.artifact) e.kind, e.payload, e.acl, e.ingested_at
           FROM l0_events e
-         WHERE `+notRetractedSQL+` AND e.source = $1
+         WHERE `+visibleSQL+` AND e.source = $1
          ORDER BY e.artifact, e.revision_edited_at DESC NULLS LAST, e.seq DESC) AS e
  WHERE e.kind <> $2 AND e.acl @> $3::jsonb
  GROUP BY 1

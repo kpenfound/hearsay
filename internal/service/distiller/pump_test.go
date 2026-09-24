@@ -219,6 +219,23 @@ func TestTargetOf(t *testing.T) {
 		hidden: fixture,
 		want:   issueID,
 	}, {
+		name: "an operator deletion event belongs to no document, and reads nothing behind a tombstone",
+		ev: func() connector.Event {
+			ev := event(connector.SelfSource, connector.KindDeletion, "deletion:del_1", at(9), &connector.Identity{Source: connector.SelfSource, Kind: connector.IdentityUser, NativeID: "kyle"}, "", "")
+			ev.Payload.Container = connector.Container{Kind: connector.ContainerWorkspace, NativeID: "operator"}
+			return ev
+		}(),
+		hidden: unreadable{},
+		want:   "",
+	}, {
+		name: "a tombstone for a comment an operator deleted re-derives the issue from the redacted payload",
+		ev:   tombstoneFor(repo + "#12:comment:1"),
+		hidden: hidden{repo + "#12:comment:1": {
+			Source: source, NativeID: repo + "#12:comment:1", Kind: connector.KindMessage, Time: at(1),
+			Payload: connector.Payload{Artifact: repo + "#12:comment:1", Container: container, Parent: repo + "#12", Thread: repo + "#12"},
+		}},
+		want: issueID,
+	}, {
 		name: "an agent session event is not distilled",
 		ev:   agentEvent(connector.KindAgentSession, ""),
 		want: "",

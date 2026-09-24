@@ -369,8 +369,10 @@ go run ./cmd/hearsay l0 tail --source github-acme     # follow the change feed
 
 `list` prints what an event is and where it came from and no payload; `get`
 prints the whole event, which is what asking for one by id means. `count`
-reports what was ever ingested beside what a read returns: L0 is append-only, so
-a deletion is a tombstone that hides an event and keeps its row.
+reports what was ever ingested beside what a read returns: a tombstone hides an
+event and keeps its row, and so does an operator deletion, which redacts the
+row's payload in place ([ADR-0018](docs/adr/0018-operator-deletion-redacts-l0-in-place.md)).
+`get` on either fails naming the tombstone, or the deletion and its operator.
 
 `list` and `tail` take the same `--source`, `--kind` and `--artifact`; `get` and
 `count` take none of them and say so rather than ignoring one. An artifact's

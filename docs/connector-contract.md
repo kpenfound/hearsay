@@ -110,10 +110,14 @@ wherever the source has something that behaves like one.
 | `assertion` | A stance written through `assert` | yes | yes |
 | `audit` | A bundle served: who asked, on whose behalf, what was filtered | yes | no |
 | `tombstone` | An artifact deleted at the source | no | no |
+| `deletion` | L0 events an operator deleted in Hearsay | yes | no |
 
-`assertion` and `audit` are written by Hearsay itself rather than by a connector,
-under source `hearsay` (`connector.SelfSource`). They are in the vocabulary
-because they are L0 events like any other.
+`assertion`, `audit` and `deletion` are written by Hearsay itself rather than by
+a connector, under source `hearsay` (`connector.SelfSource`). They are in the
+vocabulary because they are L0 events like any other. A `deletion` is not a
+tombstone: it records that an operator redacted events with `hearsay delete
+--apply` (ADR-0018), and it hides nothing by its own `target` — the redacted
+rows carry the deletion that hid them.
 
 **Extension kinds.** A source with something genuinely different emits
 `<vendor>.<name>` — two lowercase words separated by a dot, `figma.file_comment`,
@@ -274,7 +278,8 @@ Three ids, doing three different jobs:
 - **id** — Hearsay's id, derived from the source and the native id.
 
 **Re-emitting is free, and is the expected behaviour.** Ingest is idempotent on
-the event id: an event whose id is already in L0 writes nothing. A connector that
+the event id: an event whose id is already in L0 writes nothing, and one an
+operator deleted stays deleted (see deletions below). A connector that
 is unsure whether it already sent something re-sends it. That is what makes a
 webhook overlapping a backfill safe, and it is why a connector is not required to
 remember what it has emitted.
@@ -386,7 +391,13 @@ would produce a second event on every redelivery.
 
 That is deletion **at the source**. Deletion **from Hearsay** — a pasted secret,
 a departed employee, a legal hold — is an operator action that redacts payloads
-and walks provenance forward. A connector has nothing to do with it.
+and walks provenance forward. A connector has nothing to do with it, except
+that its replays of a redacted event are dropped: re-emitting an event an
+operator deleted stores nothing, returns no error and is counted on the
+deletion record, so a backfill or a redelivery neither restores the content nor
+stalls the connector. A new revision of the artifact — a new event id — is
+admitted, the same as after a tombstone
+([ADR-0018](adr/0018-operator-deletion-redacts-l0-in-place.md)).
 
 A tombstone carries the same ACL as the artifact it retracts, so that the
 retraction is visible to exactly the people the artifact was.

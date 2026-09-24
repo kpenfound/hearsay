@@ -333,10 +333,11 @@ const (
 	KindAssertion     Kind = "assertion"      // a stance written through assert()
 	KindAudit         Kind = "audit"          // a bundle served: who asked, for what
 	KindTombstone     Kind = "tombstone"      // an artifact deleted at the source
+	KindDeletion      Kind = "deletion"       // L0 events an operator deleted in Hearsay
 )
 
 // SelfSource is the source id of the events Hearsay writes itself rather than a
-// connector: `audit` and `assertion`. No ingest allowlist names it.
+// connector: `audit`, `assertion` and `deletion`. No ingest allowlist names it.
 const SelfSource = "hearsay"
 
 // kindRule is what validation requires of a kind. The two flags are per kind
@@ -369,6 +370,7 @@ var coreKinds = map[Kind]kindRule{
 	KindAssertion:     {requiresAuthor: true, requiresContent: true},
 	KindAudit:         {requiresAuthor: true},
 	KindTombstone:     {},
+	KindDeletion:      {requiresAuthor: true},
 }
 
 // CoreKinds returns the core kind vocabulary, sorted, for a connector that
