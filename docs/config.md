@@ -186,10 +186,10 @@ renamed afterwards ([connector contract](connector-contract.md#source-ids)).
 | Field | Meaning |
 |---|---|
 | `id` | The source id. It appears in every event id, so it is chosen once. |
-| `type` | The connector type: `github`, `discord`, `slack`, `drive`, `obsidian`, `agent`, or a third party's. |
+| `type` | The connector type: `github`, `discord`, `slack`, `drive`, `obsidian`, `tracker`, `agent`, or a third party's. |
 | `containers` | The repositories, channels or folders this source may ingest, **by native id** — a repository full name, a channel id, a folder id, never a display name. This is control point 1 of [access control](design.md#access-control): default deny, so a container that is not listed is not ingested. `*` widens it to everything the credentials can see, and must then be the only entry. |
 | `refresh` | A duration (`30s`, `5m`, `1h`). The poll interval and base retry interval for a stream. Ignored by a connector that only receives pushes; the runtime applies its own floor and jitter — never more often than every 30 seconds, and each tick up to a tenth of the interval later than it is due. Without it, polls run every five minutes and failed streams retry from a 30-second base. |
-| `read_only` | `true` or `false`, default `false`; nothing else is a boolean here, so `yes` is an error. `true` means Hearsay never writes to the source and its credentials need no write access: it is ingested in full, but its reactions are not gestures, its `/hearsay` comments are ordinary content that is distilled, and no command is registered, answered or replied to. People on it give feedback through `hearsay gestures` and `hearsay topics`. It changes nothing for a source type that never writes (Slack in this version, Drive, Obsidian, agent). Switching a source to read-only leaves gestures and merges it already made in force; undo them with the CLI. |
+| `read_only` | `true` or `false`, default `false`; nothing else is a boolean here, so `yes` is an error. `true` means Hearsay never writes to the source and its credentials need no write access: it is ingested in full, but its reactions are not gestures, its `/hearsay` comments are ordinary content that is distilled, and no command is registered, answered or replied to. People on it give feedback through `hearsay gestures` and `hearsay topics`. It changes nothing for a source type that never writes (Slack in this version, Drive, Obsidian, tracker, agent). Switching a source to read-only leaves gestures and merges it already made in force; undo them with the CLI. |
 | `settings` | Opaque to Hearsay and passed to the connector, which rejects a field it does not have. What belongs here is documented by the connector. |
 | `secrets` | A map from the name the connector asks for to **the name of an environment variable**. A value that is not an environment variable name is an error, because a configuration repository is checked in and a token pasted here would be too. |
 
@@ -490,6 +490,77 @@ removals are still found after a process restart. ACL and owner changes start a 
 new permission revisions. If an ACL is changed back to a prior value, set a new
 `permission_version` to prevent an earlier identical revision from deduplicating
 that transition.
+
+### Generic tracker source
+
+For a tracker with no connector of its own (Jira, Linear, an in-house one), a
+small sender that the team runs posts tickets and comments to the connectors
+service's `/hooks/<source id>`. Hearsay never calls the tracker, and backfill
+means the sender posts everything again. The request shapes, a worked curl
+request and a sender sketch are in
+[the connector contract](connector-contract.md#generic-tracker-issue-213).
+
+```yaml
+sources:
+  - id: linear
+    type: tracker
+    containers: [ENG, SEC]              # project keys; `*` is refused
+    settings:
+      access:                           # required; one entry per project
+        ENG: [{kind: public}]
+        SEC: [{kind: group, native_id: security}]
+      ticket_acl: false                 # optional; true lets a ticket carry its own acl
+    secrets:
+      token: HEARSAY_TRACKER_TOKEN      # required; the sender's bearer token
+```
+
+The sender sends `Authorization: Bearer <token>` with the value of the named
+variable. A request without it is refused with 401 and nothing is read.
+
+Access fails closed. Each project in `containers` needs an access list in
+`settings.access`, written the way the
+[contract](connector-contract.md#acl-entries) writes one. `public` means
+everyone Hearsay knows. `group` and `identity` name a group or a person in a
+source, which is this one when `source` is left out. A missing entry, an empty
+list, and an entry for a project that is not in `containers` are all startup
+failures. A project not in `containers` is refused with 403.
+
+A `group` entry is read by the `members` of the team whose identities name
+it. Hearsay cannot ask the tracker who is in a group, so the team lists them.
+An `identity` entry is read by the principal whose identities name it, and the
+same identity resolves the author of what that person posted:
+
+```yaml
+- id: security
+  kind: team
+  members: [kyle]
+  identities:
+    - source: linear
+      native_id: security
+- id: kyle
+  identities:
+    - source: linear
+      native_id: u-17          # the tracker's account id the sender posts as `id`
+```
+
+With `ticket_acl: true`, a ticket may carry its own `acl`, which replaces its
+project's list, and its comments carry the ticket's list. Hearsay trusts the
+sender with it the same way it trusts the sender with the ticket's text. Leave
+it off unless the tracker restricts individual tickets.
+
+A scope maps the tracker's items to entities with `tracker`, the same as for
+GitHub. Ticket `ENG-42` is `tracker:linear:ENG#ENG-42`, and a ticket's parent
+places it in the hierarchy:
+
+```yaml
+- id: api
+  sources: [linear]
+  tracker:
+    source: linear
+    project: ENG
+```
+
+`read_only` changes nothing: the connector never writes to the tracker.
 
 ### Agent session source
 

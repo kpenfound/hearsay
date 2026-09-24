@@ -128,12 +128,13 @@ the `hearsay.env` that `hearsay init` wrote, plus the deployment block of
 | `HEARSAY_GITHUB_WEBHOOK_SECRET` | `connectors` | **Supply** if the configuration names it: the secret the webhooks sign with. |
 | `HEARSAY_DISCORD_TOKEN` | `connectors`; `api` for a Discord source with `application_id` and `public_key` that is not `read_only` | **Supply** if the configuration names it. |
 | `HEARSAY_SLACK_APP_TOKEN`, `HEARSAY_SLACK_BOT_TOKEN` | `connectors` | **Supply** if the configuration names them: the Slack app's app-level token (`xapp-…`) and bot token (`xoxb-…`). |
+| `HEARSAY_TRACKER_TOKEN` | `connectors` | **Supply** if the configuration names it: the bearer token a generic tracker source's sender posts with (`openssl rand -hex 32`). |
 | `HEARSAY_DRIVE_CREDENTIALS` | `connectors` | **Supply** if the configuration names it: the service account's JSON key, on one line, in single quotes. |
 | `HEARSAY_LOG_LEVEL`, `HEARSAY_LOG_FORMAT` | all four services | Optional. `info` and JSON (the format when there is no terminal) by default. |
 | `HEARSAY_INSTANCE` | all four services | Optional. The replica name on every log line; the container's hostname by default. |
 
-The source-credential names are the ones `hearsay init` writes, and for Slack
-the ones [docs/config.md](config.md#slack-source) uses. A configuration
+The source-credential names are the ones `hearsay init` writes, and for the
+generic tracker the one [docs/config.md](config.md#generic-tracker-source) uses. A configuration
 can name any variable in `secrets:` and `token_env`, and whatever it names is
 what the services read. Every service receives all of `.env`, because only the
 configuration knows which names it uses.

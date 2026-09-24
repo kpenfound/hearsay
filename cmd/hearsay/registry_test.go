@@ -42,6 +42,10 @@ func TestConnectorRegistry(t *testing.T) {
 			src:  connector.SourceConfig{ID: "notes", Type: "obsidian", Containers: []string{"notes"}, Settings: json.RawMessage(`{"root":"/missing-vault","owner":{"source":"notes","kind":"user","native_id":"owner"}}`)},
 		},
 		{
+			name: "tracker is registered",
+			src:  connector.SourceConfig{ID: "linear", Type: "tracker", Containers: []string{"ENG"}, Settings: json.RawMessage(`{"access":{"ENG":[{"kind":"public"}]}}`), Secrets: map[string]string{"token": "t"}},
+		},
+		{
 			name: "agent is registered",
 			src:  connector.SourceConfig{ID: "sessions", Type: "agent", Containers: []string{"*"}},
 		},
