@@ -1,0 +1,50 @@
+[
+  {
+    "type": "hello",
+    "num_connections": 1,
+    "debug_info": {
+      "host": "applink-fixture"
+    },
+    "connection_info": {
+      "app_id": "A0HEARSAY"
+    }
+  },
+  {
+    "envelope_id": "e2-retry",
+    "type": "events_api",
+    "accepts_response_payload": false,
+    "retry_attempt": 1,
+    "retry_reason": "timeout",
+    "payload": {
+      "token": "verification-token",
+      "team_id": "T0001",
+      "api_app_id": "A0HEARSAY",
+      "type": "event_callback",
+      "event_id": "EvE2RETRY",
+      "event_time": 1758700000,
+      "is_ext_shared_channel": false,
+      "authorizations": [
+        {
+          "enterprise_id": null,
+          "team_id": "T0001",
+          "user_id": "U0HEARSAY",
+          "is_bot": true,
+          "is_enterprise_install": false
+        }
+      ],
+      "event_context": "4-eyJldCI6Im1lc3NhZ2UifQ",
+      "event": {
+        "type": "message",
+        "channel": "C0PUBLIC",
+        "user": "U0SAM",
+        "text": "Yes, once the tests pass.",
+        "ts": "1758700060.000200",
+        "thread_ts": "1758700000.000100",
+        "parent_user_id": "U0KYLE",
+        "team": "T0001",
+        "channel_type": "channel",
+        "event_ts": "1758700060.000200"
+      }
+    }
+  }
+]

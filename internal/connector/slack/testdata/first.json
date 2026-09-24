@@ -1,0 +1,634 @@
+[
+  {
+    "type": "hello",
+    "num_connections": 1,
+    "debug_info": {
+      "host": "applink-fixture",
+      "build_number": 1,
+      "approximate_connection_time": 18060
+    },
+    "connection_info": {
+      "app_id": "A0HEARSAY"
+    }
+  },
+  {
+    "envelope_id": "e1",
+    "type": "events_api",
+    "accepts_response_payload": false,
+    "retry_attempt": 0,
+    "retry_reason": "",
+    "payload": {
+      "token": "verification-token",
+      "team_id": "T0001",
+      "api_app_id": "A0HEARSAY",
+      "type": "event_callback",
+      "event_id": "EvE1",
+      "event_time": 1758700000,
+      "is_ext_shared_channel": false,
+      "authorizations": [
+        {
+          "enterprise_id": null,
+          "team_id": "T0001",
+          "user_id": "U0HEARSAY",
+          "is_bot": true,
+          "is_enterprise_install": false
+        }
+      ],
+      "event_context": "4-eyJldCI6Im1lc3NhZ2UifQ",
+      "event": {
+        "type": "message",
+        "channel": "C0PUBLIC",
+        "user": "U0KYLE",
+        "text": "Should we ship the retry change? <@U0SAM>",
+        "ts": "1758700000.000100",
+        "team": "T0001",
+        "channel_type": "channel",
+        "event_ts": "1758700000.000100",
+        "client_msg_id": "5b8e6f36-0000-4000-8000-000000000001"
+      }
+    }
+  },
+  {
+    "envelope_id": "e2",
+    "type": "events_api",
+    "accepts_response_payload": false,
+    "retry_attempt": 0,
+    "retry_reason": "",
+    "payload": {
+      "token": "verification-token",
+      "team_id": "T0001",
+      "api_app_id": "A0HEARSAY",
+      "type": "event_callback",
+      "event_id": "EvE2",
+      "event_time": 1758700000,
+      "is_ext_shared_channel": false,
+      "authorizations": [
+        {
+          "enterprise_id": null,
+          "team_id": "T0001",
+          "user_id": "U0HEARSAY",
+          "is_bot": true,
+          "is_enterprise_install": false
+        }
+      ],
+      "event_context": "4-eyJldCI6Im1lc3NhZ2UifQ",
+      "event": {
+        "type": "message",
+        "channel": "C0PUBLIC",
+        "user": "U0SAM",
+        "text": "Yes, once the tests pass.",
+        "ts": "1758700060.000200",
+        "thread_ts": "1758700000.000100",
+        "parent_user_id": "U0KYLE",
+        "team": "T0001",
+        "channel_type": "channel",
+        "event_ts": "1758700060.000200"
+      }
+    }
+  },
+  {
+    "envelope_id": "e3",
+    "type": "events_api",
+    "accepts_response_payload": false,
+    "retry_attempt": 0,
+    "retry_reason": "",
+    "payload": {
+      "token": "verification-token",
+      "team_id": "T0001",
+      "api_app_id": "A0HEARSAY",
+      "type": "event_callback",
+      "event_id": "EvE3",
+      "event_time": 1758700000,
+      "is_ext_shared_channel": false,
+      "authorizations": [
+        {
+          "enterprise_id": null,
+          "team_id": "T0001",
+          "user_id": "U0HEARSAY",
+          "is_bot": true,
+          "is_enterprise_install": false
+        }
+      ],
+      "event_context": "4-eyJldCI6Im1lc3NhZ2UifQ",
+      "event": {
+        "type": "message",
+        "subtype": "message_changed",
+        "hidden": true,
+        "channel": "C0PUBLIC",
+        "ts": "1758700061.000000",
+        "event_ts": "1758700061.000000",
+        "channel_type": "channel",
+        "message": {
+          "type": "message",
+          "channel": "C0PUBLIC",
+          "user": "U0KYLE",
+          "text": "Should we ship the retry change? <@U0SAM>",
+          "ts": "1758700000.000100",
+          "team": "T0001",
+          "channel_type": "channel",
+          "event_ts": "1758700000.000100",
+          "client_msg_id": "5b8e6f36-0000-4000-8000-000000000001",
+          "thread_ts": "1758700000.000100",
+          "reply_count": 1,
+          "reply_users": [
+            "U0SAM"
+          ],
+          "latest_reply": "1758700060.000200"
+        },
+        "previous_message": {
+          "type": "message",
+          "channel": "C0PUBLIC",
+          "user": "U0KYLE",
+          "text": "Should we ship the retry change? <@U0SAM>",
+          "ts": "1758700000.000100",
+          "team": "T0001",
+          "channel_type": "channel",
+          "event_ts": "1758700000.000100",
+          "client_msg_id": "5b8e6f36-0000-4000-8000-000000000001"
+        }
+      }
+    }
+  },
+  {
+    "envelope_id": "e4",
+    "type": "events_api",
+    "accepts_response_payload": false,
+    "retry_attempt": 0,
+    "retry_reason": "",
+    "payload": {
+      "token": "verification-token",
+      "team_id": "T0001",
+      "api_app_id": "A0HEARSAY",
+      "type": "event_callback",
+      "event_id": "EvE4",
+      "event_time": 1758700000,
+      "is_ext_shared_channel": false,
+      "authorizations": [
+        {
+          "enterprise_id": null,
+          "team_id": "T0001",
+          "user_id": "U0HEARSAY",
+          "is_bot": true,
+          "is_enterprise_install": false
+        }
+      ],
+      "event_context": "4-eyJldCI6Im1lc3NhZ2UifQ",
+      "event": {
+        "type": "message",
+        "subtype": "message_changed",
+        "hidden": true,
+        "channel": "C0PUBLIC",
+        "ts": "1758700120.000000",
+        "event_ts": "1758700120.000000",
+        "channel_type": "channel",
+        "message": {
+          "type": "message",
+          "channel": "C0PUBLIC",
+          "user": "U0SAM",
+          "text": "Yes, once the integration tests pass.",
+          "ts": "1758700060.000200",
+          "thread_ts": "1758700000.000100",
+          "parent_user_id": "U0KYLE",
+          "team": "T0001",
+          "channel_type": "channel",
+          "event_ts": "1758700060.000200",
+          "edited": {
+            "user": "U0SAM",
+            "ts": "1758700120.000000"
+          }
+        },
+        "previous_message": {
+          "type": "message",
+          "channel": "C0PUBLIC",
+          "user": "U0SAM",
+          "text": "Yes, once the tests pass.",
+          "ts": "1758700060.000200",
+          "thread_ts": "1758700000.000100",
+          "parent_user_id": "U0KYLE",
+          "team": "T0001",
+          "channel_type": "channel",
+          "event_ts": "1758700060.000200"
+        }
+      }
+    }
+  },
+  {
+    "envelope_id": "e5",
+    "type": "events_api",
+    "accepts_response_payload": false,
+    "retry_attempt": 0,
+    "retry_reason": "",
+    "payload": {
+      "token": "verification-token",
+      "team_id": "T0001",
+      "api_app_id": "A0HEARSAY",
+      "type": "event_callback",
+      "event_id": "EvE5",
+      "event_time": 1758700000,
+      "is_ext_shared_channel": false,
+      "authorizations": [
+        {
+          "enterprise_id": null,
+          "team_id": "T0001",
+          "user_id": "U0HEARSAY",
+          "is_bot": true,
+          "is_enterprise_install": false
+        }
+      ],
+      "event_context": "4-eyJldCI6Im1lc3NhZ2UifQ",
+      "event": {
+        "type": "message",
+        "subtype": "bot_message",
+        "channel": "C0PUBLIC",
+        "bot_id": "B0DEPLOY",
+        "username": "deploys",
+        "text": "Deployed v1.2.3",
+        "ts": "1758700180.000300",
+        "channel_type": "channel",
+        "event_ts": "1758700180.000300"
+      }
+    }
+  },
+  {
+    "envelope_id": "e6",
+    "type": "events_api",
+    "accepts_response_payload": false,
+    "retry_attempt": 0,
+    "retry_reason": "",
+    "payload": {
+      "token": "verification-token",
+      "team_id": "T0001",
+      "api_app_id": "A0HEARSAY",
+      "type": "event_callback",
+      "event_id": "EvE6",
+      "event_time": 1758700000,
+      "is_ext_shared_channel": false,
+      "authorizations": [
+        {
+          "enterprise_id": null,
+          "team_id": "T0001",
+          "user_id": "U0HEARSAY",
+          "is_bot": true,
+          "is_enterprise_install": false
+        }
+      ],
+      "event_context": "4-eyJldCI6Im1lc3NhZ2UifQ",
+      "event": {
+        "type": "message",
+        "subtype": "channel_join",
+        "channel": "C0PUBLIC",
+        "user": "U0NEW",
+        "text": "<@U0NEW> has joined the channel",
+        "ts": "1758700190.000000",
+        "channel_type": "channel",
+        "event_ts": "1758700190.000000"
+      }
+    }
+  },
+  {
+    "envelope_id": "e7",
+    "type": "events_api",
+    "accepts_response_payload": false,
+    "retry_attempt": 0,
+    "retry_reason": "",
+    "payload": {
+      "token": "verification-token",
+      "team_id": "T0001",
+      "api_app_id": "A0HEARSAY",
+      "type": "event_callback",
+      "event_id": "EvE7",
+      "event_time": 1758700000,
+      "is_ext_shared_channel": false,
+      "authorizations": [
+        {
+          "enterprise_id": null,
+          "team_id": "T0001",
+          "user_id": "U0HEARSAY",
+          "is_bot": true,
+          "is_enterprise_install": false
+        }
+      ],
+      "event_context": "4-eyJldCI6Im1lc3NhZ2UifQ",
+      "event": {
+        "type": "reaction_added",
+        "user": "U0SAM",
+        "reaction": "+1",
+        "item_user": "U0KYLE",
+        "item": {
+          "type": "message",
+          "channel": "C0PUBLIC",
+          "ts": "1758700000.000100"
+        },
+        "event_ts": "1758700200.000500"
+      }
+    }
+  },
+  {
+    "envelope_id": "e8",
+    "type": "events_api",
+    "accepts_response_payload": false,
+    "retry_attempt": 0,
+    "retry_reason": "",
+    "payload": {
+      "token": "verification-token",
+      "team_id": "T0001",
+      "api_app_id": "A0HEARSAY",
+      "type": "event_callback",
+      "event_id": "EvE8",
+      "event_time": 1758700000,
+      "is_ext_shared_channel": false,
+      "authorizations": [
+        {
+          "enterprise_id": null,
+          "team_id": "T0001",
+          "user_id": "U0HEARSAY",
+          "is_bot": true,
+          "is_enterprise_install": false
+        }
+      ],
+      "event_context": "4-eyJldCI6Im1lc3NhZ2UifQ",
+      "event": {
+        "type": "reaction_removed",
+        "user": "U0SAM",
+        "reaction": "+1",
+        "item_user": "U0KYLE",
+        "item": {
+          "type": "message",
+          "channel": "C0PUBLIC",
+          "ts": "1758700000.000100"
+        },
+        "event_ts": "1758700210.000600"
+      }
+    }
+  },
+  {
+    "envelope_id": "e9",
+    "type": "events_api",
+    "accepts_response_payload": false,
+    "retry_attempt": 0,
+    "retry_reason": "",
+    "payload": {
+      "token": "verification-token",
+      "team_id": "T0001",
+      "api_app_id": "A0HEARSAY",
+      "type": "event_callback",
+      "event_id": "EvE9",
+      "event_time": 1758700000,
+      "is_ext_shared_channel": false,
+      "authorizations": [
+        {
+          "enterprise_id": null,
+          "team_id": "T0001",
+          "user_id": "U0HEARSAY",
+          "is_bot": true,
+          "is_enterprise_install": false
+        }
+      ],
+      "event_context": "4-eyJldCI6Im1lc3NhZ2UifQ",
+      "event": {
+        "type": "message",
+        "subtype": "message_deleted",
+        "hidden": true,
+        "channel": "C0PUBLIC",
+        "ts": "1758700220.000700",
+        "deleted_ts": "1758700180.000300",
+        "event_ts": "1758700220.000700",
+        "channel_type": "channel",
+        "previous_message": {
+          "type": "message",
+          "subtype": "bot_message",
+          "bot_id": "B0DEPLOY",
+          "text": "Deployed v1.2.3",
+          "ts": "1758700180.000300"
+        }
+      }
+    }
+  },
+  {
+    "envelope_id": "e10",
+    "type": "events_api",
+    "accepts_response_payload": false,
+    "retry_attempt": 0,
+    "retry_reason": "",
+    "payload": {
+      "token": "verification-token",
+      "team_id": "T0001",
+      "api_app_id": "A0HEARSAY",
+      "type": "event_callback",
+      "event_id": "EvE10",
+      "event_time": 1758700000,
+      "is_ext_shared_channel": false,
+      "authorizations": [
+        {
+          "enterprise_id": null,
+          "team_id": "T0001",
+          "user_id": "U0HEARSAY",
+          "is_bot": true,
+          "is_enterprise_install": false
+        }
+      ],
+      "event_context": "4-eyJldCI6Im1lc3NhZ2UifQ",
+      "event": {
+        "type": "message",
+        "channel": "C0OTHER",
+        "user": "U0KYLE",
+        "text": "Not in the allowlist.",
+        "ts": "1758700230.000800",
+        "channel_type": "channel",
+        "event_ts": "1758700230.000800"
+      }
+    }
+  },
+  {
+    "envelope_id": "e11",
+    "type": "events_api",
+    "accepts_response_payload": false,
+    "retry_attempt": 0,
+    "retry_reason": "",
+    "payload": {
+      "token": "verification-token",
+      "team_id": "T0001",
+      "api_app_id": "A0HEARSAY",
+      "type": "event_callback",
+      "event_id": "EvE11",
+      "event_time": 1758700000,
+      "is_ext_shared_channel": false,
+      "authorizations": [
+        {
+          "enterprise_id": null,
+          "team_id": "T0001",
+          "user_id": "U0HEARSAY",
+          "is_bot": true,
+          "is_enterprise_install": false
+        }
+      ],
+      "event_context": "4-eyJldCI6Im1lc3NhZ2UifQ",
+      "event": {
+        "type": "message",
+        "channel": "C0PRIVATE",
+        "user": "U0KYLE",
+        "text": "A private channel.",
+        "ts": "1758700231.000800",
+        "channel_type": "group",
+        "event_ts": "1758700231.000800"
+      }
+    }
+  },
+  {
+    "envelope_id": "e12",
+    "type": "events_api",
+    "accepts_response_payload": false,
+    "retry_attempt": 0,
+    "retry_reason": "",
+    "payload": {
+      "token": "verification-token",
+      "team_id": "T0001",
+      "api_app_id": "A0HEARSAY",
+      "type": "event_callback",
+      "event_id": "EvE12",
+      "event_time": 1758700000,
+      "is_ext_shared_channel": true,
+      "authorizations": [
+        {
+          "enterprise_id": null,
+          "team_id": "T0001",
+          "user_id": "U0HEARSAY",
+          "is_bot": true,
+          "is_enterprise_install": false
+        }
+      ],
+      "event_context": "4-eyJldCI6Im1lc3NhZ2UifQ",
+      "event": {
+        "type": "message",
+        "channel": "C0PUBLIC",
+        "user": "U0PARTNER",
+        "text": "From a Slack Connect partner.",
+        "ts": "1758700232.000800",
+        "channel_type": "channel",
+        "event_ts": "1758700232.000800"
+      }
+    }
+  },
+  {
+    "envelope_id": "e13",
+    "type": "events_api",
+    "accepts_response_payload": false,
+    "retry_attempt": 0,
+    "retry_reason": "",
+    "payload": {
+      "token": "verification-token",
+      "team_id": "T0OTHER",
+      "api_app_id": "A0HEARSAY",
+      "type": "event_callback",
+      "event_id": "EvE13",
+      "event_time": 1758700000,
+      "is_ext_shared_channel": false,
+      "authorizations": [
+        {
+          "enterprise_id": null,
+          "team_id": "T0OTHER",
+          "user_id": "U0HEARSAY",
+          "is_bot": true,
+          "is_enterprise_install": false
+        }
+      ],
+      "event_context": "4-eyJldCI6Im1lc3NhZ2UifQ",
+      "event": {
+        "type": "message",
+        "channel": "C0PUBLIC",
+        "user": "U0ELSE",
+        "text": "Another workspace.",
+        "ts": "1758700233.000800",
+        "channel_type": "channel",
+        "event_ts": "1758700233.000800"
+      }
+    }
+  },
+  {
+    "envelope_id": "e14",
+    "type": "events_api",
+    "accepts_response_payload": false,
+    "retry_attempt": 0,
+    "retry_reason": "",
+    "payload": {
+      "token": "verification-token",
+      "team_id": "T0001",
+      "api_app_id": "A0HEARSAY",
+      "type": "event_callback",
+      "event_id": "EvE14",
+      "event_time": 1758700000,
+      "is_ext_shared_channel": false,
+      "authorizations": [
+        {
+          "enterprise_id": null,
+          "team_id": "T0001",
+          "user_id": "U0HEARSAY",
+          "is_bot": true,
+          "is_enterprise_install": false
+        }
+      ],
+      "event_context": "4-eyJldCI6Im1lc3NhZ2UifQ",
+      "event": {
+        "type": "message",
+        "channel": "C0PUBLIC",
+        "user": "U0KYLE",
+        "text": "Scratch that.",
+        "ts": "1758700240.000400",
+        "channel_type": "channel",
+        "event_ts": "1758700240.000400"
+      }
+    }
+  },
+  {
+    "envelope_id": "e15",
+    "type": "events_api",
+    "accepts_response_payload": false,
+    "retry_attempt": 0,
+    "retry_reason": "",
+    "payload": {
+      "token": "verification-token",
+      "team_id": "T0001",
+      "api_app_id": "A0HEARSAY",
+      "type": "event_callback",
+      "event_id": "EvE15",
+      "event_time": 1758700000,
+      "is_ext_shared_channel": false,
+      "authorizations": [
+        {
+          "enterprise_id": null,
+          "team_id": "T0001",
+          "user_id": "U0HEARSAY",
+          "is_bot": true,
+          "is_enterprise_install": false
+        }
+      ],
+      "event_context": "4-eyJldCI6Im1lc3NhZ2UifQ",
+      "event": {
+        "type": "message",
+        "subtype": "message_changed",
+        "hidden": true,
+        "channel": "C0PUBLIC",
+        "ts": "1758700300.000000",
+        "event_ts": "1758700300.000000",
+        "channel_type": "channel",
+        "message": {
+          "type": "message",
+          "subtype": "tombstone",
+          "user": "USLACKBOT",
+          "text": "This message was deleted.",
+          "ts": "1758700240.000400",
+          "thread_ts": "1758700240.000400",
+          "hidden": true,
+          "reply_count": 1
+        }
+      }
+    }
+  },
+  {
+    "type": "disconnect",
+    "reason": "refresh_requested",
+    "debug_info": {
+      "host": "applink-fixture"
+    }
+  }
+]
