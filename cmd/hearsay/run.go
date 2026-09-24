@@ -53,6 +53,7 @@ func commands() []command {
 		{"migrate", "up|status|up-to <n>|down", "Apply schema migrations and exit.", runMigrate},
 		{"l0", "list|get <id>|count|tail", "Inspect the L0 event store.", runL0},
 		{"aliases", "list|confirm <entity> <name>|reject <entity> <name>", "Review learned entity names.", runAliases},
+		{"topics", "list <scope>|merge <from> <into>|split <topic> --stance <id>... --name <name>|undo <op>|ops", "List topics and their operations; merge, split and undo by hand.", runTopics},
 		{"delete", "--event <id>|--artifact <source> <id>|--author <identity> [--apply] | list | show <id>", "Preview deletion provenance; --apply redacts L0 and re-distills; list and show read the records.", runDelete},
 		{"version", "", "Print version, commit and build date.", runVersion},
 		{"help", "", "Print this message.", runHelp},

@@ -466,6 +466,30 @@ Four rules to know before changing it:
 - **No test calls a provider**, as for the distiller: the answers are written
   down in `fixtures_test.go` and `-record` writes them to `testdata/fixtures`.
 
+## Topic operations
+
+```sh
+go run ./cmd/hearsay topics list api --config ./config --principal kyle
+go run ./cmd/hearsay topics merge <from-topic> <into-topic> --config ./config --principal kyle
+go run ./cmd/hearsay topics split <topic> --stance <id> --stance <id> --name "the new topic" --config ./config --principal kyle
+go run ./cmd/hearsay topics undo <operation-id> --config ./config --principal kyle
+go run ./cmd/hearsay topics ops --scope api --since 2026-09-01T00:00:00Z --json --config ./config --principal kyle
+```
+
+A person corrects the assertion worker's topics by hand: merge two topics,
+split stances off onto a new one, undo either. Each is one row appended to the
+scope's ledger by `l2.Operate`, which holds the scope's `assert` serial key
+while it decides, and changes no topic or stance row
+([ADR-0020](docs/adr/0020-topic-operations-are-a-ledger-held-on-the-scope-key.md));
+every read replays the ledger
+([ADR-0021](docs/adr/0021-reads-follow-the-topic-ledger.md)). The
+`--principal` is a configured human the scope's `ratified_by.principals`
+names, and they see only what `stance_history` would show them: a topic, a
+stance or an operation they may not read is refused as one that does not exist.
+Stance ids for `split` come from `stance_history`. There is no dry run; undo
+is how a mistake is taken back, and an undo that a later operation still in
+force is in the way of fails until that one is undone.
+
 ## Search
 
 `l1.Store.Search` is hybrid retrieval over the document table and the whole of
