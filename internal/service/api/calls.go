@@ -607,7 +607,7 @@ func getL0(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json.R
 	notFound := fail(http.StatusNotFound, "no event %q", args.ID)
 	ev, err := c.events.Get(ctx, args.ID)
 	switch {
-	case errors.Is(err, l0.ErrNotFound) || errors.Is(err, l0.ErrRetracted):
+	case errors.Is(err, l0.ErrNotFound) || errors.Is(err, l0.ErrRetracted) || errors.Is(err, l0.ErrDeleted):
 		return nil, notFound
 	case err != nil:
 		return nil, err

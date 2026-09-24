@@ -353,7 +353,7 @@ func (a *Assembler) directive(ctx context.Context, reader l1.Reader, scope, id s
 		return nil, nil
 	}
 	requested, err := a.events.Get(ctx, id)
-	if errors.Is(err, l0.ErrNotFound) || errors.Is(err, l0.ErrRetracted) {
+	if errors.Is(err, l0.ErrNotFound) || errors.Is(err, l0.ErrRetracted) || errors.Is(err, l0.ErrDeleted) {
 		return nil, nil
 	}
 	if err != nil {

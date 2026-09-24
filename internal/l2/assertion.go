@@ -97,12 +97,12 @@ func AssertedTier(policy config.Policy, eventID string) Tier {
 }
 
 // UnappendedAssertions is every `assertion` event Hearsay wrote that no stance
-// was appended from yet, oldest first. It is what lets the assertion worker's
+// was appended from yet and no operator deleted, oldest first. It is what lets the assertion worker's
 // startup pick up an assertion whose job ran out of attempts.
 func (s *Store) UnappendedAssertions(ctx context.Context) ([]string, error) {
 	rows, err := s.db.Query(ctx, `
 SELECT e.id FROM l0_events e
-WHERE e.source = $1 AND e.kind = $2
+WHERE e.source = $1 AND e.kind = $2 AND e.deletion IS NULL
   AND NOT EXISTS (SELECT 1 FROM l2_stances s WHERE s.assertion = e.id)
 ORDER BY e.occurred_at, e.id`, connector.SelfSource, string(connector.KindAssertion))
 	if err != nil {

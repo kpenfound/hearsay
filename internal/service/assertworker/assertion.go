@@ -34,7 +34,7 @@ func IsAssertion(target string) bool {
 // event, so a second run writes nothing.
 func AppendAssertion(ctx context.Context, pool *pgxpool.Pool, authority config.Authority, eventID, scope string) (bool, error) {
 	ev, err := l0.New(pool).Get(ctx, eventID)
-	if errors.Is(err, l0.ErrNotFound) || errors.Is(err, l0.ErrRetracted) {
+	if errors.Is(err, l0.ErrNotFound) || errors.Is(err, l0.ErrRetracted) || errors.Is(err, l0.ErrDeleted) {
 		return false, nil
 	}
 	if err != nil {

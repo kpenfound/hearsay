@@ -22,7 +22,7 @@ func (c *Calls) sessionSource(ctx context.Context, caller Caller, reader l1.Read
 			continue
 		}
 		ev, err := c.events.Get(ctx, connector.EventID(source, session+"@start"))
-		if errors.Is(err, l0.ErrNotFound) || errors.Is(err, l0.ErrRetracted) {
+		if errors.Is(err, l0.ErrNotFound) || errors.Is(err, l0.ErrRetracted) || errors.Is(err, l0.ErrDeleted) {
 			continue
 		}
 		if err != nil {
@@ -74,7 +74,7 @@ func getSession(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, 
 	}
 	notFound := fail(http.StatusNotFound, "no session for assertion %q", args.Assertion)
 	ev, err := c.events.Get(ctx, args.Assertion)
-	if errors.Is(err, l0.ErrNotFound) || errors.Is(err, l0.ErrRetracted) {
+	if errors.Is(err, l0.ErrNotFound) || errors.Is(err, l0.ErrRetracted) || errors.Is(err, l0.ErrDeleted) {
 		return nil, notFound
 	}
 	if err != nil {
@@ -128,7 +128,7 @@ ORDER BY coalesce(revision_edited_at, occurred_at), seq`, source, as.Session, Au
 			return nil, fmt.Errorf("reading session trace: %w", err)
 		}
 		item, err := c.events.Get(ctx, id)
-		if errors.Is(err, l0.ErrRetracted) {
+		if errors.Is(err, l0.ErrRetracted) || errors.Is(err, l0.ErrDeleted) {
 			continue
 		}
 		if err != nil {

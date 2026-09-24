@@ -177,7 +177,7 @@ func Sweep(ctx context.Context, pool *pgxpool.Pool, repo config.Repo) (int, erro
 	enqueued := 0
 	for _, doc := range pending {
 		root, err := events.Get(ctx, doc.RootEvent)
-		if errors.Is(err, l0.ErrNotFound) || errors.Is(err, l0.ErrRetracted) {
+		if errors.Is(err, l0.ErrNotFound) || errors.Is(err, l0.ErrRetracted) || errors.Is(err, l0.ErrDeleted) {
 			// The distiller removes the document of a retracted artifact; until
 			// it has, there is nothing to read from it.
 			continue
@@ -211,7 +211,7 @@ func sweepAssertions(ctx context.Context, pool *pgxpool.Pool) (int, error) {
 	enqueued := 0
 	for _, id := range ids {
 		ev, err := events.Get(ctx, id)
-		if errors.Is(err, l0.ErrNotFound) || errors.Is(err, l0.ErrRetracted) {
+		if errors.Is(err, l0.ErrNotFound) || errors.Is(err, l0.ErrRetracted) || errors.Is(err, l0.ErrDeleted) {
 			continue
 		}
 		if err != nil {

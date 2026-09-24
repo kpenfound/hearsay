@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
 // The errors a caller distinguishes. Everything else a Store returns is an IO
@@ -26,6 +27,12 @@ var (
 	// has learned something, and "unknown id" would say the opposite
 	// (docs/design.md#deletion-and-provenance).
 	ErrRetracted = errors.New("the event has been retracted by a tombstone")
+
+	// ErrDeleted is returned for an event an operator deleted in Hearsay
+	// (ADR-0018). It is not [ErrRetracted]: the source did not delete the
+	// event, and a reader must never be told that it did. The error is a
+	// [*DeletedError], which names the deletion and no content.
+	ErrDeleted = errors.New("the event has been deleted by an operator")
 
 	// ErrRewrite is returned when an event id already in L0 is re-emitted with
 	// different content. L0 is append-only, so the stored row wins and nothing
@@ -44,6 +51,46 @@ const (
 	// everything gets a page instead of the table.
 	MaxLimit = 1000
 )
+
+// RetractedError is what [Store.Get] returns for an event a source tombstone
+// covers. It keeps the source's attribution: the tombstone is the source's own
+// statement that the artifact is gone.
+type RetractedError struct {
+	// Event is the id asked for.
+	Event string
+	// Source is the configured source that retracted it.
+	Source string
+	// Tombstone is the id of the first tombstone that covers it.
+	Tombstone string
+}
+
+func (e *RetractedError) Error() string {
+	return fmt.Sprintf("%s: %v at source %s by %s", e.Event, ErrRetracted, e.Source, e.Tombstone)
+}
+
+// Is makes a RetractedError match [ErrRetracted].
+func (e *RetractedError) Is(target error) bool { return target == ErrRetracted }
+
+// DeletedError is what [Store.Get] returns for an event an operator deleted. It
+// names the deletion and who applied it, and nothing of the event's content,
+// which is gone from the row.
+type DeletedError struct {
+	// Event is the id asked for.
+	Event string
+	// Deletion is the id of the deletion record.
+	Deletion string
+	// Operator is the configured human principal who applied it.
+	Operator string
+	// DeletedAt is when it was applied.
+	DeletedAt time.Time
+}
+
+func (e *DeletedError) Error() string {
+	return fmt.Sprintf("%s: %v: deletion %s by %s at %s", e.Event, ErrDeleted, e.Deletion, e.Operator, e.DeletedAt.UTC().Format(time.RFC3339))
+}
+
+// Is makes a DeletedError match [ErrDeleted].
+func (e *DeletedError) Is(target error) bool { return target == ErrDeleted }
 
 // Store is the L0 event store: the append-only table every connector writes to
 // and everything above L0 reads from. It implements [connector.Sink], so a
@@ -87,13 +134,23 @@ type Appended struct {
 	// Cursor is where the row sits in the change feed, whether or not this call
 	// wrote it.
 	Cursor Cursor
+	// Dropped names the deletion that redacted this event, when the call was a
+	// replay of an event an operator deleted. Nothing was written to the event,
+	// the replay was counted on the deletion record, and it is not an error:
+	// a backfill or a redelivery must neither restore the content nor stall the
+	// connector (ADR-0018).
+	Dropped string
 }
 
 // Emit implements [connector.Sink]: it appends the event and reports only
 // whether that worked, because a connector has no use for the difference
 // between a write and a replay.
 func (s *Store) Emit(ctx context.Context, ev connector.Event) error {
-	_, err := s.Append(ctx, ev)
+	appended, err := s.Append(ctx, ev)
+	if err == nil && appended.Dropped != "" {
+		telemetry.Logger(ctx).InfoContext(ctx, "dropped a replay of an operator-deleted event",
+			"event", appended.ID, "deletion", appended.Dropped)
+	}
 	return err
 }
 
@@ -101,7 +158,9 @@ func (s *Store) Emit(ctx context.Context, ev connector.Event) error {
 // from the source and the native id (connector.EventID), an artifact that
 // changed carries a new revision token in its native id, and so re-emitting an
 // unchanged artifact writes nothing and re-emitting an edited one writes a new
-// row. Nothing is ever updated.
+// row. Nothing is ever updated here; the one update L0 allows is an operator
+// deletion's redaction ([Delete]), and a replay of a redacted event is dropped
+// and counted rather than compared (Appended.Dropped).
 //
 // An event that does not satisfy [connector.Event.Validate] is rejected before
 // any SQL runs, so the table holds only events the contract allows. An event id
@@ -123,16 +182,17 @@ func (s *Store) Append(ctx context.Context, ev connector.Event) (Appended, error
 	// finds it.
 	for attempt := range 2 {
 		var (
-			xact   string
-			seq    int64
-			stored bool
-			same   bool
+			xact     string
+			seq      int64
+			stored   bool
+			same     bool
+			deletion *string
 		)
 		err := s.db.QueryRow(ctx, appendSQL,
 			row.id, row.source, row.nativeID, string(row.kind), row.artifact,
 			row.revisionToken, row.revisionEditedAt, row.target,
 			row.occurredAt, row.payload, row.acl,
-		).Scan(&xact, &seq, &stored, &same)
+		).Scan(&xact, &seq, &stored, &same, &deletion)
 		if errors.Is(err, pgx.ErrNoRows) {
 			if attempt == 0 {
 				continue
@@ -142,12 +202,15 @@ func (s *Store) Append(ctx context.Context, ev connector.Event) (Appended, error
 		if err != nil {
 			return Appended{}, fmt.Errorf("appending event %s: %w", row.id, err)
 		}
-		if !stored && !same {
-			return Appended{}, fmt.Errorf("%w: %s", ErrRewrite, row.id)
-		}
 		cursor, err := cursorOf(xact, seq)
 		if err != nil {
 			return Appended{}, fmt.Errorf("appending event %s: %w", row.id, err)
+		}
+		if deletion != nil {
+			return Appended{ID: row.id, Cursor: cursor, Dropped: *deletion}, nil
+		}
+		if !stored && !same {
+			return Appended{}, fmt.Errorf("%w: %s", ErrRewrite, row.id)
 		}
 		return Appended{ID: row.id, Stored: stored, Cursor: cursor}, nil
 	}
@@ -159,6 +222,10 @@ func (s *Store) Append(ctx context.Context, ev connector.Event) (Appended, error
 // jsonb equality rather than a hash of the bytes a connector marshalled,
 // because jsonb ignores key order and whitespace: two spellings of one payload
 // are a replay, not a rewrite.
+//
+// A row an operator deleted is not compared — its payload is a redaction
+// marker, so every replay would read as a rewrite — and the replay is counted
+// on the deletion record in the same statement instead.
 const appendSQL = `
 WITH inserted AS (
     INSERT INTO l0_events (
@@ -169,14 +236,22 @@ WITH inserted AS (
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
     ON CONFLICT (id) DO NOTHING
     RETURNING xact_id, seq
+),
+existing AS (
+    SELECT e.xact_id, e.seq, e.deletion,
+           e.kind = $4 AND e.occurred_at = $9 AND e.payload = $10 AND e.acl = $11 AS same
+      FROM l0_events e
+     WHERE e.id = $1 AND NOT EXISTS (SELECT 1 FROM inserted)
+),
+dropped AS (
+    UPDATE l0_deletions d SET replays = d.replays + 1
+      FROM existing WHERE d.id = existing.deletion
 )
-SELECT inserted.xact_id::text, inserted.seq, true, true
+SELECT inserted.xact_id::text, inserted.seq, true, true, NULL::text
   FROM inserted
 UNION ALL
-SELECT e.xact_id::text, e.seq, false,
-       e.kind = $4 AND e.occurred_at = $9 AND e.payload = $10 AND e.acl = $11
-  FROM l0_events e
- WHERE e.id = $1 AND NOT EXISTS (SELECT 1 FROM inserted)`
+SELECT existing.xact_id::text, existing.seq, false, existing.same, existing.deletion
+  FROM existing`
 
 // retractedSQL hides revisions that precede a tombstone in ingest order. A
 // later revision of the same stable artifact is visible again; replaying an
@@ -189,32 +264,49 @@ const retractedSQL = `EXISTS (
      WHERE tomb.source = e.source AND tomb.target = e.artifact AND tomb.seq > e.seq
 )`
 
-// notRetractedSQL is what a read admits.
-const notRetractedSQL = `NOT ` + retractedSQL
+// visibleSQL is what a read admits: neither retracted by a source tombstone
+// nor deleted by an operator (ADR-0018). A deleted row is hidden by its own
+// column rather than by a tombstone, so it is hidden whatever the source says
+// later, and a later revision of the artifact — a new row — is not.
+const visibleSQL = `e.deletion IS NULL AND NOT ` + retractedSQL
 
 // eventColumns is everything an event is reconstructed from.
 const eventColumns = `e.id, e.source, e.native_id, e.kind, e.occurred_at, e.payload, e.acl`
 
-// Get returns one event by id. It returns [ErrRetracted] for an event a
-// tombstone covers and [ErrNotFound] for an id L0 does not hold.
+// Get returns one event by id. It returns a [*DeletedError] (matching
+// [ErrDeleted]) for an event an operator deleted, a [*RetractedError]
+// (matching [ErrRetracted]) for one a source tombstone covers, and
+// [ErrNotFound] for an id L0 does not hold. An operator deletion is reported
+// as one even where a tombstone covers the event as well: the content is gone,
+// which is the stronger fact.
 func (s *Store) Get(ctx context.Context, id string) (connector.Event, error) {
 	var (
 		ev        connector.Event
 		kind      string
 		payload   []byte
 		acl       []byte
-		retracted bool
+		deletion  *string
+		operator  *string
+		deletedAt *time.Time
+		tombstone *string
 	)
-	err := s.db.QueryRow(ctx,
-		`SELECT `+eventColumns+`, `+retractedSQL+` FROM l0_events e WHERE e.id = $1`, id,
-	).Scan(&ev.ID, &ev.Source, &ev.NativeID, &kind, &ev.Time, &payload, &acl, &retracted)
+	err := s.db.QueryRow(ctx, `
+SELECT `+eventColumns+`, d.id, d.operator, d.deleted_at,
+       (SELECT tomb.id FROM l0_events tomb
+         WHERE tomb.source = e.source AND tomb.target = e.artifact AND tomb.seq > e.seq
+         ORDER BY tomb.seq LIMIT 1)
+  FROM l0_events e LEFT JOIN l0_deletions d ON d.id = e.deletion
+ WHERE e.id = $1`, id,
+	).Scan(&ev.ID, &ev.Source, &ev.NativeID, &kind, &ev.Time, &payload, &acl, &deletion, &operator, &deletedAt, &tombstone)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return connector.Event{}, fmt.Errorf("%w: %s", ErrNotFound, id)
 	case err != nil:
 		return connector.Event{}, fmt.Errorf("reading event %s: %w", id, err)
-	case retracted:
-		return connector.Event{}, fmt.Errorf("%w: %s", ErrRetracted, id)
+	case deletion != nil:
+		return connector.Event{}, &DeletedError{Event: id, Deletion: *deletion, Operator: *operator, DeletedAt: deletedAt.UTC()}
+	case tombstone != nil:
+		return connector.Event{}, &RetractedError{Event: id, Source: ev.Source, Tombstone: *tombstone}
 	}
 	if err := decodeInto(&ev, kind, payload, acl); err != nil {
 		return connector.Event{}, fmt.Errorf("reading event %s: %w", id, err)
@@ -264,7 +356,7 @@ func (s *Store) CurrentArtifacts(ctx context.Context, source string) ([]connecto
 	rows, err := s.db.Query(ctx, `
 SELECT DISTINCT ON (e.artifact) `+eventColumns+`
   FROM l0_events e
- WHERE e.source = $1 AND e.kind <> 'tombstone' AND `+notRetractedSQL+`
+ WHERE e.source = $1 AND e.kind <> 'tombstone' AND `+visibleSQL+`
  ORDER BY e.artifact, e.revision_edited_at DESC NULLS LAST, e.seq DESC`, source)
 	if err != nil {
 		return nil, fmt.Errorf("reading current artifacts of %s: %w", source, err)
@@ -295,7 +387,10 @@ SELECT DISTINCT ON (e.artifact) `+eventColumns+`
 // conversation was the retracted artifact part of? A tombstone is not required
 // to say (docs/connector-contract.md), and the document that quoted the
 // artifact has to be re-derived without it. What it returns is not for serving —
-// every read a person or an agent reaches goes through the visible reads.
+// every read a person or an agent reaches goes through the visible reads. An
+// event an operator also deleted comes back with its redacted payload, which
+// keeps the artifact, container, thread and parent this question needs and
+// none of the content (ADR-0018).
 func (s *Store) Retracted(ctx context.Context, source, artifact string) (connector.Event, error) {
 	if source == "" || artifact == "" {
 		return connector.Event{}, errors.New("reading a retracted artifact needs its source and its artifact id")
@@ -434,7 +529,7 @@ func (s *Store) List(ctx context.Context, opts ListOptions) ([]connector.Event, 
 	if err := opts.Validate(); err != nil {
 		return nil, err
 	}
-	q := &query{sql: `SELECT ` + eventColumns + ` FROM l0_events e WHERE ` + notRetractedSQL}
+	q := &query{sql: `SELECT ` + eventColumns + ` FROM l0_events e WHERE ` + visibleSQL}
 	opts.where(q)
 	if opts.Newest {
 		q.sql += ` ORDER BY e.occurred_at DESC, e.revision_edited_at DESC NULLS LAST, e.seq DESC`
@@ -496,7 +591,7 @@ func (s *Store) Current(ctx context.Context, opts ListOptions) ([]connector.Even
 SELECT ` + eventColumns + `
   FROM (SELECT DISTINCT ON (e.artifact) ` + eventColumns + `, e.artifact, e.seq
           FROM l0_events e
-         WHERE ` + notRetractedSQL}
+         WHERE ` + visibleSQL}
 	opts.where(q)
 	q.sql += `
          ORDER BY e.artifact, e.revision_edited_at DESC NULLS LAST, e.seq DESC) AS e`
@@ -546,7 +641,7 @@ func (s *Store) Placed(ctx context.Context, source, container string) ([]connect
 SELECT `+eventColumns+` FROM (
   SELECT DISTINCT ON (e.artifact) `+eventColumns+`, e.artifact, e.revision_edited_at, e.seq
     FROM l0_events e
-   WHERE `+notRetractedSQL+` AND e.source = $1 AND e.payload->'container'->>'native_id' = $2
+   WHERE `+visibleSQL+` AND e.source = $1 AND e.payload->'container'->>'native_id' = $2
      AND e.kind <> 'tombstone'
    ORDER BY e.artifact, e.revision_edited_at DESC NULLS LAST, e.seq DESC
 ) AS e WHERE e.payload->>'part_of' IS NOT NULL ORDER BY e.artifact`, source, container)
@@ -581,7 +676,7 @@ func (s *Store) Documents(ctx context.Context, source string) ([]connector.Event
 SELECT `+eventColumns+` FROM (
   SELECT DISTINCT ON (e.artifact) `+eventColumns+`, e.artifact, e.revision_edited_at, e.seq
     FROM l0_events e
-   WHERE `+notRetractedSQL+` AND e.source = $1 AND e.kind = 'document'
+   WHERE `+visibleSQL+` AND e.source = $1 AND e.kind = 'document'
    ORDER BY e.artifact, e.revision_edited_at DESC NULLS LAST, e.seq DESC
 ) AS e ORDER BY e.artifact`, source)
 	if err != nil {
@@ -611,19 +706,20 @@ SELECT `+eventColumns+` FROM (
 type Count struct {
 	Source string
 	Kind   connector.Kind
-	// Events is every row, retracted ones included: L0 is append-only, so this
-	// is what was ever ingested.
+	// Events is every row, retracted and deleted ones included: a deletion
+	// redacts a row rather than removing it, so this is what was ever ingested.
 	Events int64
-	// Visible is what a read returns — Events less what tombstones cover.
+	// Visible is what a read returns — Events less what tombstones cover and
+	// operators deleted.
 	Visible int64
 }
 
 // Counts is every (source, kind) pair in the store with how many events it
-// holds, sorted. It reports both totals so that a tombstoned event is visibly
-// still there, which is what append-only means.
+// holds, sorted. It reports both totals so that a tombstoned or deleted event
+// is visibly still there: a deletion redacts the row and keeps it.
 func (s *Store) Counts(ctx context.Context) ([]Count, error) {
 	rows, err := s.db.Query(ctx, `
-SELECT e.source, e.kind, count(*), count(*) FILTER (WHERE `+notRetractedSQL+`)
+SELECT e.source, e.kind, count(*), count(*) FILTER (WHERE `+visibleSQL+`)
   FROM l0_events e
  GROUP BY e.source, e.kind
  ORDER BY e.source, e.kind`)
@@ -668,9 +764,10 @@ type Change struct {
 // become unreachable. The cost is that a long-running write transaction holds
 // the feed at its own position rather than letting readers past it.
 //
-// Tombstoned events are not on the feed; the tombstones themselves are, which
-// is how a consumer learns to walk provenance forward and re-derive without
-// them.
+// Tombstoned and operator-deleted events are not on the feed; the tombstones
+// and Hearsay's own `deletion` events are, which is how a consumer learns that
+// something went. The distiller learns of an operator deletion from the jobs
+// the deletion enqueued rather than from its event.
 func (s *Store) Changes(ctx context.Context, from Cursor, filter Filter, limit int) ([]Change, error) {
 	if err := filter.Validate(); err != nil {
 		return nil, err
@@ -680,7 +777,7 @@ SELECT e.xact_id::text, e.seq, e.ingested_at, ` + eventColumns + `
   FROM l0_events e
  WHERE (e.xact_id, e.seq) > ($1::xid8, $2::bigint)
    AND e.xact_id < pg_snapshot_xmin(pg_current_snapshot())
-   AND ` + notRetractedSQL}
+   AND ` + visibleSQL}
 	q.args = []any{strconv.FormatUint(from.xact, 10), from.seq}
 	filter.where(q)
 	q.sql += `
