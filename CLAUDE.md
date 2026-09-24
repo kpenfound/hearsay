@@ -160,6 +160,11 @@ needs Postgres and refuses without it.
 has ingested, an artifact's history, and the change feed the distiller
 consumes.
 
+`hearsay delete --event <l0-id>|--artifact <source> <artifact-id>|--author <identity>`
+requires `--reason` and previews the forward provenance walk only; it writes
+nothing. `--author` takes a configured principal or a source identity, and
+`--json` emits the summary for scripts. There is no apply mode yet.
+
 ## Layout
 
 One binary, four services, layers underneath (ADR-0003).
