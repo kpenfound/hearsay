@@ -351,6 +351,60 @@ func TestAnOperatorDeletionRedactsL2AndRecordsTheRebuild(t *testing.T) {
 	}
 }
 
+func TestDeletionAfterMergeReconcilesEveryRowAndKeepsTheOperation(t *testing.T) {
+	w := newGraphWorld(t)
+	ctx := t.Context()
+	merge, err := l2.Operate(ctx, w.pool, repo, l2.OperationRequest{
+		Kind: l2.OperationMerge, Principal: "pat", Into: w.later, From: w.only,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deletion.Apply(ctx, w.pool, repo,
+		deletion.Selector{ArtifactSource: src, ArtifactID: project + "#1"}, "a pasted key", "pat"); err != nil {
+		t.Fatal(err)
+	}
+	rebuild(t, w.pool)
+	graph := l2.New(w.pool)
+	if got, err := graph.Operation(ctx, merge.ID); err != nil || got.ID != merge.ID || got.UndoneBy != 0 || !slices.Equal(got.Stances, merge.Stances) {
+		t.Errorf("Operation(after deletion) = %+v, %v, want the original merge", got, err)
+	}
+	for _, id := range []string{w.onlyStance, w.sharedStance, w.laterStance} {
+		var position string
+		if err := w.pool.QueryRow(ctx, `SELECT position FROM l2_stances WHERE id = $1`, id).Scan(&position); err != nil || position != l2.Redacted {
+			t.Errorf("stance %s position = %q, %v, want redacted", id, position, err)
+		}
+	}
+	history, err := graph.StanceHistory(ctx, w.only)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := l1.Reader{Effective: principal.Effective{Human: "pat", Grant: principal.Grant{Scopes: principal.AllScopes()}}}
+	topic, err := graph.Topic(ctx, w.only)
+	if err != nil {
+		t.Fatal(err)
+	}
+	access, err := graph.Access(ctx, []l2.Topic{topic}, history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if topic.ID != w.later || !access.Topic(reader, topic) {
+		t.Errorf("merged topic = %+v, want the surviving topic accessible", topic)
+	}
+	var withdrawn bool
+	for _, st := range history {
+		if st.ID == w.onlyStance && access.Stance(reader, st) {
+			t.Error("deleted evidence is readable in the merged topic")
+		}
+		if st.Supersedes == w.onlyStance && st.Withdrawn {
+			withdrawn = access.Withdrawal(reader, st)
+		}
+	}
+	if !withdrawn {
+		t.Error("the merged topic lost the accessible withdrawal")
+	}
+}
+
 // A tombstone from the source withdraws the stances exactly as an operator
 // deletion does, and records the withdrawal, but it is not an operator's
 // deletion: no text is redacted and there is no record to show.

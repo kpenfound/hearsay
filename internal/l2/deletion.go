@@ -65,9 +65,10 @@ WHERE s.evidence && $1::text[] AND NOT s.withdrawn AND NOT `+RetiredSQL, docIDs)
 // assertion worker calls it under the topic's serialized scope key.
 func (s *Store) RerunDeletedEvidence(ctx context.Context, stanceID, scope string) (bool, error) {
 	var live bool
-	// The row the stance was written on, not the topic the ledger puts it on
-	// now: the repair is a row of its own, and is placed the way its
-	// predecessor is.
+	// A repair normally stays on its predecessor's row, so undoing a merge
+	// returns both to that row. A split is different: its selected stances
+	// moved without rewriting their rows. Materialize the split's row for a
+	// repair, so the repair follows the split and folds back on undo.
 	var row string
 	err := s.db.QueryRow(ctx, `SELECT t.scope = $2 AND NOT s.withdrawn AND NOT `+RetiredSQL+`, s.topic_id
 FROM l2_stances s JOIN l2_topics t ON t.id = s.topic_id WHERE s.id = $1`, stanceID, scope).Scan(&live, &row)
@@ -80,6 +81,27 @@ FROM l2_stances s JOIN l2_topics t ON t.id = s.topic_id WHERE s.id = $1`, stance
 	st, err := s.Stance(ctx, stanceID)
 	if err != nil {
 		return false, err
+	}
+	// Follow a repair chain to the stance a split selected. This also keeps
+	// the repair on the split's row when that split was subsequently merged.
+	var ancestors []string
+	if err := s.db.QueryRow(ctx, `WITH RECURSIVE chain AS (
+    SELECT id, supersedes FROM l2_stances WHERE id = $1
+    UNION ALL SELECT p.id, p.supersedes FROM l2_stances p JOIN chain c ON p.id = c.supersedes
+) SELECT coalesce(array_agg(id), '{}') FROM chain`, stanceID).Scan(&ancestors); err != nil {
+		return false, fmt.Errorf("reading the predecessors of stance %s: %w", stanceID, err)
+	}
+	ops, err := s.Operations(ctx, OperationFilter{Scope: scope})
+	if err != nil {
+		return false, err
+	}
+	for _, op := range ops {
+		if op.Kind != OperationSplit || !op.InForce() {
+			continue
+		}
+		if slices.ContainsFunc(op.Stances, func(id string) bool { return slices.Contains(ancestors, id) }) {
+			row = op.Topics[1]
+		}
 	}
 	rows, err := s.db.Query(ctx, `SELECT id FROM l1_docs WHERE id = ANY($1) AND outcome_kind IN ('decided', 'proposed', 'resolved')`, st.Evidence)
 	if err != nil {
@@ -101,6 +123,16 @@ FROM l2_stances s JOIN l2_topics t ON t.id = s.topic_id WHERE s.id = $1`, stance
 	}
 	if len(surviving) == len(st.Evidence) {
 		return false, nil
+	}
+	if row != st.TopicID {
+		for _, op := range ops {
+			if op.Kind == OperationSplit && op.Topics[1] == row {
+				if _, err := s.OpenTopic(ctx, Topic{ID: row, Scope: scope, Name: op.Name, ACL: st.ACL, OpenedBy: st.Evidence[0]}); err != nil {
+					return false, err
+				}
+				break
+			}
+		}
 	}
 	slices.Sort(surviving)
 	withdrawn := len(surviving) == 0

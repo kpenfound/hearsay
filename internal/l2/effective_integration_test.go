@@ -299,27 +299,44 @@ func TestMatchingFindsTopicsAsTheLedgerMakesThem(t *testing.T) {
 	}
 }
 
-// A deletion repair of a stance a split moved is written on the row the
-// stance was written on, which the split's topic may not have.
-func TestADeletionRepairOfAStanceASplitMovedIsWritten(t *testing.T) {
+// A deletion repair follows a split across a later merge, then returns with
+// the split on undo. The unaffected stance remains on its original topic.
+func TestDeletionRepairFollowsSplitAndUndo(t *testing.T) {
 	pool := newPool(t)
 	store := l2.New(pool)
 	repo := loadRepo(t, "")
 	ctx := t.Context()
 	scope := unique()
 	a := namedTopic(t, store, scope, "the lock")
-	addStance(t, store, a, putDoc(t, pool, scope, "d1", public, nil), "the queue takes the lock", 1)
+	kept := addStance(t, store, a, putDoc(t, pool, scope, "d1", public, nil), "the queue takes the lock", 1)
 	gone := putDoc(t, pool, scope, "d2", public, nil)
 	moved := addStance(t, store, a, gone, "the keys are separate", 2)
 	split := operate(t, pool, repo, l2.OperationRequest{Kind: l2.OperationSplit, Principal: "kyle", Topic: a.ID, Name: "the keys", Stances: []string{moved.ID}})
+	b := namedTopic(t, store, scope, "the engine")
+	merged := operate(t, pool, repo, l2.OperationRequest{Kind: l2.OperationMerge, Principal: "kyle", Into: b.ID, From: split.Topics[1]})
 	if _, err := l1.New(pool).Delete(ctx, gone); err != nil {
 		t.Fatal(err)
 	}
 	if written, err := store.RerunDeletedEvidence(ctx, moved.ID, scope); err != nil || !written {
 		t.Fatalf("RerunDeletedEvidence() = %v, %v, want the withdrawal written", written, err)
 	}
-	history, err := store.StanceHistory(ctx, split.Topics[1])
-	if err != nil || len(history) != 1 || !history[0].Retired {
-		t.Errorf("StanceHistory(the split's topic) = %+v, %v, want the moved stance retired by its withdrawal", history, err)
+	check := func(topic string) {
+		t.Helper()
+		history, err := store.StanceHistory(ctx, topic)
+		if err != nil || len(history) != 2 || history[0].ID != moved.ID || !history[0].Retired ||
+			!history[1].Withdrawn || history[1].Supersedes != moved.ID || history[1].TopicID != topic {
+			t.Errorf("StanceHistory(%s) = %+v, %v, want the moved stance and its withdrawal", topic, history, err)
+		}
+	}
+	check(b.ID)
+	if got := readTopic(t, store, a.ID); !strings.Contains(got.history, kept.ID) || strings.Contains(got.history, moved.ID) {
+		t.Errorf("unaffected source topic = %+v", got)
+	}
+	operate(t, pool, repo, l2.OperationRequest{Kind: l2.OperationUndo, Principal: "kyle", Undoes: merged.ID})
+	check(split.Topics[1])
+	operate(t, pool, repo, l2.OperationRequest{Kind: l2.OperationUndo, Principal: "kyle", Undoes: split.ID})
+	history, err := store.StanceHistory(ctx, a.ID)
+	if err != nil || len(history) != 3 || history[2].Supersedes != moved.ID {
+		t.Errorf("StanceHistory(after undo) = %+v, %v, want both original stances and the repair", history, err)
 	}
 }
