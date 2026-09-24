@@ -149,16 +149,31 @@ type Hearsay {
   }
 
   """
-  Builds the container image, so that an image that no longer builds fails here
-  rather than at a release.
+  Builds the default image and both release platforms, and checks the stamped
+  version and publish address without pushing to a registry.
   """
   imageCheck(ws: Workspace!): Void @check {
     image(ws).sync
+    # Exercise the same two platform builds and version stamp publish uses,
+    # without credentials or a registry write.
+    let version = "v0.0.0-image-check"
+    if (publishAddress(version, "ghcr.io/kpenfound/hearsay") != "ghcr.io/kpenfound/hearsay:" + version) {
+      raise "publish address does not use the stamped version"
+    }
+    let amd64 = image(ws, version: version, platform: "linux/amd64")
+    let arm64 = image(ws, version: version, platform: "linux/arm64")
+    if (amd64.platform != "linux/amd64" or arm64.platform != "linux/arm64") {
+      raise "image platforms do not match the publish manifest"
+    }
+    if (amd64.withExec(["version"], useEntrypoint: true).stdout.match(`^hearsay v0\.0\.0-image-check `) == null or
+        arm64.withExec(["version"], useEntrypoint: true).stdout.match(`^hearsay v0\.0\.0-image-check `) == null) {
+      raise "image version does not match the publish tag"
+    }
     null
   }
 
   """
-  The hearsay binary, compiled for Linux on the engine's own architecture.
+  The hearsay binary, compiled for Linux on the selected architecture.
   Static (CGO_ENABLED=0), so the runtime image only has to supply certificates
   and timezones.
   """
@@ -169,13 +184,20 @@ type Hearsay {
     out for itself.
     """
     version: String! = "",
+    """Target platform; defaults to the engine's platform."""
+    platform: Platform,
   ): File! {
     let ldflags = if (version == "") {
       "-s -w"
     } else {
       "-s -w -X github.com/kpenfound/hearsay/internal/version.version=" + version
     }
-    goBase(ws)
+    let base = if (platform == null) { goBase(ws) } else {
+      withGoCaches(container(platform: platform).from("golang:" + goVersion(ws)))
+        .withMountedDirectory("/src", source(ws))
+        .withWorkdir("/src")
+    }
+    base
       .withEnvVariable("CGO_ENABLED", "0")
       .withEnvVariable("GOOS", "linux")
       # go build does not create the directory it is told to write into.
@@ -194,17 +216,50 @@ type Hearsay {
     Version to stamp into the binary.
     """
     version: String! = "",
+    """Target platform; defaults to the engine's platform."""
+    platform: Platform,
   ): Container! {
-    container
+    let base = if (platform == null) { container } else { container(platform: platform) }
+    base
       .from("alpine:3.22")
       .withExec(["apk", "add", "--no-cache", "ca-certificates", "tzdata"])
-      .withFile("/usr/local/bin/hearsay", build(ws, version: version))
+      .withFile("/usr/local/bin/hearsay", build(ws, version: version, platform: platform))
       .withUser("nobody")
       .withEntrypoint(["/usr/local/bin/hearsay"])
       # The base image's CMD would otherwise be handed to hearsay as a
       # subcommand. With no default the image prints its usage and exits
       # non-zero, which is the right answer to "run hearsay" with no service.
       .withoutDefaultArgs
+  }
+
+  """
+  Publish one linux/amd64 and linux/arm64 image manifest. Run deliberately at
+  release time; this function is not a check.
+  """
+  publish(
+    ws: Workspace!,
+    """Version stamped into both binaries and used as the image tag."""
+    version: String!,
+    """Registry username with permission to push the image."""
+    username: String!,
+    """Registry token or password."""
+    password: Secret!,
+    """Untagged image address, for example ghcr.io/my-org/hearsay."""
+    imageAddress: String! = "ghcr.io/kpenfound/hearsay",
+  ): String! {
+    let address = publishAddress(version, imageAddress)
+    if (username == "") { raise "registry username is required" }
+    image(ws, version: version, platform: "linux/amd64")
+      .withRegistryAuth(imageAddress, username, password)
+      .publish(address, platformVariants: [image(ws, version: version, platform: "linux/arm64")])
+  }
+
+  let publishAddress(version: String!, imageAddress: String!): String! {
+    if (version.match(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`) == null) {
+      raise "version must be a nonempty OCI image tag"
+    }
+    if (imageAddress == "") { raise "image address is required" }
+    imageAddress + ":" + version
   }
 
   """
