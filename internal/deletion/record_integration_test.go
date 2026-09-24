@@ -153,10 +153,9 @@ func drain(t *testing.T, pool *pgxpool.Pool, kind queue.Kind, handle func(queue.
 	}
 }
 
-// rebuild runs the distiller and the assertion worker over whatever is queued,
-// until neither has anything left. Neither makes a model call here: a deleted
-// document and a stance repair need none.
-func rebuild(t *testing.T, pool *pgxpool.Pool) {
+// workers are the distiller and the assertion worker. Neither makes a model
+// call here: a deleted document and a stance repair need none.
+func workers(t *testing.T, pool *pgxpool.Pool) (distil, assert func(queue.Job) error) {
 	t.Helper()
 	registry, err := llm.NewFake(llm.Default(), llm.NewFixtures())
 	if err != nil {
@@ -172,9 +171,18 @@ func rebuild(t *testing.T, pool *pgxpool.Pool) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return func(job queue.Job) error { return d.Handle(t.Context(), job) },
+		func(job queue.Job) error { return a.Handle(t.Context(), job) }
+}
+
+// rebuild runs the distiller and the assertion worker over whatever is queued,
+// until neither has anything left.
+func rebuild(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	distil, assert := workers(t, pool)
 	for {
-		ran := drain(t, pool, distiller.JobKind(), func(job queue.Job) error { return d.Handle(t.Context(), job) })
-		ran += drain(t, pool, l2.AssertKind(), func(job queue.Job) error { return a.Handle(t.Context(), job) })
+		ran := drain(t, pool, distiller.JobKind(), distil)
+		ran += drain(t, pool, l2.AssertKind(), assert)
 		if ran == 0 {
 			return
 		}
@@ -254,6 +262,24 @@ func TestAnOperatorDeletionRedactsL2AndRecordsTheRebuild(t *testing.T) {
 	if pending.Status != deletion.StatusRebuilding || len(pending.Documents) != 1 ||
 		pending.Documents[0] != (deletion.Rebuilt{ID: w.secretDoc, Outcome: deletion.OutcomePending}) {
 		t.Errorf("Show(before the rebuild) = %+v, want the document pending and the deletion rebuilding", pending)
+	}
+
+	// The distiller's half: the document is deleted, and what was already
+	// superseded goes with it, as does the name of the topic nothing else
+	// supports. A current stance keeps its text until its withdrawal.
+	distil, _ := workers(t, pool)
+	drain(t, pool, distiller.JobKind(), distil)
+	if st := history(t, pool, w.shared)[w.sharedStance]; st.Position != l2.Redacted {
+		t.Errorf("after the distiller, the superseded stance's position = %q, want it redacted", st.Position)
+	}
+	if st := history(t, pool, w.only)[w.onlyStance]; st.Position == l2.Redacted {
+		t.Error("the distiller redacted a current stance before its withdrawal superseded it")
+	}
+	if got := topicName(t, pool, w.only); got != l2.Redacted {
+		t.Errorf("after the distiller, only's name = %q, want it redacted", got)
+	}
+	if mid, err := deletion.Show(ctx, pool, applied.Deletion); err != nil || mid.Status != deletion.StatusRebuilding {
+		t.Errorf("Show(withdrawals queued) = %+v, %v, want rebuilding", mid, err)
 	}
 
 	rebuild(t, pool)
