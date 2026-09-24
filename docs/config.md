@@ -125,9 +125,32 @@ sources:
       guild: "824100000000000000"
       intents: 34305
       # api_url: https://discord.com/api/v10 # optional; localhost for fixtures
+      # application_id: "824100000000000009" # optional, with public_key: slash commands
+      # public_key: "<the application's hex public key>"
     secrets:
       token: HEARSAY_DISCORD_BOT_TOKEN
 ```
+
+`application_id` and `public_key`, set together, turn on `/hearsay pin` and
+`/hearsay merge`. Both values are in the application's page of the developer
+portal. Invite the bot with the `applications.commands` scope as well as
+`bot`, and set the application's Interactions Endpoint URL to the API's
+`https://<api host>/discord/<source id>/interactions`. `hearsay api` (and
+`hearsay all`) then needs the bot token too, and uses it only to register the
+two commands in the guild at startup. It verifies each interaction with the
+public key, and answers only the person who ran the command, ephemerally:
+
+- `/hearsay pin`, run in a thread, pins the thread's distilled document as an
+  anchor in its scope.
+- `/hearsay merge from:<topic> into:<topic>` merges one topic into another.
+  Discord offers both topics as the person types, and only topics they may
+  read.
+
+The person's Discord account has to be one of a configured human's
+`identities`, and the scope's `ratified_by.principals` has to name that human.
+Otherwise the answer says why nothing happened. A command run in a channel the
+source does not ingest is refused. Each command is recorded in L0 as a
+`command` event and is never distilled.
 
 Run `hearsay connectors --config ./hearsay.yaml`. `/readyz` reports the
 connection state, last event time, retries, and allowlist drops. A bot token

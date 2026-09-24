@@ -314,8 +314,9 @@ func repoReaders(repo config.Repo, lookup func(string) (string, bool)) (l2.RepoR
 }
 
 // runAPI runs the read and assert API. It reads L0, L1 and L2, writes an audit
-// event per bundle and an assertion event and its assert job per `assert`, so
-// it needs Postgres and refuses without it; the model tiers are
+// event per bundle and an assertion event and its assert job per `assert`, and
+// applies the Discord slash commands of a source that configures its
+// application, so it needs Postgres and refuses without it; the model tiers are
 // built only for search's `embed` tier, and search runs on full text without
 // one.
 func runAPI(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -352,7 +353,40 @@ func runAPI(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	if err != nil {
 		return err
 	}
-	return api.Run(ctx, cfg, api.Deps{Pool: pool, LLM: registry, Listen: *listen})
+	apps, err := discordApps(cfg.Repo, os.LookupEnv)
+	if err != nil {
+		return err
+	}
+	return api.Run(ctx, cfg, api.Deps{Pool: pool, LLM: registry, Listen: *listen, Discord: apps})
+}
+
+// discordApps are the Discord applications of the sources that configure
+// one: the API answers their slash commands (ADR-0022). Only the bot token is
+// read from the environment, to register the commands.
+func discordApps(repo config.Repo, lookup func(string) (string, bool)) ([]*discord.App, error) {
+	var apps []*discord.App
+	for _, src := range repo.Sources {
+		if src.Type != discord.Type || !discord.HasApp(src) {
+			continue
+		}
+		if env, ok := src.Secrets[discord.SecretToken]; ok {
+			src.Secrets = map[string]string{discord.SecretToken: env}
+		} else {
+			src.Secrets = nil
+		}
+		resolved, err := connector.ResolveSecrets(src, lookup)
+		if err != nil {
+			return nil, err
+		}
+		app, err := discord.NewApp(resolved)
+		if err != nil {
+			return nil, fmt.Errorf("source %q: %w", src.ID, err)
+		}
+		if app != nil {
+			apps = append(apps, app)
+		}
+	}
+	return apps, nil
 }
 
 // stoppingEarly turns a startup failure that happened because the process was
@@ -525,6 +559,10 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	if err != nil {
 		return err
 	}
+	apps, err := discordApps(cfg.Repo, os.LookupEnv)
+	if err != nil {
+		return err
+	}
 
 	return service.RunAll(ctx, map[string]service.RunFunc{
 		connectors.Name: func(ctx context.Context) error {
@@ -537,7 +575,7 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 			return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry, Repos: repos})
 		},
 		api.Name: func(ctx context.Context) error {
-			return api.Run(ctx, cfg, api.Deps{Pool: pool, LLM: registry, Listen: *apiListen})
+			return api.Run(ctx, cfg, api.Deps{Pool: pool, LLM: registry, Listen: *apiListen, Discord: apps})
 		},
 	})
 }

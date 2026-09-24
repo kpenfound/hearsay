@@ -1,7 +1,7 @@
 // Package api serves the read and assert API over MCP and HTTP: bundle
 // assembly, the handles a consumer follows, `watch`, the audit trail, and
-// `assert`, the one write, through which an agent proposes a stance as an L0
-// `assertion` event. Reads are structured lookups, and nothing here asks a
+// `assert`, the one write a call makes, through which an agent proposes a
+// stance as an L0 `assertion` event. Reads are structured lookups, and nothing here asks a
 // model to generate anything: the one model call a read makes is `search` embedding the
 // query it was given, on the `embed` tier (internal/l1).
 //
@@ -42,6 +42,11 @@
 // and whatever is never distilled, never notify. A waiting watch holds no
 // database connection, and ends when its request is cancelled or the server
 // stops.
+//
+// Beside the calls, the API is the Discord interaction adapter
+// ([Interactions], ADR-0022, ADR-0024): for a Discord source that configures
+// its application, it answers `/hearsay pin` and `/hearsay merge` on
+// [DiscordPath], and registers the two commands at startup.
 package api
 
 import (
@@ -59,6 +64,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/connector/discord"
 	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/llm"
@@ -93,6 +99,10 @@ type Deps struct {
 	// Listen is the address to serve on when Listener is nil. Empty is
 	// [DefaultListen].
 	Listen string
+	// Discord are the Discord applications whose slash commands the API
+	// answers on [DiscordPath] ([Interactions]); none is a process that takes
+	// no commands.
+	Discord []*discord.App
 }
 
 // Run serves the API until ctx is cancelled, and returns nil when it stops that
@@ -124,8 +134,19 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 			return fmt.Errorf("listening on %s: %w", addr, err)
 		}
 	}
+	handler := Handler(calls, deps.Pool)
+	var interactions *Interactions
+	if len(deps.Discord) > 0 {
+		if interactions, err = NewInteractions(deps.Pool, cfg.Repo, deps.Discord...); err != nil {
+			return err
+		}
+		mux := http.NewServeMux()
+		mux.Handle("/", handler)
+		mux.Handle("POST "+DiscordPath("{source}"), interactions)
+		handler = mux
+	}
 	server := &http.Server{
-		Handler:           Handler(calls, deps.Pool),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		// Not the cancellable context: a request in flight keeps its logger
 		// through the shutdown grace period.
@@ -138,6 +159,13 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 		"embedding", embedder != nil)
 
 	var wg sync.WaitGroup
+	if interactions != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			interactions.Register(ctx)
+		}()
+	}
 	done := make(chan error, 1)
 	wg.Add(1)
 	go func() {
@@ -155,6 +183,9 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 		err = server.Shutdown(grace)
 		cancel()
 		err = errors.Join(err, <-done)
+	}
+	if interactions != nil {
+		interactions.Stop()
 	}
 	wg.Wait()
 	log.InfoContext(ctx, "api stopped")

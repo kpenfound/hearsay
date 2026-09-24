@@ -127,8 +127,8 @@ Every read and the assertion worker's matching follow the ledger: a topic
 merged away reads, and is written to, as the topic it went into, and a split's
 topic is a topic of its own that gets a row when its first new stance lands
 ([ADR-0021](docs/adr/0021-reads-follow-the-topic-ledger.md)). `hearsay topics`
-is the one command that calls `Operate`; the Discord and GitHub gestures will
-call it too.
+and Discord's `/hearsay merge` call `Operate`; the GitHub gestures will call it
+too.
 
 A person's ratify, demote and pin, and the undo of one, are `l2.RecordGesture`
 (or `l2.Store.ApplyGesture` inside a job already holding the key): one row in
@@ -141,7 +141,18 @@ and a demoted one as `contested` until a ratification or a newer stance. A pin
 writes `l2_pins`
 ([ADR-0023](docs/adr/0023-human-gestures-are-a-ledger-every-standing-reads.md)).
 Parsing a source's reaction or command into a request is the connector work
-items'. The CLI calls `RecordGesture` directly.
+items'. The CLI and Discord's `/hearsay pin` call `RecordGesture` directly.
+
+Discord's `/hearsay pin` and `/hearsay merge` are answered by the API, not the
+connector: `api.Interactions` on `POST /discord/<source>/interactions`, for a
+Discord source whose settings name `application_id` and `public_key`. It
+verifies the signature, records the command as an L0 `command` event (never
+distilled), maps the Discord user to a configured human, applies the command
+through `RecordGesture` or `Operate`, and answers ephemerally within Discord's
+three seconds, deferring and editing the answer when the work takes longer
+([ADR-0024](docs/adr/0024-discord-commands-are-applied-by-the-interaction-adapter.md)).
+Merge autocomplete offers the topics `l2.View` lets the person read — the view
+`hearsay topics` reads through.
 
 Migrations are `go run ./cmd/hearsay migrate up|status|up-to <n>|down`, or
 `dagger api call hearsay migrate --database-url=...` against a database. They are

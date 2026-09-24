@@ -16,7 +16,6 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/db"
-	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
@@ -151,74 +150,25 @@ func runTopics(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	return nil
 }
 
-// topicView is the graph as one person reads it.
+// topicView is the graph as one person reads it: the reader the API builds
+// for a person calling it directly ([l2.View]).
 type topicView struct {
-	store     *l2.Store
-	authority config.Authority
-	reader    l1.Reader
-	topics    map[string]*l2.Assessment
+	*l2.View
 }
 
-// newTopicView builds the reader the API builds for a person calling it
-// directly: their configured scopes and the code those link to, expanded over
-// the graph, and their identities for the access lists.
 func newTopicView(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, human principal.Principal) (*topicView, error) {
-	store := l2.New(pool)
-	eff, err := principal.HumanRead(human, human.Grant)
+	v, err := l2.NewView(ctx, l2.New(pool), repo, human)
 	if err != nil {
 		return nil, err
 	}
-	if eff, err = principal.Reach(ctx, store, eff, human.Grant.Scopes, principal.Scopes{}); err != nil {
-		return nil, err
-	}
-	resolver, err := repo.Resolver()
-	if err != nil {
-		return nil, err
-	}
-	reader, err := l1.ReaderFor(resolver, eff)
-	if err != nil {
-		return nil, err
-	}
-	return &topicView{store: store, authority: repo.Authority, reader: reader, topics: map[string]*l2.Assessment{}}, nil
-}
-
-// topic is the topic an id reads as now, with its history, or nil where the
-// person may not read it or there is no such topic: the two are one answer.
-func (v *topicView) topic(ctx context.Context, id string) (*l2.Assessment, error) {
-	if a, done := v.topics[id]; done {
-		return a, nil
-	}
-	t, err := v.store.Topic(ctx, id)
-	if errors.Is(err, l2.ErrNotFound) {
-		v.topics[id] = nil
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	assessed, err := v.store.Assess(ctx, v.authority, v.reader, []l2.Topic{t})
-	if err != nil {
-		return nil, err
-	}
-	var a *l2.Assessment
-	if assessed[0].Access.Topic(v.reader, t) {
-		a = &assessed[0]
-	}
-	v.topics[id] = a
-	return a, nil
-}
-
-// visible is whether the person may see a stance in a topic's history: what
-// `stance_history` would show them.
-func (v *topicView) visible(a *l2.Assessment, st l2.Stance) bool {
-	return a.Access.Stance(v.reader, st) || a.Access.Withdrawal(v.reader, st)
+	return &topicView{v}, nil
 }
 
 // operation reports whether the person may read an operation: every topic it
 // covers reads, as the ledger makes it now, as a topic they may read.
 func (v *topicView) operation(ctx context.Context, op l2.Operation) (bool, error) {
 	for _, id := range op.Topics {
-		a, err := v.topic(ctx, id)
+		a, err := v.Topic(ctx, id)
 		if err != nil || a == nil {
 			return false, err
 		}
@@ -232,7 +182,7 @@ func noOperation(id int64) error { return fmt.Errorf("no operation %d", id) }
 
 func (v *topicView) checkMerge(ctx context.Context, req l2.OperationRequest) error {
 	for _, id := range []string{req.From, req.Into} {
-		if a, err := v.topic(ctx, id); err != nil || a == nil {
+		if a, err := v.Topic(ctx, id); err != nil || a == nil {
 			return errors.Join(err, noTopic(id))
 		}
 	}
@@ -243,13 +193,13 @@ func (v *topicView) checkMerge(ctx context.Context, req l2.OperationRequest) err
 // stance they may not read on it: a split that moved a stance they cannot see
 // would tell them where it went.
 func (v *topicView) checkSplit(ctx context.Context, req l2.OperationRequest) error {
-	a, err := v.topic(ctx, req.Topic)
+	a, err := v.Topic(ctx, req.Topic)
 	if err != nil || a == nil {
 		return errors.Join(err, noTopic(req.Topic))
 	}
 	for _, id := range req.Stances {
 		i := slices.IndexFunc(a.History, func(st l2.Stance) bool { return st.ID == id })
-		if i < 0 || !v.visible(a, a.History[i]) {
+		if i < 0 || !v.Visible(a, a.History[i]) {
 			return fmt.Errorf("no stance %q on topic %q", id, req.Topic)
 		}
 	}
@@ -257,7 +207,7 @@ func (v *topicView) checkSplit(ctx context.Context, req l2.OperationRequest) err
 }
 
 func (v *topicView) checkUndo(ctx context.Context, id int64) error {
-	op, err := v.store.Operation(ctx, id)
+	op, err := v.Store().Operation(ctx, id)
 	if errors.Is(err, l2.ErrNotFound) {
 		return noOperation(id)
 	}
@@ -279,7 +229,7 @@ func (v *topicView) conflict(ctx context.Context, err error) error {
 	}
 	shown := &l2.ConflictError{Operation: c.Operation, Reason: c.Reason}
 	for _, id := range c.Conflicting {
-		op, err := v.store.Operation(ctx, id)
+		op, err := v.Store().Operation(ctx, id)
 		if err != nil {
 			continue
 		}
@@ -298,11 +248,7 @@ func (v *topicView) conflict(ctx context.Context, err error) error {
 // does not exist and a scope with nothing they may read both print the
 // header alone.
 func (v *topicView) list(ctx context.Context, w io.Writer, scope string) error {
-	topics, err := v.store.Topics(ctx, scope)
-	if err != nil {
-		return err
-	}
-	assessed, err := v.store.Assess(ctx, v.authority, v.reader, topics)
+	assessed, err := v.Topics(ctx, scope)
 	if err != nil {
 		return err
 	}
@@ -310,12 +256,9 @@ func (v *topicView) list(ctx context.Context, w io.Writer, scope string) error {
 	fmt.Fprintln(tw, "ID\tSTANCES\tNAME")
 	for i := range assessed {
 		a := &assessed[i]
-		if !a.Access.Topic(v.reader, a.Topic) {
-			continue
-		}
 		n := 0
 		for _, st := range a.History {
-			if v.visible(a, st) {
+			if v.Visible(a, st) {
 				n++
 			}
 		}
@@ -343,7 +286,7 @@ type operationRecord struct {
 
 // ops prints the ledger the person may read, oldest first.
 func (v *topicView) ops(ctx context.Context, w io.Writer, f l2.OperationFilter, asJSON bool) error {
-	ops, err := v.store.Operations(ctx, f)
+	ops, err := v.Store().Operations(ctx, f)
 	if err != nil {
 		return err
 	}
@@ -392,19 +335,19 @@ func (v *topicView) stance(ctx context.Context, seen map[string]bool, id string)
 		return ok, nil
 	}
 	seen[id] = false
-	st, err := v.store.Stance(ctx, id)
+	st, err := v.Store().Stance(ctx, id)
 	if errors.Is(err, l2.ErrNotFound) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	a, err := v.topic(ctx, st.TopicID)
+	a, err := v.Topic(ctx, st.TopicID)
 	if err != nil || a == nil {
 		return false, err
 	}
 	i := slices.IndexFunc(a.History, func(h l2.Stance) bool { return h.ID == id })
-	seen[id] = i >= 0 && v.visible(a, a.History[i])
+	seen[id] = i >= 0 && v.Visible(a, a.History[i])
 	return seen[id], nil
 }
 

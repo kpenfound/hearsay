@@ -247,8 +247,9 @@ func TargetOf(ctx context.Context, ev connector.Event, hidden Hidden) (string, b
 // undistilled are the kinds that belong to no document. An agent's session,
 // its turns and its tool calls are provenance — what an agent was doing when
 // it said something — rather than team knowledge, and distilling every tool
-// call would flood L1 (#22).
-var undistilled = []connector.Kind{connector.KindAgentSession, connector.KindAgentTurn, connector.KindToolCall}
+// call would flood L1 (#22). A command a person gave Hearsay is control
+// traffic, not team content (ADR-0022).
+var undistilled = []connector.Kind{connector.KindAgentSession, connector.KindAgentTurn, connector.KindToolCall, connector.KindCommand}
 
 // distilled reports whether an event's kind, or the core kind an extension
 // kind behaves like, is one the distiller makes documents from. Whatever the
