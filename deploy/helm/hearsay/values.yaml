@@ -1,0 +1,191 @@
+# Values for the Hearsay chart. docs/deploy.md ("Kubernetes with Helm") is the
+# guide. Three things have no default and the chart refuses to render without
+# them: image.tag, database.existingSecret, and one of the config forms.
+#
+# No value here ever holds a secret. Secrets are referenced by the name of a
+# Secret you created and the key inside it, and the chart renders no Secret.
+
+image:
+  repository: ghcr.io/kpenfound/hearsay
+  # Required: a published version tag, such as v0.10.0. There is no `latest`,
+  # so an upgrade is always a deliberate choice of version.
+  tag: ""
+  # Optional: the sha256:… digest `publish` printed, pinned beside the tag.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+# Existing Secrets of type kubernetes.io/dockerconfigjson, by name.
+imagePullSecrets: []
+
+# Postgres 16 or later with pgvector (ADR-0004). The chart does not run one.
+database:
+  # Required: the name of an existing Secret holding the connection URL, such
+  # as postgres://hearsay:<password>@db.example.internal:5432/hearsay?sslmode=require.
+  existingSecret: ""
+  # The key in that Secret.
+  key: HEARSAY_DATABASE_URL
+
+# The configuration repository (docs/config.md), mounted read-only at
+# /etc/hearsay in every service. Set exactly one of hearsayYaml, files and
+# volume. It is read once, at startup (ADR-0009).
+config:
+  # The single-file form: the contents of hearsay.yaml, for instance with
+  # `--set-file config.hearsayYaml=./hearsay.yaml`. Rendered into a ConfigMap.
+  hearsayYaml: ""
+  # The directory form: path inside the configuration → contents, such as
+  #   sources/github.yaml: |
+  #     id: github
+  #     ...
+  # Rendered into a ConfigMap and mounted with each file at its path.
+  files: {}
+  # Anything else, as a Kubernetes volume source: a ConfigMap you manage, a
+  # PersistentVolumeClaim, a CSI volume. For example
+  #   volume:
+  #     configMap:
+  #       name: hearsay-config
+  # The chart cannot see what is in it, so a change to it does not roll the
+  # pods on its own: see config.digest.
+  volume: {}
+  # Optional: the digest `hearsay config validate` prints. Put on every pod as
+  # the annotation hearsay/config-digest, so changing it rolls them. With
+  # hearsayYaml or files the pods roll on any change anyway.
+  digest: ""
+
+# Environment for all four services (never the migration job). The variables
+# a configuration names in token_env and secrets: are its own choice, so the
+# chart takes them as references and does not guess.
+#
+# Plain values, not secrets: name → value.
+env: {}
+  # HEARSAY_LOG_LEVEL: info
+# Single keys of existing Secrets: variable → {secret, key}.
+secretEnv: {}
+  # HEARSAY_OPERATOR_TOKEN: {secret: hearsay-tokens, key: operator}
+  # ANTHROPIC_API_KEY: {secret: hearsay-llm, key: api-key}
+# Whole existing Secrets, by name: every key becomes a variable of that name.
+existingSecrets: []
+  # - hearsay-env
+
+# The pods' service account. Empty is the namespace's default. Nothing in
+# Hearsay calls the Kubernetes API, so its token is never mounted; name one
+# only for what your platform attaches to it, such as cloud database IAM.
+serviceAccountName: ""
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# The image runs as nobody (65534) and writes nothing to disk.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  runAsGroup: 65534
+  fsGroup: 65534
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+# The probes every service gets, on its own port. /healthz answers once the
+# process is serving; /readyz once its database is reachable and its schema is
+# current, and for the connectors only while no source reports itself failed.
+# The startup probe gives the assertion worker time to seed entities, which it
+# does before it listens.
+probes:
+  startup:
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 60
+  liveness:
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+# The four services. Replicas are docs/deploy.md's "Replicas and
+# serialization": one each is enough for a team. Each takes its own env,
+# secretEnv and existingSecrets on top of the shared ones, so a credential can
+# go only to the service that reads it.
+connectors:
+  # Keep at 1: two replicas of the same sources both poll them and both hold
+  # their streams.
+  replicas: 1
+  # The source ids this deployment hosts (`connectors --source <id>`). Empty
+  # hosts every configured source.
+  sources: []
+  resources: {}
+  env: {}
+  secretEnv: {}
+  existingSecrets: []
+  # For instance an Obsidian vault, mounted read-only at its settings.root.
+  extraVolumes: []
+  extraVolumeMounts: []
+  service:
+    type: ClusterIP
+    port: 8081
+    annotations: {}
+
+distiller:
+  replicas: 1
+  resources: {}
+  env: {}
+  secretEnv: {}
+  existingSecrets: []
+  extraVolumes: []
+  extraVolumeMounts: []
+
+assertWorker:
+  replicas: 1
+  resources: {}
+  env: {}
+  secretEnv: {}
+  existingSecrets: []
+  extraVolumes: []
+  extraVolumeMounts: []
+
+api:
+  replicas: 1
+  resources: {}
+  env: {}
+  secretEnv: {}
+  existingSecrets: []
+  extraVolumes: []
+  extraVolumeMounts: []
+  service:
+    type: ClusterIP
+    port: 8080
+    annotations: {}
+
+# `hearsay migrate up` from the image being deployed, as a pre-install and
+# pre-upgrade hook Job (ADR-0006). It reads only the database URL. It is kept
+# after it succeeds, so its log can be read, and replaced by the next one.
+migrate:
+  enabled: true
+  backoffLimit: 1
+  activeDeadlineSeconds: 600
+  resources: {}
+
+# One Ingress routing what callers and sources need, and nothing else:
+# /hooks to the connectors, /v1, /mcp and /discord to the API. Health
+# endpoints are not routed.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  # Required when enabled.
+  host: ""
+  tls:
+    # Bearer tokens cross this hop, so TLS is on unless you turn it off because
+    # something in front of the controller terminates it.
+    enabled: true
+    # Required when TLS is enabled: an existing TLS Secret, or the one your
+    # certificate controller (cert-manager, say) writes.
+    secretName: ""

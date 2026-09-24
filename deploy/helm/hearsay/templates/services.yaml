@@ -1,0 +1,29 @@
+{{- /* The API and the connectors' webhooks. The distiller and the assertion
+worker serve only their probes, so they have no Service. */ -}}
+{{- range $svc := include "hearsay.services" . | fromYamlArray }}
+{{- $values := index $.Values $svc.key }}
+{{- if $values.service }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hearsay.fullname" $ }}-{{ $svc.name }}
+  labels:
+    {{- include "hearsay.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $svc.name }}
+  {{- with $values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ $values.service.type }}
+  selector:
+    {{- include "hearsay.selectorLabels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $svc.name }}
+  ports:
+    - name: http
+      port: {{ $values.service.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}
+{{- end }}

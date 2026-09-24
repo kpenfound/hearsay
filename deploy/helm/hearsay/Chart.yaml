@@ -1,0 +1,15 @@
+apiVersion: v2
+name: hearsay
+description: >-
+  Hearsay's production shape on Kubernetes: the connectors, distiller,
+  assertion worker and API as four Deployments from the published image, with
+  `hearsay migrate up` as a pre-install and pre-upgrade hook Job. Postgres
+  (16 or later, with pgvector) is yours. docs/deploy.md is the operator guide.
+type: application
+version: 0.10.0
+# The release this chart was written against. The image tag is always set
+# explicitly (image.tag); this does not choose it.
+appVersion: v0.10.0
+home: https://github.com/kpenfound/hearsay
+sources:
+  - https://github.com/kpenfound/hearsay

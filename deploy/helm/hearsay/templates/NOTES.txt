@@ -1,0 +1,21 @@
+Hearsay {{ .Values.image.tag }} is deployed as {{ include "hearsay.fullname" . }}.
+
+{{- if .Values.migrate.enabled }}
+The migration job ran before the services rolled:
+  kubectl -n {{ .Release.Namespace }} logs job/{{ include "hearsay.fullname" . }}-migrate
+{{- end }}
+
+Check that every pod is ready and running the configuration you meant:
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+  kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/instance={{ .Release.Name }} --tail=-1 | grep config_digest
+
+{{- if .Values.ingress.enabled }}
+Callers and sources reach it at {{ ternary "https" "http" .Values.ingress.tls.enabled }}://{{ .Values.ingress.host }}.
+{{- else }}
+The API is {{ include "hearsay.fullname" . }}-api:{{ .Values.api.service.port }} and the webhooks
+{{ include "hearsay.fullname" . }}-connectors:{{ .Values.connectors.service.port }}, inside the cluster only.
+Put TLS in front of both before anything outside reaches them (docs/deploy.md).
+{{- end }}
+
+A change to a Secret the services read does not roll them:
+  kubectl -n {{ .Release.Namespace }} rollout restart deployment -l app.kubernetes.io/instance={{ .Release.Name }}

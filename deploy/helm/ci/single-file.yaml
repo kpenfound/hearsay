@@ -1,0 +1,21 @@
+# The single-file form, with an Ingress and credentials by reference.
+# `helm-check` renders the chart with this and deploy/compose/config/hearsay.yaml
+# as config.hearsayYaml.
+image:
+  tag: v0.10.0
+database:
+  existingSecret: hearsay-database
+env:
+  HEARSAY_LOG_LEVEL: info
+secretEnv:
+  HEARSAY_OPERATOR_TOKEN: {secret: hearsay-tokens, key: operator}
+  HEARSAY_ASSISTANT_TOKEN: {secret: hearsay-tokens, key: assistant}
+  ANTHROPIC_API_KEY: {secret: hearsay-llm, key: api-key}
+connectors:
+  sources: [agent-sessions]
+ingress:
+  enabled: true
+  className: nginx
+  host: hearsay.example.com
+  tls:
+    secretName: hearsay-tls
