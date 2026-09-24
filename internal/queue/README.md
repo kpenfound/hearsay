@@ -3,8 +3,9 @@
 The job queue. One Postgres, no broker (ADR-0007).
 
 **Belongs here:** enqueue (transactional, deduplicating on `(kind, target_id)`
-while a job is pending), the two claim paths, retries with backoff, the dead
-letter path, `LISTEN`/`NOTIFY` plus the polling floor, and the worker loop.
+while a job is pending), the two claim paths and the hold, retries with
+backoff, the dead letter path, `LISTEN`/`NOTIFY` plus the polling floor, and
+the worker loop.
 
 **Does not belong here:** job handlers. What a `distill` or `assert` job does
 belongs to the service that owns it. And no SQL against the queue tables from
@@ -35,7 +36,16 @@ err = worker.Run(ctx)   // returns nil when ctx is cancelled
 
 `queue.Client` is what the worker is built on — `Claim`, `Complete`, `Fail`,
 `Heartbeat`, `Reclaim`, `Purge`, `List` and `Stats` — and is also how an
-operator reads a kind's depth or its failures. `Unfinished` tells a reader of what
+operator reads a kind's depth or its failures.
+
+Work a person is waiting on that must be serialized with a kind's jobs holds
+the key instead of enqueuing, and ends the hold in the transaction that does
+the work, which rolls back if the hold was lost:
+
+```go
+job, err := client.Hold(ctx, scope, target)       // a running job, once the key is free
+ok, err := client.CompleteIn(ctx, tx, job)        // in the work's transaction
+``` `Unfinished` tells a reader of what
 jobs write which targets still have work to land. Every `Config` field may be left
 zero; the defaults are the ones the constants document.
 
@@ -73,6 +83,12 @@ zero; the defaults are the ones the constants document.
   collision would abort it for every job. A collision the statement's snapshot
   could not see is a 23505 it runs again for. See
   [ADR-0011](../../docs/adr/0011-a-retry-superseded-by-a-pending-job-is-done.md).
+- **A hold is the third way a job starts running** (ADR-0020). It takes the
+  claim lock, reads the jobs running on its key and inserts its own row
+  already running, so no claim takes the key after it; then it waits for
+  those jobs, and not for any whose lease has expired. Inserting only when the
+  key is free would starve behind a backlog. The kind's worker must treat a
+  reclaimed hold's target as done.
 - **The invariant is tested, not asserted.** The serialized claim's test runs
   concurrent workers over jobs sharing a key and fails if two are ever running
   at once. Keep it that way — it is the reason ADR-0007 chose code we own over

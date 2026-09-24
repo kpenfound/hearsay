@@ -27,6 +27,7 @@ The format, numbering and supersession rules are in [ADR-0001](0001-record-archi
 | [0017](0017-api-calls-name-an-agent-session.md) | API calls name an agent session | accepted | 2026-09-23 |
 | [0018](0018-operator-deletion-redacts-l0-in-place.md) | Operator deletion redacts L0 in place | accepted | 2026-09-23 |
 | [0019](0019-operator-deletion-redacts-superseded-l2-text.md) | Operator deletion redacts superseded L2 text in place | accepted | 2026-09-24 |
+| [0020](0020-topic-operations-are-a-ledger-held-on-the-scope-key.md) | Topic operations are a ledger, recorded under the scope's serial key | accepted | 2026-09-24 |
 
 ## Names other work depends on
 

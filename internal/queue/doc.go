@@ -5,7 +5,8 @@
 // idempotent handlers a requirement rather than a nicety; a retry whose target
 // already has a pending job is superseded by it instead (ADR-0011). A job may carry a
 // serial_key, and jobs sharing one are never run concurrently — that is how the
-// assertion worker gets per-scope serialization.
+// assertion worker gets per-scope serialization. A caller that is not a worker
+// can hold a serial key the same way ([Client.Hold], ADR-0020).
 //
 // See docs/adr/0007-postgres-backed-job-queue.md.
 package queue

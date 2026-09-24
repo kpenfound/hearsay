@@ -96,9 +96,18 @@ type Result struct {
 // is the key the queue is actually serializing on.
 //
 // A job whose target is an `assertion` event is an agent's stance, appended
-// with no model call ([AppendAssertion]).
+// with no model call ([AppendAssertion]). One whose target is a topic
+// operation's ([l2.OperationTarget]) is a hold that outlived its process, and
+// is done.
 func (a *Asserter) Handle(ctx context.Context, job queue.Job) error {
 	log := telemetry.Logger(ctx)
+	if strings.HasPrefix(job.TargetID, l2.OperationTarget) {
+		// A topic operation held the scope under this job and died holding
+		// it. The operation committed with the job's completion or not at all,
+		// so there is nothing left to do (l2.Operate).
+		log.InfoContext(ctx, "released a topic operation's lapsed hold", "scope", job.SerialKey)
+		return nil
+	}
 	if strings.HasPrefix(job.TargetID, l2.WithdrawalTarget) {
 		return pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) error {
 			_, err := l2.New(tx).RerunDeletedEvidence(ctx, strings.TrimPrefix(job.TargetID, l2.WithdrawalTarget), job.SerialKey)

@@ -45,7 +45,18 @@ text that is no longer current (ADR-0019, below).
   reads the predecessor and writes the row in two statements. That is only safe
   because every job under one serial key runs alone (ADR-0007), and topics are
   only ever matched under the key they were opened under ([ScopeKey]). Matching
-  across keys would need a different lock, not a different query.
+  across keys would need a different lock, not a different query. A topic
+  operation takes the same key as an assert job would ([Operate]).
+- **Merge, split and undo are a ledger, not a rewrite** ([Operate],
+  `l2_topic_operations`,
+  [ADR-0020](../../docs/adr/0020-topic-operations-are-a-ledger-held-on-the-scope-key.md)).
+  An operation appends one row and touches no topic or stance; what the
+  operations in force make of a scope is the ledger replayed over the rows
+  ([ScopeState]), and an undo is leaving one out, which is refused
+  ([ConflictError]) while a later operation in force covers its topics. A
+  split's new topic has no `l2_topics` row. Reads and matching do not follow
+  the ledger yet. Only a configured human who may ratify by hand in the scope
+  operates ([CheckOperator]).
 - **A new reading of a document replaces that document's own stance.** A
   document that already holds a live stance on a topic — it was re-distilled,
   or re-run after a deletion — supersedes that stance, not whatever is newest

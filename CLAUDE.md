@@ -119,6 +119,12 @@ enqueues every such document it has not read. Between startups it follows the
 L0 change feed and places each tracker item again when its issue changes. It
 needs Postgres and refuses without it.
 
+Topic merge, split and undo are `l2.Operate`: one row appended to the
+`l2_topic_operations` ledger, recorded while holding the scope's `assert` serial
+key (`queue.Client.Hold`), with no topic or stance row changed
+([ADR-0020](docs/adr/0020-topic-operations-are-a-ledger-held-on-the-scope-key.md)).
+Reads and matching do not follow the ledger yet, and no command calls it yet.
+
 Migrations are `go run ./cmd/hearsay migrate up|status|up-to <n>|down`, or
 `dagger api call hearsay migrate --database-url=...` against a database. They are
 plain SQL in `internal/db/migrations/`, embedded with `go:embed`, applied by
