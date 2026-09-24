@@ -29,11 +29,18 @@ webhooks. Hearsay does not create these credentials for you.
   slash commands and the interactions endpoint are not used. See the
   [Discord connector package comments](https://github.com/kpenfound/hearsay/blob/main/internal/connector/discord/discord.go)
   for intents, permissions and command details.
+- **Slack (optional):** create an app from the manifest in the
+  [Slack connector package comment](https://github.com/kpenfound/hearsay/blob/main/internal/connector/slack/slack.go).
+  Generate an app-level token with `connections:write`, install the app,
+  and invite it to each public channel. Pass `--slack-workspace T…` and
+  `--slack-channel C…` to `init`; export `HEARSAY_SLACK_BOT_TOKEN` to verify
+  channels and, with `users:read` and `users:read.email`, match identities.
+  The generated env file leaves both Slack token entries empty.
 - **Drive:** create a Google Cloud service account, enable the Drive API, and
   share every configured folder and document with the service account's email.
   Native Google Docs need owner, organizer, file organizer or writer access to
-  read revisions. `hearsay init` writes the service account JSON key into the
-  env file placeholder, not into the configuration. See the
+  read revisions. `hearsay init` leaves an empty env entry for the service
+  account JSON key; it never copies the credential it read. See the
   [Drive connector package comments](https://github.com/kpenfound/hearsay/blob/main/internal/connector/drive/drive.go)
   and [Drive configuration details](config.md#google-drive-source).
 

@@ -27,7 +27,8 @@ that does not load.
   collaborators, with login and node id. A Discord account is written on one
   only when their GitHub profile links it and the guild has that member; a
   Drive account only when their public GitHub email is an address a folder is
-  shared with. An account two people claim is written on neither. A handle
+  shared with. A Slack account is added only when its email uniquely matches
+  one seeded principal. An account two people claim is written on neither. A handle
   that merely looks the same in two sources is not evidence
   (docs/config.md, "Matching is per source").
 - **The operator's word is taken as given.** What the person running init says

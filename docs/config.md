@@ -64,8 +64,8 @@ only one of them would be read and the other would go missing in silence.
 
 ## Starting with `hearsay init`
 
-`hearsay init` writes the single file for a team on GitHub, Discord and Google
-Drive, and a separate env file for the secrets it names. It needs no database,
+`hearsay init` writes the single file for a team on GitHub, Discord, Slack
+and Google Drive, and a separate env file for the secrets it names. It needs no database,
 and what it writes passes `hearsay config validate`.
 
 ```sh
@@ -90,6 +90,9 @@ asked and what no flag gives is skipped.
 | `--discord-guild` | The Discord server's id. None skips Discord. |
 | `--discord-channel` | The parent channels to ingest, by id. Required with a guild. |
 | `--operator-discord` | Your Discord user id. |
+| `--slack-workspace` | The Slack workspace id (`T…`). Empty skips Slack. |
+| `--slack-channel` | Public channel ids (`C…`). Required with a workspace. |
+| `--operator-slack` | Your Slack user id (optional). |
 | `--drive-folder` | The Drive folders to ingest, by id. None skips Drive. |
 | `--operator-email` | The Google account Drive shares with you. |
 
@@ -97,13 +100,14 @@ It writes `hearsay.yaml` (`--out`) and `hearsay.env` (`--env-file`), and
 refuses if either exists, writing neither, unless `--force` is given. The
 configuration holds:
 
-- a source per service, with the ids `github`, `discord` and `drive`, its
+- a source per service, with the ids `github`, `discord`, `slack` and `drive`, its
   containers and its secrets named `HEARSAY_GITHUB_TOKEN`,
   `HEARSAY_GITHUB_WEBHOOK_SECRET`, `HEARSAY_DISCORD_TOKEN` and
-  `HEARSAY_DRIVE_CREDENTIALS`;
+  `HEARSAY_DRIVE_CREDENTIALS`, `HEARSAY_SLACK_APP_TOKEN` and
+  `HEARSAY_SLACK_BOT_TOKEN`;
 - a scope per repository, named after it (`owner-name` where two share a
   name), whose tracker is the repository and whose entity is its
-  `code:owner/name` project, taking all of Discord and Drive; without GitHub,
+  `code:owner/name` project, taking all of Discord, Slack and Drive; without GitHub,
   one scope `team` over every source;
 - a human principal for you, and one per person GitHub names, each with a
   `token_env`;
@@ -124,6 +128,10 @@ from the same variables the configuration names, and writes nowhere:
 - `HEARSAY_DRIVE_CREDENTIALS` set as well, a collaborator whose public GitHub
   email is an address a configured folder is shared with gets that Drive
   identity.
+- `HEARSAY_SLACK_BOT_TOKEN` set, init verifies the named channels are public
+  and reads workspace users. With `users:read` and `users:read.email`, it adds
+  a Slack user id only when one account email equals one seeded principal email.
+  A missing email or duplicate on either side makes no match.
 - An account two collaborators claim is written on neither, and init says so.
   What you say about your own accounts is written as you said it.
 
@@ -351,8 +359,11 @@ sources:
 Create the app at https://api.slack.com/apps from the manifest in the
 `internal/connector/slack` package comment. It turns on Socket Mode,
 subscribes the bot to `message.channels`, `reaction_added`,
-`reaction_removed`, `channel_archive`, `channel_unarchive` and `channel_deleted`, and asks for the bot scopes `channels:history`,
-`channels:read` and `reactions:read`, all read-only. Under Basic Information,
+`reaction_removed`, `channel_archive`, `channel_unarchive` and
+`channel_deleted`. The bot scopes are `channels:history`, `channels:read`,
+`reactions:read`, `users:read` and `users:read.email`, all read-only. The user
+scopes let `hearsay init` match identities by email; the stream does not
+require them. Under Basic Information,
 generate an app-level token with the `connections:write` scope; that is
 `app_token`. Install the app to the workspace; its Bot User OAuth Token is
 `bot_token`. Then invite the app (`/invite @Hearsay`) into every channel

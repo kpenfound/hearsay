@@ -102,8 +102,8 @@ and a change to it is a restart (ADR-0009). The format is
 env file for the secrets it names, with no database (`internal/onboard`). It
 prompts on a terminal, and every prompt has a flag. With `HEARSAY_GITHUB_TOKEN`
 in its environment it seeds principals from the repositories' collaborators,
-and with `HEARSAY_DISCORD_TOKEN` and `HEARSAY_DRIVE_CREDENTIALS` it adds the
-Discord and Drive accounts those sources confirm; it never writes a credential
+and with `HEARSAY_DISCORD_TOKEN`, `HEARSAY_SLACK_BOT_TOKEN` and
+`HEARSAY_DRIVE_CREDENTIALS` it adds only accounts those sources confirm; it never writes a credential
 it did not generate, and refuses to overwrite either file without `--force`.
 
 The distiller is not a stub. It reads the L0 change feed, enqueues a `distill`

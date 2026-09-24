@@ -15,6 +15,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector/discord"
 	"github.com/kpenfound/hearsay/internal/connector/drive"
 	"github.com/kpenfound/hearsay/internal/connector/github"
+	"github.com/kpenfound/hearsay/internal/connector/slack"
 	"github.com/kpenfound/hearsay/internal/onboard"
 )
 
@@ -80,6 +81,16 @@ func initQuestions() []question {
 		{flag: "operator-discord", prompt: "Your Discord user id (optional)", when: onboard.Input.HasDiscord,
 			check: func(s string) error { return onboard.CheckSnowflake("user", s) },
 			set:   func(in *onboard.Input, v []string) { in.Operator.Discord = first(v) }},
+		{flag: "slack-workspace", prompt: "Slack workspace id (T…, empty skips Slack)",
+			check: func(s string) error { return onboard.CheckSlackID("workspace", s) },
+			set:   func(in *onboard.Input, v []string) { in.Slack.Workspace = first(v) }},
+		{flag: "slack-channel", prompt: "Public Slack channel ids (C…), comma-separated", list: true, required: true,
+			when:  onboard.Input.HasSlack,
+			check: func(s string) error { return onboard.CheckSlackID("channel", s) },
+			set:   func(in *onboard.Input, v []string) { in.Slack.Channels = v }},
+		{flag: "operator-slack", prompt: "Your Slack user id (optional)", when: onboard.Input.HasSlack,
+			check: func(s string) error { return onboard.CheckSlackID("user", s) },
+			set:   func(in *onboard.Input, v []string) { in.Operator.Slack = first(v) }},
 		{flag: "drive-folder", prompt: "Google Drive folder ids to ingest, comma-separated (empty skips Drive)", list: true,
 			check: onboard.CheckFolder, set: func(in *onboard.Input, v []string) { in.Drive.Folders = v }},
 		{flag: "operator-email", prompt: "Your Google account email (optional)", when: onboard.Input.HasDrive,
@@ -137,6 +148,7 @@ func initTeam(ctx context.Context, args []string, env initIO, stdout, stderr io.
 	githubAPI := fs.String("github-api-url", "", "a GitHub Enterprise Server's REST API, such as https://ghe.example/api/v3")
 	discordAPI := fs.String("discord-api-url", "", "replace Discord's REST API, for a local fixture")
 	driveAPI := fs.String("drive-api-url", "", "replace the Google Drive API, for a local fixture")
+	slackAPI := fs.String("slack-api-url", "", "replace Slack's Web API, for a local fixture")
 	questions := initQuestions()
 	answers := make([]*answer, len(questions))
 	for i, q := range questions {
@@ -154,6 +166,7 @@ func initTeam(ctx context.Context, args []string, env initIO, stdout, stderr io.
 		GitHub:  onboard.GitHub{APIURL: *githubAPI},
 		Discord: onboard.Discord{APIURL: *discordAPI},
 		Drive:   onboard.Drive{APIURL: *driveAPI},
+		Slack:   onboard.Slack{APIURL: *slackAPI},
 	}
 	interactive := env.terminal && !*noInput
 	var reader *bufio.Reader
@@ -262,6 +275,8 @@ func initDirectory(in onboard.Input, lookup func(string) (string, bool)) (onboar
 			name, env = discord.SecretToken, onboard.EnvDiscordToken
 		case drive.Type:
 			name, env = drive.SecretCredentials, onboard.EnvDriveCredentials
+		case slack.Type:
+			name, env = slack.SecretBotToken, onboard.EnvSlackBotToken
 		}
 		value, ok := lookup(env)
 		if !ok || value == "" {
@@ -276,6 +291,8 @@ func initDirectory(in onboard.Input, lookup func(string) (string, bool)) (onboar
 				if dir.GitHub != nil {
 					notes = append(notes, fmt.Sprintf("drive: %s is not set, so no collaborator's Drive account was confirmed", env))
 				}
+			case slack.Type:
+				notes = append(notes, fmt.Sprintf("slack: %s is not set, so channels were not verified and no Slack identities were matched", env))
 			}
 			continue
 		}
@@ -307,6 +324,18 @@ func buildReader(dir *onboard.Directory, src connector.SourceConfig) error {
 			return err
 		}
 		dir.Drive = c
+	case slack.Type:
+		r, err := slack.NewReader(src.Secrets[slack.SecretBotToken], slackAPIURL(src))
+		if err != nil {
+			return err
+		}
+		dir.Slack = r
 	}
 	return nil
+}
+
+func slackAPIURL(src connector.SourceConfig) string {
+	var settings slack.Settings
+	_ = src.DecodeSettings(&settings)
+	return settings.APIURL
 }
