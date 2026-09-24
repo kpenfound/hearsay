@@ -31,7 +31,8 @@ The format, numbering and supersession rules are in [ADR-0001](0001-record-archi
 | [0021](0021-reads-follow-the-topic-ledger.md) | Reads follow the topic ledger | accepted | 2026-09-24 |
 | [0022](0022-human-gestures-and-command-replies.md) | Human gestures enter L0; only explicit commands receive source replies | accepted; Discord slash commands are applied by the interaction adapter, not the assertion worker ([0024](0024-discord-commands-are-applied-by-the-interaction-adapter.md)) | 2026-09-24 |
 | [0023](0023-human-gestures-are-a-ledger-every-standing-reads.md) | Human gestures are a ledger every standing reads | accepted | 2026-09-24 |
-| [0024](0024-discord-commands-are-applied-by-the-interaction-adapter.md) | Discord commands are applied by the interaction adapter | accepted | 2026-09-24 |
+| [0024](0024-discord-commands-are-applied-by-the-interaction-adapter.md) | Discord commands are applied by the interaction adapter | accepted; the adapter applies a command through the shared applier, as every receiving process does ([0025](0025-chat-commands-are-applied-by-the-receiving-process-through-one-applier.md)) | 2026-09-24 |
+| [0025](0025-chat-commands-are-applied-by-the-receiving-process-through-one-applier.md) | Chat commands are applied by the receiving process through one applier | accepted | 2026-09-24 |
 
 ## Names other work depends on
 

@@ -46,7 +46,8 @@
 // Beside the calls, the API is the Discord interaction adapter
 // ([Interactions], ADR-0022, ADR-0024): for a Discord source that configures
 // its application and is not read-only, it answers `/hearsay pin` and `/hearsay merge` on
-// [DiscordPath], and registers the two commands at startup.
+// [DiscordPath], applying them through the shared applier ([l2.Commands],
+// ADR-0025), and registers the two commands at startup.
 package api
 
 import (

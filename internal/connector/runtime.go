@@ -230,7 +230,8 @@ type hosted struct {
 
 // Runtime hosts a set of connectors: it builds one per configured source, polls
 // the pollers, supervises streams, drives the backfillers through their
-// cursors, mounts the pushers' handlers, and reports what all of them think of
+// cursors, mounts the pushers' handlers, records and applies the chat commands
+// they receive ([CommandSink]), and reports what all of them think of
 // themselves.
 //
 // It is the supervision the connector contract leaves to Hearsay. What may be

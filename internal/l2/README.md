@@ -69,6 +69,15 @@ text that is no longer current (ADR-0019, below).
   ratified, or contested until a ratification or a newer current stance. An
   undo is another row; a gesture whose event an operator deletion deleted is
   out of force. Who may gesture is [CheckGesturer], the operators' rule.
+- **Chat commands are applied here, for whichever process received them**
+  ([Commands],
+  [ADR-0025](../../docs/adr/0025-chat-commands-are-applied-by-the-receiving-process-through-one-applier.md)).
+  It maps the invoker to a configured human, reads through their [View], and
+  writes only through [RecordGesture] and [Operate], so the serial key,
+  idempotency and authority are theirs. It returns a
+  `connector.CommandResult` and never words: the API's Discord adapter and each
+  connector phrase it for their own surface, so a new outcome is one every
+  caller has to phrase.
 - **Every read follows the ledger** (`effective.go`,
   [ADR-0021](../../docs/adr/0021-reads-follow-the-topic-ledger.md)). `Topic`,
   `Topics`, `TopicsOver`, the stance reads and matching replay the ledgers of

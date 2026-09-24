@@ -16,8 +16,8 @@
 // well as `bot`, and set the application's Interactions Endpoint URL to the
 // API's `/discord/<source id>/interactions`. At startup the API registers the
 // commands in the guild with the bot token. It verifies every interaction
-// with the public key, records each command as an L0 `command` event, and
-// answers it ephemerally with the interaction's own token, within Discord's
+// with the public key, records each command as an L0 `command` event, applies
+// it through the shared applier (ADR-0025), and answers it ephemerally with the interaction's own token, within Discord's
 // three seconds or through a deferred answer it edits later. It never posts a
 // channel message. A source without the two settings takes no commands.
 //
