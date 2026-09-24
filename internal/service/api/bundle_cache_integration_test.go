@@ -229,8 +229,12 @@ func TestBundleCacheFollowsCallInputsAndLayerWrites(t *testing.T) {
 	if len(beforeBundle.Stances) != 2 {
 		t.Fatalf("bundle has %d topics before merge, want 2", len(beforeBundle.Stances))
 	}
+	beforeOperation := readRevision()
 	if _, err := l2.Operate(t.Context(), pool, repo, l2.OperationRequest{Kind: l2.OperationMerge, Principal: "kyle", Into: into.ID, From: from.ID}); err != nil {
 		t.Fatal(err)
+	}
+	if readRevision() <= beforeOperation {
+		t.Fatal("topic operation did not advance the bundle watermark")
 	}
 	afterMerge := request(calls, kyle, scope, "")
 	if bytes.Equal(beforeMerge, afterMerge) {
