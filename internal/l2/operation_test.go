@@ -2,6 +2,7 @@ package l2_test
 
 import (
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -219,6 +220,75 @@ func TestDecide(t *testing.T) {
 				got.Name != tt.want.Name || got.Undoes != tt.want.Undoes ||
 				!slices.Equal(got.Topics, tt.want.Topics) || !slices.Equal(got.Stances, tt.want.Stances) {
 				t.Fatalf("Decide() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// withSplitRow is a state in which the split's topic has a row, with stance
+// n1 written on it after the split.
+func withSplitRow(s l2.ScopeState, of l2.Operation) l2.ScopeState {
+	s.Topics = append(slices.Clone(s.Topics), of.Topics[1])
+	s.Stances = maps.Clone(s.Stances)
+	s.Stances["n1"] = of.Topics[1]
+	return s
+}
+
+// A split's topic gets a row when a stance is first written on it after the
+// split (Store.Target). The row is a topic only while a split creating it is
+// in force; its stances are otherwise on the topic the split took from.
+func TestDecideOverASplitsRow(t *testing.T) {
+	s1 := split(1, "a", "the other lock", "a2")
+	row := s1.Topics[1]
+	tests := []struct {
+		name  string
+		state l2.ScopeState
+		req   l2.OperationRequest
+		want  l2.Operation
+		says  string
+	}{
+		{
+			name:  "the split's topic holds what it moved and what was written on it",
+			state: withSplitRow(scope(s1), s1),
+			req:   l2.OperationRequest{Kind: l2.OperationMerge, Principal: "kyle", Into: "c", From: row},
+			want:  merge(0, "c", row, "a2", "n1"),
+		},
+		{
+			name:  "undone, what was written on it is on the topic it split from",
+			state: withSplitRow(scope(undone(s1, 2), undo(2, s1)), s1),
+			req:   l2.OperationRequest{Kind: l2.OperationMerge, Principal: "kyle", Into: "c", From: "a"},
+			want:  merge(0, "c", "a", "a1", "a2", "n1"),
+		},
+		{
+			name:  "undone, the row is no topic",
+			state: withSplitRow(scope(undone(s1, 2), undo(2, s1)), s1),
+			req:   l2.OperationRequest{Kind: l2.OperationMerge, Principal: "kyle", Into: "c", From: row},
+			says:  "is not a topic",
+		},
+		{
+			name:  "undone after its source was merged away, it follows the merge",
+			state: withSplitRow(scope(undone(s1, 2), undo(2, s1), merge(3, "b", "a", "a1", "a2")), s1),
+			req:   l2.OperationRequest{Kind: l2.OperationMerge, Principal: "kyle", Into: "c", From: "b"},
+			want:  merge(0, "c", "b", "a1", "a2", "b1", "b2", "n1"),
+		},
+		{
+			name:  "made again, it holds what was written on it again",
+			state: withSplitRow(scope(undone(s1, 2), undo(2, s1), split(3, "a", "the other lock", "a2")), s1),
+			req:   l2.OperationRequest{Kind: l2.OperationMerge, Principal: "kyle", Into: "c", From: row},
+			want:  merge(0, "c", row, "a2", "n1"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.state.Decide(tt.req)
+			if tt.says != "" {
+				if !errors.Is(err, l2.ErrInvalid) || !strings.Contains(err.Error(), tt.says) {
+					t.Fatalf("Decide() = %+v, %v, want ErrInvalid saying %q", got, err, tt.says)
+				}
+				return
+			}
+			if err != nil || !slices.Equal(got.Topics, tt.want.Topics) || !slices.Equal(got.Stances, tt.want.Stances) {
+				t.Fatalf("Decide() = %+v, %v, want %+v", got, err, tt.want)
 			}
 		})
 	}

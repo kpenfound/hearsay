@@ -180,7 +180,7 @@ var calls = []call{
 		schema(`{"scope":{"type":"string","description":"the entity id the bundle is for, such as tracker:github:acme/api#12"},"directive":{"type":"string","description":"L0 event id of the triggering message"}}`, "scope")}, getBundle},
 	{Tool{"resolve", "The entity ids a piece of text names, by alias and by path.",
 		schema(`{"text":{"type":"string"}}`, "text")}, resolve},
-	{Tool{"stance_history", "Every stance on a topic the caller may read, oldest first, with the topic's current stance and its tier: ratified, inferred or contested.",
+	{Tool{"stance_history", "Every stance on a topic the caller may read, oldest first, with the topic's current stance and its tier: ratified, inferred or contested. A topic merged into another answers as that one, and the merges and splits that shaped it are listed.",
 		schema(`{"topic":{"type":"string","description":"a topic id, from a bundle's topic_id"}}`, "topic")}, stanceHistory},
 	{Tool{"get_l1", "One L1 document by id.",
 		schema(`{"id":{"type":"string"}}`, "id")}, getL1},
@@ -494,9 +494,32 @@ type StanceRecord struct {
 	StatedAt  string  `json:"stated_at"`
 	// RecordedTier is the tier the stance was written with: a record of that
 	// moment, not the tier the topic stands at, which is [History.Tier].
-	RecordedTier string   `json:"recorded_tier"`
-	Supersedes   string   `json:"supersedes,omitempty"`
-	Evidence     []string `json:"evidence"`
+	RecordedTier string `json:"recorded_tier"`
+	Supersedes   string `json:"supersedes,omitempty"`
+	// SupersedesTopic is the topic Supersedes is on where that is another
+	// topic now: the edge crosses a split, or a merge since undone.
+	SupersedesTopic string `json:"supersedes_topic,omitempty"`
+	// SupersededBy are the stances on other topics now that supersede this
+	// one, the same crossing edges seen from this end.
+	SupersededBy []StanceRef `json:"superseded_by,omitempty"`
+	Evidence     []string    `json:"evidence"`
+}
+
+// StanceRef is a stance on another topic.
+type StanceRef struct {
+	ID    string `json:"id"`
+	Topic string `json:"topic_id"`
+}
+
+// OperationRecord is a merge or a split in force that shaped a topic
+// (`hearsay topics` records them; l2.Operate).
+type OperationRecord struct {
+	ID        int64    `json:"id"`
+	Kind      string   `json:"kind"`
+	Topics    []string `json:"topics"`
+	Name      string   `json:"name,omitempty"`
+	Principal string   `json:"principal"`
+	At        string   `json:"at"`
 }
 
 // History is a topic's `stance_history`: every readable stance and any
@@ -504,12 +527,18 @@ type StanceRecord struct {
 // tier computed under the policy in force for its scope, the same the bundle
 // and L3 serve. Current and Tier are empty where the caller may not read the
 // current stance, as the bundle leaves such a topic out.
+//
+// The topic is the one the topic ledger makes it now: asked for by a topic
+// merged away, it is the topic that one went into, with the stances of both,
+// and ID says which. Operations are the merges and splits in force that
+// shaped it, oldest first.
 type History struct {
-	Topic   string         `json:"topic"`
-	ID      string         `json:"topic_id"`
-	Current string         `json:"current,omitempty"`
-	Tier    string         `json:"tier,omitempty"`
-	Stances []StanceRecord `json:"stances"`
+	Topic      string            `json:"topic"`
+	ID         string            `json:"topic_id"`
+	Current    string            `json:"current,omitempty"`
+	Tier       string            `json:"tier,omitempty"`
+	Operations []OperationRecord `json:"operations,omitempty"`
+	Stances    []StanceRecord    `json:"stances"`
 }
 
 func stanceHistory(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json.RawMessage) (any, error) {
@@ -548,22 +577,84 @@ func stanceHistory(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, ra
 	if a.Stands && a.Access.Stance(reader, a.Standing.Current) {
 		out.Current, out.Tier = a.Standing.Current.ID, string(a.Standing.Tier)
 	}
+	for _, op := range topic.Operations {
+		out.Operations = append(out.Operations, OperationRecord{
+			ID: op.ID, Kind: string(op.Kind), Topics: op.Topics, Name: op.Name, Principal: op.Principal,
+			At: op.At.UTC().Format(time.RFC3339),
+		})
+	}
+	across, err := c.readableAcross(ctx, reader, a.History)
+	if err != nil {
+		return nil, err
+	}
 	for _, st := range a.History {
 		if !a.Access.Stance(reader, st) && !a.Access.Withdrawal(reader, st) {
 			continue
 		}
 		visible[st.ID] = true
-		out.Stances = append(out.Stances, StanceRecord{
+		rec := StanceRecord{
 			ID: st.ID, Position: st.Position, Withdrawn: st.Withdrawn, Author: st.Author, StatedAt: st.StatedAt.UTC().Format(time.RFC3339),
 			RecordedTier: string(st.Tier), Supersedes: st.Supersedes, Evidence: st.Evidence,
 			Judgement: stanceJudgement(st.Judgement),
-		})
+		}
+		if st.SupersedesTopic != "" && across[st.Supersedes] {
+			visible[st.Supersedes] = true
+			rec.SupersedesTopic = st.SupersedesTopic
+		}
+		for _, n := range st.SupersededAcross {
+			if across[n.Stance] {
+				rec.SupersededBy = append(rec.SupersededBy, StanceRef{ID: n.Stance, Topic: n.Topic})
+			}
+		}
+		out.Stances = append(out.Stances, rec)
 	}
 	for i := range out.Stances {
 		// A stance the reader may not read is not named by one they may.
 		if !visible[out.Stances[i].Supersedes] && !out.Stances[i].Withdrawn {
 			out.Stances[i].Supersedes = ""
 		}
+	}
+	return out, nil
+}
+
+// readableAcross is which of the stances on other topics that a history's
+// supersession edges cross to the reader may read, with the topic each is on:
+// an edge to one they may not is not shown.
+func (c *Calls) readableAcross(ctx context.Context, reader l1.Reader, history []l2.Stance) (map[string]bool, error) {
+	var ids []string
+	for _, st := range history {
+		if st.SupersedesTopic != "" {
+			ids = append(ids, st.Supersedes)
+		}
+		for _, n := range st.SupersededAcross {
+			ids = append(ids, n.Stance)
+		}
+	}
+	out := map[string]bool{}
+	for _, id := range ids {
+		if _, done := out[id]; done {
+			continue
+		}
+		out[id] = false
+		st, err := c.graph.Stance(ctx, id)
+		if errors.Is(err, l2.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		topic, err := c.graph.Topic(ctx, st.TopicID)
+		if errors.Is(err, l2.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		assessed, err := c.graph.Assess(ctx, c.authority, reader, []l2.Topic{topic})
+		if err != nil {
+			return nil, err
+		}
+		out[id] = assessed[0].Access.Topic(reader, topic) && assessed[0].Access.Stance(reader, st)
 	}
 	return out, nil
 }

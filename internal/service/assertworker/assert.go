@@ -236,6 +236,9 @@ func (a *Asserter) Assert(ctx context.Context, docID, scope string) (Result, err
 				if opened {
 					result.TopicsOpened++
 				}
+				// A topic this answer opened before, on an earlier run, may
+				// have been merged away since: its stance goes where the
+				// topic went.
 				topicID = topic.ID
 			} else {
 				at := -1
@@ -252,6 +255,13 @@ func (a *Asserter) Assert(ctx context.Context, docID, scope string) (Result, err
 				topicID = topics[at].ID
 				shown = candidates[at].Current != ""
 			}
+			// The topic as the ledger makes it now, with a row to write on:
+			// never one merged away, and a split's topic gets its row here.
+			target, err := w.Target(ctx, topicID, doc.ACL, docID)
+			if err != nil {
+				return err
+			}
+			topicID = target.ID
 			if err := w.ExtendTopic(ctx, topicID, about, keys); err != nil {
 				return err
 			}
@@ -290,7 +300,9 @@ func (a *Asserter) Assert(ctx context.Context, docID, scope string) (Result, err
 // candidates is the topics a document may be continuing: reference overlap
 // first, then embedding similarity for what is left of the budget, each only
 // among topics everyone who may read the document may read — decided by the
-// opener while it exists, then by a surviving live stance.
+// opener while it exists, then by a surviving live stance. They are topics as
+// the ledger makes them now: a topic merged away is offered as the topic it
+// went into, and only once.
 func (a *Asserter) candidates(ctx context.Context, graph *l2.Store, scope string, doc l1.Document, keys []string) ([]l2.Topic, error) {
 	byKeys, err := graph.TopicsByJoinKeys(ctx, scope, keys, doc.ACL, MaxCandidates)
 	if err != nil {

@@ -53,10 +53,18 @@ text that is no longer current (ADR-0019, below).
   An operation appends one row and touches no topic or stance; what the
   operations in force make of a scope is the ledger replayed over the rows
   ([ScopeState]), and an undo is leaving one out, which is refused
-  ([ConflictError]) while a later operation in force covers its topics. A
-  split's new topic has no `l2_topics` row. Reads and matching do not follow
-  the ledger yet. Only a configured human who may ratify by hand in the scope
-  operates ([CheckOperator]).
+  ([ConflictError]) while a later operation in force covers its topics. Only
+  a configured human who may ratify by hand in the scope operates
+  ([CheckOperator]).
+- **Every read follows the ledger** (`effective.go`,
+  [ADR-0021](../../docs/adr/0021-reads-follow-the-topic-ledger.md)). `Topic`,
+  `Topics`, `TopicsOver`, the stance reads and matching replay the ledgers of
+  the scopes they touch: a topic merged away is the topic it went into, a
+  stance's `TopicID` is the topic it is on now, and an edge a split cut is
+  marked from both ends (`SupersedesTopic`, `SupersededAcross`). Read a row as
+  the tables hold it only to check that nothing rewrote it. Write through
+  [Store.Target]: it resolves the topic now and gives a split's topic its row.
+  That row is a topic only while a split creating it is in force.
 - **A new reading of a document replaces that document's own stance.** A
   document that already holds a live stance on a topic — it was re-distilled,
   or re-run after a deletion — supersedes that stance, not whatever is newest

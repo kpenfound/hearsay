@@ -123,7 +123,11 @@ Topic merge, split and undo are `l2.Operate`: one row appended to the
 `l2_topic_operations` ledger, recorded while holding the scope's `assert` serial
 key (`queue.Client.Hold`), with no topic or stance row changed
 ([ADR-0020](docs/adr/0020-topic-operations-are-a-ledger-held-on-the-scope-key.md)).
-Reads and matching do not follow the ledger yet, and no command calls it yet.
+Every read and the assertion worker's matching follow the ledger: a topic
+merged away reads, and is written to, as the topic it went into, and a split's
+topic is a topic of its own that gets a row when its first new stance lands
+([ADR-0021](docs/adr/0021-reads-follow-the-topic-ledger.md)). No command calls
+`Operate` yet.
 
 Migrations are `go run ./cmd/hearsay migrate up|status|up-to <n>|down`, or
 `dagger api call hearsay migrate --database-url=...` against a database. They are

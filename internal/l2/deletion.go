@@ -65,8 +65,12 @@ WHERE s.evidence && $1::text[] AND NOT s.withdrawn AND NOT `+RetiredSQL, docIDs)
 // assertion worker calls it under the topic's serialized scope key.
 func (s *Store) RerunDeletedEvidence(ctx context.Context, stanceID, scope string) (bool, error) {
 	var live bool
-	err := s.db.QueryRow(ctx, `SELECT t.scope = $2 AND NOT s.withdrawn AND NOT `+RetiredSQL+`
-FROM l2_stances s JOIN l2_topics t ON t.id = s.topic_id WHERE s.id = $1`, stanceID, scope).Scan(&live)
+	// The row the stance was written on, not the topic the ledger puts it on
+	// now: the repair is a row of its own, and is placed the way its
+	// predecessor is.
+	var row string
+	err := s.db.QueryRow(ctx, `SELECT t.scope = $2 AND NOT s.withdrawn AND NOT `+RetiredSQL+`, s.topic_id
+FROM l2_stances s JOIN l2_topics t ON t.id = s.topic_id WHERE s.id = $1`, stanceID, scope).Scan(&live, &row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -121,12 +125,12 @@ FROM l2_stances s JOIN l2_topics t ON t.id = s.topic_id WHERE s.id = $1`, stance
 	tag, err := s.db.Exec(ctx, `INSERT INTO l2_stances
 (id, topic_id, position, author, stated_at, evidence, supersedes, tier, acl, judgement, assertion, withdrawn)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), $12)
-ON CONFLICT (id) DO NOTHING`, id, st.TopicID, position, st.Author, st.StatedAt,
+ON CONFLICT (id) DO NOTHING`, id, row, position, st.Author, st.StatedAt,
 		evidence, st.ID, st.Tier, acl, nullableJudgement(JudgementRestates), st.Assertion, withdrawn)
 	if err != nil {
 		return false, fmt.Errorf("superseding stance %s after evidence withdrawal: %w", st.ID, err)
 	}
-	if err := s.redact(ctx, []string{st.TopicID}); err != nil {
+	if err := s.redact(ctx, []string{row}); err != nil {
 		return false, err
 	}
 	return tag.RowsAffected() == 1, nil

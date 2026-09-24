@@ -2,7 +2,6 @@ package l3
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -72,18 +71,18 @@ type CurrentStance struct {
 	Inherited bool
 }
 
-// topicsSQL is every topic about one of the entities or an ancestor of one. The
-// walk up `part_of` is a UNION, so a cycle ends it rather than looping.
+// topicsSQL is every topic row about one of the entities or an ancestor of
+// one. The walk up `part_of` is a UNION, so a cycle ends it rather than
+// looping.
 const topicsSQL = `
 WITH RECURSIVE up(id) AS (
     SELECT unnest($1::text[])
     UNION
     SELECT unnest(e.part_of) FROM l2_entities e JOIN up ON e.id = up.id
 )
-SELECT t.id, t.scope, t.name, t.about, t.acl, t.opened_by, t.created_at
+SELECT coalesce(array_agg(t.id ORDER BY t.id), '{}')
 FROM l2_topics t
-WHERE t.about && ARRAY(SELECT id FROM up)
-ORDER BY t.id`
+WHERE t.about && ARRAY(SELECT id FROM up)`
 
 // CurrentStances is the stance every topic about one entity stands at, then the
 // ones it inherits: topics about the related entities — for a tracker item, the
@@ -116,6 +115,10 @@ ORDER BY t.id`
 // opening document while it exists, then by a surviving live stance; a stance
 // by every piece of its evidence. A document re-synced private or retracted
 // since the worker read it removes access to stances that rest only on it.
+//
+// Topics are as the topic ledger makes them now ([l2.Store.TopicsOver]): a
+// topic merged into another is served as that one, once, standing on every
+// stance of both, and a split's topic as a topic of its own.
 func (v *Views) CurrentStances(ctx context.Context, reader l1.Reader, own string, related []string) ([]CurrentStance, int, int, error) {
 	if own == "" {
 		return []CurrentStance{}, 0, 0, nil
@@ -169,28 +172,15 @@ func (v *Views) CurrentStances(ctx context.Context, reader l1.Reader, own string
 }
 
 func (v *Views) topics(ctx context.Context, entities []string) ([]l2.Topic, error) {
-	rows, err := v.db.Query(ctx, topicsSQL, entities)
+	var rows []string
+	if err := v.db.QueryRow(ctx, topicsSQL, entities).Scan(&rows); err != nil {
+		return nil, fmt.Errorf("reading current stances: %w", err)
+	}
+	topics, err := v.graph.TopicsOver(ctx, rows)
 	if err != nil {
 		return nil, fmt.Errorf("reading current stances: %w", err)
 	}
-	defer rows.Close()
-	var out []l2.Topic
-	for rows.Next() {
-		var t l2.Topic
-		var acl []byte
-		if err := rows.Scan(&t.ID, &t.Scope, &t.Name, &t.About, &acl, &t.OpenedBy, &t.CreatedAt); err != nil {
-			return nil, fmt.Errorf("reading current stances: %w", err)
-		}
-		if err := json.Unmarshal(acl, &t.ACL); err != nil {
-			return nil, fmt.Errorf("decoding the access list of topic %s: %w", t.ID, err)
-		}
-		t.CreatedAt = t.CreatedAt.UTC()
-		out = append(out, t)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("reading current stances: %w", err)
-	}
-	return out, nil
+	return topics, nil
 }
 
 // Activity is the recent activity on a scope.
