@@ -426,6 +426,14 @@ func TestDeletionsAreTombstones(t *testing.T) {
 	if last := rec.Events()[5]; last.Kind != connector.KindTombstone || last.Payload.Target != "ENG#ENG-42:comment:9001" {
 		t.Fatalf("deleting the comment emitted a %s of %q", last.Kind, last.Payload.Target)
 	}
+
+	// A restricted ticket's tombstone is as restricted as the ticket.
+	send(t, srv.URL, with(t, ticket, map[string]any{"project": "SEC", "id": "SEC-1", "parent": nil}), http.StatusAccepted)
+	send(t, srv.URL, `{"kind":"ticket","project":"SEC","id":"SEC-1","deleted":true}`, http.StatusAccepted)
+	want := connector.ACL{{Kind: connector.ACLGroup, Source: sourceID, NativeID: "security"}}
+	if last := rec.Events()[7]; last.Kind != connector.KindTombstone || !reflect.DeepEqual(last.ACL, want) {
+		t.Fatalf("deleting the restricted ticket emitted a %s readable by %v, want a tombstone readable by %v", last.Kind, last.ACL, want)
+	}
 }
 
 // Access is the project's unless the source lets a ticket carry its own, and a
