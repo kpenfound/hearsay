@@ -149,14 +149,17 @@ type Hearsay {
   }
 
   """
-  Builds the container image, so that an image that no longer builds fails here
-  rather than at a release.
+  Builds the default image and both release platforms, and checks the stamped
+  version and publish address without pushing to a registry.
   """
   imageCheck(ws: Workspace!): Void @check {
     image(ws).sync
     # Exercise the same two platform builds and version stamp publish uses,
     # without credentials or a registry write.
     let version = "v0.0.0-image-check"
+    if (publishAddress(version, "ghcr.io/kpenfound/hearsay") != "ghcr.io/kpenfound/hearsay:" + version) {
+      raise "publish address does not use the stamped version"
+    }
     let amd64 = image(ws, version: version, platform: "linux/amd64")
     let arm64 = image(ws, version: version, platform: "linux/arm64")
     if (amd64.platform != "linux/amd64" or arm64.platform != "linux/arm64") {
@@ -170,7 +173,7 @@ type Hearsay {
   }
 
   """
-  The hearsay binary, compiled for Linux on the engine's own architecture.
+  The hearsay binary, compiled for Linux on the selected architecture.
   Static (CGO_ENABLED=0), so the runtime image only has to supply certificates
   and timezones.
   """
@@ -244,16 +247,19 @@ type Hearsay {
     """Untagged image address, for example ghcr.io/my-org/hearsay."""
     imageAddress: String! = "ghcr.io/kpenfound/hearsay",
   ): String! {
-    if (version.match(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`) == null) {
-      raise "version must be a nonempty OCI image tag"
-    }
-    if (imageAddress == "" or username == "") {
-      raise "image address and registry username are required"
-    }
-    let address = imageAddress + ":" + version
+    let address = publishAddress(version, imageAddress)
+    if (username == "") { raise "registry username is required" }
     image(ws, version: version, platform: "linux/amd64")
       .withRegistryAuth(imageAddress, username, password)
       .publish(address, platformVariants: [image(ws, version: version, platform: "linux/arm64")])
+  }
+
+  let publishAddress(version: String!, imageAddress: String!): String! {
+    if (version.match(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`) == null) {
+      raise "version must be a nonempty OCI image tag"
+    }
+    if (imageAddress == "") { raise "image address is required" }
+    imageAddress + ":" + version
   }
 
   """

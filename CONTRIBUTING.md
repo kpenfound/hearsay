@@ -64,7 +64,7 @@ stack.
 | `hearsay:lint` | hearsay | `go vet`, `golangci-lint run`, `golangci-lint fmt --diff` |
 | `hearsay:integration-test` | hearsay | `hearsay migrate up`, then `go test -race -tags=integration ./...`, against a pgvector Postgres |
 | `hearsay:tidy-check` | hearsay | fails if `go mod tidy` would change `go.mod` or `go.sum` |
-| `hearsay:image-check` | hearsay | builds the binary and the container image |
+| `hearsay:image-check` | hearsay | builds the default and two release platforms; checks the version stamp and publish address without pushing |
 | `dagger-dang-sdk:generate` | Dang SDK | fails if the SDK would regenerate anything under `.dagger` |
 
 `go:lint-all` is off because the Go module pins a `golangci-lint` built with
