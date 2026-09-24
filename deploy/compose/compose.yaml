@@ -1,0 +1,115 @@
+# Hearsay in its production shape: Postgres with pgvector, a one-shot
+# `hearsay migrate up` job, and the four services as four containers from the
+# published image (ADR-0003, ADR-0006). `hearsay all` is for development and is
+# not used here. docs/deploy.md is the operator guide.
+#
+#   cp env.example .env        # then fill it in; never commit it
+#   docker compose up -d --wait
+#
+# Configuration is ./config, mounted read-only: one hearsay.yaml or the
+# directory form (docs/config.md). Secrets come from .env.
+name: hearsay
+
+# What the four services share. Each one reads the whole of .env, because the
+# variables a configuration names (token_env, secrets) are its own choice.
+x-service: &service
+  image: ${HEARSAY_IMAGE:?set HEARSAY_IMAGE in .env to a published image, such as ghcr.io/kpenfound/hearsay:v0.10.0}
+  env_file: [.env]
+  environment:
+    HEARSAY_CONFIG: /etc/hearsay
+  volumes:
+    - type: bind
+      source: ./config
+      target: /etc/hearsay
+      read_only: true
+  depends_on:
+    postgres:
+      condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
+  restart: unless-stopped
+
+# Each service's /readyz: 200 once its database is reachable and migrated, and,
+# for the connectors, while no source reports itself failed. The image is
+# Alpine, so busybox wget is there to ask.
+x-healthcheck: &healthcheck
+  interval: 10s
+  timeout: 5s
+  retries: 3
+  start_period: 30s
+
+services:
+  postgres:
+    # pgvector on Postgres 16, the minimum ADR-0004 sets. Pin a digest for
+    # production; a major version change is a dump and restore.
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: hearsay
+      POSTGRES_DB: hearsay
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # Over TCP: the image's first-start initialisation runs a server on the
+      # socket only, which would pass a socket check and then restart.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "hearsay", "-d", "hearsay"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  # The deploy job (ADR-0006): runs to completion before any service starts, and
+  # again on every `docker compose up`, where it applies what is pending and
+  # otherwise does nothing. No service migrates for itself.
+  migrate:
+    image: ${HEARSAY_IMAGE:?set HEARSAY_IMAGE in .env to a published image, such as ghcr.io/kpenfound/hearsay:v0.10.0}
+    command: ["migrate", "up"]
+    environment:
+      HEARSAY_DATABASE_URL: ${HEARSAY_DATABASE_URL:?set HEARSAY_DATABASE_URL in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  connectors:
+    <<: *service
+    command: ["connectors"]
+    # Webhooks under /hooks/<source id>, and /healthz and /readyz. Published on
+    # the host's loopback only: put the TLS proxy that serves the webhooks in
+    # front of it (docs/deploy.md).
+    ports:
+      - "127.0.0.1:8081:8081"
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/readyz"]
+
+  distiller:
+    <<: *service
+    command: ["distiller"]
+    # :8082 serves /healthz and /readyz inside the network only.
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8082/readyz"]
+
+  assert-worker:
+    <<: *service
+    command: ["assert-worker"]
+    # :8083 serves /healthz and /readyz inside the network only.
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8083/readyz"]
+
+  api:
+    <<: *service
+    command: ["api"]
+    # HTTP (/v1/<call>), MCP (/mcp), /healthz and /readyz. Callers send bearer
+    # tokens, so it is published on the host's loopback only and reached
+    # through a TLS proxy (ADR-0014, docs/deploy.md).
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/readyz"]
+
+volumes:
+  pgdata:

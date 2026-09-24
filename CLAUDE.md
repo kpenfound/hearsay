@@ -19,8 +19,8 @@ implements, are specified in
 
 Dagger runs everything. The workspace is `dagger.toml`. The tests and the
 `go generate` drift check come from the reusable Go module
-(`github.com/dagger/go`) it installs; lint, the integration tests, the tidy and
-image checks, the binary, the image, migrations and the dev stack are `hearsay`, our own module
+(`github.com/dagger/go`) it installs; lint, the integration tests, the tidy,
+image and compose checks, the binary, the image, migrations and the dev stack are `hearsay`, our own module
 in `.dagger/modules/hearsay/main.dang`, written in Dang. Its `go-test-base`
 function hands the Go module a container with Postgres attached.
 There is no CI workflow: Dagger Cloud runs `dagger check` on every commit.
@@ -30,6 +30,7 @@ dagger check              # every check, in parallel; -l lists them
 dagger up                 # Postgres plus all four services
 dagger api functions      # the modules; `dagger api call hearsay <fn>` runs one
 dagger api call hearsay qa --script '...'     # run a test plan in the shipped image, Postgres beside it
+dagger api call hearsay compose-smoke         # run deploy/compose in a Docker daemon of its own
 dagger settings go        # the Go module's settings
 ```
 
@@ -38,6 +39,13 @@ tree, binds Postgres, sets `HEARSAY_DATABASE_URL`, writes the script to
 `/test.sh`, runs it, and returns the combined output with the exit code on the
 last line. `playground` is the interactive equivalent and needs a terminal, so
 an agent should reach for `qa`, not `playground`. CONTRIBUTING.md has both.
+
+The production deployment is `deploy/compose` (Postgres, a `migrate` job, the
+four services from the published image) and its guide is
+[docs/deploy.md](docs/deploy.md). `hearsay:compose-check` holds it to that
+shape without a Docker daemon, and `compose-smoke` runs it. A service that
+comes to read a new environment variable adds it to `deploy/compose/env.example`
+and to the guide's env table.
 
 The Go module's own lint check is switched off in `dagger.toml` (its
 golangci-lint is built with an older Go than go.mod asks for); `hearsay:lint`
