@@ -112,10 +112,10 @@ ORDER BY t.id`
 // which is how a stance inherited from an ancestor outside the reach is
 // withheld ([l2.Access.TopicInReach]).
 //
-// Who may read is decided from L1 as it is now ([l2.Access]): a topic by the
-// document that opened it, a stance by every piece of its evidence. A document
-// re-synced private, or retracted, since the worker read it takes what it
-// derived with it.
+// Who may read is decided from L1 as it is now ([l2.Access]): a topic by its
+// opening document while it exists, then by a surviving live stance; a stance
+// by every piece of its evidence. A document re-synced private or retracted
+// since the worker read it removes access to stances that rest only on it.
 func (v *Views) CurrentStances(ctx context.Context, reader l1.Reader, own string, related []string) ([]CurrentStance, int, int, error) {
 	if own == "" {
 		return []CurrentStance{}, 0, 0, nil

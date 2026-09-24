@@ -99,6 +99,12 @@ type Result struct {
 // with no model call ([AppendAssertion]).
 func (a *Asserter) Handle(ctx context.Context, job queue.Job) error {
 	log := telemetry.Logger(ctx)
+	if strings.HasPrefix(job.TargetID, l2.WithdrawalTarget) {
+		return pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) error {
+			_, err := l2.New(tx).RerunDeletedEvidence(ctx, strings.TrimPrefix(job.TargetID, l2.WithdrawalTarget), job.SerialKey)
+			return err
+		})
+	}
 	if IsAssertion(job.TargetID) {
 		written, err := AppendAssertion(ctx, a.pool, a.repo.Authority, job.TargetID, job.SerialKey)
 		if err != nil {
@@ -274,8 +280,8 @@ func (a *Asserter) Assert(ctx context.Context, docID, scope string) (Result, err
 
 // candidates is the topics a document may be continuing: reference overlap
 // first, then embedding similarity for what is left of the budget, each only
-// among topics everyone who may read the document may read — which the
-// topic's opening document decides, as it is in L1 now.
+// among topics everyone who may read the document may read — decided by the
+// opener while it exists, then by a surviving live stance.
 func (a *Asserter) candidates(ctx context.Context, graph *l2.Store, scope string, doc l1.Document, keys []string) ([]l2.Topic, error) {
 	byKeys, err := graph.TopicsByJoinKeys(ctx, scope, keys, doc.ACL, MaxCandidates)
 	if err != nil {
