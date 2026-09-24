@@ -102,15 +102,15 @@ type App struct {
 }
 
 // NewApp returns the application a source configures, or nil where its
-// settings name none: such a source takes no commands. The source's secrets
-// must be resolved.
+// settings name none or the source is read-only: such a source takes no
+// commands. The source's secrets must be resolved.
 func NewApp(src connector.SourceConfig) (*App, error) {
 	var s Settings
 	if err := src.DecodeSettings(&s); err != nil {
 		return nil, err
 	}
 	key, ok, err := s.app()
-	if err != nil || !ok {
+	if err != nil || !ok || src.ReadOnly {
 		return nil, err
 	}
 	if !snowflake(s.Guild) {
@@ -127,12 +127,12 @@ func NewApp(src connector.SourceConfig) (*App, error) {
 	return &App{Source: src.ID, Guild: s.Guild, ID: s.ApplicationID, key: key, token: token, api: api, http: &http.Client{Timeout: 10 * time.Second}}, nil
 }
 
-// HasApp reports whether a source's settings name an application, before
-// its secrets are resolved: a source that names none needs no token outside
-// the connectors process.
+// HasApp reports whether a source's settings name an application the API
+// answers, before its secrets are resolved: a source that names none, or is
+// read-only, needs no token outside the connectors process.
 func HasApp(src connector.SourceConfig) bool {
 	var s Settings
-	return src.DecodeSettings(&s) == nil && (s.ApplicationID != "" || s.PublicKey != "")
+	return !src.ReadOnly && src.DecodeSettings(&s) == nil && (s.ApplicationID != "" || s.PublicKey != "")
 }
 
 // app validates the application settings, which are set together or not at

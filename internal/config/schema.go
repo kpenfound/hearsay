@@ -15,12 +15,16 @@ import (
 
 // sourceDoc is one entry of `sources/`.
 type sourceDoc struct {
-	ID         string            `yaml:"id"`
-	Type       string            `yaml:"type"`
-	Containers []string          `yaml:"containers"`
-	Refresh    string            `yaml:"refresh"`
-	Settings   map[string]any    `yaml:"settings"`
-	Secrets    map[string]string `yaml:"secrets"`
+	ID         string   `yaml:"id"`
+	Type       string   `yaml:"type"`
+	Containers []string `yaml:"containers"`
+	Refresh    string   `yaml:"refresh"`
+	// ReadOnly is decoded as whatever the file wrote rather than as a bool,
+	// because the YAML library would read `yes`, `on` and `y` into a bool
+	// field, and the format promises that only true and false are booleans.
+	ReadOnly any               `yaml:"read_only"`
+	Settings map[string]any    `yaml:"settings"`
+	Secrets  map[string]string `yaml:"secrets"`
 }
 
 // scopeDoc is one entry of `scopes/`.

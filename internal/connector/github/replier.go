@@ -39,8 +39,12 @@ type Replier struct {
 	api   *client
 }
 
-// NewReplier builds the replier for a source.
+// NewReplier builds the replier for a source. A read-only source has none:
+// Hearsay posts nothing to it.
 func NewReplier(src connector.SourceConfig) (*Replier, error) {
+	if src.ReadOnly {
+		return nil, fmt.Errorf("source %q is read_only: Hearsay writes nothing to it", src.ID)
+	}
 	sc, err := parseSource(src)
 	if err != nil {
 		return nil, err

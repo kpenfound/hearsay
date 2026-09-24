@@ -193,6 +193,16 @@ func (l *loader) buildSources() []connector.SourceConfig {
 			}
 		}
 
+		switch ro := src.ReadOnly.(type) {
+		case nil:
+		case bool:
+			cfg.ReadOnly = ro
+		case string:
+			l.bad(a, "read_only", "%q is not a boolean: want true or false", ro)
+		default:
+			l.bad(a, "read_only", "%v is not a boolean: want true or false", ro)
+		}
+
 		if len(src.Settings) > 0 {
 			settings, err := json.Marshal(src.Settings)
 			if err != nil {

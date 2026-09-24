@@ -56,7 +56,7 @@ type Replies map[string]Replier
 // was deleted, as a `gesture:<event id>` job under the serial key of the scope
 // it acts on (ADR-0022). The jobs and the cursor commit together, so a restart
 // misses nothing and a repeated enqueue collapses into the job already
-// pending.
+// pending. A read-only source takes no commands, and is passed over.
 type CommandFollower struct {
 	pool     *pgxpool.Pool
 	repo     config.Repo
@@ -104,7 +104,7 @@ func (f *CommandFollower) Once(ctx context.Context) (int, error) {
 		events, graph := l0.New(tx), l2.New(tx)
 		for _, change := range changes {
 			ev := change.Event
-			if src, ok := f.repo.Source(ev.Source); !ok || src.Type != github.Type {
+			if src, ok := f.repo.Source(ev.Source); !ok || src.Type != github.Type || src.ReadOnly {
 				continue
 			}
 			command := ev
@@ -612,10 +612,10 @@ func (a *Asserter) answer(ctx context.Context, rec commandRecord) error {
 // sweepReplies enqueues the job again for every command whose reply is still
 // owed — not posted, or not revised since the command was deleted — because
 // its job ran out of attempts, perhaps while GitHub was down. A pending job
-// collapses the enqueue.
-func sweepReplies(ctx context.Context, pool *pgxpool.Pool) (int, error) {
+// collapses the enqueue. A source that has become read-only is owed nothing.
+func sweepReplies(ctx context.Context, pool *pgxpool.Pool, repo config.Repo) (int, error) {
 	rows, err := pool.Query(ctx, `
-SELECT CASE WHEN reply IS NULL THEN event ELSE undo_event END, scope
+SELECT CASE WHEN reply IS NULL THEN event ELSE undo_event END, scope, source
   FROM github_command_replies
  WHERE reply IS NULL OR (undo_event IS NOT NULL AND NOT undo_revised)`)
 	if err != nil {
@@ -625,9 +625,13 @@ SELECT CASE WHEN reply IS NULL THEN event ELSE undo_event END, scope
 	var all []owed
 	for rows.Next() {
 		var o owed
-		if err := rows.Scan(&o.event, &o.scope); err != nil {
+		var source string
+		if err := rows.Scan(&o.event, &o.scope, &source); err != nil {
 			rows.Close()
 			return 0, fmt.Errorf("reading the replies owed to github commands: %w", err)
+		}
+		if src, ok := repo.Source(source); ok && src.ReadOnly {
+			continue
 		}
 		all = append(all, o)
 	}
@@ -656,7 +660,7 @@ func (a *Asserter) githubGesture(ctx context.Context, job queue.Job) error {
 	if err != nil {
 		return err
 	}
-	if src, ok := a.repo.Source(ev.Source); !ok || src.Type != github.Type {
+	if src, ok := a.repo.Source(ev.Source); !ok || src.Type != github.Type || src.ReadOnly {
 		return nil
 	}
 	switch ev.Kind {

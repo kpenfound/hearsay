@@ -25,7 +25,8 @@ import (
 const gestureConsumer = "assert-worker:gestures"
 
 // GestureFollower places Discord reaction changes on the assertion queue. Its
-// cursor and the jobs commit together, so a restart cannot miss a reaction.
+// cursor and the jobs commit together, so a restart cannot miss a reaction. A
+// read-only source's reactions are not gestures, and are passed over.
 type GestureFollower struct {
 	pool *pgxpool.Pool
 	repo config.Repo
@@ -73,7 +74,7 @@ func (f *GestureFollower) Once(ctx context.Context) (int, error) {
 		for _, change := range changes {
 			ev := change.Event
 			src, ok := f.repo.Source(ev.Source)
-			if !ok || src.Type != discord.Type || (ev.Kind != connector.KindReaction && ev.Kind != connector.KindTombstone) {
+			if !ok || src.Type != discord.Type || src.ReadOnly || (ev.Kind != connector.KindReaction && ev.Kind != connector.KindTombstone) {
 				continue
 			}
 			if ev.Kind == connector.KindTombstone && !strings.Contains(ev.Payload.Target, ":reaction:") {
@@ -100,7 +101,7 @@ func (a *Asserter) applyDiscordGesture(ctx context.Context, job queue.Job) error
 		return err
 	}
 	src, ok := a.repo.Source(ev.Source)
-	if !ok || src.Type != discord.Type {
+	if !ok || src.Type != discord.Type || src.ReadOnly {
 		return nil
 	}
 	var settings discord.Settings

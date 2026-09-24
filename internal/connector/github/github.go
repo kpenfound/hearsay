@@ -15,6 +15,7 @@
 //	id: github
 //	type: github
 //	containers: [acme/api]   # repositories by full name; `*` is refused
+//	read_only: false         # optional; true takes no commands and posts nothing
 //	settings:
 //	  since: 2026-01-01      # optional; backfill what changed on or after it
 //	  api_url: https://ghe.example/api/v3   # optional; GitHub Enterprise Server
@@ -34,6 +35,13 @@
 // Metadata and Contents read, and Issues and Pull requests read and write; a
 // classic token needs `repo`.
 //
+// A source configured `read_only: true` needs no write access at all: a
+// fine-grained token or an App installation with Metadata, Contents, Issues and
+// Pull requests read. A classic token has no read-only scope for private
+// repositories; one with no scope at all reads public ones. Its `/hearsay`
+// comments are not commands, nothing replies to them, and the assertion worker
+// builds no [Replier] for it. Startup and health make no call that needs more.
+//
 // # Commands and replies
 //
 // An issue or pull request comment whose first line starts with [CommandWord]
@@ -48,6 +56,15 @@
 // The connector only describes them. The assertion worker runs the commands,
 // and a [Replier] built from the same source configuration posts the replies;
 // the connector never writes to GitHub.
+//
+// In a read-only source a `/hearsay` comment is a `message`, which the
+// distiller reads as it reads any other comment, and the source's descriptor
+// declares no `command`. A reply marker is still read as a reply there: the
+// only replies in a read-only source are Hearsay's own, from before it was
+// read-only. Switching a source to read-only does not re-describe a comment
+// L0 already holds — a redelivery of the same revision is refused as a
+// rewrite — and a command it ran stays in force until somebody undoes it with
+// `hearsay gestures undo` or `hearsay topics undo`.
 //
 // # Things to know before changing it
 //
@@ -151,6 +168,9 @@ type Connector struct {
 	since  time.Time
 	secret []byte
 	api    *client
+	// readOnly is a source Hearsay never writes to, whose `/hearsay` comments
+	// are therefore ordinary comments ([connector.SourceConfig.ReadOnly]).
+	readOnly bool
 
 	mu          sync.Mutex
 	lastEventAt time.Time
@@ -187,6 +207,8 @@ func New(src connector.SourceConfig) (*Connector, error) {
 		since:  sc.since,
 		secret: []byte(secret),
 		api:    sc.api,
+
+		readOnly: src.ReadOnly,
 	}, nil
 }
 
@@ -284,22 +306,24 @@ func parseAPIURL(s string) (*url.URL, error) {
 	return u, nil
 }
 
-// Describe implements [connector.Connector].
+// Describe implements [connector.Connector]. A read-only source emits no
+// `command`, and the runtime refuses one if it did.
 func (c *Connector) Describe() connector.Descriptor {
-	return connector.Descriptor{
-		Type: Type,
-		Kinds: []connector.Kind{
-			connector.KindIssue,
-			connector.KindMessage,
-			connector.KindCommand,
-			KindReply,
-			connector.KindPullRequest,
-			connector.KindReview,
-			connector.KindReviewComment,
-			connector.KindCommit,
-			connector.KindTombstone,
-		},
+	kinds := []connector.Kind{
+		connector.KindIssue,
+		connector.KindMessage,
+		connector.KindCommand,
+		KindReply,
+		connector.KindPullRequest,
+		connector.KindReview,
+		connector.KindReviewComment,
+		connector.KindCommit,
+		connector.KindTombstone,
 	}
+	if c.readOnly {
+		kinds = slices.DeleteFunc(kinds, func(k connector.Kind) bool { return k == connector.KindCommand })
+	}
+	return connector.Descriptor{Type: Type, Kinds: kinds}
 }
 
 // Health implements [connector.Connector]. It makes no network call.
@@ -333,7 +357,7 @@ func (c *Connector) canonical(fullName string) string { return canonicalIn(c.rep
 // view is one repository as an event is built in it, spelled the configured
 // way.
 func (c *Connector) view(fullName string, private bool) view {
-	return view{source: c.source, repo: c.canonical(fullName), private: private, repos: c.repos}
+	return view{source: c.source, repo: c.canonical(fullName), private: private, repos: c.repos, readOnly: c.readOnly}
 }
 
 func canonicalIn(repos []string, fullName string) string {

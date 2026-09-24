@@ -58,8 +58,9 @@ type Deps struct {
 	// so when an entry names a CODEOWNERS file.
 	Repos l2.RepoReader
 	// Replies answer GitHub `/hearsay` commands; the binary builds a
-	// github.Replier with each GitHub source's token. A source with none runs
-	// its commands and does not answer them.
+	// github.Replier with the token of each GitHub source that is not
+	// read-only. A source with none runs its commands and does not answer
+	// them; a read-only source runs none.
 	Replies Replies
 }
 
@@ -211,7 +212,7 @@ func Sweep(ctx context.Context, pool *pgxpool.Pool, repo config.Repo) (int, erro
 	if err != nil {
 		return enqueued + assertions, err
 	}
-	replies, err := sweepReplies(ctx, pool)
+	replies, err := sweepReplies(ctx, pool, repo)
 	return enqueued + assertions + replies, err
 }
 
