@@ -459,6 +459,14 @@ part of onboarding worth spending effort on.
 
 An identity needs a `native_id`, a `handle`, or both.
 
+After ingest, `hearsay identities list --config <path>` lists source identities
+that have no principal or match several. Set `HEARSAY_DATABASE_URL` or pass
+`--database-url`; use `--json` for stable machine output or `--yaml` for
+`principals:` entries to copy into this configuration. Merge an entry under an
+existing principal when one is suggested; new principal ids are stubs to review.
+The command excludes bot identities and Hearsay's own `hearsay` source. It
+shows identity hints and counts, never event text, and never edits configuration.
+
 `scopes` lists entity ids such as `code:acme/api` and
 `tracker:github:acme/api#1234`. `"*"` alone grants every scope. A grant covers
 the named entity and its `part_of` descendants. The id need not already appear

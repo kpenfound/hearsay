@@ -12,6 +12,7 @@ The one binary Hearsay ships. Each process is a subcommand of it (ADR-0003).
 | `hearsay config validate [path]` | Check a configuration repository. Prints every problem, with file and line. |
 | `hearsay migrate up\|status\|up-to <n>\|down` | Schema migrations, then exit. `down` refuses without `--i-know`. |
 | `hearsay l0 list\|get <id>\|count\|tail` | Inspect the L0 event store. Read-only. |
+| `hearsay identities list [--json\|--yaml]` | List unresolved source identities and suggest principal mappings. Read-only. |
 | `hearsay aliases list\|confirm <entity> <name>\|reject <entity> <name>` | List candidates and decide their names as a configured human. |
 | `hearsay topics list <scope>\|merge <from> <into>\|split <topic> --stance <id>... --name <name>\|undo <op-id>\|ops` | List a scope's topics and the topic ledger; merge, split and undo as a configured human. |
 | `hearsay gestures ratify\|demote\|pin\|unpin <document>\|undo <gesture-id>\|list` | Record and list human stance and pin gestures. |
@@ -19,6 +20,16 @@ The one binary Hearsay ships. Each process is a subcommand of it (ADR-0003).
 | `hearsay delete --event <l0-id>\|--artifact <source> <artifact-id>\|--author <identity> [--apply]` | Preview deletion provenance; with `--apply`, redact L0 and re-distill what depended on it. |
 | `hearsay delete list\|show <deletion-id>` | The deletions applied and what each rebuilt. Read-only. |
 | `hearsay version` | Version, commit and build date. |
+
+`hearsay identities list` requires `--config` and a database URL (via
+`--database-url` or `HEARSAY_DATABASE_URL`). It lists unknown and ambiguous
+author, participant and mention identities from visible L0 events, grouped by
+source and ordered by descending unresolved sightings. It skips bots and the
+Hearsay `hearsay` source. It has no principal filter. `--json` is stable
+machine-readable output; `--yaml` prints `principals:` entries whose
+`identities:` can be pasted under an existing suggested principal or a new
+principal stub. Review suggestions before pasting. The command does not write
+configuration or reveal L0 payload text.
 
 `hearsay aliases` requires `--config` and `--principal <human-id>`. Its list shows
 entity, name, state and vote count only where that human may read every current

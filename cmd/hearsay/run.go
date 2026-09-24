@@ -52,6 +52,7 @@ func commands() []command {
 		{"config", "validate [path]", "Check a configuration repository and say what is wrong with it.", runConfig},
 		{"migrate", "up|status|up-to <n>|down", "Apply schema migrations and exit.", runMigrate},
 		{"l0", "list|get <id>|count|tail", "Inspect the L0 event store.", runL0},
+		{"identities", "list [--json|--yaml]", "List unmapped and ambiguous source identities.", runIdentities},
 		{"aliases", "list|confirm <entity> <name>|reject <entity> <name>", "Review learned entity names.", runAliases},
 		{"topics", "list <scope>|merge <from> <into>|split <topic> --stance <id>... --name <name>|undo <op>|ops", "List topics and their operations; merge, split and undo by hand.", runTopics},
 		{"gestures", "ratify|demote|pin|unpin <document>|undo <gesture-id>|list", "Record and list human stance and pin gestures.", runGestures},
