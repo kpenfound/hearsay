@@ -54,6 +54,12 @@ func (r *Reader) PublicChannel(ctx context.Context, id string) error {
 	if err := r.connector.call(ctx, "conversations.info", r.token, url.Values{"channel": {id}}, &out); err != nil {
 		return err
 	}
+	if out.Channel.IsPrivate {
+		return fmt.Errorf("slack channel %s is a private channel: select an active public channel", id)
+	}
+	if out.Channel.IsArchived {
+		return fmt.Errorf("slack channel %s is archived: select an active public channel", id)
+	}
 	if why := out.Channel.unsupported(); why != "" {
 		return fmt.Errorf("slack channel %s %s: only public channels are ingested", id, why)
 	}

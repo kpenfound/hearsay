@@ -338,9 +338,10 @@ visibility, or the re-sync cannot read the artifacts it must re-emit.
 ### Slack source
 
 A Slack source is one workspace, read over Socket Mode: the connectors service
-dials Slack, so it needs no public URL. Only **public channels** are ingested
-in this version. Private channels, direct messages and Slack Connect channels
-shared with another organisation are refused, and so is `*`.
+dials Slack, so it needs no public URL. Configure **public channels** by id. If one becomes private or archived,
+its previously ingested content is re-synced under a restricted channel ACL.
+Direct messages and Slack Connect channels shared with another organisation
+are refused, and so is `*`.
 
 ```yaml
 sources:
@@ -357,11 +358,12 @@ sources:
 
 Create the app at https://api.slack.com/apps from the manifest in the
 `internal/connector/slack` package comment. It turns on Socket Mode,
-subscribes the bot to `message.channels`, `reaction_added` and
-`reaction_removed`, and asks for the bot scopes `channels:history`,
-`channels:read` and `reactions:read`, `users:read` and `users:read.email`, all read-only.
-The user scopes let `hearsay init` match identities by email; the stream does
-not require them. Under Basic Information,
+subscribes the bot to `message.channels`, `reaction_added`,
+`reaction_removed`, `channel_archive`, `channel_unarchive` and
+`channel_deleted`. The bot scopes are `channels:history`, `channels:read`,
+`reactions:read`, `users:read` and `users:read.email`, all read-only. The user
+scopes let `hearsay init` match identities by email; the stream does not
+require them. Under Basic Information,
 generate an app-level token with the `connections:write` scope; that is
 `app_token`. Install the app to the workspace; its Bot User OAuth Token is
 `bot_token`. Then invite the app (`/invite @Hearsay`) into every channel
@@ -372,8 +374,9 @@ in the workspace's settings or in any `app.slack.com/client/T…` URL.
 A `D…` (direct message) or `G…` (private channel or group DM) id fails at
 startup. Private channels created since 2021 have `C…` ids too, so on every
 connection the connector reads each channel with `conversations.info`: a
-private, direct-message or Slack Connect channel stops the source with failed
-health, and the fix is to take it out of `containers` and restart. A channel the
+direct-message or Slack Connect channel stops the source with failed
+health. A private or archived channel triggers a durable ACL re-sync of its
+prior content; the app may lose access to new messages there. A channel the
 app is not in is reported as degraded health and checked again on the next
 connection. Messages from any other workspace are dropped.
 

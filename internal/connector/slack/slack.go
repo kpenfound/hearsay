@@ -3,14 +3,14 @@
 // deployment needs no public ingress and no request URL.
 //
 // A source names the workspace in settings `team` (its `T…` id) and its
-// channels in `containers`, by channel id (`C…`). Only public channels are
-// ingested in this version. A `D…` (direct message) or `G…` (private channel or
+// channels in `containers`, by channel id (`C…`). Configure public channels;
+// when one becomes private or archived, its prior content is restricted. A `D…` (direct message) or `G…` (private channel or
 // group direct message) container, or `*`, fails construction, and so a
 // configuration naming one does not start. Private channels created since 2021
 // have `C…` ids too, so every connection first reads each configured channel
-// with `conversations.info`: one that is private, a direct message, or shared
-// with another organisation through Slack Connect stops the source with failed
-// health, and the operator removes it from `containers` and restarts. A
+// with `conversations.info`: a private or archived channel is restricted by a
+// durable L0 re-sync. A direct message or Slack Connect channel stops the
+// source with failed health. A
 // channel the app has not been invited to is reported as degraded health and
 // checked again on the next connection. Events from any other channel class
 // (`channel_type` other than `channel`, or `is_ext_shared_channel`) and from
@@ -49,6 +49,9 @@
 //	      - message.channels
 //	      - reaction_added
 //	      - reaction_removed
+//	      - channel_archive
+//	      - channel_unarchive
+//	      - channel_deleted
 //	  interactivity:
 //	    is_enabled: false
 //	  org_deploy_enabled: false
@@ -63,7 +66,8 @@
 // thread replies, edits, deletions and reactions are ingested; a reply's
 // `thread` and `parent` are the message it answers. The runtime retries a
 // connection that ends with backoff, and the connector opens a new one itself
-// when Slack asks it to refresh. `/readyz` reports the socket state.
+// when Slack asks it to refresh. Backfill and ACL re-sync use runtime-managed
+// cursors. `/readyz` reports the socket state.
 package slack
 
 import (
@@ -125,9 +129,13 @@ type Connector struct {
 	active             chan struct{}
 	closed             bool
 	notMember          []string
+	restricted         map[string]bool
+	nextRequest        time.Time
 }
 
 var _ connector.Streamer = (*Connector)(nil)
+var _ connector.Backfiller = (*Connector)(nil)
+var _ connector.Resyncer = (*Connector)(nil)
 
 // Factory builds a Slack connector for the runtime registry.
 func Factory(_ context.Context, src connector.SourceConfig) (connector.Connector, error) {
@@ -174,6 +182,7 @@ func New(src connector.SourceConfig) (*Connector, error) {
 		appToken: src.Secrets[SecretAppToken], botToken: src.Secrets[SecretBotToken],
 		http:       &http.Client{Timeout: 30 * time.Second},
 		containers: containers,
+		restricted: map[string]bool{},
 		status:     connector.HealthDegraded, detail: "connecting",
 	}, nil
 }
@@ -186,9 +195,9 @@ func channelClass(id string) error {
 	case id == connector.AllowAll:
 		return errors.New("slack containers must name public channel ids, not *")
 	case slackID(id, 'D'):
-		return fmt.Errorf("slack container %q is a direct message: only public channels are ingested", id)
+		return fmt.Errorf("slack container %q is a direct message: only configured public-channel ids are supported", id)
 	case slackID(id, 'G'):
-		return fmt.Errorf("slack container %q is a private channel or group direct message: only public channels are ingested", id)
+		return fmt.Errorf("slack container %q is a private channel or group direct message: only configured public-channel ids are supported", id)
 	case !slackID(id, 'C'):
 		return fmt.Errorf("slack container %q must be a public channel id (C…)", id)
 	}
@@ -319,7 +328,7 @@ type envelope struct {
 // session is one connection: check the channels, open, read hello, then
 // events until it ends.
 func (c *Connector) session(ctx context.Context, sink connector.Sink) error {
-	if err := c.verifyChannels(ctx); err != nil {
+	if err := c.verifyChannels(ctx, sink); err != nil {
 		return err
 	}
 	target, err := c.openConnection(ctx)
@@ -459,6 +468,18 @@ func (e *apiError) permanent() bool {
 // call makes one Web API request and decodes its answer into out, which
 // embeds [response].
 func (c *Connector) call(ctx context.Context, method, token string, form url.Values, out interface{ result() response }) error {
+	c.mu.Lock()
+	delay := time.Until(c.nextRequest)
+	c.mu.Unlock()
+	if delay > 0 {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.api+"/"+method, strings.NewReader(form.Encode()))
 	if err != nil {
 		return fmt.Errorf("slack %s: %w", method, err)
@@ -470,6 +491,18 @@ func (c *Connector) call(ctx context.Context, method, token string, form url.Val
 		return fmt.Errorf("slack %s: %w", method, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusTooManyRequests {
+		seconds, err := time.ParseDuration(resp.Header.Get("Retry-After") + "s")
+		if err != nil || seconds <= 0 {
+			seconds = time.Second
+		}
+		c.mu.Lock()
+		if until := time.Now().Add(seconds); until.After(c.nextRequest) {
+			c.nextRequest = until
+		}
+		c.mu.Unlock()
+		return fmt.Errorf("slack %s: rate limited", method)
+	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return fmt.Errorf("slack %s: reading the answer: %w", method, err)
@@ -531,6 +564,7 @@ type channelInfo struct {
 	IsExtShared        bool   `json:"is_ext_shared"`
 	IsPendingExtShared bool   `json:"is_pending_ext_shared"`
 	IsMember           bool   `json:"is_member"`
+	IsArchived         bool   `json:"is_archived"`
 }
 
 // unsupported says why a channel is not one this version ingests, or "".
@@ -540,7 +574,7 @@ func (ch channelInfo) unsupported() string {
 		return "is a direct message"
 	case ch.IsMPIM:
 		return "is a group direct message"
-	case ch.IsPrivate || ch.IsGroup:
+	case ch.IsGroup:
 		return "is a private channel"
 	case ch.IsExtShared || ch.IsPendingExtShared:
 		return "is shared with another organisation through Slack Connect"
@@ -553,7 +587,7 @@ func (ch channelInfo) unsupported() string {
 // verifyChannels reads every configured channel with the bot token. A channel
 // of a class this version does not ingest is a configuration error, so it
 // stops the source; one the app is not in is remembered for health.
-func (c *Connector) verifyChannels(ctx context.Context) error {
+func (c *Connector) verifyChannels(ctx context.Context, sink connector.Sink) error {
 	var notMember []string
 	for _, id := range c.containers {
 		var r struct {
@@ -564,11 +598,14 @@ func (c *Connector) verifyChannels(ctx context.Context) error {
 			return c.fail(err, "Slack refused to describe channel "+id)
 		}
 		if why := r.Channel.unsupported(); why != "" {
-			c.setHealth(connector.HealthFailed, "channel "+id+" "+why+": only public channels are ingested, so remove it from containers")
+			c.setHealth(connector.HealthFailed, "channel "+id+" "+why+": only configured public-channel ids are supported, so remove it from containers")
 			return fmt.Errorf("%w: slack channel %s %s", connector.ErrStreamPermanent, id, why)
 		}
 		if !r.Channel.IsMember {
 			notMember = append(notMember, id)
+		}
+		if err := c.observeVisibility(ctx, sink, id, r.Channel.IsPrivate || r.Channel.IsArchived); err != nil {
+			return err
 		}
 	}
 	c.mu.Lock()
