@@ -29,10 +29,14 @@ A connector turns one source into L0 events. That is all it does.
 
 This includes Discord reactions and slash commands and GitHub `/hearsay`
 issue or PR comment commands. Their source actor, target, event identity and
-command data are described in L0; the assertion worker's L0 change-feed
-follower interprets them after mapping a human principal and checking the
-scope's `ratified_by.principals`. Unmapped or unauthorized gestures make no L2
-change. It enqueues an idempotent `assert` job targeted at
+command data are described in L0. The assertion worker's L0 change-feed
+follower interprets reactions and GitHub commands after mapping a human
+principal and checking the scope's `ratified_by.principals`; the API's
+Discord interaction adapter applies a slash command itself, with the same
+checks, under the same serial key
+([ADR-0024](adr/0024-discord-commands-are-applied-by-the-interaction-adapter.md)).
+Unmapped or unauthorized gestures make no L2 change. The worker enqueues an
+idempotent `assert` job targeted at
 `gesture:<source event id>` under the scope's existing serial key, shared with
 L1 assertion jobs and topic operations. The gesture record and L2 writes
 commit together. A reaction removal or command-comment deletion reverses the
@@ -43,8 +47,9 @@ The only source-write exception is an answer to a command the person issued.
 Reactions receive no reply. The API runtime's HTTP Discord interaction adapter
 verifies with the configured application public key, ingests the command as L0
 and answers ephemerally with the interaction token within three seconds (or
-defers an ephemeral answer while work completes); the configured Discord bot
-token registers commands and is never used for channel replies. That adapter,
+defers an ephemeral answer and edits it in when the work completes); the
+configured Discord bot token registers commands and is never used for channel
+replies. That adapter,
 not the connector, reads L2 for autocomplete under the invoker's mapped
 principal, and merge choices are limited to topics the invoker can read. For
 GitHub, the assertion worker uses the configured source bot/app `secrets.token`
@@ -140,6 +145,7 @@ wherever the source has something that behaves like one.
 | `audit` | A bundle served: who asked, on whose behalf, what was filtered | yes | no |
 | `tombstone` | An artifact deleted at the source | no | no |
 | `deletion` | L0 events an operator deleted in Hearsay | yes | no |
+| `command` | A command a person gave Hearsay in a source, such as a Discord slash command; control traffic, never distilled | yes | no |
 
 `assertion`, `audit` and `deletion` are written by Hearsay itself rather than by
 a connector, under source `hearsay` (`connector.SelfSource`). They are in the
@@ -147,6 +153,11 @@ vocabulary because they are L0 events like any other. A `deletion` is not a
 tombstone: it records that an operator redacted events with `hearsay delete
 --apply` (ADR-0018), and it hides nothing by its own `target` — the redacted
 rows carry the deletion that hid them.
+
+A `command` is written under the source it was given in, by the runtime
+component that received it rather than by the connector: a Discord slash
+command by the API's interaction adapter (ADR-0022). The distiller reads no
+document from it.
 
 **Extension kinds.** A source with something genuinely different emits
 `<vendor>.<name>` — two lowercase words separated by a dot, `figma.file_comment`,

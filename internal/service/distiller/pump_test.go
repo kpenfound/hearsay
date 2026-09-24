@@ -256,6 +256,15 @@ func TestTargetOf(t *testing.T) {
 		}(),
 		want: "",
 	}, {
+		name: "a command a person gave Hearsay is not distilled, even in a thread",
+		ev: func() connector.Event {
+			ev := event(source, connector.KindCommand, "interaction:1", at(1), who(source, "u2", "samr"), "", "/hearsay pin")
+			ev.Payload.Container = connector.Container{Kind: connector.ContainerChannel, NativeID: "C1"}
+			ev.Payload.Thread = "thread:7"
+			return ev
+		}(),
+		want: "",
+	}, {
 		name:   "a tombstone for an agent turn has no target",
 		ev:     tombstoneFor("session-1:turn:1"),
 		hidden: hidden{"session-1:turn:1": agentEvent(connector.KindAgentTurn, "session-1")},
