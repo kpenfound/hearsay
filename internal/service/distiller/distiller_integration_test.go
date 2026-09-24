@@ -21,8 +21,10 @@ import (
 	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
+	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/queue"
+	"github.com/kpenfound/hearsay/internal/service/assertworker"
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
@@ -495,6 +497,35 @@ func TestATombstoneForACommentRedistillsTheDocumentThatQuotedIt(t *testing.T) {
 	if !strings.Contains(before.RawText, "Seen it twice this week") {
 		t.Fatalf("the issue's raw text does not quote the comment before it is deleted:\n%s", before.RawText)
 	}
+	// Read the version with the comment into L2 using a recorded answer. The
+	// second answer below is for the same document after the tombstone.
+	assertFixtures := llm.NewFixtures()
+	budget, ok := llm.Default().Tier(llm.TierAssert)
+	if !ok {
+		t.Fatal("no assertion model tier")
+	}
+	const topicName = "Where to take the engine lock"
+	const beforePosition = "Move the lock into the queue."
+	addAnswer := func(doc l1.Document, candidates []assertworker.Candidate, answer string) {
+		t.Helper()
+		if err := assertFixtures.Add(llm.CompletionFixture{Tier: llm.TierAssert,
+			Request:  assertworker.RequestFor(doc, candidates, budget.MaxTokens),
+			Response: llm.Response{JSON: []byte(answer), StopReason: llm.StopEnd, Model: "recorded"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	addAnswer(before.Document, nil, `{"assertions":[{"topic":"new","topic_name":"`+topicName+`","position":"`+beforePosition+`"}]}`)
+	assertRegistry, err := llm.NewFake(testRepo(src).LLM, assertFixtures)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asserter, err := assertworker.New(pool, assertRegistry, testConfig(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, err := asserter.Assert(t.Context(), id, "api"); err != nil || r.StancesWritten != 1 {
+		t.Fatalf("Assert(before tombstone) = %+v, %v", r, err)
+	}
 
 	tombstone := event(src, connector.KindTombstone, retractedComment+":tombstone", at(9), nil, "", "")
 	tombstone.Payload.Target = retractedComment
@@ -509,6 +540,21 @@ func TestATombstoneForACommentRedistillsTheDocumentThatQuotedIt(t *testing.T) {
 	}
 	if len(after.L0Refs) != len(before.L0Refs)-1 {
 		t.Errorf("L0Refs = %v, want %v less the deleted comment", after.L0Refs, before.L0Refs)
+	}
+	const afterPosition = "Keep the lock in the engine."
+	addAnswer(after.Document, []assertworker.Candidate{{Name: topicName, Current: beforePosition}},
+		`{"assertions":[{"topic":"T1","topic_name":"`+topicName+`","position":"`+afterPosition+`","judgement":"changes"}]}`)
+	if r, err := asserter.Assert(t.Context(), id, "api"); err != nil || r.StancesWritten != 1 {
+		t.Fatalf("Assert(after tombstone) = %+v, %v", r, err)
+	}
+	graph := l2.New(pool)
+	topics, err := graph.Topics(t.Context(), "api")
+	if err != nil || len(topics) != 1 {
+		t.Fatalf("Topics() = %+v, %v, want the original topic", topics, err)
+	}
+	history, err := graph.StanceHistory(t.Context(), topics[0].ID)
+	if err != nil || len(history) != 2 || history[1].Supersedes != history[0].ID || history[1].Position != afterPosition {
+		t.Errorf("tombstone re-read history = %+v, %v, want replacement of the document's original stance", history, err)
 	}
 }
 

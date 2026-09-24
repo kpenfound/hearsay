@@ -507,7 +507,8 @@ func TestEveryReadIsFilteredByPrincipal(t *testing.T) {
 // Issue #114: a topic and every stance on it are served on what their documents
 // allow now. When the repository's documents are re-synced private, an outside
 // reader loses the topic and its whole history — the superseded stances too —
-// and a retracted document takes what it opened and what rests on it with it.
+// and a retracted document takes stances resting only on it with it. A topic
+// with no surviving stance becomes unavailable.
 func TestStancesAndTopicsFollowTheirEvidenceAfterAResync(t *testing.T) {
 	w := newWorld(t)
 	ctx := t.Context()
