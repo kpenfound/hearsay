@@ -31,7 +31,7 @@ L0 and L1 are flat. L2 is the graph. LLM work happens at write time (L0 to L1, L
 
 ## L0: events
 
-Every source connector writes L0 only. An event is `{id, source, native_id, kind, time, payload (JSONB), acl}`. Sources include Slack threads and messages, GitHub issues, PRs, reviews and commits, meeting transcripts from Drive, wiki pages, tracker tickets, and agent session events (start, end, tool calls, assertions).
+Every source connector writes L0 only. An event is `{id, source, native_id, kind, time, payload (JSONB), acl}`. Sources include Slack threads and messages, GitHub issues, PRs, reviews and commits, meeting transcripts from Drive, wiki pages, tracker tickets, and agent session events (start, end, tool calls, assertions). Human gestures are also L0 events; the narrow source-reply exception belongs to runtime components, not connectors ([ADR-0022](adr/0022-human-gestures-and-command-replies.md)).
 
 Agent activity is a first-class source. An agent's tool calls and proposals enter L0 so that later assertions can trace back to what the agent retrieved and chose.
 
@@ -141,7 +141,7 @@ Durable artifacts that define a scope, as distinct from recent activity. A desig
 
 ### L2 write path
 
-Serialized per scope to avoid topic-merge races. For each new L1 doc with a qualifying `outcome_kind`, extract candidate assertions, match against existing topics using reference overlap first and embedding similarity second, then append a stance or open a topic. Topic merges and splits are cheap human actions. Wrong merges are the expected failure mode and must be one gesture to undo.
+Serialized per scope to avoid topic-merge races. For each new L1 doc with a qualifying `outcome_kind`, extract candidate assertions, match against existing topics using reference overlap first and embedding similarity second, then append a stance or open a topic. Topic merges and splits are cheap human actions. Wrong merges are the expected failure mode and must be one gesture to undo. Gesture jobs and topic-operation holds use the same scope's serialized `assert` key ([ADR-0020](adr/0020-topic-operations-are-a-ledger-held-on-the-scope-key.md), [ADR-0022](adr/0022-human-gestures-and-command-replies.md)).
 
 ## L3: derived views
 
@@ -286,6 +286,12 @@ Connectors are plugins. A third party ships a module that emits L0 events in the
 ## Human feedback loop
 
 L2 will be wrong on a regular basis. Correction has to be one gesture in the tool the person is already in: an emoji reaction to ratify a stance, `/hearsay pin` on a thread, `/hearsay merge` on two topics, a reaction that demotes an inference. If correcting requires opening a separate UI, no one will.
+
+Discord reactions, slash commands and GitHub `/hearsay` issue or PR comments enter L0 as source events. Connectors describe their actor, target and command data, but do not interpret them, resolve principals or write L1/L2. The assertion worker follows the L0 change feed and enqueues a durable `assert` job targeted at `gesture:<source event id>` under the scope's existing serialized key. Replays collapse to the same target; the gesture record and L2 writes commit together. Removing a reaction or deleting a command reverses its gesture, subject to topic-operation undo rules. A GitHub command edit does not run a second command. The worker maps the source actor to a configured human principal and checks the scope's `ratified_by.principals`; unmapped or unauthorized gestures make no L2 change. Reactions on an original Discord message apply to every live stance drawn from its L1 thread or burst; GitHub ratify and demote commands apply to every live stance drawn from the issue or PR. Demotion serves a stance as `contested` until an authorized ratification or a newer stance supersedes it. Pins anchor the target's L1 document; merge uses the topic-operation ledger.
+
+Hearsay answers only commands a person explicitly issued. Reactions receive no reply. An HTTP interaction adapter in the API runtime verifies Discord requests with the configured application public key, ingests the command as L0, and sends an ephemeral answer with the interaction token within Discord's three-second deadline; it may defer the ephemeral answer while the worker completes. It uses the configured bot token to register commands, never to post channel messages. The adapter performs the L2 autocomplete read under the invoker's mapped principal; `/hearsay merge` offers only topics the invoker can read. For GitHub, the assertion worker posts one result-or-refusal reply comment per command using the configured source bot/app `secrets.token`, with issue and PR comment write permission. A durable reply record keyed by the source command event and source-comment reconciliation prevent duplicates on retry. Hearsay makes no other source writes and posts nothing unprompted ([ADR-0022](adr/0022-human-gestures-and-command-replies.md)).
+
+Command events and Hearsay-authored replies are control traffic, not team content: they are excluded from L1 distillation, including the webhook echo of a GitHub reply. The echo cannot become a new command.
 
 ## Evaluation
 

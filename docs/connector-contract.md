@@ -27,6 +27,35 @@ A connector turns one source into L0 events. That is all it does.
 - It emits everything it is allowed to and nothing it is not. What may be
   ingested is config, not a judgement the connector makes.
 
+This includes Discord reactions and slash commands and GitHub `/hearsay`
+issue or PR comment commands. Their source actor, target, event identity and
+command data are described in L0; the assertion worker's L0 change-feed
+follower interprets them after mapping a human principal and checking the
+scope's `ratified_by.principals`. Unmapped or unauthorized gestures make no L2
+change. It enqueues an idempotent `assert` job targeted at
+`gesture:<source event id>` under the scope's existing serial key, shared with
+L1 assertion jobs and topic operations. The gesture record and L2 writes
+commit together. A reaction removal or command-comment deletion reverses the
+gesture under the same key. A GitHub command edit does not execute it again.
+See [ADR-0022](adr/0022-human-gestures-and-command-replies.md).
+
+The only source-write exception is an answer to a command the person issued.
+Reactions receive no reply. The API runtime's HTTP Discord interaction adapter
+verifies with the configured application public key, ingests the command as L0
+and answers ephemerally with the interaction token within three seconds (or
+defers an ephemeral answer while work completes); the configured Discord bot
+token registers commands and is never used for channel replies. That adapter,
+not the connector, reads L2 for autocomplete under the invoker's mapped
+principal, and merge choices are limited to topics the invoker can read. For
+GitHub, the assertion worker uses the configured source bot/app `secrets.token`
+with issue and PR comment write permission to post one result-or-refusal
+reply per command. A durable record keyed by the command event and
+source-comment reconciliation prevent duplicates on retry. Neither runtime
+component sends any other source write or anything unprompted. Commands and
+Hearsay-authored replies, including a GitHub reply's webhook echo, are L0
+control traffic excluded from L1 distillation; the echo cannot become another
+command.
+
 ## The event
 
 An event is one thing that happened at one source.
