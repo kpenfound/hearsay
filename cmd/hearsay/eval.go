@@ -23,7 +23,7 @@ func runEval(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	resolveDatabase := databaseFlag(fs, cfg)
 	since := fs.String("since", "", "start of the window, RFC3339; the default is the beginning")
 	until := fs.String("until", "", "end of the window, RFC3339, exclusive; the default is now")
-	scope := fs.String("scope", "", "only topics and operations in this scope; the default is every scope")
+	scope := fs.String("scope", "", "only topics and operations in this topic scope, and bundles and next actions on this bundle scope; the default is every scope")
 	asJSON := fs.Bool("json", false, "print the report as JSON")
 	words, err := parseWords(fs, args)
 	if err != nil {

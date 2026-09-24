@@ -3,9 +3,13 @@
 //
 // A [Report] holds one section per metric. Time to ratification and the topic
 // merge and split rate are read from the L2 ledgers — stances, gestures and
-// topic operations — and need nothing else. Every section is aggregates:
-// counts, durations, rates, and scope and topic ids. Nothing here reads or
-// returns an L0 payload, L1 text, a stance's position or a topic's name.
+// topic operations — and need nothing else. The drill-down rate per bundle
+// section, conflict-flag precision and the consumer's next actions are read
+// from L0: the session-linked bundle and handle audits the API writes, and the
+// `next_action` events agents post. Every section is aggregates: counts,
+// durations, rates, and scope and topic ids. Nothing here returns an L0
+// payload, L1 text, a stance's position or a topic's name, and of an audit or
+// next action it decodes the ids and call names alone.
 package eval
 
 import (
@@ -21,6 +25,8 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l2"
 )
 
@@ -31,7 +37,8 @@ type Options struct {
 	// the end of the window is measured at it.
 	Since, Until time.Time
 	// Scope is the serial key the topics and operations are in
-	// (`l2_topics.scope`); empty is every scope.
+	// (`l2_topics.scope`), and the scope the bundles and next actions name;
+	// empty is every scope.
 	Scope string
 }
 
@@ -42,9 +49,12 @@ type Report struct {
 	Since *time.Time `json:"since"`
 	Until time.Time  `json:"until"`
 	// Scope is empty for every scope.
-	Scope        string       `json:"scope"`
-	Ratification Ratification `json:"time_to_ratification"`
-	Operations   Operations   `json:"topic_operations"`
+	Scope        string        `json:"scope"`
+	Ratification Ratification  `json:"time_to_ratification"`
+	Operations   Operations    `json:"topic_operations"`
+	DrillDown    DrillDown     `json:"drill_down"`
+	Conflicts    ConflictFlags `json:"conflict_flags"`
+	NextActions  NextActions   `json:"next_actions"`
 }
 
 // Ratification is time to ratification: for each topic whose clock started in
@@ -103,8 +113,8 @@ type Count struct {
 	PerTopic *float64 `json:"per_topic"`
 }
 
-// Compute reads the ledgers and computes the report. Standing is computed
-// under authority, the configuration's.
+// Compute reads the ledgers and the session trails and computes the report.
+// Standing is computed under authority, the configuration's.
 func Compute(ctx context.Context, q l2.Querier, authority config.Authority, opts Options) (Report, error) {
 	if opts.Until.IsZero() {
 		return Report{}, errors.New("an evaluation window needs an end")
@@ -135,6 +145,11 @@ func Compute(ctx context.Context, q l2.Querier, authority config.Authority, opts
 		return Report{}, err
 	}
 	report.Operations = SummarizeOperations(ops, opened, opts.Since)
+	trail, err := l0.New(q).Timeline(ctx, []connector.Kind{connector.KindAudit, connector.KindNextAction}, opts.Since, opts.Until)
+	if err != nil {
+		return Report{}, err
+	}
+	report.DrillDown, report.Conflicts, report.NextActions = SummarizeSessions(trail, opts.Scope)
 	return report, nil
 }
 
@@ -274,6 +289,40 @@ func (r Report) WriteText(w io.Writer) error {
 	fmt.Fprintf(tw, "  topics opened\t%d\n", ops.TopicsOpened)
 	fmt.Fprintf(tw, "  merges\t%d\t%s per topic\t%d undone\n", ops.Merges.Count, rate(ops.Merges.PerTopic), ops.Merges.Undone)
 	fmt.Fprintf(tw, "  splits\t%d\t%s per topic\t%d undone\n", ops.Splits.Count, rate(ops.Splits.PerTopic), ops.Splits.Undone)
+	fmt.Fprintln(tw)
+
+	drill := r.DrillDown
+	fmt.Fprintln(tw, "drill-down rate per bundle section")
+	fmt.Fprintf(tw, "  session-linked bundles\t%d\n", drill.Bundles)
+	fmt.Fprintf(tw, "  excluded, no session\t%d\n", drill.WithoutSession)
+	for _, sec := range drill.Sections {
+		fmt.Fprintf(tw, "  %s\t%d of %d\t%s\n", sec.Section, sec.Followed, sec.Served, percent(sec.Share))
+	}
+	fmt.Fprintln(tw, "  looked beyond the bundle")
+	for _, c := range []struct {
+		call string
+		b    Beyond
+	}{{"search", drill.LookedBeyond.Search}, {"resolve", drill.LookedBeyond.Resolve}} {
+		fmt.Fprintf(tw, "    %s\t%d of %d\t%s\n", c.call, c.b.Beyond, c.b.Calls, percent(c.b.Share))
+	}
+	fmt.Fprintln(tw)
+
+	flags := r.Conflicts
+	fmt.Fprintln(tw, "conflict-flag precision")
+	fmt.Fprintf(tw, "  flagged\t%d\n", flags.Flagged)
+	fmt.Fprintf(tw, "  verdicts\t%d\t%d real\t%d spurious\n", flags.Verdicts, flags.Real, flags.Spurious)
+	fmt.Fprintf(tw, "  precision\t%s\n", percent(flags.Precision))
+	fmt.Fprintf(tw, "  coverage\t%s\n", percent(flags.Coverage))
+	fmt.Fprintf(tw, "  verdicts on unflagged topics\t%d\n", flags.Unflagged)
+	fmt.Fprintln(tw)
+
+	next := r.NextActions
+	fmt.Fprintln(tw, "next actions")
+	fmt.Fprintf(tw, "  after a bundle\t%d\n", next.Actions)
+	fmt.Fprintf(tw, "  asked\t%d\t%s\n", next.Asked.Count, percent(next.Asked.Share))
+	fmt.Fprintf(tw, "  proceeded\t%d\t%s\n", next.Proceeded.Count, percent(next.Proceeded.Share))
+	fmt.Fprintf(tw, "  asserted\t%d\t%s\n", next.Asserted.Count, percent(next.Asserted.Share))
+	fmt.Fprintf(tw, "  with no bundle before them\t%d\n", next.Unattributed)
 	return tw.Flush()
 }
 
