@@ -190,17 +190,17 @@ func waitFor(t *testing.T, what string, ok func() bool) {
 // want is what one emitted event must say. Messages carry a hashed content
 // token, so their native id is checked as `<artifact>@<token>`.
 type want struct {
-	kind                   connector.Kind
-	artifact               string
-	author                 string
-	authorKind             connector.IdentityKind
-	text, parent, target   string
-	thread                 string
-	url                    string
-	mentions               []string
-	editedAt               time.Time
-	emoji                  string
-	revision, sameRevision bool
+	kind                 connector.Kind
+	artifact             string
+	author               string
+	authorKind           connector.IdentityKind
+	text, parent, target string
+	thread               string
+	url                  string
+	mentions             []string
+	editedAt             time.Time
+	emoji                string
+	revision             bool
 }
 
 func TestStreamThroughRuntimeGate(t *testing.T) {
