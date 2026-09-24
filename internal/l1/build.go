@@ -26,7 +26,8 @@ type Input struct {
 	Root connector.Event
 	// Children are the events that hang off it — the comments on an issue, the
 	// reviews and review comments on a pull request. Order does not matter:
-	// [Build] puts them in the document's own order.
+	// [Build] puts them in the document's own order. Commands and Hearsay's
+	// replies to them are left out of the document.
 	Children []connector.Event
 	// Resolver maps the identity hints the events carry to principals. A nil
 	// resolver resolves nothing, which is what a process with no `principals/`
@@ -85,7 +86,7 @@ func build(in Input, kind Kind, artifact string, window bool) (Document, error) 
 	if err != nil {
 		return Document{}, err
 	}
-	children := slices.Clone(in.Children)
+	children := slices.DeleteFunc(slices.Clone(in.Children), control)
 	for i, child := range children {
 		if child.Source != root.Source {
 			return Document{}, fmt.Errorf("child %s is from source %q and the artifact is from %q", child.NativeID, child.Source, root.Source)
@@ -173,6 +174,15 @@ func (d Document) WithBody(b Body) (Document, []string, error) {
 // two-level source it equals `parent`.
 func conversationOf(ev connector.Event) string {
 	return cmp.Or(ev.Payload.Thread, ev.Payload.Parent)
+}
+
+// control reports an event that is control traffic rather than team content:
+// a command a person gave Hearsay, such as a `/hearsay` comment on an issue,
+// or Hearsay's reply to one, which is an extension kind based on `command`
+// (ADR-0022). It hangs off the conversation it was written in and is never
+// part of that conversation's document.
+func control(ev connector.Event) bool {
+	return ev.Kind == connector.KindCommand || ev.Payload.BaseKind == connector.KindCommand
 }
 
 // byConversationOrder is the order a document reads in: when things were said,

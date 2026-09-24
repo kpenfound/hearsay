@@ -334,6 +334,7 @@ const (
 	KindAudit         Kind = "audit"          // a bundle served: who asked, for what
 	KindTombstone     Kind = "tombstone"      // an artifact deleted at the source
 	KindDeletion      Kind = "deletion"       // L0 events an operator deleted in Hearsay
+	KindCommand       Kind = "command"        // a command a person gave Hearsay in a source; never distilled
 )
 
 // SelfSource is the source id of the events Hearsay writes itself rather than a
@@ -371,6 +372,7 @@ var coreKinds = map[Kind]kindRule{
 	KindAudit:         {requiresAuthor: true},
 	KindTombstone:     {},
 	KindDeletion:      {requiresAuthor: true},
+	KindCommand:       {requiresAuthor: true},
 }
 
 // CoreKinds returns the core kind vocabulary, sorted, for a connector that

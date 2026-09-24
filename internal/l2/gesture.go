@@ -40,6 +40,12 @@ func (a GestureAction) Valid() bool {
 	return a == GestureRatify || a == GestureDemote || a == GesturePin || a == GestureUndo
 }
 
+// GestureTarget starts the target of the assert job that interprets a
+// gesture's L0 event, or the tombstone that withdraws one: `gesture:` and the
+// event id (ADR-0022). The assertion worker's change-feed follower enqueues it
+// under the scope's serial key, and a repeated enqueue collapses into it.
+const GestureTarget = "gesture:"
+
 // GestureHoldTarget starts the target of the assert job [RecordGesture] holds
 // its scope with. The assertion worker only ever sees one when the gesture's
 // process died holding the scope, and treats it as done.

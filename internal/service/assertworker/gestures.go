@@ -23,7 +23,6 @@ import (
 )
 
 const gestureConsumer = "assert-worker:gestures"
-const gestureTarget = "gesture:"
 
 // GestureFollower places Discord reaction changes on the assertion queue. Its
 // cursor and the jobs commit together, so a restart cannot miss a reaction.
@@ -80,7 +79,7 @@ func (f *GestureFollower) Once(ctx context.Context) (int, error) {
 			if ev.Kind == connector.KindTombstone && !strings.Contains(ev.Payload.Target, ":reaction:") {
 				continue
 			}
-			_, err := queue.Enqueue(ctx, tx, queue.Request{Kind: l2.AssertKind(), TargetID: gestureTarget + ev.ID,
+			_, err := queue.Enqueue(ctx, tx, queue.Request{Kind: l2.AssertKind(), TargetID: l2.GestureTarget + ev.ID,
 				SerialKey: l2.ScopeKey(f.repo, ev.Source, ev.Payload.Container.NativeID)})
 			if err != nil {
 				return err
@@ -92,7 +91,7 @@ func (f *GestureFollower) Once(ctx context.Context) (int, error) {
 }
 
 func (a *Asserter) applyDiscordGesture(ctx context.Context, job queue.Job) error {
-	id := strings.TrimPrefix(job.TargetID, gestureTarget)
+	id := strings.TrimPrefix(job.TargetID, l2.GestureTarget)
 	ev, err := a.events.Get(ctx, id)
 	if errors.Is(err, l0.ErrRetracted) || errors.Is(err, l0.ErrDeleted) {
 		return nil

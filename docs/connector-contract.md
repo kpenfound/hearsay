@@ -29,10 +29,14 @@ A connector turns one source into L0 events. That is all it does.
 
 This includes Discord reactions and slash commands and GitHub `/hearsay`
 issue or PR comment commands. Their source actor, target, event identity and
-command data are described in L0; the assertion worker's L0 change-feed
-follower interprets them after mapping a human principal and checking the
-scope's `ratified_by.principals`. Unmapped or unauthorized gestures make no L2
-change. It enqueues an idempotent `assert` job targeted at
+command data are described in L0. The assertion worker's L0 change-feed
+follower interprets reactions and GitHub commands after mapping a human
+principal and checking the scope's `ratified_by.principals`; the API's
+Discord interaction adapter applies a slash command itself, with the same
+checks, under the same serial key
+([ADR-0024](adr/0024-discord-commands-are-applied-by-the-interaction-adapter.md)).
+Unmapped or unauthorized gestures make no L2 change. The worker enqueues an
+idempotent `assert` job targeted at
 `gesture:<source event id>` under the scope's existing serial key, shared with
 L1 assertion jobs and topic operations. The gesture record and L2 writes
 commit together. A reaction removal or command-comment deletion reverses the
@@ -43,8 +47,9 @@ The only source-write exception is an answer to a command the person issued.
 Reactions receive no reply. The API runtime's HTTP Discord interaction adapter
 verifies with the configured application public key, ingests the command as L0
 and answers ephemerally with the interaction token within three seconds (or
-defers an ephemeral answer while work completes); the configured Discord bot
-token registers commands and is never used for channel replies. That adapter,
+defers an ephemeral answer and edits it in when the work completes); the
+configured Discord bot token registers commands and is never used for channel
+replies. That adapter,
 not the connector, reads L2 for autocomplete under the invoker's mapped
 principal, and merge choices are limited to topics the invoker can read. For
 GitHub, the assertion worker uses the configured source bot/app `secrets.token`
@@ -140,6 +145,7 @@ wherever the source has something that behaves like one.
 | `audit` | A bundle served: who asked, on whose behalf, what was filtered | yes | no |
 | `tombstone` | An artifact deleted at the source | no | no |
 | `deletion` | L0 events an operator deleted in Hearsay | yes | no |
+| `command` | A command a person gave Hearsay in a source, such as a Discord slash command or a GitHub `/hearsay` comment; control traffic, never distilled | yes | no |
 
 `assertion`, `audit` and `deletion` are written by Hearsay itself rather than by
 a connector, under source `hearsay` (`connector.SelfSource`). They are in the
@@ -147,6 +153,13 @@ vocabulary because they are L0 events like any other. A `deletion` is not a
 tombstone: it records that an operator redacted events with `hearsay delete
 --apply` (ADR-0018), and it hides nothing by its own `target` — the redacted
 rows carry the deletion that hid them.
+
+A `command` is written under the source it was given in, by the runtime
+component that received it: a Discord slash command by the API's interaction
+adapter (ADR-0024), and a GitHub `/hearsay` comment, which arrives with the
+comment webhook, by the GitHub connector. Hearsay's reply to a GitHub command
+is `github.reply`, based on `command`. The distiller reads no document from
+either, and leaves both out of the conversation they hang off (ADR-0022).
 
 **Extension kinds.** A source with something genuinely different emits
 `<vendor>.<name>` — two lowercase words separated by a dot, `figma.file_comment`,
@@ -661,6 +674,8 @@ Discord (v0.3.0), Drive (v0.4.0) and Obsidian (v0.4.0) work.
 |---|---|---|---|---|
 | Issue | `issue` | `acme/api#12` | `acme/api#12@<updated_at>`, or `…@<updated_at>+parent:<parent artifact>` for a sub-issue | repository `acme/api` |
 | Issue or PR comment | `message` | `acme/api#12:comment:998` | `…@<updated_at>` | repository |
+| `/hearsay` command comment | `command` | `acme/api#12:comment:998` | `…@<updated_at>` | repository |
+| Hearsay's reply to a command | `github.reply`, base `command` | `acme/api#12:comment:999` | `…@<updated_at>` | repository |
 | Pull request | `pull_request` | `acme/api#31` | `…@<updated_at>`, or `…@<updated_at>+paths:<hash of its paths>` where it touches any | repository |
 | Review | `review` | `acme/api#31:review:77` | `…@<hash of state and body>` ([ADR-0012](adr/0012-a-github-review-is-versioned-by-a-hash-of-its-content.md)) | repository |
 | Review comment | `review_comment` | `acme/api#31:comment:88` | `…@<updated_at>` | repository |
@@ -677,6 +692,17 @@ list endpoints with the page cursor; `repository.privatized` is a
 repository, with no start date. Deleting a comment sends
 `issue_comment.deleted`, which is a `tombstone` with artifact
 `acme/api#12:comment:998:tombstone` and `target` the comment's artifact id.
+
+An issue or pull request comment whose first line starts with the word
+`/hearsay` is a `command`, with the same artifact, parent and thread as any
+comment. Its `native` is the command read from it —
+`{"id": 998, "repository": "acme/api", "issue": 12, "command": "merge", "args": ["topic:…", "topic:…"]}` —
+and `"edited": true` on a revision whose `updated_at` is after its
+`created_at`, which Hearsay does not run. A comment carrying the invisible
+line `<!-- hearsay:reply comment=<id> -->`, which every reply Hearsay posts to
+a command ends with, is a `github.reply` naming that command in
+`native.reply_to`, whatever its text says, so a reply's webhook echo is never
+a command. Deleting either is the same tombstone as for any comment.
 
 A sub-issue is `part_of` its parent issue, `acme/api#10` or an issue in another
 repository, read from the `parent_issue_url` the REST lists and the webhooks

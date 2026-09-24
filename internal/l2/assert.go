@@ -48,6 +48,21 @@ func ScopeKey(repo config.Repo, source, container string) string {
 	return ids[0]
 }
 
+// ScopeKeys is every key [ScopeKey] can return under this configuration:
+// each configured scope's id, then `source:<source id>` for each configured
+// source, in that order.
+func ScopeKeys(repo config.Repo) []string {
+	keys := make([]string, 0, len(repo.Scopes)+len(repo.Sources))
+	for _, s := range repo.Scopes {
+		keys = append(keys, s.ID)
+	}
+	slices.Sort(keys)
+	for _, s := range repo.Sources {
+		keys = append(keys, "source:"+s.ID)
+	}
+	return keys
+}
+
 // EnqueueAssertion adds the assert job for a document, inside whatever
 // transaction the caller is in, and does nothing for a document whose outcome
 // does not enter the assertion pipeline (docs/design.md#l1-distilled-documents).

@@ -117,7 +117,15 @@ names (`github.Reader`, with the source's token), and from the tracker
 hierarchy L0 holds — GitHub sub-issues, `part_of` their parent issue — and
 enqueues every such document it has not read. Between startups it follows the
 L0 change feed and places each tracker item again when its issue changes. It
-needs Postgres and refuses without it.
+follows the feed for GitHub `/hearsay` comment commands too, which the GitHub
+connector emits as `command` events (and Hearsay's replies as `github.reply`,
+based on `command`, which nothing distils): it enqueues a `gesture:<event id>`
+assert job per command as written and per deletion of one, runs the command
+under the scope's key through `ApplyGesture` or `ApplyOperation`, records it in
+`github_command_replies`, and answers it with one reply comment through a
+`github.Replier` with the source's token, which needs issue and pull request
+write access. Deleting the command comment undoes it and revises the reply
+(ADR-0022). It needs Postgres and refuses without it.
 
 Topic merge, split and undo are `l2.Operate`: one row appended to the
 `l2_topic_operations` ledger, recorded while holding the scope's `assert` serial
@@ -127,12 +135,13 @@ Every read and the assertion worker's matching follow the ledger: a topic
 merged away reads, and is written to, as the topic it went into, and a split's
 topic is a topic of its own that gets a row when its first new stance lands
 ([ADR-0021](docs/adr/0021-reads-follow-the-topic-ledger.md)). `hearsay topics`
-is the one command that calls `Operate`; the Discord and GitHub gestures will
-call it too.
+and Discord's `/hearsay merge` call `Operate`; GitHub's `/hearsay merge` runs
+inside an assert job already holding the key, and calls
+`l2.Store.ApplyOperation`, its in-transaction form.
 
 A person's ratify, demote and pin, and the undo of one, are `l2.RecordGesture`
 (or `l2.Store.ApplyGesture` inside a job already holding the key): one row in
-the `l2_gestures` ledger, keyed by the L0 event the gesture came from so a retry
+the `l2_gestures` ledger, keyed by the source L0 event or a CLI-generated event id so a retry
 records nothing, recorded under the same serial key and authorized as an
 operation is. A ratify or a demote applies to the live stances drawn from the
 documents it names and changes no stance row; `l2.Store.Assess`, and so every
@@ -142,8 +151,20 @@ writes `l2_pins`
 ([ADR-0023](docs/adr/0023-human-gestures-are-a-ledger-every-standing-reads.md)).
 The assertion worker interprets Discord reaction L0 events and their
 tombstones as gestures through this ledger. It resolves the actor and the
-containing L1 thread or burst without writing to Discord. Other source
-gestures remain separate connector work items.
+containing L1 thread or burst without writing to Discord.
+Parsing a source's reaction or command into a request is the connector work
+items'. The CLI and Discord's `/hearsay pin` call `RecordGesture` directly.
+
+Discord's `/hearsay pin` and `/hearsay merge` are answered by the API, not the
+connector: `api.Interactions` on `POST /discord/<source>/interactions`, for a
+Discord source whose settings name `application_id` and `public_key`. It
+verifies the signature, records the command as an L0 `command` event (never
+distilled), maps the Discord user to a configured human, applies the command
+through `RecordGesture` or `Operate`, and answers ephemerally within Discord's
+three seconds, deferring and editing the answer when the work takes longer
+([ADR-0024](docs/adr/0024-discord-commands-are-applied-by-the-interaction-adapter.md)).
+Merge autocomplete offers the topics `l2.View` lets the person read — the view
+`hearsay topics` reads through.
 
 Migrations are `go run ./cmd/hearsay migrate up|status|up-to <n>|down`, or
 `dagger api call hearsay migrate --database-url=...` against a database. They are
@@ -194,6 +215,14 @@ topic, stance or operation they may not read is refused exactly as one that
 does not exist. `merge`, `split` and `undo` print the id of the operation
 `l2.Operate` recorded, and the scope's `ratified_by.principals` decides who may
 run them. `ops [--scope] [--since <RFC3339>] [--json]` lists the ledger.
+
+`hearsay gestures ratify|demote|pin|unpin <l1-document-id>|undo <gesture-id>|list`
+requires `--config` and `--principal <human-id>`. Writes also accept
+`--artifact <source> <artifact-id>` instead of a document id, print the new
+gesture id, and use the shared L2 gesture ledger and scope authority. Hidden
+targets and ledger records read as missing. `list [--scope] [--since
+<RFC3339>] [--json]` filters the ledger by the person's current reach and
+evidence access. Topic merge is in `hearsay topics merge`.
 
 `hearsay delete --event <l0-id>|--artifact <source> <artifact-id>|--author <identity>`
 requires `--reason` and by default previews the forward provenance walk and

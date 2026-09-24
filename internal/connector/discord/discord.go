@@ -7,6 +7,19 @@
 // that secret from the environment before calling Factory. A source's
 // containers are parent channel snowflakes; the runtime Gate enforces them.
 // Discord's REST lists expose current messages but no deleted-message list.
+//
+// Slash commands are not the connector's. `/hearsay pin` and `/hearsay merge`
+// are answered by the API runtime's interaction adapter (ADR-0022) through
+// [App], for a source whose settings also name `application_id` and
+// `public_key` (the application's hex Ed25519 key, from the developer
+// portal). Invite the bot with the `applications.commands` OAuth2 scope as
+// well as `bot`, and set the application's Interactions Endpoint URL to the
+// API's `/discord/<source id>/interactions`. At startup the API registers the
+// commands in the guild with the bot token. It verifies every interaction
+// with the public key, records each command as an L0 `command` event, and
+// answers it ephemerally with the interaction's own token, within Discord's
+// three seconds or through a deferred answer it edits later. It never posts a
+// channel message. A source without the two settings takes no commands.
 package discord
 
 import (
@@ -47,6 +60,10 @@ type Settings struct {
 	APIURL      string `json:"api_url"`
 	RatifyEmoji string `json:"ratify_emoji"`
 	DemoteEmoji string `json:"demote_emoji"`
+	// ApplicationID and PublicKey name the Discord application whose slash
+	// commands the API answers ([App]). The connector does not use them.
+	ApplicationID string `json:"application_id"`
+	PublicKey     string `json:"public_key"`
 }
 
 // ReactionEmojis returns the configured gesture emoji, with defaults.
@@ -110,6 +127,9 @@ func New(src connector.SourceConfig) (*Connector, error) {
 	if !snowflake(s.Guild) {
 		return nil, errors.New("discord setting guild must be a snowflake")
 	}
+	if _, _, err := s.app(); err != nil {
+		return nil, err
+	}
 	if s.Intents == 0 {
 		s.Intents = requiredIntents
 	}
@@ -143,24 +163,33 @@ func New(src connector.SourceConfig) (*Connector, error) {
 	if u.Scheme == "ws" && !strings.HasPrefix(u.Host, "127.0.0.1:") && !strings.HasPrefix(u.Host, "localhost:") {
 		return nil, errors.New("discord gateway_url must use wss outside localhost")
 	}
-	api := s.APIURL
-	if api == "" {
-		api = defaultAPI
-	}
-	u, err = url.Parse(api)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
-		return nil, errors.New("discord api_url must be an HTTP URL without query or fragment")
-	}
-	if u.Scheme == "http" && u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost" {
-		return nil, errors.New("discord api_url must use https outside localhost")
+	api, err := apiURL(s.APIURL)
+	if err != nil {
+		return nil, err
 	}
 	containers := slices.Clone(src.Containers)
 	if slices.Contains(containers, connector.AllowAll) {
 		return nil, errors.New("discord containers must name channel snowflakes, not *")
 	}
 	slices.Sort(containers)
-	return &Connector{source: src.ID, guild: s.Guild, token: src.Secrets[SecretToken], gateway: gateway, api: strings.TrimRight(api, "/"), http: &http.Client{Timeout: 30 * time.Second}, containers: containers, intents: s.Intents, status: connector.HealthDegraded, detail: "reconnecting", channels: map[string]channel{}, roles: map[string]uint64{}, messages: map[string]message{}}, nil
+	return &Connector{source: src.ID, guild: s.Guild, token: src.Secrets[SecretToken], gateway: gateway, api: api, http: &http.Client{Timeout: 30 * time.Second}, containers: containers, intents: s.Intents, status: connector.HealthDegraded, detail: "reconnecting", channels: map[string]channel{}, roles: map[string]uint64{}, messages: map[string]message{}}, nil
 }
+
+// apiURL is the REST base a source's settings name, without a trailing slash.
+func apiURL(api string) (string, error) {
+	if api == "" {
+		api = defaultAPI
+	}
+	u, err := url.Parse(api)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
+		return "", errors.New("discord api_url must be an HTTP URL without query or fragment")
+	}
+	if u.Scheme == "http" && u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost" {
+		return "", errors.New("discord api_url must use https outside localhost")
+	}
+	return strings.TrimRight(api, "/"), nil
+}
+
 func snowflake(s string) bool {
 	if s == "" {
 		return false

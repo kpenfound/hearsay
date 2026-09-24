@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -80,6 +81,56 @@ func TestRepoReaders(t *testing.T) {
 			}
 			if strings.Join(got, ",") != strings.Join(tt.want, ",") {
 				t.Errorf("repoReaders() has readers for %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// The assertion worker gets a replier for every GitHub source, built with its
+// token and not its webhook secret, and a GitHub source whose token is not in
+// the environment stops it starting: it would run commands and answer none.
+func TestCommandRepliers(t *testing.T) {
+	files := map[string]string{
+		"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\n" +
+			"secrets: {token: CMD_GITHUB_TOKEN, webhook_secret: CMD_GITHUB_WEBHOOK_SECRET}\n",
+		"sources/github-oss.yaml": "id: github-oss\ntype: github\ncontainers: [acme/oss]\n" +
+			"secrets: {token: CMD_OSS_TOKEN}\n",
+		"sources/vault.yaml": "id: vault\ntype: obsidian\ncontainers: [notes]\n",
+		"scopes/api.yaml":    "id: api\nsources: [github]\n",
+	}
+	tests := []struct {
+		name    string
+		env     map[string]string
+		want    string
+		wantErr string
+	}{
+		{name: "every GitHub source, with its token alone", env: map[string]string{"CMD_GITHUB_TOKEN": "a", "CMD_OSS_TOKEN": "b"}, want: "github,github-oss"},
+		{name: "a token that is not in the environment stops startup", env: map[string]string{"CMD_GITHUB_TOKEN": "a"}, wantErr: `source "github-oss": no value in the environment for [token (CMD_OSS_TOKEN)]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo, err := config.Load(writeConfig(t, files))
+			if err != nil {
+				t.Fatalf("config.Load() = %v", err)
+			}
+			lookup := func(name string) (string, bool) { v, ok := tt.env[name]; return v, ok }
+			replies, err := commandRepliers(repo, lookup)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("commandRepliers() = %v, want an error containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("commandRepliers() = %v", err)
+			}
+			var got []string
+			for id := range replies {
+				got = append(got, id)
+			}
+			slices.Sort(got)
+			if strings.Join(got, ",") != tt.want {
+				t.Errorf("commandRepliers() has repliers for %q, want %q", got, tt.want)
 			}
 		})
 	}
