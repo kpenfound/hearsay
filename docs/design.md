@@ -279,7 +279,7 @@ Four processes:
 - Assertion worker. L1 to L2. Serialized per scope. Better model, low volume.
 - API. Bundle assembly, MCP and HTTP endpoints, interface adapters, audit.
 
-Self-hosted per organization. Containers, one compose file to start, Helm later.
+Self-hosted per organization. Containers, one compose file to start, and a Helm chart for Kubernetes.
 
 Connectors are plugins. A third party ships a module that emits L0 events in the standard shape plus a source config entry, and its data is searchable and distillable with no special handling elsewhere.
 

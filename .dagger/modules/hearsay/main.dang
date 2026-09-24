@@ -461,6 +461,215 @@ type Hearsay {
   }
 
   """
+  Helm, and yq and jq to read what it renders. Alpine's packages, from the
+  release the image is built on.
+  """
+  let helmCli: Container! {
+    container
+      .from("alpine:3.22")
+      .withExec(["apk", "add", "--no-cache", "helm", "yq-go", "jq"])
+  }
+
+  """
+  Checks the Helm chart in deploy/helm/hearsay without a cluster.
+
+  `helm lint --strict` on the chart with both values files in deploy/helm/ci,
+  then `helm template` for install and upgrade, held to the shape docs/deploy.md
+  describes. That shape is four Deployments from the image, each with its
+  subcommand, its port and probes on /healthz and /readyz, running as nobody
+  with a read-only root and no service account token. The configuration is
+  mounted read-only at /etc/hearsay and its checksum rolls the pods. The
+  database URL and every credential are references to existing Secrets, and
+  no Secret is rendered. `hearsay migrate up` is a pre-install and pre-upgrade
+  hook Job that reads only the database URL. Only the API and the connectors
+  have Services, and the Ingress routes only what callers and sources need.
+  Values the chart must refuse are refused. The ConfigMap of each config form
+  is then laid out the way the kubelet mounts it (symlinks into ..data) and
+  the image has to accept it.
+  """
+  helmCheck(ws: Workspace!): Void @check {
+    let rendered = helmCli
+      .withDirectory("/deploy", ws.directory("/deploy"))
+      .withWorkdir("/deploy/helm")
+      .withExec(["sh", "-c", """
+        set -eu
+        cfg=../compose/config/hearsay.yaml
+        : > /tmp/failures
+        fail() { echo "$*" >> /tmp/failures; }
+        render() { helm template r hearsay "$@"; }
+        tojson() { yq ea -o=json '[.] | map(select(. != null))'; }
+
+        helm lint --strict hearsay -f ci/single-file.yaml --set-file config.hearsayYaml=$cfg
+        helm lint --strict hearsay -f ci/directory.yaml
+
+        # The single-file form, with credentials by reference and an Ingress.
+        render -f ci/single-file.yaml --set-file config.hearsayYaml=$cfg | tojson > /tmp/single.json
+        jq -r --rawfile cfg $cfg -f /dev/stdin /tmp/single.json >> /tmp/failures <<'JQ'
+        def of(k): map(select(.kind == k));
+        def envmap: map({key: .name, value: (if .valueFrom then .valueFrom.secretKeyRef else .value end)}) | from_entries;
+        def locked($n; $s; $c):
+          (if $s.automountServiceAccountToken != false then $n + ": mounts a service account token" else empty end),
+          (if $s.securityContext.runAsNonRoot != true or $s.securityContext.runAsUser != 65534 then $n + ": does not run as nobody" else empty end),
+          (if $c.securityContext.readOnlyRootFilesystem != true or $c.securityContext.allowPrivilegeEscalation != false or $c.securityContext.capabilities.drop != ["ALL"]
+            then $n + ": the container's security context is not read-only root, no escalation, no capabilities" else empty end);
+        . as $all
+        | "ghcr.io/kpenfound/hearsay:v0.10.0" as $img
+        | {"connectors": 8081, "distiller": 8082, "assert-worker": 8083, "api": 8080} as $port
+        | {"name": "hearsay-database", "key": "HEARSAY_DATABASE_URL"} as $db
+        | [
+          ([$all[] | .kind + "/" + .metadata.name] | sort) as $objs
+          | (if $objs != ["ConfigMap/r-hearsay-config", "Deployment/r-hearsay-api", "Deployment/r-hearsay-assert-worker", "Deployment/r-hearsay-connectors", "Deployment/r-hearsay-distiller",
+                          "Ingress/r-hearsay", "Job/r-hearsay-migrate", "Service/r-hearsay-api", "Service/r-hearsay-connectors"]
+            then "renders " + ($objs | join(", ")) + "; want the ConfigMap, four Deployments, the migration Job, two Services and the Ingress, and no Secret" else empty end),
+          ($port | to_entries[] | .key as $n | .value as $p
+            | ($all | of("Deployment") | map(select(.metadata.name == "r-hearsay-" + $n)) | .[0]) as $d
+            | select($d != null)
+            | $d.spec.template.spec as $s | $s.containers[0] as $c | ($c.env | envmap) as $env
+            | (if $c.image != $img then $n + ": image is " + $c.image + "; want " + $img else empty end),
+              (if $c.args[0] != $n then $n + ": the subcommand is not " + $n else empty end),
+              (if $d.spec.replicas != 1 then $n + ": " + ($d.spec.replicas | tostring) + " replicas by default; docs/deploy.md says one" else empty end),
+              (if [$c.ports[] | select(.name == "http") | .containerPort] != [$p] then $n + ": its http port is not " + ($p | tostring) else empty end),
+              (if $c.startupProbe.httpGet != {"path": "/healthz", "port": "http"} then $n + ": the startup probe is not /healthz" else empty end),
+              (if $c.livenessProbe.httpGet != {"path": "/healthz", "port": "http"} then $n + ": the liveness probe is not /healthz" else empty end),
+              (if $c.readinessProbe.httpGet != {"path": "/readyz", "port": "http"} then $n + ": the readiness probe is not /readyz" else empty end),
+              (if ($env | keys) != ["ANTHROPIC_API_KEY", "HEARSAY_ASSISTANT_TOKEN", "HEARSAY_CONFIG", "HEARSAY_DATABASE_URL", "HEARSAY_LOG_LEVEL", "HEARSAY_OPERATOR_TOKEN"]
+                then $n + ": its environment is " + ($env | keys | join(", ")) else empty end),
+              (if $env.HEARSAY_CONFIG != "/etc/hearsay" then $n + ": HEARSAY_CONFIG is not /etc/hearsay" else empty end),
+              (if $env.HEARSAY_DATABASE_URL != $db then $n + ": HEARSAY_DATABASE_URL is not database.existingSecret's key" else empty end),
+              (if $env.HEARSAY_LOG_LEVEL != "info" then $n + ": env is not passed through" else empty end),
+              (if [$env.HEARSAY_OPERATOR_TOKEN, $env.HEARSAY_ASSISTANT_TOKEN, $env.ANTHROPIC_API_KEY]
+                  != [{"name": "hearsay-tokens", "key": "operator"}, {"name": "hearsay-tokens", "key": "assistant"}, {"name": "hearsay-llm", "key": "api-key"}]
+                then $n + ": secretEnv is not rendered as references to the existing Secrets" else empty end),
+              (if [$c.volumeMounts[] | select(.mountPath == "/etc/hearsay" and .readOnly == true) | .name] != ["config"] then $n + ": the configuration is not mounted read-only at /etc/hearsay" else empty end),
+              (if ([$s.volumes[] | select(.name == "config")][0].configMap.name) != "r-hearsay-config" then $n + ": the configuration is not the chart's ConfigMap" else empty end),
+              (if ($d.spec.template.metadata.annotations["checksum/config"] // "" | test("^[0-9a-f]{64}$")) | not then $n + ": no checksum/config annotation" else empty end),
+              locked($n; $s; $c)),
+          (($all | of("Deployment") | map(select(.metadata.name == "r-hearsay-connectors")) | .[0].spec.template.spec.containers[0].args) as $a
+            | if $a != ["connectors", "--source", "agent-sessions"] then "connectors: args are " + ($a | join(" ")) + "; want connectors.sources as --source" else empty end),
+          ([$all | of("Service")[] | .metadata.name + " " + .spec.type + " " + .spec.selector["app.kubernetes.io/component"] + " "
+              + (.spec.ports | map((.port | tostring) + "->" + (.targetPort | tostring)) | join(","))] | sort) as $svcs
+          | (if $svcs != ["r-hearsay-api ClusterIP api 8080->http", "r-hearsay-connectors ClusterIP connectors 8081->http"]
+            then "services are [" + ($svcs | join("; ")) + "]; want the API on 8080 and the connectors on 8081, in the cluster" else empty end),
+          ($all | of("Job") | .[0]) as $j | select($j != null)
+          | $j.spec.template.spec as $s | $s.containers[0] as $c
+          | (if $j.metadata.annotations["helm.sh/hook"] != "pre-install,pre-upgrade" then "migrate: not a pre-install and pre-upgrade hook" else empty end),
+            (if $j.metadata.annotations["helm.sh/hook-delete-policy"] != "before-hook-creation" then "migrate: its hook-delete-policy is not before-hook-creation, which keeps its log" else empty end),
+            (if $c.args != ["migrate", "up"] then "migrate: args are not migrate up" else empty end),
+            (if $c.image != $img then "migrate: image is " + $c.image else empty end),
+            (if ($c.env | envmap) != {"HEARSAY_DATABASE_URL": $db} then "migrate: reads more than the database URL" else empty end),
+            (if $c.envFrom != null or $s.volumes != null then "migrate: reads something the release renders, which a hook runs before" else empty end),
+            (if $s.restartPolicy != "Never" then "migrate: restartPolicy is not Never" else empty end),
+            locked("migrate"; $s; $c),
+          ($all | of("Ingress") | .[0]) as $i | select($i != null)
+          | (if $i.spec.tls != [{"hosts": ["hearsay.example.com"], "secretName": "hearsay-tls"}] then "ingress: TLS is not the named Secret for the host" else empty end),
+            ([$i.spec.rules[].http.paths[] | .path + " " + .pathType + " " + .backend.service.name + ":" + .backend.service.port.name] | sort) as $routes
+            | (if $routes != ["/discord Prefix r-hearsay-api:http", "/hooks Prefix r-hearsay-connectors:http", "/mcp Prefix r-hearsay-api:http", "/v1 Prefix r-hearsay-api:http"]
+              then "ingress: routes are [" + ($routes | join("; ")) + "]" else empty end),
+          (if ($all | of("ConfigMap") | .[0].data) != {"hearsay.yaml": $cfg} then "configmap: hearsay.yaml is not config.hearsayYaml" else empty end)
+        ] | .[]
+        JQ
+
+        # The directory form, a digest-pinned image and a Secret read whole.
+        render -f ci/directory.yaml | tojson > /tmp/directory.json
+        jq -r -f /dev/stdin /tmp/directory.json >> /tmp/failures <<'JQ'
+        def of(k): map(select(.kind == k));
+        . as $all
+        | ($all | of("ConfigMap") | .[0].data // {}) as $data
+        | [
+          (if ($data | keys) != ["README.md", "principals.agents.yaml", "principals.people.yaml", "scopes.team.yaml", "sources.agent-sessions.yaml"]
+            then "directory: ConfigMap keys are " + ($data | keys | join(", ")) else empty end),
+          ($all | of("Deployment")[] | .metadata.name as $n | .spec.template.spec as $s | $s.containers[0] as $c
+            | (if ($c.image | endswith(":v0.10.0@sha256:0000000000000000000000000000000000000000000000000000000000000000")) | not then $n + ": image.digest is not pinned" else empty end),
+              (if $c.envFrom != [{"secretRef": {"name": "hearsay-env"}}] then $n + ": existingSecrets is not envFrom" else empty end),
+              (if ([$c.env[] | select(.name == "HEARSAY_DATABASE_URL")][0].valueFrom.secretKeyRef) != {"name": "hearsay-database", "key": "url"} then $n + ": database.key is not used" else empty end),
+              (if ([$s.volumes[] | select(.name == "config")][0].configMap.items | map(.key + "=" + .path))
+                  != ["README.md=README.md", "principals.agents.yaml=principals/agents.yaml", "principals.people.yaml=principals/people.yaml", "scopes.team.yaml=scopes/team.yaml", "sources.agent-sessions.yaml=sources/agent-sessions.yaml"]
+                then $n + ": the ConfigMap's keys are not mounted at their paths" else empty end)),
+          (if ($all | of("Deployment") | map(select(.metadata.name == "r-hearsay-api")) | .[0].spec.replicas) != 2 then "api: replicas is not passed through" else empty end),
+          (if ($all | of("Job") | .[0].spec.template.spec.containers[0].envFrom) != null then "migrate: reads existingSecrets" else empty end)
+        ] | .[]
+        JQ
+
+        # Each form's ConfigMap as the kubelet mounts it: the files under
+        # ..data, and a symlink into it for each top-level entry.
+        mount() {
+          dir=$1; json=$2
+          mkdir -p "$dir/..data"
+          jq -r '.[] | select(.kind == "Deployment" and .metadata.name == "r-hearsay-api") | .spec.template.spec.volumes[] | select(.name == "config") | .configMap.items // [{"key": "hearsay.yaml", "path": "hearsay.yaml"}] | .[] | .key + " " + .path' "$json" |
+          while read -r key path; do
+            mkdir -p "$(dirname "$dir/..data/$path")"
+            jq -j --arg k "$key" '.[] | select(.kind == "ConfigMap") | .data[$k]' "$json" > "$dir/..data/$path"
+          done
+          for top in $(ls -A "$dir/..data"); do ln -s "..data/$top" "$dir/$top"; done
+        }
+        mount /out/single /tmp/single.json
+        mount /out/directory /tmp/directory.json
+        cmp /out/single/hearsay.yaml $cfg || fail "single: the mounted hearsay.yaml is not the file given"
+
+        # Upgrades render the hook too, and migrate.enabled=false drops it.
+        [ "$(render -f ci/directory.yaml --is-upgrade | yq ea 'select(.kind == "Job") | .metadata.annotations["helm.sh/hook"]')" = "pre-install,pre-upgrade" ] ||
+          fail "upgrade: the migration hook is not rendered"
+        [ -z "$(render -f ci/directory.yaml --set migrate.enabled=false | yq ea 'select(.kind == "Job") | .metadata.name')" ] ||
+          fail "migrate.enabled=false still renders the Job"
+
+        # A change to the configuration changes the pods' checksum; the same
+        # configuration does not. A volume has no checksum to take, so
+        # config.digest is what rolls it.
+        checksum() { render "$@" | yq ea 'select(.kind == "Deployment" and .metadata.name == "r-hearsay-api") | .spec.template.metadata.annotations["checksum/config"]'; }
+        { cat $cfg; echo '# changed'; } > /tmp/changed.yaml
+        printf 'config:\n  files:\n    scopes/team.yaml: |\n      id: team\n      name: Renamed team\n      sources: [agent-sessions]\n' > /tmp/changed-dir.yaml
+        one=$(checksum -f ci/single-file.yaml --set-file config.hearsayYaml=$cfg)
+        [ "$one" = "$(checksum -f ci/single-file.yaml --set-file config.hearsayYaml=$cfg)" ] || fail "checksum: the same configuration renders two checksums"
+        [ "$one" != "$(checksum -f ci/single-file.yaml --set-file config.hearsayYaml=/tmp/changed.yaml)" ] || fail "checksum: a changed hearsay.yaml does not change it"
+        [ "$(checksum -f ci/directory.yaml)" != "$(checksum -f ci/directory.yaml -f /tmp/changed-dir.yaml)" ] || fail "checksum: a changed file in the directory form does not change it"
+        render -f ci/single-file.yaml --set config.volume.configMap.name=team-config --set config.digest=sha256:abc | tojson > /tmp/volume.json
+        jq -r -f /dev/stdin /tmp/volume.json >> /tmp/failures <<'JQ'
+        [
+          (if map(select(.kind == "ConfigMap")) != [] then "volume: renders a ConfigMap" else empty end),
+          (.[] | select(.kind == "Deployment") | .metadata.name as $n
+            | (if ([.spec.template.spec.volumes[] | select(.name == "config")][0]) != {"name": "config", "configMap": {"name": "team-config"}} then $n + ": config.volume is not the config volume" else empty end),
+              (if .spec.template.metadata.annotations["hearsay/config-digest"] != "sha256:abc" then $n + ": config.digest is not a pod annotation" else empty end))
+        ] | .[]
+        JQ
+
+        # What the chart has to refuse, and the reason it has to give.
+        refuse() {
+          want=$1; shift
+          if out=$(render "$@" 2>&1); then fail "rendered with $*; want it refused: $want"
+          else echo "$out" | grep -qF "$want" || fail "with $*: $out; want: $want"; fi
+        }
+        refuse "image.tag is required" --set database.existingSecret=db --set config.hearsayYaml=x
+        refuse "database.existingSecret is required" --set image.tag=v1 --set config.hearsayYaml=x
+        refuse "set exactly one of config.hearsayYaml, config.files and config.volume; none is set" --set image.tag=v1 --set database.existingSecret=db
+        refuse "hearsayYaml and volume are set" --set image.tag=v1 --set database.existingSecret=db --set config.hearsayYaml=x --set config.volume.configMap.name=c
+        refuse "ingress.host is required" -f ci/single-file.yaml --set config.hearsayYaml=x --set ingress.host=
+        refuse "ingress.tls.secretName is required" -f ci/single-file.yaml --set config.hearsayYaml=x --set ingress.tls.secretName=
+        refuse "HEARSAY_DATABASE_URL is set by the chart" -f ci/single-file.yaml --set config.hearsayYaml=x --set secretEnv.HEARSAY_DATABASE_URL.secret=s --set secretEnv.HEARSAY_DATABASE_URL.key=k
+        refuse "HEARSAY_API_LISTEN is set by the chart" -f ci/single-file.yaml --set config.hearsayYaml=x --set api.env.HEARSAY_API_LISTEN=:9090
+        refuse "ANTHROPIC_API_KEY is in both env and secretEnv" -f ci/single-file.yaml --set config.hearsayYaml=x --set env.ANTHROPIC_API_KEY=x
+        refuse "is not a path inside the configuration" -f ci/directory.yaml --set-string 'config.files.sources/nested/x\.yaml=id: x'
+        refuse "would be the same ConfigMap key" -f ci/directory.yaml --set-string 'config.files.scopes\.team\.yaml=id: x'
+
+        if [ -s /tmp/failures ]; then cat /tmp/failures; exit 1; fi
+      """])
+    {{
+      single: validateConfig(ws, rendered.directory("/out/single")).sync,
+      directory: validateConfig(ws, rendered.directory("/out/directory")).sync,
+    }}
+    null
+  }
+
+  """
+  `hearsay config validate` on a configuration mounted at /etc/hearsay in the
+  image.
+  """
+  let validateConfig(ws: Workspace!, config: Directory!): Container! {
+    image(ws)
+      .withDirectory("/etc/hearsay", config)
+      .withExec(["config", "validate", "/etc/hearsay"], useEntrypoint: true)
+  }
+
+  """
   Runs deploy/compose for real, in a Docker daemon of its own, and checks that
   the migration job succeeds, all four services report healthy, and only the
   API and the connectors are published. The image is the one built from the

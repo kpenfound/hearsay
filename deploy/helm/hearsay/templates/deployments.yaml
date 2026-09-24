@@ -1,0 +1,133 @@
+{{- /*
+One Deployment per service, all from the one image, the subcommand as the
+argument (ADR-0003). None of them migrates: the hook Job does, before any of
+them rolls (ADR-0006).
+*/ -}}
+{{- $configChecksum := include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+{{- range $svc := include "hearsay.services" . | fromYamlArray }}
+{{- $values := index $.Values $svc.key }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hearsay.fullname" $ }}-{{ $svc.name }}
+  labels:
+    {{- include "hearsay.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $svc.name }}
+spec:
+  replicas: {{ $values.replicas }}
+  selector:
+    matchLabels:
+      {{- include "hearsay.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: {{ $svc.name }}
+  template:
+    metadata:
+      labels:
+        {{- include "hearsay.selectorLabels" $ | nindent 8 }}
+        app.kubernetes.io/component: {{ $svc.name }}
+        {{- with $.Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # Configuration is read once, at startup (ADR-0009): a change to it
+        # has to replace the pods.
+        checksum/config: {{ $configChecksum }}
+        {{- with $.Values.config.digest }}
+        hearsay/config-digest: {{ . | quote }}
+        {{- end }}
+        {{- with $.Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with $.Values.serviceAccountName }}
+      serviceAccountName: {{ . }}
+      {{- end }}
+      automountServiceAccountToken: false
+      # Service links would put <SERVICE>_PORT variables in the environment,
+      # and a release named hearsay would have them start with HEARSAY_.
+      enableServiceLinks: false
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      securityContext:
+        {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ $svc.name }}
+          image: {{ include "hearsay.image" $ | quote }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          args:
+            - {{ $svc.name }}
+            {{- if eq $svc.name "connectors" }}
+            {{- range $values.sources }}
+            - --source
+            - {{ . | quote }}
+            {{- end }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ $svc.port }}
+              protocol: TCP
+          env:
+            {{- include "hearsay.env" (dict "root" $ "svc" $values) | nindent 12 }}
+          {{- $secrets := concat ($.Values.existingSecrets | default list) ($values.existingSecrets | default list) | uniq }}
+          {{- with $secrets }}
+          envFrom:
+            {{- range . }}
+            - secretRef:
+                name: {{ . | quote }}
+            {{- end }}
+          {{- end }}
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            {{- toYaml $.Values.probes.startup | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            {{- toYaml $.Values.probes.liveness | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            {{- toYaml $.Values.probes.readiness | nindent 12 }}
+          securityContext:
+            {{- toYaml $.Values.securityContext | nindent 12 }}
+          {{- with $values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/hearsay
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- with $values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: config
+          {{- include "hearsay.configVolume" $ | nindent 10 }}
+        - name: tmp
+          emptyDir: {}
+        {{- with $values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with $.Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

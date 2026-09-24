@@ -95,7 +95,9 @@ go run ./cmd/hearsay help
 
 To run it for a team, [docs/deploy.md](docs/deploy.md) deploys the published
 image with Docker Compose: Postgres, the migration job and the four services,
-from [deploy/compose/](deploy/compose/).
+from [deploy/compose/](deploy/compose/). On Kubernetes, the Helm chart in
+[deploy/helm/hearsay/](deploy/helm/hearsay/) deploys the same services, with the
+migration as a hook Job, against a Postgres you provide.
 
 The four services — connectors, distiller, assertion worker and API — are
 subcommands of one binary. The API serves the context bundle and the handles a

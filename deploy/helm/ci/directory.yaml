@@ -1,0 +1,40 @@
+# The directory form: deploy/compose/config/hearsay.yaml split into its
+# directories, with a Secret mounted whole and the database key renamed.
+image:
+  tag: v0.10.0
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+database:
+  existingSecret: hearsay-database
+  key: url
+existingSecrets: [hearsay-env]
+config:
+  files:
+    README.md: |
+      Not read: only YAML is.
+    sources/agent-sessions.yaml: |
+      id: agent-sessions
+      type: agent
+      containers: ["*"]
+    scopes/team.yaml: |
+      id: team
+      name: Example team
+      sources: [agent-sessions]
+    principals/people.yaml: |
+      - id: operator
+        name: Example operator
+        token_env: HEARSAY_OPERATOR_TOKEN
+        identities:
+          - source: agent-sessions
+            native_id: operator
+    principals/agents.yaml: |
+      - id: assistant
+        name: Example agent
+        kind: agent
+        class: worker
+        token_env: HEARSAY_ASSISTANT_TOKEN
+        scopes: ["*"]
+        identities:
+          - source: agent-sessions
+            native_id: assistant
+api:
+  replicas: 2

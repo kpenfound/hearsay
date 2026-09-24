@@ -1,0 +1,48 @@
+{{- /*
+Routes what callers and sources need, as docs/deploy.md's proxy does: webhooks
+to the connectors, the API's calls, MCP and Discord interactions to the API.
+The health endpoints stay inside the cluster.
+*/ -}}
+{{- if .Values.ingress.enabled }}
+{{- $host := required "ingress.host is required when the ingress is enabled" .Values.ingress.host }}
+{{- $fullname := include "hearsay.fullname" . }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "hearsay.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts: [{{ $host | quote }}]
+      secretName: {{ required "ingress.tls.secretName is required when TLS is enabled; set ingress.tls.enabled=false only if something in front of the controller terminates TLS" .Values.ingress.tls.secretName | quote }}
+  {{- end }}
+  rules:
+    - host: {{ $host | quote }}
+      http:
+        paths:
+          - path: /hooks
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullname }}-connectors
+                port:
+                  name: http
+          {{- range list "/v1" "/mcp" "/discord" }}
+          - path: {{ . }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullname }}-api
+                port:
+                  name: http
+          {{- end }}
+{{- end }}

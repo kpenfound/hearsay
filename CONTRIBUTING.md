@@ -53,7 +53,7 @@ Two modules share the work. The reusable Go module,
 in the workspace and owns the tests and the `go generate` drift check; it knows
 nothing about Hearsay. `hearsay`, in `.dagger/modules/hearsay/main.dang`, is
 ours and holds everything that module could not know: lint, the integration
-tests, the tidy, image and compose checks, the binary, the image, migrations
+tests, the tidy, image, compose and Helm checks, the binary, the image, migrations
 and the dev stack.
 
 | Check | From | Does |
@@ -66,6 +66,7 @@ and the dev stack.
 | `hearsay:tidy-check` | hearsay | fails if `go mod tidy` would change `go.mod` or `go.sum` |
 | `hearsay:image-check` | hearsay | builds the default and two release platforms; checks the version stamp and publish address without pushing |
 | `hearsay:compose-check` | hearsay | `docker compose config` on `deploy/compose` with `env.example` filled in, held to the shape in `docs/deploy.md`; `hearsay config validate` on its example configuration. No Docker daemon |
+| `hearsay:helm-check` | hearsay | `helm lint --strict` and `helm template` on `deploy/helm/hearsay` with the values in `deploy/helm/ci`, held to the shape in `docs/deploy.md`; the refusals it must make; `hearsay config validate` on each config form as the kubelet mounts it. No cluster |
 | `dagger-dang-sdk:generate` | Dang SDK | fails if the SDK would regenerate anything under `.dagger` |
 
 `go:lint-all` is off because the Go module pins a `golangci-lint` built with

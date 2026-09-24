@@ -1,0 +1,31 @@
+{{- $form := include "hearsay.configForm" . -}}
+{{- if ne $form "volume" }}
+# The configuration repository, mounted read-only at /etc/hearsay. The pods
+# carry a checksum of this object, so any change to it rolls them.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "hearsay.configMapName" . }}
+  labels:
+    {{- include "hearsay.labels" . | nindent 4 }}
+data:
+  {{- if eq $form "hearsayYaml" }}
+  hearsay.yaml: {{ .Values.config.hearsayYaml | quote }}
+  {{- else }}
+  {{- $seen := dict }}
+  {{- range $path, $content := .Values.config.files }}
+  {{- if or (hasPrefix "/" $path) (has ".." (splitList "/" $path)) (gt (len (splitList "/" $path)) 2) }}
+  {{- fail (printf "config.files: %q is not a path inside the configuration; the directory form is <directory>/<file>, one level deep" $path) }}
+  {{- end }}
+  {{- $key := include "hearsay.configKey" $path }}
+  {{- if not (regexMatch "^[-._a-zA-Z0-9]+$" $key) }}
+  {{- fail (printf "config.files: %q has a character a ConfigMap key cannot hold" $path) }}
+  {{- end }}
+  {{- if hasKey $seen $key }}
+  {{- fail (printf "config.files: %q and %q would be the same ConfigMap key" (get $seen $key) $path) }}
+  {{- end }}
+  {{- $_ := set $seen $key $path }}
+  {{ $key | quote }}: {{ $content | quote }}
+  {{- end }}
+  {{- end }}
+{{- end }}
