@@ -245,6 +245,8 @@ Every bundle served is itself an L0 audit event: who asked, on whose behalf, wha
 
 L0 is append-only, but deletion is required (a pasted secret, a departed employee's data, a legal hold). Deletion writes a tombstone, then walks provenance forward. `l0_refs` on L1 and `evidence` on L2 give the full fan-out. Affected L1 docs are re-distilled without the deleted event; affected L2 objects are re-run. If a stance changes as a result, that is recorded as a supersession so nothing flips silently.
 
+A deletion at the source arrives as a tombstone and only hides what it covers. A deletion from Hearsay is an operator action, `hearsay delete --apply`, and it is the one exception to append-only: the covered L0 rows keep their id, source, artifact, kind, time and ACL, their payload content is redacted in place, and Hearsay records the deletion as its own action rather than the source's ([ADR-0018](adr/0018-operator-deletion-redacts-l0-in-place.md)).
+
 ## Configuration
 
 A repo, applied like GitOps. The schema is [config.md](config.md); what follows

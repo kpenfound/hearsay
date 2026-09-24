@@ -24,6 +24,8 @@ The format, numbering and supersession rules are in [ADR-0001](0001-record-archi
 | [0014](0014-api-callers-use-per-principal-bearer-tokens.md) | API callers use per-principal bearer tokens | accepted | 2026-09-22 |
 | [0015](0015-runtime-owned-streams-for-client-dialed-sources.md) | Runtime-owned streams for client-dialed sources | accepted | 2026-09-22 |
 | [0016](0016-entity-hierarchy-sources-are-ranked-and-replace.md) | Entity hierarchy sources are ranked, and the highest replaces the rest | accepted | 2026-09-23 |
+| [0017](0017-api-calls-name-an-agent-session.md) | API calls name an agent session | accepted | 2026-09-23 |
+| [0018](0018-operator-deletion-redacts-l0-in-place.md) | Operator deletion redacts L0 in place | accepted | 2026-09-23 |
 
 ## Names other work depends on
 

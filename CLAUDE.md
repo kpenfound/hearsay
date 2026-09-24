@@ -161,9 +161,16 @@ has ingested, an artifact's history, and the change feed the distiller
 consumes.
 
 `hearsay delete --event <l0-id>|--artifact <source> <artifact-id>|--author <identity>`
-requires `--reason` and previews the forward provenance walk only; it writes
-nothing. `--author` takes a configured principal or a source identity, and
-`--json` emits the summary for scripts. There is no apply mode yet.
+requires `--reason` and by default previews the forward provenance walk and
+writes nothing. `--author` takes a configured principal or a source identity, and
+`--json` emits the summary for scripts. `--apply` deletes, and needs `--config`
+and `--principal <human-id>`: in one transaction it records the deletion,
+redacts the covered L0 payloads in place, writes a `deletion` event under source
+`hearsay`, and enqueues a `distill` job for every affected L1 document, which the
+running distiller rebuilds or removes
+([ADR-0018](docs/adr/0018-operator-deletion-redacts-l0-in-place.md), the one
+exception to L0 being append-only). L2 text redaction and `delete list|show`
+are not built yet.
 
 ## Layout
 
