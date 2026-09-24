@@ -123,6 +123,40 @@ var (
 // (internal/db.Connect).
 func New(q Querier) *Store { return &Store{db: q} }
 
+// IdentityHints visits the identity metadata in visible events in ingest order.
+// The query projects only identity objects; payload text never leaves Postgres.
+func (s *Store) IdentityHints(ctx context.Context, visit func(connector.Identity) error) error {
+	rows, err := s.db.Query(ctx, `
+SELECT hint.value
+  FROM l0_events e
+ CROSS JOIN LATERAL (
+    SELECT e.payload->'author' AS value, 0 AS position
+    UNION ALL SELECT part->'identity', ord::int FROM jsonb_array_elements(coalesce(e.payload->'participants', '[]'::jsonb)) WITH ORDINALITY AS participants(part, ord)
+    UNION ALL SELECT mention, (1000000+ord)::int FROM jsonb_array_elements(coalesce(e.payload->'mentions', '[]'::jsonb)) WITH ORDINALITY AS mentions(mention, ord)
+ ) hint
+ WHERE e.source <> 'hearsay' AND `+visibleSQL+`
+   AND hint.value IS NOT NULL AND hint.value <> 'null'::jsonb
+ ORDER BY e.seq, hint.position`)
+	if err != nil {
+		return fmt.Errorf("reading L0 identity hints: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return err
+		}
+		var hint connector.Identity
+		if err := json.Unmarshal(raw, &hint); err != nil {
+			return fmt.Errorf("decoding L0 identity hint: %w", err)
+		}
+		if err := visit(hint); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
 // Appended is what one write did.
 type Appended struct {
 	// ID is the event id, derived from the source and native id.

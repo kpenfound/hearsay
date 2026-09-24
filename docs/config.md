@@ -127,6 +127,9 @@ from the same variables the configuration names, and writes nowhere:
 - An account two collaborators claim is written on neither, and init says so.
   What you say about your own accounts is written as you said it.
 
+What is left out is mapped after the first ingest: `hearsay identities list`
+(below, under `principals/`) names the identities no principal claims.
+
 A collaborator whose login is the id you chose for yourself is refused rather
 than assumed to be you: give that login as `--operator-github` if it is yours.
 
@@ -533,6 +536,14 @@ part of onboarding worth spending effort on.
 ```
 
 An identity needs a `native_id`, a `handle`, or both.
+
+After ingest, `hearsay identities list --config <path>` lists source identities
+that have no principal or match several. Set `HEARSAY_DATABASE_URL` or pass
+`--database-url`; use `--json` for stable machine output or `--yaml` for
+`principals:` entries to copy into this configuration. Merge an entry under an
+existing principal when one is suggested; new principal ids are stubs to review.
+The command excludes bot identities and Hearsay's own `hearsay` source. It
+shows identity hints and counts, never event text, and never edits configuration.
 
 `scopes` lists entity ids such as `code:acme/api` and
 `tracker:github:acme/api#1234`. `"*"` alone grants every scope. A grant covers

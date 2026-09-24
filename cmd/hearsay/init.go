@@ -202,6 +202,7 @@ func initTeam(ctx context.Context, args []string, env initIO, stdout, stderr io.
 		for _, n := range notes {
 			fmt.Fprintf(stdout, "  %s\n", n)
 		}
+		fmt.Fprintln(stdout, "after the first ingest, `hearsay identities list` names the accounts no principal claims")
 	}
 	return nil
 }

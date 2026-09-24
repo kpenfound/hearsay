@@ -231,12 +231,14 @@ func renderConfig(in Input, sources []source, all []*person, envs map[string]str
 	}
 	principalsNote := []string{
 		"The people on the team. Each calls the API with the token in its token_env, and with no `scopes:` reads every scope.",
-		"A Discord or Drive identity is written only where the sources confirmed it; add the rest by hand, per source.",
+		"A Discord or Drive identity is written only where the sources confirmed it. After the first ingest,",
+		"`hearsay identities list` names the accounts nobody claims yet, with YAML to paste in here.",
 	}
 	if len(all) == 1 {
 		principalsNote = []string{
 			"You, as you described yourself. Nothing was read from GitHub, so nobody else is here yet:",
-			"add each person with an identity per source they appear in, and a token_env.",
+			"add each person with an identity per source they appear in, and a token_env. After the first ingest,",
+			"`hearsay identities list` names the accounts nobody claims yet, with YAML to paste in here.",
 		}
 	}
 	top = append(top, comment(key("principals"), principalsNote...), seq(principals...))
