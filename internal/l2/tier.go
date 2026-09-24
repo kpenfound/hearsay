@@ -32,9 +32,9 @@ type TierInputs struct {
 	Evidence map[string]Evidence
 	// Policy is the authority in force for the topic's scope.
 	Policy config.Policy
-	// Ratified is the stances a person ratified by hand. Nothing records one
-	// before v0.8.0, so every caller passes nothing.
-	Ratified []string
+	// Ratified is the stances a person ratified by hand, and Demoted the ones
+	// a person demoted: what the gestures in force say ([Store.Corrections]).
+	Ratified, Demoted []string
 	// Readable reports whether the reader the topic is assessed for may read
 	// a stance ([Access.Stance]). Only a stance they may read can make the
 	// topic contested for them. Nil counts every stance.
@@ -59,12 +59,14 @@ type Standing struct {
 //     between stances and includes its boundary.
 //   - The current stance is the one among them whose evidence ranks highest
 //     under the policy; the most recently stated wins a tie.
-//   - The topic is contested where another stance compared disagrees with the
-//     current one, the current one does not strictly outrank it, and the
-//     reader may read it ([TierInputs.Readable]): a stance hidden from them
-//     does not contest anything for them. The current stance is chosen from
-//     every stance, readable or not; one the reader may not read is withheld
-//     from them by the caller, not replaced by an older one.
+//   - The topic is contested where a person demoted the current stance, and
+//     where another stance compared disagrees with the current one, the
+//     current one does not strictly outrank it, and the reader may read it
+//     ([TierInputs.Readable]): a stance hidden from them does not contest
+//     anything for them. The current stance is chosen from every stance,
+//     readable or not; one the reader may not read is withheld from them by
+//     the caller, not replaced by an older one. A demotion is of a stance, so
+//     a newer stance the topic stands at instead is not contested by it.
 //   - Otherwise it is ratified where the current stance's evidence ratifies on
 //     its own under `ratified_by.artifacts` and `ratified_by.sources`, or a
 //     person ratified that stance; and inferred where it is not.
@@ -105,6 +107,9 @@ func Stand(in TierInputs) (Standing, bool) {
 		}
 	}
 
+	if slices.Contains(in.Demoted, current.ID) {
+		return Standing{Current: current, Tier: TierContested}, true
+	}
 	paths := newSupersession(in.History)
 	for _, other := range compared {
 		if other.ID == current.ID {

@@ -143,15 +143,17 @@ func TestAppendAssertionRefusesWhatItCannotSerialize(t *testing.T) {
 	}
 }
 
-// A topic operation that died holding its scope leaves an assert job for its
-// hold, which the worker finishes without reading anything: the operation
-// committed with the hold's completion or not at all.
-func TestALapsedTopicOperationHoldIsDone(t *testing.T) {
+// A topic operation or a gesture that died holding its scope leaves an assert
+// job for its hold, which the worker finishes without reading anything: the
+// operation or gesture committed with the hold's completion or not at all.
+func TestALapsedHoldIsDone(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
 	a := newAsserter(t, pool, src, llm.NewFixtures())
-	job := queue.Job{Kind: l2.AssertKind(), TargetID: l2.OperationTarget + "0123", SerialKey: src, Attempt: 2}
-	if err := a.Handle(t.Context(), job); err != nil {
-		t.Errorf("Handle(a lapsed hold) = %v, want it done", err)
+	for _, prefix := range []string{l2.OperationTarget, l2.GestureHoldTarget} {
+		job := queue.Job{Kind: l2.AssertKind(), TargetID: prefix + "0123", SerialKey: src, Attempt: 2}
+		if err := a.Handle(t.Context(), job); err != nil {
+			t.Errorf("Handle(%s) = %v, want it done", job.TargetID, err)
+		}
 	}
 }

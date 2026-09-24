@@ -30,9 +30,9 @@ func (k OperationKind) Valid() bool {
 // ambiguous wraps. [ConflictError] names the operations in the way.
 var ErrConflict = errors.New("conflicting topic operation")
 
-// ErrNotAllowed is what an operation by a principal who may not correct the
-// scope's topics wraps.
-var ErrNotAllowed = errors.New("not allowed to change topics")
+// ErrNotAllowed is what a correction by hand — a topic operation or a gesture
+// — by a principal who may not correct the scope wraps.
+var ErrNotAllowed = errors.New("not allowed to correct the graph")
 
 // ConflictError is an undo refused because of what the scope's ledger holds
 // after the operation it would reverse.

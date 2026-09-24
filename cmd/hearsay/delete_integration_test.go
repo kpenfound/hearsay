@@ -146,7 +146,7 @@ func TestDeletePreviewSelectorsAndNoWrites(t *testing.T) {
 		return p, out.String()
 	}
 	p, raw := invoke("--event", "evt:chat:reply")
-	if !strings.Contains(raw, `"counts":{"alias_candidates":2,"documents":1,"events":1,"pins":1,"stances":1,"topics":1}`) {
+	if !strings.Contains(raw, `"counts":{"alias_candidates":2,"documents":1,"events":1,"gestures":0,"pins":1,"stances":1,"topics":1}`) {
 		t.Fatalf("JSON counts missing: %s", raw)
 	}
 	if !reflect.DeepEqual(p.Events, []string{"evt:chat:reply"}) || !reflect.DeepEqual(p.Documents, []string{"l1:chat:thread"}) || !reflect.DeepEqual(p.Stances, []string{"stance-1"}) || !reflect.DeepEqual(p.Topics, []string{"topic-1"}) || !reflect.DeepEqual(p.AliasCandidates, []string{"entity-1:alias-1", "entity-2:alias-2"}) || !reflect.DeepEqual(p.Pins, []string{"all:l1:chat:thread"}) {

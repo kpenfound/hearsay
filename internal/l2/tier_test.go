@@ -53,6 +53,7 @@ func TestStand(t *testing.T) {
 		history  []l2.Stance
 		policy   config.Policy
 		ratified []string
+		demoted  []string
 		// hidden is the stances the reader may not read.
 		hidden []string
 		want   string
@@ -251,6 +252,26 @@ func TestStand(t *testing.T) {
 			policy:  def, ratified: []string{"b"}, want: "b", tier: l2.TierContested,
 		},
 		{
+			name:    "a person demoted the current stance",
+			history: []l2.Stance{st("a", "issue1", days(0), "", "")},
+			policy:  def, demoted: []string{"a"}, want: "a", tier: l2.TierContested,
+		},
+		{
+			name:    "a demotion outweighs the merged pull request the stance rests on",
+			history: []l2.Stance{st("a", "pr", days(0), "", "")},
+			policy:  def, demoted: []string{"a"}, want: "a", tier: l2.TierContested,
+		},
+		{
+			name:    "a newer stance the topic stands at is not contested by a demotion of the old one",
+			history: []l2.Stance{st("a", "issue1", days(0), "", ""), st("b", "issue2", days(1), "a", l2.JudgementRestates)},
+			policy:  def, demoted: []string{"a"}, want: "b", tier: l2.TierInferred,
+		},
+		{
+			name:    "a demoted stance that still outranks the newer one stays current, contested",
+			history: []l2.Stance{st("a", "pr", days(0), "", ""), st("b", "chat", days(1), "a", l2.JudgementRestates)},
+			policy:  def, demoted: []string{"a"}, want: "a", tier: l2.TierContested,
+		},
+		{
 			name:    "evidence that is gone ranks below every class",
 			history: []l2.Stance{st("a", "chat", days(0), "", ""), st("b", "retracted", days(1), "a", l2.JudgementChanges)},
 			policy:  def, want: "a", tier: l2.TierInferred,
@@ -281,7 +302,7 @@ func TestStand(t *testing.T) {
 			if tt.hidden != nil {
 				readable = func(st l2.Stance) bool { return !slices.Contains(tt.hidden, st.ID) }
 			}
-			got, ok := l2.Stand(l2.TierInputs{History: tt.history, Evidence: evidence, Policy: tt.policy, Ratified: tt.ratified, Readable: readable})
+			got, ok := l2.Stand(l2.TierInputs{History: tt.history, Evidence: evidence, Policy: tt.policy, Ratified: tt.ratified, Demoted: tt.demoted, Readable: readable})
 			if ok != (tt.want != "") || got.Current.ID != tt.want || got.Tier != tt.tier {
 				t.Errorf("Stand() = %s at %q, %v; want %s at %q", got.Current.ID, got.Tier, ok, tt.want, tt.tier)
 			}

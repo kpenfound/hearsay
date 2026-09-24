@@ -97,15 +97,15 @@ type Result struct {
 //
 // A job whose target is an `assertion` event is an agent's stance, appended
 // with no model call ([AppendAssertion]). One whose target is a topic
-// operation's ([l2.OperationTarget]) is a hold that outlived its process, and
-// is done.
+// operation's ([l2.OperationTarget]) or a gesture's ([l2.GestureHoldTarget]) is
+// a hold that outlived its process, and is done.
 func (a *Asserter) Handle(ctx context.Context, job queue.Job) error {
 	log := telemetry.Logger(ctx)
-	if strings.HasPrefix(job.TargetID, l2.OperationTarget) {
-		// A topic operation held the scope under this job and died holding
-		// it. The operation committed with the job's completion or not at all,
-		// so there is nothing left to do (l2.Operate).
-		log.InfoContext(ctx, "released a topic operation's lapsed hold", "scope", job.SerialKey)
+	if strings.HasPrefix(job.TargetID, l2.OperationTarget) || strings.HasPrefix(job.TargetID, l2.GestureHoldTarget) {
+		// A topic operation or a gesture held the scope under this job and
+		// died holding it. It committed with the job's completion or not at
+		// all, so there is nothing left to do (l2.Operate, l2.RecordGesture).
+		log.InfoContext(ctx, "released a lapsed hold", "scope", job.SerialKey, "target", job.TargetID)
 		return nil
 	}
 	if strings.HasPrefix(job.TargetID, l2.WithdrawalTarget) {
