@@ -57,7 +57,8 @@ preview. `--artifact` covers every revision. `--author` takes a configured
 principal (with `--config`) or `source:native-id` (or `source:@handle`); a
 principal expands to all configured source identities. The summary names the
 covered L0 events, dependent L1 documents and L2 stances, topics, alias
-candidates and pins. `--json` prints the same walk as a JSON object. The
+candidates and pins, and the gestures in force the events made, which deleting
+them takes out of force. `--json` prints the same walk as a JSON object. The
 preview is the default and writes nothing.
 
 `--apply` deletes, and needs `--config` and `--principal <human-id>`, a human
@@ -65,7 +66,8 @@ principal in that configuration. A missing flag, an unknown id or an agent is
 refused before the database is opened, and `--principal` without `--apply` is
 an error. One transaction records the deletion with the principal as operator,
 redacts the covered L0 events in place, writes a `deletion` event under source
-`hearsay`, and enqueues a `distill` job for every L1 document the walk found
+`hearsay`, takes out the pins the covered gestures made, and enqueues a
+`distill` job for every L1 document the walk found
 ([ADR-0018](../../docs/adr/0018-operator-deletion-redacts-l0-in-place.md)).
 It prints the deletion id, the events redacted and the documents queued, or
 with `--json` the same as an object. Events an earlier deletion already covered

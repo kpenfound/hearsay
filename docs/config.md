@@ -727,7 +727,9 @@ in passing.
 `ratified_by` has three parts and they are not the same rule:
 
 - `principals` is who may ratify **by hand**, with the reaction or the slash
-  command. `*` is anyone who can write to the scope.
+  command. `*` is anyone who can write to the scope. The same people may
+  demote a stance, pin an anchor and merge or split topics, and only a
+  configured human, never an agent.
 - `artifacts` is what ratifies **on its own**, with no human in the loop.
 - `sources` restricts where such an artifact may come from. It applies to the
   `artifacts` rule only: a person ratifying is a person, not a source. Use it
