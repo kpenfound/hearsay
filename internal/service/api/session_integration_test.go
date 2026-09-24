@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kpenfound/hearsay/internal/bundle"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
@@ -45,11 +46,35 @@ func TestAssertionTracesToSessionAndBundles(t *testing.T) {
 		}
 	}
 	withSession := api.Caller{Principal: "kyle", Agent: "shed", Session: session}
+	if _, err := l2.New(w.pool).Pin(t.Context(), l2.Pin{Scope: w.scope, L1: w.pr, PinnedBy: "kyle", PinnedAt: started}); err != nil {
+		t.Fatal(err)
+	}
 	bundleArgs := map[string]any{"scope": w.scope}
 	bundleHTTP := w.http(t, withSession, "get_bundle", bundleArgs)
 	bundleMCP, bundleError := w.mcp(t, withSession, "get_bundle", bundleArgs)
 	if bundleError || !bytes.Equal(bundleHTTP, bundleMCP) {
 		t.Fatalf("session bundle differs over HTTP and MCP")
+	}
+	var served bundle.Bundle
+	if err := json.Unmarshal(bundleHTTP, &served); err != nil {
+		t.Fatal(err)
+	}
+	if len(served.Anchors) == 0 || len(served.Stances) == 0 {
+		t.Fatalf("fixture has no handles: %+v", served)
+	}
+	w.http(t, withSession, "get_l1", map[string]any{"id": served.Anchors[0].L1})
+	w.http(t, withSession, "stance_history", map[string]any{"topic": served.Stances[0].TopicID})
+	w.http(t, withSession, "search", map[string]any{"query": "lock", "scope": w.scope})
+	w.http(t, withSession, "resolve", map[string]any{"text": w.project})
+	w.http(t, withSession, "get_l0", map[string]any{"id": connector.EventID(w.src, w.project+"#12")})
+	for _, name := range []string{"get_l1", "get_l0", "stance_history"} {
+		key := "id"
+		if name == "stance_history" {
+			key = "topic"
+		}
+		if status, _ := w.post(t, "/v1/"+name, withSession, string(mustJSON(t, map[string]any{key: "missing-private-id"}))); status != http.StatusNotFound {
+			t.Errorf("%s missing handle = %d", name, status)
+		}
 	}
 	var asserted api.Asserted
 	assertArgs := map[string]any{
@@ -81,19 +106,96 @@ func TestAssertionTracesToSessionAndBundles(t *testing.T) {
 	if err := json.Unmarshal(httpBody, &trace); err != nil {
 		t.Fatal(err)
 	}
-	if trace.Source != source || trace.Artifact != session || len(trace.Events) != 5 {
+	if trace.Source != source || trace.Artifact != session || len(trace.Events) != 13 {
 		t.Fatalf("trace = %+v", trace)
 	}
-	for i, kind := range []connector.Kind{connector.KindAgentSession, connector.KindAgentTurn, connector.KindToolCall, connector.KindAudit, connector.KindAudit} {
+	for i, kind := range []connector.Kind{connector.KindAgentSession, connector.KindAgentTurn, connector.KindToolCall, connector.KindAudit, connector.KindAudit, connector.KindAudit, connector.KindAudit, connector.KindAudit, connector.KindAudit, connector.KindAudit, connector.KindAudit, connector.KindAudit, connector.KindAudit} {
 		if trace.Events[i].Kind != kind {
 			t.Errorf("event %d kind = %s, want %s", i, trace.Events[i].Kind, kind)
 		}
 	}
+	var records []api.AuditRecord
 	for _, ev := range trace.Events[3:] {
 		var audit api.AuditRecord
 		if err := json.Unmarshal(ev.Payload.Native, &audit); err != nil || audit.Session != session || audit.SessionSource != source {
 			t.Errorf("audit = %+v, %v", audit, err)
 		}
+		if bytes.Contains(ev.Payload.Native, []byte("lock")) || bytes.Contains(ev.Payload.Native, []byte(`"query"`)) || bytes.Contains(ev.Payload.Native, []byte(`"text"`)) {
+			t.Errorf("audit contains query text: %s", ev.Payload.Native)
+		}
+		records = append(records, audit)
+	}
+	for i, call := range []string{"get_bundle", "get_bundle", "get_l1", "stance_history", "search", "resolve", "get_l0", "get_l1", "get_l0", "stance_history"} {
+		if records[i].Call != call {
+			t.Errorf("audit %d call = %q, want %q", i, records[i].Call, call)
+		}
+	}
+	sections := records[0].Sections
+	if len(sections) != 6 || len(sections["anchors"].L1) == 0 || sections["anchors"].L1[0] != served.Anchors[0].L1 ||
+		len(sections["stances"].Topics) == 0 || sections["stances"].Topics[0] != served.Stances[0].TopicID {
+		t.Errorf("bundle section ids = %+v", sections)
+	}
+	for i, e := range served.Scope.Entities {
+		if sections["scope.entities"].Entities[i] != e.ID {
+			t.Errorf("scope entity %d = %q, want %q", i, sections["scope.entities"].Entities[i], e.ID)
+		}
+	}
+	for i, item := range served.Recent.Items {
+		if sections["recent"].L1[i] != item.L1 {
+			t.Errorf("recent id %d = %q, want %q", i, sections["recent"].L1[i], item.L1)
+		}
+	}
+	for i, q := range served.OpenQuestions {
+		if sections["open_questions"].L1[i] != q.Evidence[0] {
+			t.Errorf("question evidence %d = %q, want %q", i, sections["open_questions"].L1[i], q.Evidence[0])
+		}
+	}
+	if len(records[2].TargetIDs) != 1 || records[2].TargetIDs[0] != served.Anchors[0].L1 ||
+		len(records[3].TargetIDs) != 1 || records[3].TargetIDs[0] != served.Stances[0].TopicID || len(records[4].ReturnedIDs) == 0 {
+		t.Errorf("successful handle audits = %+v", records)
+	}
+	for _, rec := range records[7:] {
+		if rec.Status != http.StatusNotFound || len(rec.TargetIDs) != 0 || len(rec.ReturnedIDs) != 0 {
+			t.Errorf("refused handle audit reveals ids: %+v", rec)
+		}
+	}
+	before := len(records)
+	var unlinkedBefore int
+	if err := w.pool.QueryRow(t.Context(), `SELECT count(*) FROM l0_events WHERE source = $1 AND kind = $2 AND payload->'native'->>'call' IN ('get_l1', 'stance_history', 'search') AND payload->'native'->>'session' IS NULL AND (payload->'native'->'target_ids' ? $3 OR payload->'native'->>'scope' = $4)`, api.AuditSource, string(connector.KindAudit), served.Anchors[0].L1, w.scope).Scan(&unlinkedBefore); err != nil {
+		t.Fatal(err)
+	}
+	w.http(t, shedKyle, "get_l1", map[string]any{"id": served.Anchors[0].L1})
+	w.http(t, shedKyle, "stance_history", map[string]any{"topic": served.Stances[0].TopicID})
+	w.http(t, shedKyle, "search", map[string]any{"query": "lock", "scope": w.scope})
+	var unlinkedAfter int
+	if err := w.pool.QueryRow(t.Context(), `SELECT count(*) FROM l0_events WHERE source = $1 AND kind = $2 AND payload->'native'->>'call' IN ('get_l1', 'stance_history', 'search') AND payload->'native'->>'session' IS NULL AND (payload->'native'->'target_ids' ? $3 OR payload->'native'->>'scope' = $4)`, api.AuditSource, string(connector.KindAudit), served.Anchors[0].L1, w.scope).Scan(&unlinkedAfter); err != nil {
+		t.Fatal(err)
+	}
+	if unlinkedAfter != unlinkedBefore {
+		t.Errorf("unlinked handles wrote %d audits", unlinkedAfter-unlinkedBefore)
+	}
+	var after api.SessionTrace
+	if err := json.Unmarshal(w.http(t, kyle, "get_session", args), &after); err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Events) != before+3 {
+		t.Errorf("session grew after unlinked handles: %d events", len(after.Events))
+	}
+	// The audit event exists, but its ACL deliberately prevents get_l0 from
+	// serving it. The refusal must not repeat its id in another audit.
+	if status, _ := w.post(t, "/v1/get_l0", withSession, string(mustJSON(t, map[string]any{"id": trace.Events[3].ID}))); status != http.StatusNotFound {
+		t.Errorf("get_l0 of a closed audit = %d, want 404", status)
+	}
+	var refused api.SessionTrace
+	if err := json.Unmarshal(w.http(t, kyle, "get_session", args), &refused); err != nil {
+		t.Fatal(err)
+	}
+	var refusal api.AuditRecord
+	if err := json.Unmarshal(refused.Events[len(refused.Events)-1].Payload.Native, &refusal); err != nil {
+		t.Fatal(err)
+	}
+	if len(refused.Events) != len(after.Events)+1 || refusal.Call != "get_l0" || refusal.Status != http.StatusNotFound || len(refusal.TargetIDs) != 0 {
+		t.Errorf("refused audit = %+v in %d events", refusal, len(refused.Events))
 	}
 	if status, _ := w.post(t, "/v1/get_session", sam, string(mustJSON(t, args))); status != http.StatusNotFound {
 		t.Errorf("Sam follows Kyle's session: %d", status)

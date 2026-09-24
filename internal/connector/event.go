@@ -331,7 +331,7 @@ const (
 	KindAgentTurn     Kind = "agent_turn"     // one turn of an agent session
 	KindToolCall      Kind = "tool_call"      // a tool call an agent made
 	KindAssertion     Kind = "assertion"      // a stance written through assert()
-	KindAudit         Kind = "audit"          // a bundle served: who asked, for what
+	KindAudit         Kind = "audit"          // a bundle served or a session handle call
 	KindTombstone     Kind = "tombstone"      // an artifact deleted at the source
 	KindDeletion      Kind = "deletion"       // L0 events an operator deleted in Hearsay
 	KindCommand       Kind = "command"        // a command a person gave Hearsay in a source; never distilled

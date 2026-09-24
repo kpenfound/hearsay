@@ -151,7 +151,7 @@ wherever the source has something that behaves like one.
 | `agent_turn` | One turn of an agent session | yes | yes |
 | `tool_call` | A tool call an agent made | yes | no |
 | `assertion` | A stance written through `assert` | yes | yes |
-| `audit` | A bundle served: who asked, on whose behalf, what was filtered | yes | no |
+| `audit` | A bundle served or a session's handle call: who asked and ids served | yes | no |
 | `tombstone` | An artifact deleted at the source | no | no |
 | `deletion` | L0 events an operator deleted in Hearsay | yes | no |
 | `command` | A command a person gave Hearsay in a source, such as a Discord slash command or a GitHub `/hearsay` comment; control traffic, never distilled | yes | no |
