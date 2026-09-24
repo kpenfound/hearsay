@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -673,5 +674,72 @@ func TestStartupSweepsTheRepliesStillOwed(t *testing.T) {
 	}
 	if c.replies.posts != 2 || c.replies.revises != 1 {
 		t.Errorf("posts = %d, revises = %d, want 2 and 1", c.replies.posts, c.replies.revises)
+	}
+}
+
+// A read-only GitHub source takes no commands. Its connector emits a
+// `/hearsay` comment as a `message` (the connector's tests), but L0 may hold
+// commands from before the source became read-only: the follower enqueues
+// none of them nor their deletions, a job for one enqueued before then runs
+// nothing and posts nothing, a deletion undoes nothing, and the startup sweep
+// owes none of them a reply. The same commands on a source that is not
+// read-only are the tests above.
+func TestAReadOnlySourceTakesNoCommands(t *testing.T) {
+	c := newCommands(t, scratchPool(t))
+	answered := c.comment(12, "u1", "/hearsay ratify")
+	c.mustHandle(answered)
+	c.replies.fail = errors.New("GitHub is down")
+	owed := c.comment(12, "u1", "/hearsay pin")
+	if err := c.handle(owed); err == nil {
+		t.Fatal("Handle() with GitHub down = nil, want an error")
+	}
+	c.replies.fail = nil
+	if gs := c.gestures(); len(gs) != 2 || c.replies.posts != 1 {
+		t.Fatalf("gestures = %+v, replies = %d, want a ratify and a pin, and one reply", gs, c.replies.posts)
+	}
+
+	c.repo.Sources = slices.Clone(c.repo.Sources)
+	c.repo.Sources[0].ReadOnly = true
+	cfg := config.Default()
+	cfg.Repo = c.repo
+	registry, err := llm.NewFake(llm.Default(), llm.NewFixtures())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := assertworker.New(c.pool, registry, &cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The binary builds no replier for a read-only source; this one is here
+	// to show that nothing would be posted through it if it did.
+	c.a = a.WithReplies(assertworker.Replies{c.src: c.replies})
+
+	merge := c.comment(12, "u1", "/hearsay merge "+c.topics[0]+" "+c.topics[1])
+	c.mustHandle(owed)
+	c.mustHandle(merge)
+	tomb := c.delete(answered)
+	c.mustHandle(tomb)
+	if gs, ops := c.gestures(), c.operations(); len(gs) != 2 || gs[0].UndoneBy != 0 || len(ops) != 0 {
+		t.Errorf("gestures = %+v, operations = %+v, want the two from before, neither undone, and no merge", gs, ops)
+	}
+	if c.replies.posts != 1 || c.replies.revises != 0 {
+		t.Errorf("posts = %d, revises = %d, want only the reply from before", c.replies.posts, c.replies.revises)
+	}
+
+	// Appending the last command again reads where it sits in the feed.
+	appended, err := l0.New(c.pool).Append(t.Context(), c.revision(12, 8000, "u1", "/hearsay demote", at(12), at(12), ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	readThrough(t, c.pool, assertworker.CommandConsumer, assertworker.NewCommandFollower(c.pool, c.repo, 0, 0).Once, appended.Cursor)
+	if _, err := assertworker.Sweep(t.Context(), c.pool, c.repo); err != nil {
+		t.Fatalf("Sweep() = %v", err)
+	}
+	var queued []string
+	if err := c.pool.QueryRow(t.Context(), `SELECT coalesce(array_agg(target_id), '{}') FROM queue_job WHERE target_id LIKE 'gesture:%'`).Scan(&queued); err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 0 {
+		t.Errorf("queued = %q, want nothing for a read-only source", queued)
 	}
 }

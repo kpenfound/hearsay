@@ -112,14 +112,20 @@ type replyNative struct {
 
 // controlEvent turns a comment's event into the control traffic it is, where
 // it is: Hearsay's reply to a command, which is never a command itself, and a
-// `/hearsay` command. Anything else is left a `message`.
-func controlEvent(ev connector.Event, cm comment, issue int, repo string) (connector.Event, error) {
+// `/hearsay` command. Anything else is left a `message`, and so is a
+// `/hearsay` comment in a read-only source, which takes no commands: there it
+// is what the person wrote and nothing more. A reply is still a reply there,
+// because it is Hearsay's own text from before the source was read-only.
+func controlEvent(ev connector.Event, cm comment, issue int, repo string, readOnly bool) (connector.Event, error) {
 	if to, ok := replyTo(cm.Body); ok {
 		raw, err := json.Marshal(replyNative{ID: cm.ID, ReplyTo: to})
 		if err != nil {
 			return connector.Event{}, fmt.Errorf("encoding reply %d: %w", cm.ID, err)
 		}
 		ev.Kind, ev.Payload.BaseKind, ev.Payload.Native = KindReply, connector.KindCommand, raw
+		return ev, nil
+	}
+	if readOnly {
 		return ev, nil
 	}
 	name, args, ok := ParseCommand(cm.Body)

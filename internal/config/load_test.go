@@ -166,6 +166,21 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 			want:  []string{`source "github": refresh: -5m is negative`},
 		},
 		{
+			name:  "a read_only that YAML 1.1 would call a boolean",
+			files: with(map[string]string{"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\nread_only: yes\n"}),
+			want:  []string{`source "github": read_only: "yes" is not a boolean: want true or false`},
+		},
+		{
+			name:  "a read_only that is a number",
+			files: with(map[string]string{"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\nread_only: 1\n"}),
+			want:  []string{`source "github": read_only: 1 is not a boolean`},
+		},
+		{
+			name:  "a read_only that is a list",
+			files: with(map[string]string{"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\nread_only: [true]\n"}),
+			want:  []string{`source "github": read_only: [true] is not a boolean`},
+		},
+		{
 			name:  "a secret that holds a value instead of a variable name",
 			files: with(map[string]string{"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\nsecrets: {token: ghp_secret}\n"}),
 			want:  []string{`source "github": secrets.token: "ghp_secret" is not the name of an environment variable`},
@@ -740,6 +755,43 @@ func TestScopeSourceShorthandMatchesTheLongForm(t *testing.T) {
 			t.Errorf("the two forms disagree about %q: short %v, long %v",
 				container, s.Covers("github", container), l.Covers("github", container))
 		}
+	}
+}
+
+// read_only is a field of every source, whatever its type, next to containers
+// and refresh rather than in the connector's settings, and it is false unless
+// the file says true.
+func TestSourceReadOnly(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{name: "absent", line: "", want: false},
+		{name: "false", line: "read_only: false\n", want: false},
+		{name: "true", line: "read_only: true\n", want: true},
+		{name: "empty, which YAML reads as null", line: "read_only:\n", want: false},
+	}
+	types := []string{"github", "discord", "drive", "obsidian", "agent", "someone-elses"}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{"scopes/api.yaml": "id: api\nsources: [github]\n"}
+			for _, typ := range types {
+				files["sources/"+typ+".yaml"] = "id: " + typ + "\ntype: " + typ + "\ncontainers: [x]\n" + tt.line
+			}
+			repo, err := config.Load(writeFiles(t, files))
+			if err != nil {
+				t.Fatalf("Load() = %v, want no error", err)
+			}
+			if len(repo.Sources) != len(types) {
+				t.Fatalf("loaded %d sources, want %d", len(repo.Sources), len(types))
+			}
+			for _, src := range repo.Sources {
+				if src.ReadOnly != tt.want {
+					t.Errorf("source %q of type %s: ReadOnly = %v, want %v", src.ID, src.Type, src.ReadOnly, tt.want)
+				}
+			}
+		})
 	}
 }
 

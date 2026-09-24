@@ -20,6 +20,16 @@
 // answers it ephemerally with the interaction's own token, within Discord's
 // three seconds or through a deferred answer it edits later. It never posts a
 // channel message. A source without the two settings takes no commands.
+//
+// Reactions matching `ratify_emoji` or `demote_emoji` are ingested as
+// `reaction` events like any other, and the assertion worker reads them as
+// gestures. A source configured `read_only: true` is ingested exactly the same
+// way, but nothing reads its reactions as gestures, and the API registers no
+// command for it and answers no interaction, whatever its settings name. Such
+// a deployment needs only the `bot` scope with View Channel and Read Message
+// History, and the intents above: no `applications.commands` scope, no Send
+// Messages, and no Interactions Endpoint URL. Its people give feedback through
+// `hearsay gestures` and `hearsay topics` instead.
 package discord
 
 import (

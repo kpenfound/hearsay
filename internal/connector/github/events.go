@@ -148,6 +148,8 @@ type view struct {
 	// repos are the configured repositories, for spelling a repository an
 	// artifact in this one points at.
 	repos []string
+	// readOnly is a source whose `/hearsay` comments are not commands.
+	readOnly bool
 }
 
 func (v view) container() connector.Container {
@@ -439,7 +441,7 @@ func (v view) commentEvent(cm comment) (connector.Event, error) {
 	ev.Payload.Author = v.identity(cm.User)
 	ev.Payload.Parent, ev.Payload.Thread = parent, parent
 	n, _ := numberFrom(cm.IssueURL, "/issues/")
-	return controlEvent(ev, cm, n, v.repo)
+	return controlEvent(ev, cm, n, v.repo, v.readOnly)
 }
 
 type reviewCommentNative struct {

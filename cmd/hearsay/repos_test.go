@@ -88,13 +88,16 @@ func TestRepoReaders(t *testing.T) {
 
 // The assertion worker gets a replier for every GitHub source, built with its
 // token and not its webhook secret, and a GitHub source whose token is not in
-// the environment stops it starting: it would run commands and answer none.
+// the environment stops it starting: it would run commands and answer none. A
+// read-only source gets none, and the worker does not ask for its token.
 func TestCommandRepliers(t *testing.T) {
 	files := map[string]string{
 		"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\n" +
 			"secrets: {token: CMD_GITHUB_TOKEN, webhook_secret: CMD_GITHUB_WEBHOOK_SECRET}\n",
 		"sources/github-oss.yaml": "id: github-oss\ntype: github\ncontainers: [acme/oss]\n" +
 			"secrets: {token: CMD_OSS_TOKEN}\n",
+		"sources/github-ro.yaml": "id: github-ro\ntype: github\ncontainers: [acme/docs]\nread_only: true\n" +
+			"secrets: {token: CMD_RO_TOKEN}\n",
 		"sources/vault.yaml": "id: vault\ntype: obsidian\ncontainers: [notes]\n",
 		"scopes/api.yaml":    "id: api\nsources: [github]\n",
 	}
@@ -133,5 +136,44 @@ func TestCommandRepliers(t *testing.T) {
 				t.Errorf("commandRepliers() has repliers for %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// The API answers the slash commands of every Discord source that names an
+// application and is not read-only. A read-only source's application
+// settings are passed over, and its bot token is not asked for: the API
+// registers nothing with it and answers no interaction for it.
+func TestDiscordApps(t *testing.T) {
+	const app = "settings: {guild: \"824100000000000000\", application_id: \"824100000000000009\", " +
+		"public_key: \"3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c\"}\n"
+	files := map[string]string{
+		"sources/chat.yaml": "id: chat\ntype: discord\ncontainers: [\"824100000000000001\"]\n" + app +
+			"secrets: {token: APP_CHAT_TOKEN}\n",
+		"sources/chat-ro.yaml": "id: chat-ro\ntype: discord\ncontainers: [\"824100000000000002\"]\nread_only: true\n" + app +
+			"secrets: {token: APP_RO_TOKEN}\n",
+		"sources/chat-plain.yaml": "id: chat-plain\ntype: discord\ncontainers: [\"824100000000000003\"]\n" +
+			"settings: {guild: \"824100000000000000\"}\nsecrets: {token: APP_PLAIN_TOKEN}\n",
+		"scopes/chat.yaml": "id: chat\nsources: [chat]\n",
+	}
+	repo, err := config.Load(writeConfig(t, files))
+	if err != nil {
+		t.Fatalf("config.Load() = %v", err)
+	}
+	lookup := func(name string) (string, bool) {
+		if name == "APP_CHAT_TOKEN" {
+			return "bot", true
+		}
+		return "", false
+	}
+	apps, err := discordApps(repo, lookup)
+	if err != nil {
+		t.Fatalf("discordApps() = %v", err)
+	}
+	var got []string
+	for _, a := range apps {
+		got = append(got, a.Source)
+	}
+	if strings.Join(got, ",") != "chat" {
+		t.Errorf("discordApps() has applications for %q, want only chat", got)
 	}
 }

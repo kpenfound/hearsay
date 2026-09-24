@@ -36,27 +36,35 @@ func appSource(settings map[string]any) connector.SourceConfig {
 }
 
 // The application settings are set together or not at all, and the
-// connector refuses the same half-configured source the API would.
+// connector refuses the same half-configured source the API would. A
+// read-only source has no application, whatever its settings name, so the
+// API registers no command and answers no interaction for it; its settings
+// are still checked.
 func TestApplicationSettings(t *testing.T) {
 	pub, _ := testKey(t)
 	key := hex.EncodeToString(pub)
 	tests := []struct {
 		name     string
 		settings map[string]any
+		readOnly bool
 		app      bool
 		wantErr  string
 	}{
-		{"no application", map[string]any{"guild": appGuild}, false, ""},
-		{"both", map[string]any{"guild": appGuild, "application_id": testApp, "public_key": key}, true, ""},
-		{"id alone", map[string]any{"guild": appGuild, "application_id": testApp}, false, "public_key"},
-		{"key alone", map[string]any{"guild": appGuild, "public_key": key}, false, "application_id"},
-		{"short key", map[string]any{"guild": appGuild, "application_id": testApp, "public_key": key[:10]}, false, "public_key"},
-		{"id not a snowflake", map[string]any{"guild": appGuild, "application_id": "app", "public_key": key}, false, "application_id"},
+		{"no application", map[string]any{"guild": appGuild}, false, false, ""},
+		{"both", map[string]any{"guild": appGuild, "application_id": testApp, "public_key": key}, false, true, ""},
+		{"id alone", map[string]any{"guild": appGuild, "application_id": testApp}, false, false, "public_key"},
+		{"key alone", map[string]any{"guild": appGuild, "public_key": key}, false, false, "application_id"},
+		{"short key", map[string]any{"guild": appGuild, "application_id": testApp, "public_key": key[:10]}, false, false, "public_key"},
+		{"id not a snowflake", map[string]any{"guild": appGuild, "application_id": "app", "public_key": key}, false, false, "application_id"},
+		{"both, read-only", map[string]any{"guild": appGuild, "application_id": testApp, "public_key": key}, true, false, ""},
+		{"no application, read-only", map[string]any{"guild": appGuild}, true, false, ""},
+		{"key alone, read-only", map[string]any{"guild": appGuild, "public_key": key}, true, false, "application_id"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			src := appSource(tt.settings)
-			if got := discord.HasApp(src); got != (tt.app || tt.wantErr != "") {
+			src.ReadOnly = tt.readOnly
+			if got := discord.HasApp(src); got != (tt.app || (tt.wantErr != "" && !tt.readOnly)) {
 				t.Errorf("HasApp() = %v", got)
 			}
 			app, err := discord.NewApp(src)

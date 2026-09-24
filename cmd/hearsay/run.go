@@ -235,8 +235,8 @@ func runDistiller(ctx context.Context, args []string, stdout, stderr io.Writer) 
 //
 // It is also given a repository reader for every GitHub source `code/` names
 // ([repoReaders]), which is how CODEOWNERS files and repository layout reach
-// the entity map, and a replier for every GitHub source ([commandRepliers]),
-// which is how a `/hearsay` comment command is answered.
+// the entity map, and a replier for every GitHub source that is not read-only
+// ([commandRepliers]), which is how a `/hearsay` comment command is answered.
 func runAssertWorker(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, cfg, configPath := newFlagSet(assertworker.Name, stderr)
 	resolveDatabase := databaseFlag(fs, cfg)
@@ -314,15 +314,16 @@ func repoReaders(repo config.Repo, lookup func(string) (string, bool)) (l2.RepoR
 }
 
 // commandRepliers builds what the assertion worker answers GitHub `/hearsay`
-// commands through: a replier for every GitHub source, with its token, which
-// has to be allowed to write issue and pull request comments. A token that is
-// not in the environment is a startup failure, as it is for the connector: a
-// worker that could not answer would run commands and leave the person who
-// gave them no word of it.
+// commands through: a replier for every GitHub source that is not read-only,
+// with its token, which has to be allowed to write issue and pull request
+// comments. A token that is not in the environment is a startup failure, as it
+// is for the connector: a worker that could not answer would run commands and
+// leave the person who gave them no word of it. A read-only source takes no
+// commands, so the worker needs nothing of it.
 func commandRepliers(repo config.Repo, lookup func(string) (string, bool)) (assertworker.Replies, error) {
 	replies := assertworker.Replies{}
 	for _, src := range repo.Sources {
-		if src.Type != github.Type {
+		if src.Type != github.Type || src.ReadOnly {
 			continue
 		}
 		resolved, err := githubToken(src, lookup)
@@ -398,8 +399,8 @@ func runAPI(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 }
 
 // discordApps are the Discord applications of the sources that configure
-// one: the API answers their slash commands (ADR-0022). Only the bot token is
-// read from the environment, to register the commands.
+// one and are not read-only: the API answers their slash commands (ADR-0022).
+// Only the bot token is read from the environment, to register the commands.
 func discordApps(repo config.Repo, lookup func(string) (string, bool)) ([]*discord.App, error) {
 	var apps []*discord.App
 	for _, src := range repo.Sources {

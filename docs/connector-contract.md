@@ -61,6 +61,15 @@ Hearsay-authored replies, including a GitHub reply's webhook echo, are L0
 control traffic excluded from L1 distillation; the echo cannot become another
 command.
 
+A source configured `read_only: true` opts out of that exception
+(`SourceConfig.ReadOnly`, [config](config.md#sources)). It is ingested exactly
+as it would be otherwise, and its credentials need no write access, but nothing
+reads its reactions as gestures, no command is registered or answered for it,
+and nothing is posted to it. A connector that would describe a comment as a
+`command` describes it as the ordinary content it then is, and does not declare
+`command` in its descriptor. A connector that never writes, which is every
+connector, starts and reports health on read-only credentials.
+
 ## The event
 
 An event is one thing that happened at one source.
@@ -649,6 +658,7 @@ connector:
 | `Type` | The connector type, which selects the factory. |
 | `Containers` | The repositories, channels or folders this source may ingest, by native id. Default deny; `*` widens it. |
 | `Refresh` | How often the runtime calls `Poll`, and the retry base for `Stream`. Ignored by a push-only connector; the runtime applies its own floor and jitter. A stream with none retries from the minimum refresh (30 seconds). |
+| `ReadOnly` | Hearsay never writes to the source ([above](#what-a-connector-does-and-what-it-must-not)). A connector that would describe a comment as a `command` describes it as ordinary content instead, and declares no `command`. |
 | `Settings` | The connector's own configuration, as JSON. Decode it with `DecodeSettings`, which rejects unknown fields so that a typo in config fails at startup. |
 | `Secrets` | Credentials, resolved by the runtime from the environment. They never live in the config repository, which is checked in: config names a secret, the runtime supplies its value. |
 

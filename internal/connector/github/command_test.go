@@ -80,8 +80,10 @@ func commentItem(n int, id int64, body, created, updated string) map[string]any 
 // A `/hearsay` comment on an issue or a pull request is a `command`, with the
 // command read from it; Hearsay's reply to one is a `github.reply`, based on
 // `command`, whatever it says, so its webhook echo is never a command and
-// never team content; anything else is a `message`. A backfill that reads the
-// same comment emits the same event (ADR-0022).
+// never team content; anything else is a `message`. In a read-only source a
+// `/hearsay` comment is a `message` too, what the person wrote and nothing
+// more, and a reply is still a reply. A backfill that reads the same comment
+// emits the same event (ADR-0022).
 func TestCommentCommandsAndRepliesAreControlTraffic(t *testing.T) {
 	const at = "2026-09-24T12:00:00Z"
 	tests := []struct {
@@ -89,6 +91,7 @@ func TestCommentCommandsAndRepliesAreControlTraffic(t *testing.T) {
 		n        int
 		body     string
 		updated  string
+		readOnly bool
 		wantKind connector.Kind
 		wantBase connector.Kind
 		// wantNative is the event's native, as JSON.
@@ -108,6 +111,12 @@ func TestCommentCommandsAndRepliesAreControlTraffic(t *testing.T) {
 			wantNative: `{"id":5001,"reply_to":4999}`},
 		{name: "a reply that starts like a command is still a reply", n: 2, body: "/hearsay ratify\n\n" + github.ReplyMarker(4999), wantKind: github.KindReply, wantBase: connector.KindCommand,
 			wantNative: `{"id":5001,"reply_to":4999}`},
+		{name: "ratify in a read-only source is a message", n: 1, body: "/hearsay ratify", readOnly: true, wantKind: connector.KindMessage,
+			wantNative: `{"id":5001}`},
+		{name: "merge on a pull request in a read-only source is a message", n: 2, body: "/hearsay merge `topic:a` topic:b", readOnly: true, wantKind: connector.KindMessage,
+			wantNative: `{"id":5001}`},
+		{name: "Hearsay's reply in a read-only source is still a reply", n: 1, body: "Ratified 2 stances.\n\n" + github.ReplyMarker(4999), readOnly: true, wantKind: github.KindReply, wantBase: connector.KindCommand,
+			wantNative: `{"id":5001,"reply_to":4999}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -117,7 +126,11 @@ func TestCommentCommandsAndRepliesAreControlTraffic(t *testing.T) {
 			}
 			gh := newFakeGitHub(t)
 			src := newSource(t, gh, sourceID, nil)
+			src.ReadOnly = tt.readOnly
 			c := newConnector(t, src)
+			if got := slices.Contains(c.Describe().Kinds, connector.KindCommand); got == tt.readOnly {
+				t.Errorf("Describe() declares command: %v, want %v", got, !tt.readOnly)
+			}
 			live := &connector.Recorder{}
 			if code := deliver(t, c.Handler(gateFor(src, c, live)), "issue_comment", commentHook(t, "created", tt.n, 5001, tt.body, at, updated)); code != http.StatusAccepted {
 				t.Fatalf("status = %d, want 202", code)
@@ -231,6 +244,20 @@ func (f *fakeComments) serve(w http.ResponseWriter, r *http.Request) {
 	default:
 		f.t.Errorf("unexpected request %s %s", r.Method, r.URL.RequestURI())
 		http.NotFound(w, r)
+	}
+}
+
+// A read-only source has no replier, whatever its token could do: Hearsay
+// posts nothing to it.
+func TestNoReplierForAReadOnlySource(t *testing.T) {
+	f := newFakeComments(t)
+	r, err := github.NewReplier(connector.SourceConfig{
+		ID: sourceID, Type: github.Type, Containers: []string{"acme/api"}, ReadOnly: true,
+		Settings: json.RawMessage(`{"api_url":"` + f.srv.URL + `"}`),
+		Secrets:  map[string]string{github.SecretToken: testToken},
+	})
+	if err == nil || !strings.Contains(err.Error(), "read_only") {
+		t.Errorf("NewReplier(a read-only source) = %v, %v, want a refusal naming read_only", r, err)
 	}
 }
 
