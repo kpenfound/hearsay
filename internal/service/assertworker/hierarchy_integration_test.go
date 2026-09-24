@@ -87,7 +87,7 @@ func (h *hooks) deliver(event, name string) {
 
 func item(n string) string { return "tracker:" + hierarchySource + ":acme/api#" + n }
 
-// follow reads the whole change feed into the tracker hierarchy.
+// follow drains the currently visible change feed into the tracker hierarchy.
 func follow(t *testing.T, pool *pgxpool.Pool, repo config.Repo) {
 	t.Helper()
 	f := assertworker.NewFollower(pool, repo, time.Millisecond, l0.MaxLimit)
