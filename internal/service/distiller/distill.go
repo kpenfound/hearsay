@@ -526,6 +526,11 @@ func (d *Distiller) distillWikiSections(ctx context.Context, result Result, root
 					return err
 				}
 				result.Asserting = result.Asserting || asserting
+				if !asserting {
+					if err := l2.EnqueueNonassertingEvidence(ctx, tx, section.ID); err != nil {
+						return err
+					}
+				}
 			}
 		}
 		return rebuilt(ctx, tx, ids, removed)
@@ -629,6 +634,11 @@ func (d *Distiller) writeDocument(ctx context.Context, result Result, source, ar
 			result.Asserting, err = l2.EnqueueAssertion(ctx, tx, d.repo, doc, container)
 			if err != nil {
 				return err
+			}
+			if !result.Asserting {
+				if err := l2.EnqueueNonassertingEvidence(ctx, tx, doc.ID); err != nil {
+					return err
+				}
 			}
 		}
 		if doc.Kind != l1.KindChatThread {

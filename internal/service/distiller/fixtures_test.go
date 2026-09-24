@@ -229,6 +229,24 @@ var answersAfterRetraction = map[string]map[string]any{
 	},
 }
 
+// The issue was revised to ask an open question; its prior decision no longer
+// has an asserting document behind it.
+var answersWithoutDecision = map[string]map[string]any{
+	issueID: {
+		"summary":        "The engine's write order is being investigated again.",
+		"question":       "Should the engine take the lock before writing?",
+		"outcome":        "",
+		"outcome_kind":   "none",
+		"open_questions": []string{"Does the write race with the job queue?"},
+	},
+}
+
+func issueWithoutDecision(src string) connector.Event {
+	issue := revised(fixtureEvents(src)[0], "2026-09-09T22:00:00Z", at(10))
+	issue.Payload.Text = "The engine's write order is being investigated again."
+	return issue
+}
+
 // answersWithSecret are the replies while the pasted secret is on the issue.
 // The model repeats it, so the document's text holds it as well as its raw
 // text, and an operator deletion has to take it out of both.
@@ -375,6 +393,7 @@ func fixtureStates() []fixtureState {
 		{events: base},
 		{events: append(append([]connector.Event{}, base...), laterComment(source))},
 		{events: without(base, retractedComment), answers: answersAfterRetraction},
+		{events: append(append([]connector.Event{}, base...), issueWithoutDecision(source)), answers: answersWithoutDecision},
 		{events: append(append([]connector.Event{}, base...), secretComment(source)), answers: answersWithSecret},
 	}
 }
