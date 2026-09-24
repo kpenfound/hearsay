@@ -357,8 +357,8 @@ func TestStancesFollowEveryPieceOfTheirEvidenceNow(t *testing.T) {
 		return out, withheld
 	}
 	sams, withheld := read(sam)
-	if want := map[string]string{"kept": "what everyone reads / "}; fmt.Sprint(sams) != fmt.Sprint(want) || withheld != 6 {
-		t.Errorf("sam's stances = %v with %d withheld, want %v with 6", sams, withheld, want)
+	if want := map[string]string{"kept": "what everyone reads / ", "opener retracted": "on a gone topic / "}; fmt.Sprint(sams) != fmt.Sprint(want) || withheld != 5 {
+		t.Errorf("sam's stances = %v with %d withheld, want %v with 5", sams, withheld, want)
 	}
 	kyles, withheld := read(kyle)
 	wantKyle := map[string]string{
@@ -366,9 +366,10 @@ func TestStancesFollowEveryPieceOfTheirEvidenceNow(t *testing.T) {
 		"opener narrowed":   "on an open stance / ",
 		"evidence narrowed": "the newer position / the older position",
 		"kept":              "what everyone reads / what went private",
+		"opener retracted":  "on a gone topic / ",
 	}
-	if fmt.Sprint(kyles) != fmt.Sprint(wantKyle) || withheld != 3 {
-		t.Errorf("kyle's stances = %v with %d withheld, want %v with 3", kyles, withheld, wantKyle)
+	if fmt.Sprint(kyles) != fmt.Sprint(wantKyle) || withheld != 2 {
+		t.Errorf("kyle's stances = %v with %d withheld, want %v with 2", kyles, withheld, wantKyle)
 	}
 
 	// The same through the bundle: nothing of what sam may not read is in it.
@@ -381,13 +382,13 @@ func TestStancesFollowEveryPieceOfTheirEvidenceNow(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, secret := range []string{"rests on two", "partial evidence", "opener narrowed", "the newer position", "the older position",
-		"retracted evidence", "rests on nothing", "on a gone topic", "what went private"} {
+		"retracted evidence", "rests on nothing", "what went private"} {
 		if strings.Contains(string(body), secret) {
 			t.Errorf("sam's bundle holds %q: %s", secret, body)
 		}
 	}
-	if report.Withheld.Stances != 6 {
-		t.Errorf("sam's bundle withheld %d stances, want 6", report.Withheld.Stances)
+	if report.Withheld.Stances != 5 {
+		t.Errorf("sam's bundle withheld %d stances, want 5", report.Withheld.Stances)
 	}
 }
 

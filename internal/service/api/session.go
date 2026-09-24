@@ -100,7 +100,11 @@ func getSession(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, 
 	if err != nil {
 		return nil, err
 	}
-	if !access.Topic(reader, topic) || !access.Stance(reader, stance) {
+	assessed, err := c.graph.Assess(ctx, c.authority, reader, []l2.Topic{topic})
+	if err != nil {
+		return nil, err
+	}
+	if !assessed[0].Access.Topic(reader, topic) || !access.Stance(reader, stance) {
 		return nil, notFound
 	}
 	source, err := c.sessionSource(ctx, caller, reader, as.Session, as.SessionSource)

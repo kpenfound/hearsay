@@ -369,23 +369,46 @@ func (d *Distiller) deleteConversation(ctx context.Context, source, artifact, do
 		if err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `DELETE FROM l1_docs WHERE source = $1 AND kind = $2 AND left(source_native_id, length($3)) = $3`, source, l1.KindChatBurst, l1.BurstPrefix(artifact))
+		var removedIDs []string
+		if deleted {
+			removedIDs = append(removedIDs, docID)
+		}
+		ids, err := deleteDerived(ctx, tx, `DELETE FROM l1_docs WHERE source = $1 AND kind = $2 AND left(source_native_id, length($3)) = $3`, source, l1.KindChatBurst, l1.BurstPrefix(artifact))
 		if err != nil {
 			return err
 		}
-		removed, err := tx.Exec(ctx, `DELETE FROM l1_docs WHERE source = $1 AND kind = $2 AND left(source_native_id, length($3)) = $3`, source, l1.KindWikiSection, l1.WikiSectionPrefix(artifact))
-		deleted = deleted || removed.RowsAffected() > 0
+		removedIDs = append(removedIDs, ids...)
+		ids, err = deleteDerived(ctx, tx, `DELETE FROM l1_docs WHERE source = $1 AND kind = $2 AND left(source_native_id, length($3)) = $3`, source, l1.KindWikiSection, l1.WikiSectionPrefix(artifact))
 		if err != nil {
 			return err
 		}
-		removed, err = tx.Exec(ctx, `DELETE FROM l1_docs WHERE source = $1 AND kind = $2 AND left(source_native_id, length($3)) = $3`, source, l1.KindMeetingSegment, l1.MeetingSegmentPrefix(artifact))
-		deleted = deleted || removed.RowsAffected() > 0
-		return err
+		removedIDs = append(removedIDs, ids...)
+		ids, err = deleteDerived(ctx, tx, `DELETE FROM l1_docs WHERE source = $1 AND kind = $2 AND left(source_native_id, length($3)) = $3`, source, l1.KindMeetingSegment, l1.MeetingSegmentPrefix(artifact))
+		if err != nil {
+			return err
+		}
+		removedIDs = append(removedIDs, ids...)
+		deleted = len(removedIDs) > 0
+		return l2.EnqueueDeletedEvidence(ctx, tx, removedIDs)
 	})
 	if err != nil {
 		return false, fmt.Errorf("removing conversation %s: %w", docID, err)
 	}
 	return deleted, nil
+}
+
+// deleteDerived returns the removed L1 ids so their graph repair jobs can be
+// enqueued in the same transaction.
+func deleteDerived(ctx context.Context, tx pgx.Tx, sql string, args ...any) ([]string, error) {
+	rows, err := tx.Query(ctx, sql+` RETURNING id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, err
+	}
+	return ids, nil
 }
 
 // distillWikiSections models each bounded part independently, then reconciles
@@ -441,11 +464,14 @@ func (d *Distiller) distillWikiSections(ctx context.Context, result Result, root
 		ids[i] = section.ID
 	}
 	err = pgx.BeginFunc(ctx, d.pool, func(tx pgx.Tx) error {
-		removed, err := tx.Exec(ctx, `DELETE FROM l1_docs WHERE source = $1 AND kind = $2 AND left(source_native_id, length($3)) = $3 AND NOT (id = ANY($4))`, root.Source, l1.KindWikiSection, l1.WikiSectionPrefix(root.Payload.Artifact), ids)
+		removed, err := deleteDerived(ctx, tx, `DELETE FROM l1_docs WHERE source = $1 AND kind = $2 AND left(source_native_id, length($3)) = $3 AND NOT (id = ANY($4))`, root.Source, l1.KindWikiSection, l1.WikiSectionPrefix(root.Payload.Artifact), ids)
 		if err != nil {
 			return fmt.Errorf("reconciling sections of %s: %w", result.DocID, err)
 		}
-		result.Deleted = removed.RowsAffected() > 0
+		result.Deleted = len(removed) > 0
+		if err := l2.EnqueueDeletedEvidence(ctx, tx, removed); err != nil {
+			return err
+		}
 		for _, section := range sections {
 			written, err := l1.New(tx).Put(ctx, section)
 			if err != nil {
@@ -571,8 +597,12 @@ func (d *Distiller) writeDocument(ctx context.Context, result Result, source, ar
 		for i, burst := range bursts {
 			ids[i] = burst.ID
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM l1_docs WHERE source = $1 AND kind = $2 AND left(source_native_id, length($3)) = $3 AND NOT (id = ANY($4))`, source, l1.KindChatBurst, prefix, ids); err != nil {
+		removed, err := deleteDerived(ctx, tx, `DELETE FROM l1_docs WHERE source = $1 AND kind = $2 AND left(source_native_id, length($3)) = $3 AND NOT (id = ANY($4))`, source, l1.KindChatBurst, prefix, ids)
+		if err != nil {
 			return fmt.Errorf("reconciling bursts of %s: %w", docID, err)
+		}
+		if err := l2.EnqueueDeletedEvidence(ctx, tx, removed); err != nil {
+			return err
 		}
 		for _, burst := range bursts {
 			changed, err := l1.New(tx).Put(ctx, burst)

@@ -488,6 +488,7 @@ func resolve(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json
 type StanceRecord struct {
 	ID        string  `json:"id"`
 	Position  string  `json:"position"`
+	Withdrawn bool    `json:"withdrawn,omitempty"`
 	Judgement *string `json:"judgement"`
 	Author    string  `json:"author,omitempty"`
 	StatedAt  string  `json:"stated_at"`
@@ -498,8 +499,8 @@ type StanceRecord struct {
 	Evidence     []string `json:"evidence"`
 }
 
-// History is a topic's `stance_history`: every stance on it the caller may
-// read, oldest first, and where the topic stands — its current stance and the
+// History is a topic's `stance_history`: every readable stance and any
+// evidence-deleted withdrawal on it, oldest first, and where the topic stands — its current stance and the
 // tier computed under the policy in force for its scope, the same the bundle
 // and L3 serve. Current and Tier are empty where the caller may not read the
 // current stance, as the bundle leaves such a topic out.
@@ -523,7 +524,8 @@ func stanceHistory(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, ra
 	}
 	// Who may read the topic and each stance is what their documents allow
 	// now (l2.Access), not what they allowed when the worker read them, so a
-	// superseded or retired stance goes with its evidence too.
+	// superseded or retired stance goes with its evidence too. A withdrawal
+	// records no readable position and can be shown to a topic reader.
 	topic, err := c.graph.Topic(ctx, args.Topic)
 	if errors.Is(err, l2.ErrNotFound) {
 		return nil, fail(http.StatusNotFound, "no topic %q", args.Topic)
@@ -547,19 +549,19 @@ func stanceHistory(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, ra
 		out.Current, out.Tier = a.Standing.Current.ID, string(a.Standing.Tier)
 	}
 	for _, st := range a.History {
-		if !a.Access.Stance(reader, st) {
+		if !a.Access.Stance(reader, st) && !a.Access.Withdrawal(reader, st) {
 			continue
 		}
 		visible[st.ID] = true
 		out.Stances = append(out.Stances, StanceRecord{
-			ID: st.ID, Position: st.Position, Author: st.Author, StatedAt: st.StatedAt.UTC().Format(time.RFC3339),
+			ID: st.ID, Position: st.Position, Withdrawn: st.Withdrawn, Author: st.Author, StatedAt: st.StatedAt.UTC().Format(time.RFC3339),
 			RecordedTier: string(st.Tier), Supersedes: st.Supersedes, Evidence: st.Evidence,
 			Judgement: stanceJudgement(st.Judgement),
 		})
 	}
 	for i := range out.Stances {
 		// A stance the reader may not read is not named by one they may.
-		if !visible[out.Stances[i].Supersedes] {
+		if !visible[out.Stances[i].Supersedes] && !out.Stances[i].Withdrawn {
 			out.Stances[i].Supersedes = ""
 		}
 	}
@@ -723,14 +725,18 @@ func assertStance(ctx context.Context, c *Calls, caller Caller, reader l1.Reader
 		return nil, err
 	}
 	// The same test every read of the stance will make (l2.Access): the topic
-	// by its opening document, and the stance by every document it cites, as
-	// L1 holds them now. A document that is not there fails it.
+	// by its opening document or a surviving live stance, and the proposed
+	// stance by every document it cites, as L1 holds them now.
 	proposed := l2.Stance{Evidence: evidence}
 	access, err := c.graph.Access(ctx, []l2.Topic{topic}, []l2.Stance{proposed})
 	if err != nil {
 		return nil, err
 	}
-	if !access.Topic(reader, topic) || !access.Stance(reader, proposed) {
+	assessed, err := c.graph.Assess(ctx, c.authority, reader, []l2.Topic{topic})
+	if err != nil {
+		return nil, err
+	}
+	if !assessed[0].Access.Topic(reader, topic) || !access.Stance(reader, proposed) {
 		return nil, errUnreadable
 	}
 

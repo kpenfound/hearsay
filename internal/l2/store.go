@@ -285,13 +285,15 @@ func readableBy(column, readers string) string {
 	return fmt.Sprintf(`(%[1]s @> '[{"kind":"public"}]'::jsonb OR %[1]s @> %[2]s::jsonb)`, column, readers)
 }
 
-// topicReadableBy is readableBy for a topic: the document that opened it is
-// still in L1, and its access list *now* is readable by everyone who may read
-// the document being asserted. The access list the topic was written with is
-// not consulted ([Access]). It is what keeps the name of a private topic out of
-// a prompt about a public document, and out of the stance that prompt produces.
+// topicReadableBy admits an opening document still readable now, or a live
+// stance whose complete surviving evidence is readable. The latter keeps a
+// topic open when its opening document was deleted but another stance lives.
 func topicReadableBy(readers string) string {
-	return `EXISTS (SELECT 1 FROM l1_docs o WHERE o.id = t.opened_by AND ` + readableBy("o.acl", readers) + `)`
+	return `(EXISTS (SELECT 1 FROM l1_docs o WHERE o.id = t.opened_by AND ` + readableBy("o.acl", readers) + `)
+OR (NOT EXISTS (SELECT 1 FROM l1_docs o WHERE o.id = t.opened_by)
+ AND EXISTS (SELECT 1 FROM l2_stances s WHERE s.topic_id = t.id AND NOT s.withdrawn AND NOT ` + RetiredSQL + `
+  AND NOT EXISTS (SELECT 1 FROM unnest(s.evidence) e(id) LEFT JOIN l1_docs d ON d.id = e.id
+    WHERE d.id IS NULL OR NOT ` + readableBy("d.acl", readers) + `))))`
 }
 
 // TopicsByJoinKeys is the first half of topic matching: the topics in one scope
@@ -402,7 +404,7 @@ func aclJSON(acl connector.ACL) string {
 
 // --- stances ---
 
-const stanceColumns = `id, topic_id, position, author, stated_at, evidence, coalesce(supersedes, ''), tier, acl, created_at, judgement, coalesce(assertion, '')`
+const stanceColumns = `id, topic_id, position, author, stated_at, evidence, coalesce(supersedes, ''), tier, acl, created_at, judgement, coalesce(assertion, ''), withdrawn`
 
 // RetiredSQL is the predicate, over a stance aliased `s`, that a later reading
 // of its own document replaced it: a stance from the same origin on the same
@@ -434,7 +436,7 @@ const RetiredSQL = `EXISTS (
 // point at it. A stance is never overwritten.
 const predecessorSQL = `
 SELECT s.id FROM l2_stances s
-WHERE s.topic_id = $1 AND s.id <> $3 AND (coalesce(s.assertion, s.evidence[1]) = $4 OR s.stated_at <= $2)
+WHERE s.topic_id = $1 AND s.id <> $3 AND NOT s.withdrawn AND (coalesce(s.assertion, s.evidence[1]) = $4 OR s.stated_at <= $2)
   AND NOT ` + RetiredSQL + `
 ORDER BY coalesce(s.assertion, s.evidence[1]) = $4 DESC, s.stated_at DESC, s.created_at DESC, s.id DESC
 LIMIT 1`
@@ -567,8 +569,8 @@ type Assessment struct {
 	// stance stands nowhere.
 	Standing Standing
 	Stands   bool
-	// Access is what the topic's opening document and its stances' evidence
-	// allow now. The caller decides with it what the reader sees: the topic,
+	// Access is what the topic's opening document (or a live stance after its
+	// deletion) and its stances' evidence allow now. The caller decides with it what the reader sees: the topic,
 	// the current stance and each stance in the history.
 	Access Access
 }
@@ -656,7 +658,7 @@ func scanStance(row scanner) (Stance, error) {
 	var judgement *string
 	var acl []byte
 	if err := row.Scan(&st.ID, &st.TopicID, &st.Position, &st.Author, &st.StatedAt, &st.Evidence,
-		&st.Supersedes, &tier, &acl, &st.CreatedAt, &judgement, &st.Assertion); err != nil {
+		&st.Supersedes, &tier, &acl, &st.CreatedAt, &judgement, &st.Assertion, &st.Withdrawn); err != nil {
 		return Stance{}, err
 	}
 	st.Tier = Tier(tier)

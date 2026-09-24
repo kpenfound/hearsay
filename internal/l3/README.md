@@ -26,10 +26,11 @@ L2 it is not an L3 view — it is an L2 fact and belongs in `internal/l2`.
   not see. A stance the reader may not read does not make the topic contested
   for them.
 - **Whether a reader may read a topic or a stance is what its documents allow
-  now** (`l2.Access`): the topic's opening document, and every piece of the
-  stance's evidence. The access lists stored on topics and stances record the
+  now** (`l2.Access`): the topic's opening document while it exists, then a
+  surviving live stance, and every piece of the stance's evidence. The access
+  lists stored on topics and stances record the
   moment they were written and authorize nothing; a document re-synced private
-  or retracted since takes what was derived from it with it.
+  or retracted since takes stances resting only on it with it.
 - **A stance is an entity's own only when its topic's `about` names that entity
   itself.** Every other topic reached — through a related entity (for a tracker
   item, the code entities its own document is about) or through an ancestor of

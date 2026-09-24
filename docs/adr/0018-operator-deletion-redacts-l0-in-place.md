@@ -62,5 +62,6 @@ after a tombstone.
 - Until the distiller has rebuilt a queued document, the old L1 text is still
   served. With a running distiller that is one job's latency. A deletion
   applied while no distiller runs waits for one.
-- The L2 follow-up (stances resting on a rebuilt document) is issue #159. L2
-  text redaction and `hearsay delete list|show` are issue #162.
+- Stances resting on a rebuilt or deleted document follow it the way they
+  follow a source tombstone (#159). L2 text redaction and
+  `hearsay delete list|show` are issue #162.
