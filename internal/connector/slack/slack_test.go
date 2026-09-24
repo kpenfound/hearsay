@@ -38,6 +38,7 @@ type fakeSlack struct {
 	openErr  string
 	opens    int
 	session  func(n int, ws *websocket.Conn)
+	history  func(http.ResponseWriter, *http.Request)
 }
 
 func newFakeSlack(t *testing.T, session func(n int, ws *websocket.Conn)) *fakeSlack {
@@ -85,6 +86,15 @@ func newFakeSlack(t *testing.T, session func(n int, ws *websocket.Conn)) *fakeSl
 		n, _ := strconv.Atoi(r.URL.Query().Get("n"))
 		f.session(n, ws)
 	})
+	for _, method := range []string{"conversations.history", "conversations.replies"} {
+		mux.HandleFunc("POST /api/"+method, func(w http.ResponseWriter, r *http.Request) {
+			if f.history == nil {
+				t.Errorf("unexpected %s", r.URL.Path)
+				return
+			}
+			f.history(w, r)
+		})
+	}
 	f.server = httptest.NewServer(mux)
 	t.Cleanup(f.server.Close)
 	return f
@@ -388,7 +398,6 @@ func TestStreamRefusesUnsupportedChannels(t *testing.T) {
 		permanent bool
 		detail    string
 	}{
-		{name: "private channel", channel: `{"id":"C0PUBLIC","is_channel":true,"is_private":true,"is_member":true}`, permanent: true, detail: "channel C0PUBLIC is a private channel"},
 		{name: "legacy private group", channel: `{"id":"C0PUBLIC","is_group":true,"is_member":true}`, permanent: true, detail: "is a private channel"},
 		{name: "direct message", channel: `{"id":"C0PUBLIC","is_im":true}`, permanent: true, detail: "is a direct message"},
 		{name: "group direct message", channel: `{"id":"C0PUBLIC","is_mpim":true,"is_private":true}`, permanent: true, detail: "is a group direct message"},

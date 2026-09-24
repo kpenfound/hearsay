@@ -14,9 +14,8 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector"
 )
 
-// permPublic is the permission part of every revision token. Only public
-// channels are ingested, so it is constant in this version; it is in the
-// token so that an ACL change can be a new revision (docs/connector-contract.md).
+// permPublic is the permission part of a public message revision token. A
+// visibility change uses perm:private so ACL re-sync is a new revision.
 const permPublic = "perm:public"
 
 // callback is an Events API payload, as a Socket Mode envelope carries it.
@@ -42,6 +41,7 @@ type message struct {
 	Text        string   `json:"text"`
 	TS          string   `json:"ts"`
 	ThreadTS    string   `json:"thread_ts"`
+	ReplyCount  int      `json:"reply_count"`
 	Edited      *edited  `json:"edited"`
 	Message     *message `json:"message"`
 	DeletedTS   string   `json:"deleted_ts"`
@@ -112,6 +112,22 @@ func (c *Connector) dispatch(ctx context.Context, sink connector.Sink, raw json.
 			}
 			return c.emitMessage(ctx, sink, m)
 		}
+	case "channel_archive", "channel_unarchive", "channel_deleted", "channel_shared", "channel_unshared", "channel_convert_to_private":
+		var change struct {
+			Channel string `json:"channel"`
+		}
+		if err := json.Unmarshal(cb.Event, &change); err != nil {
+			return err
+		}
+		if !c.configured(change.Channel) {
+			return nil
+		}
+		// Read the current state rather than trusting a possibly delayed event.
+		private, err := c.Public(ctx, change.Channel)
+		if err != nil {
+			return err
+		}
+		return c.observeVisibility(ctx, sink, change.Channel, !private)
 	case "reaction_added", "reaction_removed":
 		var r reaction
 		if err := json.Unmarshal(cb.Event, &r); err != nil {
@@ -187,17 +203,28 @@ func (c *Connector) author(m message) *connector.Identity {
 	return nil
 }
 
-// event is the part every Slack event shares: a public channel's container
+// event is the part every Slack event shares: a channel's container
 // and ACL.
 func (c *Connector) event(kind connector.Kind, artifact, channel string, at time.Time) connector.Event {
+	c.mu.Lock()
+	restricted := c.restricted[channel]
+	c.mu.Unlock()
+	acl := connector.ACL{{Kind: connector.ACLPublic}}
+	if restricted {
+		acl = connector.ACL{{Kind: connector.ACLGroup, Source: c.source, NativeID: channel}}
+	}
 	return connector.Event{
 		Source: c.source, NativeID: artifact, Kind: kind, Time: at,
-		ACL:     connector.ACL{{Kind: connector.ACLPublic}},
+		ACL:     acl,
 		Payload: connector.Payload{Artifact: artifact, Container: connector.Container{Kind: connector.ContainerChannel, NativeID: channel}},
 	}
 }
 
 func (c *Connector) emit(ctx context.Context, sink connector.Sink, ev connector.Event) error {
+	if ev.ACL[0].Kind != connector.ACLPublic && ev.Payload.Revision == nil {
+		ev.NativeID += "@perm:private"
+		ev.Payload.Revision = &connector.Revision{Token: "perm:private"}
+	}
 	if err := sink.Emit(ctx, ev); err != nil {
 		return err
 	}
@@ -247,7 +274,11 @@ func (c *Connector) emitMessage(ctx context.Context, sink connector.Sink, m mess
 		return fmt.Errorf("hashing slack message %s: %w", artifact, err)
 	}
 	hash := sha256.Sum256(sum)
-	token := fmt.Sprintf("%x+%s", hash[:8], permPublic)
+	permission := permPublic
+	if ev.ACL[0].Kind != connector.ACLPublic {
+		permission = "perm:private"
+	}
+	token := fmt.Sprintf("%x+%s", hash[:8], permission)
 	ev.NativeID = artifact + "@" + token
 	ev.Payload.Revision = &connector.Revision{Token: token, EditedAt: editedAt}
 	return c.emit(ctx, sink, ev)

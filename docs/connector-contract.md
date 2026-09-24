@@ -839,8 +839,8 @@ else.
 
 | Artifact | kind | artifact id | native_id | container |
 |---|---|---|---|---|
-| Message or thread reply | `message` | `<channel id>/<ts>` | `<artifact>@<content hash>+perm:public` | channel `<channel id>` |
-| Reaction | `reaction` | `<channel id>/<ts>:reaction:<user id>:<name>` | same | channel |
+| Message or thread reply | `message` | `<channel id>/<ts>` | `<artifact>@<content hash>+perm:public` (or `perm:private` after re-sync) | channel `<channel id>` |
+| Reaction | `reaction` | `<channel id>/<ts>:reaction:<user id>:<name>` | same, or `<artifact>@perm:private` when restricted | channel |
 | Deleted message | `tombstone` | `<channel id>/<ts>:tombstone` | same, with `target` `<channel id>/<ts>` | channel |
 | Removed reaction | `tombstone` | `<reaction artifact>:tombstone` | same, with `target` `<reaction artifact>` | channel |
 
@@ -859,10 +859,9 @@ an app can update a message without marking it edited. The content token is
 therefore the first 16 hex digits of the SHA-256 of what the payload says — the
 author, the text, the thread and the edit's `ts` — so an unchanged message
 re-emits the same native id and a changed one is a new revision. An edit's
-`edited.ts` is `payload.revision.edited_at`. The permission part is `perm:public`
-for every event, because only public channels are ingested. It is in the token
-so that a channel that stops being public can be re-emitted as a new revision
-(#211). The ACL is `public`.
+`edited.ts` is `payload.revision.edited_at`. The permission part is `perm:public` while a channel is public. A private
+or archived channel is restricted to the source-native channel group, and its
+message token changes to `perm:private`. The ACL is `public` or that group.
 
 The author is the Slack user id (`U…`), of kind `user`, or `bot` for an app's
 message: its bot user's id, or its `bot_id` (`B…`) where it has no bot user.
@@ -882,12 +881,21 @@ name and pin messages are channel housekeeping and are not ingested.
 Slack is a `Streamer` over Socket Mode (ADR-0015). The connector asks
 `apps.connections.open` for a URL with the app-level token, reads each
 configured channel with `conversations.info` and the bot token, and refuses a
-private, direct-message or Slack Connect channel with `ErrStreamPermanent`. It
+direct-message or Slack Connect channel with `ErrStreamPermanent`. It
 acknowledges an envelope only after its events are through the gate, so an
 emit that fails leaves it for Slack to deliver again, and it opens a new
 connection itself when Slack sends `disconnect` to refresh one. An event from
 another workspace, from a channel whose `channel_type` is not `channel`, or
 marked `is_ext_shared_channel` is acknowledged and dropped before the gate.
+History backfill reads one cursor-paginated `conversations.history` or
+`conversations.replies` page per call. The runtime persists the position,
+including pending thread roots. A Slack 429 records `Retry-After` before the
+runtime retries. Channel archive and visibility events request a durable
+re-sync before their envelope is acknowledged; at startup the runtime also
+checks previously public containers. Re-sync reads current L0 artifacts,
+which remains possible when Slack no longer lets the bot read the channel,
+and emits new revisions under the restricted group ACL.
+
 Slash commands and interactions are not answered in this version, and no
 `command` kind is declared.
 
