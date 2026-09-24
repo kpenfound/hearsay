@@ -130,6 +130,19 @@ topic is a topic of its own that gets a row when its first new stance lands
 is the one command that calls `Operate`; the Discord and GitHub gestures will
 call it too.
 
+A person's ratify, demote and pin, and the undo of one, are `l2.RecordGesture`
+(or `l2.Store.ApplyGesture` inside a job already holding the key): one row in
+the `l2_gestures` ledger, keyed by the L0 event the gesture came from so a retry
+records nothing, recorded under the same serial key and authorized as an
+operation is. A ratify or a demote applies to the live stances drawn from the
+documents it names and changes no stance row; `l2.Store.Assess`, and so every
+bundle and `stance_history`, serves a ratified current stance as `ratified`
+and a demoted one as `contested` until a ratification or a newer stance. A pin
+writes `l2_pins`
+([ADR-0023](docs/adr/0023-human-gestures-are-a-ledger-every-standing-reads.md)).
+Parsing a source's reaction or command into a request is the connector work
+items'; nothing in this build calls it yet.
+
 Migrations are `go run ./cmd/hearsay migrate up|status|up-to <n>|down`, or
 `dagger api call hearsay migrate --database-url=...` against a database. They are
 plain SQL in `internal/db/migrations/`, embedded with `go:embed`, applied by
@@ -186,13 +199,16 @@ writes nothing. `--author` takes a configured principal or a source identity, an
 `--json` emits the summary for scripts. `--apply` deletes, and needs `--config`
 and `--principal <human-id>`: in one transaction it records the deletion,
 redacts the covered L0 payloads in place, writes a `deletion` event under source
-`hearsay`, and enqueues a `distill` job for every affected L1 document, which the
+`hearsay`, takes out the pins a gesture from a covered event made, and
+enqueues a `distill` job for every affected L1 document, which the
 running distiller rebuilds or removes
 ([ADR-0018](docs/adr/0018-operator-deletion-redacts-l0-in-place.md), the one
 exception to L0 being append-only). The distiller records each rebuild on the
 deletion, and the text L2 read from the deleted content — a superseded stance's
 position, a topic's name when nothing surviving supports it — is redacted in
 place ([ADR-0019](docs/adr/0019-operator-deletion-redacts-superseded-l2-text.md)).
+A gesture whose event is deleted stays in the ledger, holding only ids, and is
+out of force for every read.
 `hearsay delete list` and `hearsay delete show <id> [--json]` read the records,
 with whether each rebuild is complete.
 

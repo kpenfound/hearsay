@@ -49,8 +49,8 @@ subject to the `recent` cap; no code content, ever.
   first — each document once, [AnchorCap] in all, every one readable by the
   reader. A pin the reader may not read takes no place. Anchors are left out of
   `recent` and do not count towards its cap. Nothing configures an anchor
-  (docs/config.md), and nothing in this build pins one: `l2.Store.Pin` is the
-  record the pin gesture will write.
+  (docs/config.md); a person pins one with a gesture (`l2.RecordGesture`),
+  which writes `l2.Store.Pin`'s record.
 - **Only a line with an id.** An entity has a `line` only when it is a document
   the reader may read, and then it carries that document's `l1`.
 - **Conflicts** come from a readable directive's references or text matching a readable current topic title or position. They are computed before budget trimming, capped at three, ordered by tier then topic id, and carry the current position, tier, and ratification stakes. Without a directive they are `[]`.

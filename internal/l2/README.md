@@ -26,7 +26,9 @@ text that is no longer current (ADR-0019, below).
   and whoever pinned it; the document is derived and may be distilled again, so
   the pin outlives it, and a pin whose document is gone is not served. Nothing
   here filters pins by reader — which pins a reader sees is `internal/l3`'s.
-  Pinning again keeps the first pinner; the pin gesture is later work.
+  Pinning again keeps the first pinner. A pin gesture writes the row; undoing
+  it, or deleting its event, takes the row out or hands it to the next pin
+  gesture in force, and never touches a pin no gesture made.
 - **The tier a read serves is computed, never stored** ([Stand], `tier.go`).
   It is a pure function of the topic's live stances, the artifact class and
   source of their evidence as L1 holds it now, their recorded `changes` /
@@ -56,6 +58,17 @@ text that is no longer current (ADR-0019, below).
   ([ConflictError]) while a later operation in force covers its topics. Only
   a configured human who may ratify by hand in the scope operates
   ([CheckOperator]).
+- **Ratify, demote and pin are a ledger too** ([RecordGesture],
+  `l2_gestures`,
+  [ADR-0023](../../docs/adr/0023-human-gestures-are-a-ledger-every-standing-reads.md)).
+  A gesture appends one row keyed by the L0 event it came from, so a retry
+  records nothing, under the scope's serial key like an operation. A ratify
+  or a demote names the live stances drawn from its documents when it was
+  made, and touches no stance row: [Store.Assess] reads the gestures in force
+  ([Store.Corrections]) into [Stand], where the latest on a stance decides —
+  ratified, or contested until a ratification or a newer current stance. An
+  undo is another row; a gesture whose event an operator deletion deleted is
+  out of force. Who may gesture is [CheckGesturer], the operators' rule.
 - **Every read follows the ledger** (`effective.go`,
   [ADR-0021](../../docs/adr/0021-reads-follow-the-topic-ledger.md)). `Topic`,
   `Topics`, `TopicsOver`, the stance reads and matching replay the ledgers of

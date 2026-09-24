@@ -32,6 +32,9 @@ type Preview struct {
 	Topics          []string `json:"topics"`
 	AliasCandidates []string `json:"alias_candidates"`
 	Pins            []string `json:"pins"`
+	// Gestures are the gestures in force the events made, in ledger order:
+	// deleting their events takes them out of force.
+	Gestures []int64 `json:"gestures"`
 }
 
 // Counts returns the number of affected objects in each layer.
@@ -40,6 +43,7 @@ func (p Preview) Counts() map[string]int {
 		"events": len(p.Events), "documents": len(p.Documents),
 		"stances": len(p.Stances), "topics": len(p.Topics),
 		"alias_candidates": len(p.AliasCandidates), "pins": len(p.Pins),
+		"gestures": len(p.Gestures),
 	}
 }
 
@@ -59,7 +63,7 @@ func Walk(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, sel Selecto
 }
 
 func emptyPreview(sel Selector, reason string) Preview {
-	return Preview{Selector: sel, Reason: reason, Events: []string{}, Documents: []string{}, Stances: []string{}, Topics: []string{}, AliasCandidates: []string{}, Pins: []string{}}
+	return Preview{Selector: sel, Reason: reason, Events: []string{}, Documents: []string{}, Stances: []string{}, Topics: []string{}, AliasCandidates: []string{}, Pins: []string{}, Gestures: []int64{}}
 }
 
 // check refuses a selector or reason before any database is touched.
@@ -136,6 +140,16 @@ func walk(ctx context.Context, tx pgx.Tx, repo config.Repo, sel Selector, reason
 	p.Events = unique(p.Events)
 	if len(p.Events) == 0 {
 		return p, fmt.Errorf("selector matches no L0 events")
+	}
+	gestures, err := tx.Query(ctx, `SELECT g.id FROM l2_gestures g
+WHERE g.event = ANY($1) AND g.action <> 'undo' AND NOT EXISTS (SELECT 1 FROM l2_gestures u WHERE u.undoes = g.id)
+  AND NOT EXISTS (SELECT 1 FROM l0_events e WHERE e.id = g.event AND e.deletion IS NOT NULL)
+ORDER BY g.id`, p.Events)
+	if err != nil {
+		return p, err
+	}
+	if p.Gestures, err = pgx.CollectRows(gestures, pgx.RowTo[int64]); err != nil {
+		return p, err
 	}
 	queries := []struct {
 		dest *[]string

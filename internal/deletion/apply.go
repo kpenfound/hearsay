@@ -13,6 +13,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/l0"
+	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/principal"
 	"github.com/kpenfound/hearsay/internal/queue"
 	"github.com/kpenfound/hearsay/internal/service/distiller"
@@ -55,9 +56,11 @@ func CheckOperator(repo config.Repo, id string) error {
 
 // Apply deletes what a selector covers, as operator. In one transaction it
 // walks provenance forward the way [Walk] does, records the deletion, redacts
-// the covered L0 events, writes Hearsay's own `deletion` event, and enqueues a
-// `distill` job for every L1 document the walk found. Anything that fails
-// rolls all of it back.
+// the covered L0 events, writes Hearsay's own `deletion` event, takes out the
+// pins the gestures from those events made ([l2.Store.ResyncDeletedPins]), and
+// enqueues a `distill` job for every L1 document the walk found. Anything that
+// fails rolls all of it back. The gestures themselves stay in the ledger; a
+// deleted event takes its gesture out of force wherever it is read.
 //
 // The running distiller does the rebuild: each document is re-distilled from
 // what is still visible, or deleted if nothing is, and L2 follows the
@@ -78,7 +81,21 @@ func Apply(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, sel Select
 		return Applied{}, fmt.Errorf("encoding the selector: %w", err)
 	}
 
-	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return Applied{}, fmt.Errorf("starting deletion %s: %w", id, err)
+	}
+	defer conn.Release()
+	// A deleted event takes the gesture it made out of force, and the pins
+	// that gesture made with it. Hold the pins before the snapshot is taken,
+	// so that the snapshot sees every pin gesture recorded before the
+	// deletion and none is recorded during it.
+	unhold, err := l2.HoldPins(ctx, conn)
+	if err != nil {
+		return Applied{}, fmt.Errorf("starting deletion %s: %w", id, err)
+	}
+	defer unhold()
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
 		return Applied{}, fmt.Errorf("starting deletion %s: %w", id, err)
 	}
@@ -93,6 +110,9 @@ func Apply(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, sel Select
 		Events: p.Events, Documents: p.Documents, Time: time.Now().UTC(),
 	})
 	if err != nil {
+		return Applied{}, err
+	}
+	if err := l2.New(tx).ResyncDeletedPins(ctx, p.Events); err != nil {
 		return Applied{}, err
 	}
 	for _, doc := range p.Documents {

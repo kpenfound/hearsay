@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -122,6 +123,11 @@ func runDelete(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	} {
 		printIDs(stdout, layer.name, layer.ids)
 	}
+	gestures := make([]string, len(p.Gestures))
+	for i, id := range p.Gestures {
+		gestures[i] = strconv.FormatInt(id, 10)
+	}
+	printIDs(stdout, "Gestures taken out of force", gestures)
 	return nil
 }
 

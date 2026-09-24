@@ -26,14 +26,20 @@ const OperationTarget = "topic-operation:"
 // authority does not let ratify by hand (`ratified_by.principals`). No agent
 // may, whatever its class.
 func CheckOperator(repo config.Repo, scope, id string) error {
+	return checkHand(repo, scope, id, "a topic operation", "changes topics")
+}
+
+// checkHand is the rule a correction by hand is held to: a configured human
+// whom the scope's authority lets ratify by hand.
+func checkHand(repo config.Repo, scope, id, what, does string) error {
 	p, ok := repo.Principal(id)
 	switch {
 	case id == "":
-		return fmt.Errorf("%w: a topic operation names no principal", ErrNotAllowed)
+		return fmt.Errorf("%w: %s names no principal", ErrNotAllowed, what)
 	case !ok:
 		return fmt.Errorf("%w: %q is not a configured principal", ErrNotAllowed, id)
 	case p.Kind != principal.KindHuman:
-		return fmt.Errorf("%w: %q is a %s, and only a person changes topics", ErrNotAllowed, id, p.Kind)
+		return fmt.Errorf("%w: %q is a %s, and only a person %s", ErrNotAllowed, id, p.Kind, does)
 	case !repo.Authority.ForScope(scope).RatifiedByPrincipal(id):
 		return fmt.Errorf("%w: %q may not ratify by hand in scope %q", ErrNotAllowed, id, scope)
 	}
@@ -110,11 +116,17 @@ func Operate(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, req Oper
 }
 
 func operationTarget() (string, error) {
+	return holdTarget(OperationTarget)
+}
+
+// holdTarget mints the target of a hold's assert job: prefix and 128 random
+// bits, so no two holds share a job.
+func holdTarget(prefix string) (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("minting a topic operation's job target: %w", err)
+		return "", fmt.Errorf("minting a hold's job target: %w", err)
 	}
-	return OperationTarget + hex.EncodeToString(b[:]), nil
+	return prefix + hex.EncodeToString(b[:]), nil
 }
 
 // operationScope is the scope a request's topics are in, read before the

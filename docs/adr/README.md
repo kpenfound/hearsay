@@ -30,6 +30,7 @@ The format, numbering and supersession rules are in [ADR-0001](0001-record-archi
 | [0020](0020-topic-operations-are-a-ledger-held-on-the-scope-key.md) | Topic operations are a ledger, recorded under the scope's serial key | accepted | 2026-09-24 |
 | [0021](0021-reads-follow-the-topic-ledger.md) | Reads follow the topic ledger | accepted | 2026-09-24 |
 | [0022](0022-human-gestures-and-command-replies.md) | Human gestures enter L0; only explicit commands receive source replies | accepted | 2026-09-24 |
+| [0023](0023-human-gestures-are-a-ledger-every-standing-reads.md) | Human gestures are a ledger every standing reads | accepted | 2026-09-24 |
 
 ## Names other work depends on
 

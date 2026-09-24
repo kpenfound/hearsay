@@ -12,9 +12,9 @@ import (
 
 // Pin is a person saying that one L1 document is an anchor of a scope
 // (docs/design.md#anchors). It is a record, like a stance: nothing re-derives
-// it, and it outlives the document it names being distilled again. Nothing in
-// this build makes one on a person's behalf — the gesture is later work — so the
-// store operations are the whole of it.
+// it, and it outlives the document it names being distilled again. A pin
+// gesture writes one through [Store.Pin], and its undo takes it out
+// ([RecordGesture]).
 type Pin struct {
 	// Scope is the entity id the document anchors.
 	Scope string

@@ -350,12 +350,16 @@ func TestCheckOperator(t *testing.T) {
 		{name: "a human named in ratified_by", repo: restricted, id: "kyle", allow: true},
 		{name: "a human not named in ratified_by", repo: restricted, id: "sam"},
 	}
+	// A gesture is held to the rule a topic operation is.
+	checks := map[string]func(config.Repo, string, string) error{"CheckOperator": l2.CheckOperator, "CheckGesturer": l2.CheckGesturer}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := l2.CheckOperator(tt.repo, "eng", tt.id)
-			if tt.allow != (err == nil) || (err != nil && !errors.Is(err, l2.ErrNotAllowed)) {
-				t.Fatalf("CheckOperator(%q) = %v, want allowed %v", tt.id, err, tt.allow)
-			}
-		})
+		for name, check := range checks {
+			t.Run(name+"/"+tt.name, func(t *testing.T) {
+				err := check(tt.repo, "eng", tt.id)
+				if tt.allow != (err == nil) || (err != nil && !errors.Is(err, l2.ErrNotAllowed)) {
+					t.Fatalf("%s(%q) = %v, want allowed %v", name, tt.id, err, tt.allow)
+				}
+			})
+		}
 	}
 }

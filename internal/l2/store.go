@@ -641,7 +641,8 @@ type Assessment struct {
 // the topic and its current stance at all is the caller's to check, with
 // [Assessment.Access].
 //
-// Nothing records a person's ratification before v0.8.0, so none is passed.
+// What people ratified and demoted by hand is the gesture ledger in force
+// ([Store.Corrections]), read with the histories.
 func (s *Store) Assess(ctx context.Context, authority config.Authority, reader l1.Reader, topics []Topic) ([]Assessment, error) {
 	ids := make([]string, len(topics))
 	for i, t := range topics {
@@ -669,11 +670,22 @@ func (s *Store) Assess(ctx context.Context, authority config.Authority, reader l
 	if err != nil {
 		return nil, err
 	}
+	stanceIDs := make([]string, len(stances))
+	for i, st := range stances {
+		stanceIDs[i] = st.ID
+	}
+	corrections, err := s.Corrections(ctx, stanceIDs)
+	if err != nil {
+		return nil, err
+	}
 	readable := func(st Stance) bool { return access.Stance(reader, st) }
 	out := make([]Assessment, len(topics))
 	for i, t := range topics {
 		history := histories[t.ID]
-		standing, ok := Stand(TierInputs{History: history, Evidence: evidence, Policy: authority.ForScope(t.Scope), Readable: readable})
+		standing, ok := Stand(TierInputs{
+			History: history, Evidence: evidence, Policy: authority.ForScope(t.Scope),
+			Ratified: corrections.Ratified, Demoted: corrections.Demoted, Readable: readable,
+		})
 		out[i] = Assessment{Topic: t, History: history, Standing: standing, Stands: ok, Access: access}
 	}
 	return out, nil
