@@ -247,6 +247,8 @@ L0 is append-only, but deletion is required (a pasted secret, a departed employe
 
 A deletion at the source arrives as a tombstone and only hides what it covers. A deletion from Hearsay is an operator action, `hearsay delete --apply`, and it is the one exception to append-only: the covered L0 rows keep their id, source, artifact, kind, time and ACL, their payload content is redacted in place, and Hearsay records the deletion as its own action rather than the source's ([ADR-0018](adr/0018-operator-deletion-redacts-l0-in-place.md)).
 
+Both kinds of deletion rebuild the same way: the affected L1 documents are re-distilled or deleted, and each stance resting on them is superseded, by a withdrawal when none of its evidence is left. Only an operator deletion also takes the derived text: a stance written before it rebuilt the stance's document has its position redacted once it is superseded, and a topic whose opening document it deleted, and which no surviving document supports, has its name redacted. Ids and supersession edges stay, so `stance_history` still shows the withdrawal ([ADR-0019](adr/0019-operator-deletion-redacts-superseded-l2-text.md)). Every deletion is a durable record of what it covered and what it rebuilt; `hearsay delete list` and `hearsay delete show <id>` read it, including whether every rebuild job has finished.
+
 ## Configuration
 
 A repo, applied like GitOps. The schema is [config.md](config.md); what follows

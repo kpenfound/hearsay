@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"reflect"
 	"strconv"
@@ -19,6 +20,8 @@ import (
 	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/deletion"
 	"github.com/kpenfound/hearsay/internal/l0"
+	"github.com/kpenfound/hearsay/internal/queue"
+	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
 // deleteDatabase is a migrated scratch database: the preview test compares the
@@ -302,5 +305,134 @@ func TestDeleteApplyNamesAConfiguredHumanOperator(t *testing.T) {
 	}
 	if _, err := get("evt:chat:m3"); err == nil || !strings.Contains(err.Error(), "at source chat by evt:chat:m3:tombstone") || strings.Contains(err.Error(), "operator") {
 		t.Errorf("l0 get <tombstoned> = %v, want the source's tombstone and no operator", err)
+	}
+}
+
+// The audit trail as an operator reads it: `delete list` and `delete show`,
+// in text and in JSON, over fixed deletion records — one whose rebuild is
+// complete and one still waiting on a document.
+func TestDeleteListAndShow(t *testing.T) {
+	url, pool := deleteDatabase(t, "delete_record_")
+	ctx := t.Context()
+	const (
+		done    = "del_00000000000000000000000000000001"
+		waiting = "del_00000000000000000000000000000002"
+	)
+	for _, stmt := range []string{
+		`INSERT INTO l0_deletions (id, operator, reason, selector, deleted_at, events, documents, retraction, replays) VALUES
+ ('` + done + `', 'pat', 'pasted a key', '{"Event":"evt:chat:reply","ArtifactSource":"","ArtifactID":"","Author":""}',
+  '2026-09-01T10:00:00Z', '{evt:chat:reply}', '{l1:chat:thread}', 'evt:hearsay:deletion:` + done + `', 2),
+ ('` + waiting + `', 'pat', 'departed employee', '{"Event":"","ArtifactSource":"","ArtifactID":"","Author":"chat:u9"}',
+  '2026-09-02T09:00:00Z', '{evt:chat:a,evt:chat:b}', '{l1:chat:a}', 'evt:hearsay:deletion:` + waiting + `', 0)`,
+		`INSERT INTO l0_deletion_rebuilds (deletion, document, outcome, rebuilt_at) VALUES
+ ('` + done + `', 'l1:chat:thread', 'deleted', '2026-09-01T10:05:00Z')`,
+		`INSERT INTO l2_topics (id, scope, name, acl, opened_by, redacted_by) VALUES
+ ('topic:one', 'chat', '[redacted]', '[{"kind":"public"}]', 'l1:chat:thread', '` + done + `')`,
+		`INSERT INTO l2_stances (id, topic_id, position, stated_at, evidence, tier, acl, redacted_by) VALUES
+ ('stance:one', 'topic:one', '[redacted]', '2026-08-31T00:00:00Z', '{l1:chat:thread}', 'inferred', '[{"kind":"public"}]', '` + done + `')`,
+	} {
+		if _, err := pool.Exec(ctx, stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cli := func(args ...string) string {
+		t.Helper()
+		var out, stderr bytes.Buffer
+		if err := run(ctx, append([]string{"delete", "--database-url", url}, args...), &out, &stderr); err != nil {
+			t.Fatalf("delete %v = %v (%s)", args, err, stderr.String())
+		}
+		return out.String()
+	}
+	row := func(cells ...string) string {
+		return fmt.Sprintf("%-38s%-22s%-10s%-12s%-22s%s\n", cells[0], cells[1], cells[2], cells[3], cells[4], cells[5])
+	}
+	for _, tt := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"list", []string{"list"}, row("ID", "TIME", "OPERATOR", "STATUS", "SELECTOR", "REASON") +
+			row(waiting, "2026-09-02T09:00:00Z", "pat", "rebuilding", "author chat:u9", "departed employee") +
+			row(done, "2026-09-01T10:00:00Z", "pat", "complete", "event evt:chat:reply", "pasted a key")},
+		{"list json", []string{"list", "--json"}, `[{"id":"` + waiting + `","time":"2026-09-02T09:00:00Z","operator":"pat","reason":"departed employee",` +
+			`"selector":{"Event":"","ArtifactSource":"","ArtifactID":"","Author":"chat:u9"},"status":"rebuilding"},` +
+			`{"id":"` + done + `","time":"2026-09-01T10:00:00Z","operator":"pat","reason":"pasted a key",` +
+			`"selector":{"Event":"evt:chat:reply","ArtifactSource":"","ArtifactID":"","Author":""},"status":"complete"}]` + "\n"},
+		{"show complete", []string{"show", done}, `Deletion ` + done + ` (event evt:chat:reply)
+Time: 2026-09-01T10:00:00Z
+Operator: pat
+Reason: pasted a key
+Status: complete
+Retraction event: evt:hearsay:deletion:` + done + `
+Replays dropped: 2
+L0 events redacted (1):
+  evt:chat:reply
+L1 documents rebuilt (1):
+  l1:chat:thread deleted at 2026-09-01T10:05:00Z
+L2 stances superseded, position redacted (1):
+  stance:one
+L2 topics, name redacted (1):
+  topic:one
+`},
+		{"show rebuilding", []string{"show", waiting}, `Deletion ` + waiting + ` (author chat:u9)
+Time: 2026-09-02T09:00:00Z
+Operator: pat
+Reason: departed employee
+Status: rebuilding
+Retraction event: evt:hearsay:deletion:` + waiting + `
+Replays dropped: 0
+L0 events redacted (2):
+  evt:chat:a
+  evt:chat:b
+L1 documents rebuilt (1):
+  l1:chat:a pending
+L2 stances superseded, position redacted (0):
+L2 topics, name redacted (0):
+`},
+		{"show json", []string{"--json", "show", done}, `{"id":"` + done + `","time":"2026-09-01T10:00:00Z","operator":"pat","reason":"pasted a key",` +
+			`"selector":{"Event":"evt:chat:reply","ArtifactSource":"","ArtifactID":"","Author":""},"status":"complete",` +
+			`"retraction":"evt:hearsay:deletion:` + done + `","replays":2,"events":["evt:chat:reply"],` +
+			`"documents":[{"id":"l1:chat:thread","outcome":"deleted","at":"2026-09-01T10:05:00Z"}],"stances":["stance:one"],"topics":["topic:one"]}` + "\n"},
+		{"show rebuilding json", []string{"show", waiting, "--json"}, `{"id":"` + waiting + `","time":"2026-09-02T09:00:00Z","operator":"pat","reason":"departed employee",` +
+			`"selector":{"Event":"","ArtifactSource":"","ArtifactID":"","Author":"chat:u9"},"status":"rebuilding",` +
+			`"retraction":"evt:hearsay:deletion:` + waiting + `","replays":0,"events":["evt:chat:a","evt:chat:b"],` +
+			`"documents":[{"id":"l1:chat:a","outcome":"pending"}],"stances":[],"topics":[]}` + "\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := cli(tt.args...); got != tt.want {
+				t.Errorf("delete %v =\n%s\nwant\n%s", tt.args, got, tt.want)
+			}
+		})
+	}
+
+	// A job still to run on a rebuilt document holds the status at rebuilding.
+	if _, err := queue.Enqueue(ctx, pool, queue.Request{Kind: distiller.JobKind(), TargetID: "l1:chat:thread"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := cli("show", done); !strings.Contains(got, "Status: rebuilding\n") {
+		t.Errorf("show with a pending distill job =\n%s\nwant rebuilding", got)
+	}
+
+	for _, tt := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"show without an id", []string{"show"}, "exactly one deletion id"},
+		{"show two ids", []string{"show", done, waiting}, "exactly one deletion id"},
+		{"show an unknown id", []string{"show", "del_ffffffffffffffffffffffffffffffff"}, "no such deletion"},
+		{"list with an argument", []string{"list", done}, "takes none"},
+		{"list with a selector", []string{"list", "--event", "evt:chat:reply"}, "does not read --event"},
+		{"show with a reason", []string{"show", done, "--reason", "x"}, "does not read --reason"},
+		{"list with an artifact", []string{"list", "--artifact", "chat", "thread"}, "does not read --artifact"},
+		{"an unknown action", []string{"purge"}, `unexpected argument "purge"`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var out, stderr bytes.Buffer
+			err := run(ctx, append([]string{"delete", "--database-url", url}, tt.args...), &out, &stderr)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("delete %v = %v, want an error containing %q", tt.args, err, tt.want)
+			}
+		})
 	}
 }

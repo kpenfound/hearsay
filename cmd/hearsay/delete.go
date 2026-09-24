@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"strings"
+	"text/tabwriter"
+	"time"
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/db"
@@ -19,7 +22,7 @@ func runDelete(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	event := fs.String("event", "", "L0 event id")
 	author := fs.String("author", "", "configured principal or source:native-id")
 	reason := fs.String("reason", "", "reason for deletion (required, preview or not)")
-	asJSON := fs.Bool("json", false, "print the preview, or what was applied, as JSON")
+	asJSON := fs.Bool("json", false, "print the preview, what was applied, or the deletion records as JSON")
 	apply := fs.Bool("apply", false, "delete: redact the covered L0 events and re-distill what depended on them")
 	operator := fs.String("principal", "", "with --apply: the configured human principal applying the deletion")
 	// flag.FlagSet consumes one value, whereas --artifact has two. Extract its
@@ -45,7 +48,13 @@ func runDelete(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		return err
 	}
 	if len(words) != 0 {
-		return fmt.Errorf("unexpected argument %q", words[0])
+		if words[0] != "list" && words[0] != "show" {
+			return fmt.Errorf("unexpected argument %q", words[0])
+		}
+		if artifactSource != "" {
+			return fmt.Errorf("delete %s does not read --artifact", words[0])
+		}
+		return runDeleteRecord(ctx, fs, cfg, resolveDatabase, words, *asJSON, stdout)
 	}
 	if *reason == "" {
 		return errors.New("--reason is required")
@@ -131,4 +140,70 @@ func selectorLabel(s deletion.Selector) string {
 		return "author " + s.Author
 	}
 	return "artifact " + s.ArtifactSource + " " + s.ArtifactID
+}
+
+// runDeleteRecord is `hearsay delete list` and `hearsay delete show <id>`: the
+// audit trail of deletions applied, read-only.
+func runDeleteRecord(ctx context.Context, fs *flag.FlagSet, cfg *config.Config, resolveDatabase func(), words []string, asJSON bool, stdout io.Writer) error {
+	action := "delete " + words[0]
+	if err := checkFlags(fs, action, "json"); err != nil {
+		return err
+	}
+	switch {
+	case words[0] == "list" && len(words) > 1:
+		return fmt.Errorf("unexpected argument %q: %s takes none", words[1], action)
+	case words[0] == "show" && len(words) != 2:
+		return errors.New("delete show needs exactly one deletion id")
+	}
+	resolveDatabase()
+	pool, err := db.Connect(ctx, cfg.Database.URL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	if words[0] == "list" {
+		deletions, err := deletion.List(ctx, pool)
+		if err != nil {
+			return err
+		}
+		if asJSON {
+			return json.NewEncoder(stdout).Encode(deletions)
+		}
+		return printDeletions(stdout, deletions)
+	}
+	rec, err := deletion.Show(ctx, pool, words[1])
+	if err != nil {
+		return err
+	}
+	if asJSON {
+		return json.NewEncoder(stdout).Encode(rec)
+	}
+	printDeletion(stdout, rec)
+	return nil
+}
+
+func printDeletions(w io.Writer, deletions []deletion.Summary) error {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tTIME\tOPERATOR\tSTATUS\tSELECTOR\tREASON")
+	for _, d := range deletions {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", d.ID, d.Time.Format(time.RFC3339), d.Operator, d.Status, selectorLabel(d.Selector), d.Reason)
+	}
+	return tw.Flush()
+}
+
+func printDeletion(w io.Writer, rec deletion.Record) {
+	fmt.Fprintf(w, "Deletion %s (%s)\n", rec.ID, selectorLabel(rec.Selector))
+	fmt.Fprintf(w, "Time: %s\nOperator: %s\nReason: %s\nStatus: %s\n", rec.Time.Format(time.RFC3339), rec.Operator, rec.Reason, rec.Status)
+	fmt.Fprintf(w, "Retraction event: %s\nReplays dropped: %d\n", rec.Retraction, rec.Replays)
+	printIDs(w, "L0 events redacted", rec.Events)
+	fmt.Fprintf(w, "L1 documents rebuilt (%d):\n", len(rec.Documents))
+	for _, d := range rec.Documents {
+		at := ""
+		if d.At != nil {
+			at = " at " + d.At.Format(time.RFC3339)
+		}
+		fmt.Fprintf(w, "  %s %s%s\n", d.ID, d.Outcome, at)
+	}
+	printIDs(w, "L2 stances superseded, position redacted", rec.Stances)
+	printIDs(w, "L2 topics, name redacted", rec.Topics)
 }

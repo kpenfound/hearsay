@@ -136,7 +136,7 @@ func (d *Distiller) distillMeeting(ctx context.Context, result Result, root conn
 				result.Asserting = result.Asserting || asserting
 			}
 		}
-		return nil
+		return rebuilt(ctx, tx, ids, removed)
 	})
 	if err != nil {
 		return Result{}, err

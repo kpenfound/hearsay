@@ -450,7 +450,10 @@ Four rules to know before changing it:
   earlier stance on the topic where there is one — a re-distilled document
   replaces what it said, it does not answer what came after — and otherwise the
   newest live stance on its topic stated no later than it; a document read late
-  forks the chain rather than rewriting a later stance.
+  forks the chain rather than rewriting a later stance. The one update is an
+  operator deletion's redaction of a superseded stance's position and of a
+  topic's name
+  ([ADR-0019](docs/adr/0019-operator-deletion-redacts-superseded-l2-text.md)).
 - **Re-reading a document is idempotent twice over.** `l2_asserted` records
   which version (`distilled_at`) was read, so a restart makes no model call; and
   topic and stance ids are derived from what produced them — a stance's from its

@@ -157,6 +157,13 @@ func (d *Distiller) Handle(ctx context.Context, job queue.Job) error {
 	if err != nil {
 		return err
 	}
+	if !result.Superseded {
+		// A job that wrote nothing still finished the document's rebuild, and
+		// an operator deletion waiting on it would otherwise wait for good.
+		if err := d.settled(ctx, job.TargetID); err != nil {
+			return err
+		}
+	}
 	log := telemetry.Logger(ctx)
 	switch {
 	case result.Skipped:
@@ -173,6 +180,23 @@ func (d *Distiller) Handle(ctx context.Context, job queue.Job) error {
 		log.DebugContext(ctx, "document unchanged", "l1_id", result.DocID, "embedded", result.Embedded)
 	}
 	return nil
+}
+
+// settled records a document's rebuild as it stands, for a job whose outcome
+// wrote no transaction of its own: re-distilled if it is still in L1, deleted
+// if it is not. A rebuild already recorded is left as it was.
+func (d *Distiller) settled(ctx context.Context, docID string) error {
+	_, err := d.docs.Get(ctx, docID)
+	if err != nil && !errors.Is(err, l1.ErrNotFound) {
+		return err
+	}
+	redistilled, deleted := []string{docID}, []string(nil)
+	if err != nil {
+		redistilled, deleted = nil, redistilled
+	}
+	return pgx.BeginFunc(ctx, d.pool, func(tx pgx.Tx) error {
+		return rebuilt(ctx, tx, redistilled, deleted)
+	})
 }
 
 // Distill rebuilds one document from L0 and writes it.
@@ -389,12 +413,30 @@ func (d *Distiller) deleteConversation(ctx context.Context, source, artifact, do
 		}
 		removedIDs = append(removedIDs, ids...)
 		deleted = len(removedIDs) > 0
-		return l2.EnqueueDeletedEvidence(ctx, tx, removedIDs)
+		if err := l2.EnqueueDeletedEvidence(ctx, tx, removedIDs); err != nil {
+			return err
+		}
+		// The document is gone whether this job removed it or an earlier one
+		// did, and an operator deletion that queued it is told so.
+		return rebuilt(ctx, tx, nil, append(removedIDs, docID))
 	})
 	if err != nil {
 		return false, fmt.Errorf("removing conversation %s: %w", docID, err)
 	}
 	return deleted, nil
+}
+
+// rebuilt tells any operator deletion that queued these documents that they
+// were re-distilled or deleted, and redacts the L2 text the deletion took the
+// ground from (l2.RedactDeleted). It runs in the transaction that wrote or
+// removed them. A document no deletion is waiting on costs one insert that
+// matches nothing.
+func rebuilt(ctx context.Context, tx pgx.Tx, redistilled, deleted []string) error {
+	recorded, err := l0.RecordRebuilt(ctx, tx, redistilled, deleted)
+	if err != nil || recorded == 0 {
+		return err
+	}
+	return l2.RedactDeleted(ctx, tx, append(slices.Clone(redistilled), deleted...))
 }
 
 // deleteDerived returns the removed L1 ids so their graph repair jobs can be
@@ -486,7 +528,7 @@ func (d *Distiller) distillWikiSections(ctx context.Context, result Result, root
 				result.Asserting = result.Asserting || asserting
 			}
 		}
-		return nil
+		return rebuilt(ctx, tx, ids, removed)
 	})
 	if err != nil {
 		return Result{}, err
@@ -590,7 +632,7 @@ func (d *Distiller) writeDocument(ctx context.Context, result Result, source, ar
 			}
 		}
 		if doc.Kind != l1.KindChatThread {
-			return nil
+			return rebuilt(ctx, tx, []string{docID}, nil)
 		}
 		prefix := l1.BurstPrefix(artifact)
 		ids := make([]string, len(bursts))
@@ -611,7 +653,7 @@ func (d *Distiller) writeDocument(ctx context.Context, result Result, source, ar
 			}
 			result.Written = result.Written || changed
 		}
-		return nil
+		return rebuilt(ctx, tx, append(ids, docID), removed)
 	})
 	if err != nil {
 		return Result{}, err

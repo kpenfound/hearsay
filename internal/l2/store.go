@@ -485,6 +485,13 @@ ON CONFLICT (id) DO NOTHING`,
 	if err != nil {
 		return Stance{}, false, fmt.Errorf("appending stance %s: %w", st.ID, err)
 	}
+	if tag.RowsAffected() == 1 && predecessor != nil {
+		// The predecessor is superseded now, and may be text an operator
+		// deletion was waiting to redact.
+		if err := s.redact(ctx, []string{st.TopicID}); err != nil {
+			return Stance{}, false, err
+		}
+	}
 	stored, err := s.Stance(ctx, st.ID)
 	if err != nil {
 		return Stance{}, false, err

@@ -20,7 +20,9 @@ things about it are worth knowing before you use it:
   ([ADR-0018](../../docs/adr/0018-operator-deletion-redacts-l0-in-place.md)).
   Every read hides a deleted row, `Get` says `ErrDeleted` (never
   `ErrRetracted`), and `Append` drops and counts a replay of one instead of
-  calling it a rewrite.
+  calling it a rewrite. `RecordRebuilt` is how the distiller tells a deletion
+  what became of each document it queued (`l0_deletion_rebuilds`,
+  [ADR-0019](../../docs/adr/0019-operator-deletion-redacts-superseded-l2-text.md)).
 - **A deletion is a tombstone.** A tombstone event names the artifact it
   retracts. Revisions ingested before it are hidden — `Get` says
   `ErrRetracted`, `List` and `Changes` leave them out, and `Counts` shows

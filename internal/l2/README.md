@@ -13,7 +13,8 @@ them), and anything derived that can be recomputed — that is `internal/l3`.
 
 Two invariants to preserve: a stance is never overwritten, only superseded; and
 one scope's writes are serialized, or supersession chains interleave and
-corrupt.
+corrupt. The one exception to the first is an operator deletion's redaction of
+text that is no longer current (ADR-0019, below).
 
 ## Things to know before changing it
 
@@ -60,6 +61,17 @@ corrupt.
   explicit `evidence deleted` withdrawal when none remain. Withdrawals stay in
   history but never stand as a current position. The original citation ids
   remain on a withdrawal for provenance.
+- **An operator deletion redacts text; a tombstone does not** ([RedactDeleted],
+  [ADR-0019](../../docs/adr/0019-operator-deletion-redacts-superseded-l2-text.md)).
+  The distiller records each document an operator deletion rebuilt in
+  `l0_deletion_rebuilds`. A stance written before that rebuild, once it is
+  superseded, has its position replaced by [Redacted]; a topic whose opening
+  document the deletion deleted, and which no document still in L1 supports,
+  has its name replaced. `redacted_by` names the deletion, and ids, evidence
+  and `supersedes` edges stay. The sweep runs in the distiller's rebuild
+  transaction and again in the store whenever a stance supersedes another,
+  because a current stance is never redacted: it waits for its withdrawal or
+  its document's next reading.
 - **Otherwise supersession follows `stated_at`, the evidence's time.** A
   document read late supersedes the newest live stance before it and is
   superseded by nothing, so the chain forks; the later stance is never

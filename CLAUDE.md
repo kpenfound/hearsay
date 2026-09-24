@@ -169,8 +169,12 @@ redacts the covered L0 payloads in place, writes a `deletion` event under source
 `hearsay`, and enqueues a `distill` job for every affected L1 document, which the
 running distiller rebuilds or removes
 ([ADR-0018](docs/adr/0018-operator-deletion-redacts-l0-in-place.md), the one
-exception to L0 being append-only). L2 text redaction and `delete list|show`
-are not built yet.
+exception to L0 being append-only). The distiller records each rebuild on the
+deletion, and the text L2 read from the deleted content — a superseded stance's
+position, a topic's name when nothing surviving supports it — is redacted in
+place ([ADR-0019](docs/adr/0019-operator-deletion-redacts-superseded-l2-text.md)).
+`hearsay delete list` and `hearsay delete show <id> [--json]` read the records,
+with whether each rebuild is complete.
 
 ## Layout
 
