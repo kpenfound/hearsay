@@ -22,7 +22,9 @@ read path asks a model to generate anything.
 
 - **A document is a function of its events.** [Build] takes the current revision
   of an artifact and of everything that hangs off it; [BuildChatWindow] takes
-  the current messages in a fixed channel time bucket; [BuildChatBursts] derives
+  the current messages in a fixed channel time bucket; [BuildChatReplies] takes
+  a channel message and the replies whose `thread` names it, on a source such
+  as Slack where a reply's thread is the message it answers; [BuildChatBursts] derives
   gated single-author runs from those current messages; [BuildWikiSections]
   partitions markdown at headings; [BuildMeetingSegments] takes numbered
   transcript ranges and combines repeated ranges for one topic. They produce everything but

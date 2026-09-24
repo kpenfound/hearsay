@@ -202,7 +202,7 @@ about it. Everything else the connector wants to keep goes in `native`.
 | `mentions` | array of identities | where the source resolves mentions | Identities the text refers to. |
 | `links` | array of strings | where the source gives them | URLs the artifact carries, verbatim. L1 turns them into typed references; a connector does not. |
 | `parent` | artifact id | where there is a parent | The thing this one hangs off: the issue a comment is on, the message a reply answers. |
-| `thread` | artifact id | where there is a thread | The root of the conversation, which is what the distiller assembles a thread from. On a two-level source it equals `parent`. |
+| `thread` | artifact id | where there is a thread | The root of the conversation, which is what the distiller assembles a thread from. On a two-level source it equals `parent`. A channel message that replies name here heads a conversation of its own, as well as belonging to its channel's. |
 | `part_of` | artifact id | where the source has a hierarchy of items | The item this one is part of in the source's own hierarchy: a sub-issue's parent issue. It is not a conversation — nothing is assembled from it — and it may name an artifact in another container of the same source. An item with no parent leaves it out. |
 | `paths` | array of strings | where the artifact is a change to files | The repository paths the change touches — a pull request's changed files, and the name a renamed file had — relative to the repository root. Sorted, without duplicates, at most 300 (`connector.MaxPaths`). Names only: never a diff, a patch or file content. |
 | `paths_truncated` | boolean | when `paths` was cut | The change touched more paths than `paths` holds. |
@@ -677,7 +677,9 @@ production, and assert on what the recorder received.
 ## Connector examples
 
 Written before the connectors, and checked on paper against the GitHub (v0.2.0),
-Discord (v0.3.0), Drive (v0.4.0) and Obsidian (v0.4.0) work.
+Discord (v0.3.0), Drive (v0.4.0) and Obsidian (v0.4.0) work. Slack (v0.10.0) was
+written with its connector, which is the check that a new source needs nothing
+outside its own package, its registration and these documents.
 
 ### GitHub (issue #8)
 
@@ -832,6 +834,62 @@ different native id every time the gateway replays after a reconnect, and
 reconnects replay. Hanging the tombstone off a fixed artifact id,
 `<message id>:tombstone`, makes a replayed deletion idempotent like everything
 else.
+
+### Slack (issue #210)
+
+| Artifact | kind | artifact id | native_id | container |
+|---|---|---|---|---|
+| Message or thread reply | `message` | `<channel id>/<ts>` | `<artifact>@<content hash>+perm:public` | channel `<channel id>` |
+| Reaction | `reaction` | `<channel id>/<ts>:reaction:<user id>:<name>` | same | channel |
+| Deleted message | `tombstone` | `<channel id>/<ts>:tombstone` | same, with `target` `<channel id>/<ts>` | channel |
+| Removed reaction | `tombstone` | `<reaction artifact>:tombstone` | same, with `target` `<reaction artifact>` | channel |
+
+A Slack `ts` is unique only within its channel, so the channel is part of every
+artifact id. Slack is two-level: a thread reply's `thread` and `parent` are both
+the message it answers (`thread_ts`), and the message itself carries neither.
+There is no separate thread artifact. The distiller makes a message that replies
+name as their `thread` the root of a `chat_thread` keyed by the message's
+artifact, with bursts over the message and its replies, and the message stays in
+its channel's 30-minute window as well. Discord replies outside a native thread
+name their message only as `parent`, so they stay in the window.
+
+Slack reports a message again whenever something about it changes that is not
+its content: a thread root is re-sent with its reply count on every reply, and
+an app can update a message without marking it edited. The content token is
+therefore the first 16 hex digits of the SHA-256 of what the payload says — the
+author, the text, the thread and the edit's `ts` — so an unchanged message
+re-emits the same native id and a changed one is a new revision. An edit's
+`edited.ts` is `payload.revision.edited_at`. The permission part is `perm:public`
+for every event, because only public channels are ingested. It is in the token
+so that a channel that stops being public can be re-emitted as a new revision
+(#211). The ACL is `public`.
+
+The author is the Slack user id (`U…`), of kind `user`, or `bot` for an app's
+message: its bot user's id, or its `bot_id` (`B…`) where it has no bot user.
+Slack's events carry no names, so there is no `handle` or `display_name`.
+`<@U…>` in the text is a mention. `url` is the message's archive link,
+`https://slack.com/archives/<channel>/p<ts without the dot>`, with
+`?thread_ts=<root ts>&cid=<channel>` on a reply. A reaction's name is its Slack
+shortcode (`+1`, `white_check_mark`, `thumbsup::skin-tone-2`), URL-escaped in the
+artifact id and kept verbatim in `native.emoji`. Its `parent` is the message.
+
+Deletions carry no time, so a tombstone's `time` is the deleted message's `ts`
+and its id is fixed: a redelivered deletion is the same event. A deleted
+message that has replies stays in Slack as a placeholder, which Slack reports
+as a change to subtype `tombstone`; that is a tombstone too. Join, leave, topic,
+name and pin messages are channel housekeeping and are not ingested.
+
+Slack is a `Streamer` over Socket Mode (ADR-0015). The connector asks
+`apps.connections.open` for a URL with the app-level token, reads each
+configured channel with `conversations.info` and the bot token, and refuses a
+private, direct-message or Slack Connect channel with `ErrStreamPermanent`. It
+acknowledges an envelope only after its events are through the gate, so an
+emit that fails leaves it for Slack to deliver again, and it opens a new
+connection itself when Slack sends `disconnect` to refresh one. An event from
+another workspace, from a channel whose `channel_type` is not `channel`, or
+marked `is_ext_shared_channel` is acknowledged and dropped before the gate.
+Slash commands and interactions are not answered in this version, and no
+`command` kind is declared.
 
 ### Google Drive (issue #15)
 

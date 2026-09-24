@@ -30,6 +30,10 @@ func TestConnectorRegistry(t *testing.T) {
 			src:  connector.SourceConfig{ID: "discord", Type: "discord", Containers: []string{"1"}, Settings: []byte(`{"guild":"2"}`), Secrets: map[string]string{"token": "t"}},
 		},
 		{
+			name: "slack is registered",
+			src:  connector.SourceConfig{ID: "slack", Type: "slack", Containers: []string{"C0PUBLIC"}, Settings: []byte(`{"team":"T0001"}`), Secrets: map[string]string{"app_token": "xapp-t", "bot_token": "xoxb-t"}},
+		},
+		{
 			name: "drive is registered",
 			src:  connector.SourceConfig{ID: "drive", Type: "drive", Containers: []string{"folder"}},
 		},

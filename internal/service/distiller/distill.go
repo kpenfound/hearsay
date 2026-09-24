@@ -243,6 +243,9 @@ func (d *Distiller) Distill(ctx context.Context, docID string) (Result, error) {
 		return d.distillWikiSections(ctx, result, root)
 	}
 	if _, ok := l1.KindFor(root); !ok {
+		if l1.ChatRoot(root) {
+			return d.distillReplies(ctx, result, source, artifact, root)
+		}
 		// A job for something that is part of another artifact's document: a
 		// comment whose parent the source did not name, or a kind no L1 kind
 		// covers yet. Nothing to do, and nothing wrong.
@@ -286,6 +289,46 @@ func (d *Distiller) Distill(ctx context.Context, docID string) (Result, error) {
 		return d.writeThread(ctx, result, source, artifact, root.Payload.Container.NativeID, doc, children)
 	}
 	return d.writeDocument(ctx, result, source, artifact, root.Payload.Container.NativeID, doc, nil)
+}
+
+// distillReplies distils the conversation a channel message heads on a source
+// whose replies name the message they answer as their thread. A message nobody
+// answers heads nothing, and one whose replies are all gone takes its document
+// and bursts with it.
+func (d *Distiller) distillReplies(ctx context.Context, result Result, source, artifact string, root connector.Event) (Result, error) {
+	repo, err := d.referenceRepo(ctx)
+	if err != nil {
+		return Result{}, err
+	}
+	doc, replies, err := d.replies(ctx, source, root, repo)
+	if errors.Is(err, l1.ErrNotDistilled) {
+		deleted, err := d.deleteConversation(ctx, source, artifact, result.DocID)
+		if err != nil {
+			return Result{}, err
+		}
+		result.Deleted = deleted
+		result.Skipped = !deleted
+		return result, nil
+	}
+	if err != nil {
+		return Result{}, fmt.Errorf("building %s: %w", result.DocID, err)
+	}
+	return d.writeThread(ctx, result, source, artifact, root.Payload.Container.NativeID, doc, append(replies, root))
+}
+
+// replies reads and builds the conversation a [l1.ChatRoot] message heads.
+func (d *Distiller) replies(ctx context.Context, source string, root connector.Event, repo config.Repo) (l1.Document, []connector.Event, error) {
+	children, err := d.events.Current(ctx, l0.ListOptions{
+		Filter: l0.Filter{Source: source, Thread: root.Payload.Artifact},
+		Limit:  l0.MaxLimit,
+	})
+	if err != nil {
+		return l1.Document{}, nil, fmt.Errorf("reading the replies to %s: %w", root.Payload.Artifact, err)
+	}
+	if len(children) >= l0.MaxLimit {
+		return l1.Document{}, nil, fmt.Errorf("%s has at least %d replies, which is more than one read returns", root.Payload.Artifact, l0.MaxLimit)
+	}
+	return l1.BuildChatReplies(root, children, d.resolver, repo)
 }
 
 // referenceRepo is the current vocabulary for extracting L1 references.
@@ -780,6 +823,13 @@ func (d *Distiller) provenanceNow(ctx context.Context, source, artifact string) 
 	})
 	if err != nil || len(roots) == 0 {
 		return nil, err
+	}
+	if _, ok := l1.KindFor(roots[0]); !ok && l1.ChatRoot(roots[0]) {
+		doc, _, err := d.replies(ctx, source, roots[0], d.repo)
+		if errors.Is(err, l1.ErrNotDistilled) {
+			return nil, nil
+		}
+		return doc.L0Refs, err
 	}
 	children, err := d.events.Current(ctx, l0.ListOptions{
 		Filter: l0.Filter{Source: source, Thread: artifact},

@@ -116,7 +116,8 @@ process is up) and `/readyz` (the database, its schema, and what each source
 says about itself) on `--listen` (default `:8081`, and `hearsay all` takes the
 flag too). It writes L0, so it refuses without a
 database too. GitHub (`internal/connector/github`), Discord
-(`internal/connector/discord`), Drive (`internal/connector/drive`), Obsidian
+(`internal/connector/discord`), Slack (`internal/connector/slack`, public
+channels over Socket Mode), Drive (`internal/connector/drive`), Obsidian
 (`internal/connector/obsidian`) and the agent session source
 (`internal/connector/agent`, which agents push their own session events to,
 authenticated by their API tokens) ship, and their package comments document
