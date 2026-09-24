@@ -100,6 +100,50 @@ dagger api functions                        # the modules; add a name for its fu
 
 `build` and `image` take `--version` to stamp into the binary.
 
+### Publishing a release image
+
+Publishing is a manual Dagger function, separate from `dagger check`. Start
+from the release commit, run the checks, and choose the version to use for both
+the image tag and `hearsay version`. The version must be a valid OCI tag (for
+example `v0.10.0`); `publish` does not add or remove a `v`.
+
+For GHCR, use a GitHub personal access token with `write:packages` permission
+for the target package, and a user who can publish to its owner. Put the token
+in `HEARSAY_REGISTRY_TOKEN` in your environment, not in the command line or the
+repository. Dagger reads it as a secret:
+
+```sh
+dagger check
+git tag v0.10.0
+dagger api call hearsay publish \
+  --version=v0.10.0 \
+  --username="$GITHUB_USER" \
+  --password=env:HEARSAY_REGISTRY_TOKEN
+git push origin v0.10.0
+```
+
+The default destination is `ghcr.io/kpenfound/hearsay:v0.10.0`. For a fork or
+another registry, pass an **untagged** `--image-address`, such as
+`--image-address=ghcr.io/my-org/hearsay`; use credentials for that registry.
+`publish` returns the manifest's digest-qualified address. It builds both
+`linux/amd64` and `linux/arm64` from `image` and publishes one manifest without
+needing a separate container runtime.
+
+After publishing, smoke-check the registry image on both platforms with
+Dagger, using the digest-qualified address returned by `publish` as `IMAGE`:
+
+```sh
+dagger -c "container --platform=linux/amd64 | from $IMAGE | platform"
+dagger -c "container --platform=linux/arm64 | from $IMAGE | platform"
+dagger -c "container --platform=linux/amd64 | from $IMAGE | with-exec -- hearsay version | stdout"
+dagger -c "container --platform=linux/arm64 | from $IMAGE | with-exec -- hearsay version | stdout"
+```
+
+The platform calls must report `linux/amd64` and `linux/arm64`, and both
+version calls must begin `hearsay v0.10.0`. A missing platform fails while
+pulling from the manifest. `hearsay:image-check` runs the same two platform
+builds and version calls locally during routine checks, with no registry push.
+
 ### Trying a change
 
 `playground` and `qa` run the change you have in the working tree, in
