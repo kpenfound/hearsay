@@ -125,7 +125,11 @@ under the scope's key through `ApplyGesture` or `ApplyOperation`, records it in
 `github_command_replies`, and answers it with one reply comment through a
 `github.Replier` with the source's token, which needs issue and pull request
 write access. Deleting the command comment undoes it and revises the reply
-(ADR-0022). It needs Postgres and refuses without it.
+(ADR-0022). A source configured `read_only: true` opts out: its connector
+emits `/hearsay` comments as ordinary messages, the worker enqueues and runs
+nothing from it and builds no replier for it, reads none of its reactions as
+gestures, and the API registers no Discord command for it. It needs Postgres
+and refuses without it.
 
 Topic merge, split and undo are `l2.Operate`: one row appended to the
 `l2_topic_operations` ledger, recorded while holding the scope's `assert` serial
@@ -157,7 +161,8 @@ items'. The CLI and Discord's `/hearsay pin` call `RecordGesture` directly.
 
 Discord's `/hearsay pin` and `/hearsay merge` are answered by the API, not the
 connector: `api.Interactions` on `POST /discord/<source>/interactions`, for a
-Discord source whose settings name `application_id` and `public_key`. It
+Discord source whose settings name `application_id` and `public_key` and
+which is not `read_only`. It
 verifies the signature, records the command as an L0 `command` event (never
 distilled), maps the Discord user to a configured human, applies the command
 through `RecordGesture` or `Operate`, and answers ephemerally within Discord's

@@ -89,6 +89,7 @@ renamed afterwards ([connector contract](connector-contract.md#source-ids)).
     - acme/api
     - acme/infra
   refresh: 2m                # optional; poll cadence or stream retry base
+  read_only: false           # optional; true: Hearsay never writes to it
   settings:                  # optional; the connector's own configuration
     since: 2026-01-01
   secrets:                   # optional; names of environment variables
@@ -102,6 +103,7 @@ renamed afterwards ([connector contract](connector-contract.md#source-ids)).
 | `type` | The connector type: `github`, `discord`, `drive`, `obsidian`, `agent`, or a third party's. |
 | `containers` | The repositories, channels or folders this source may ingest, **by native id** — a repository full name, a channel id, a folder id, never a display name. This is control point 1 of [access control](design.md#access-control): default deny, so a container that is not listed is not ingested. `*` widens it to everything the credentials can see, and must then be the only entry. |
 | `refresh` | A duration (`30s`, `5m`, `1h`). The poll interval and base retry interval for a stream. Ignored by a connector that only receives pushes; the runtime applies its own floor and jitter — never more often than every 30 seconds, and each tick up to a tenth of the interval later than it is due. Without it, polls run every five minutes and failed streams retry from a 30-second base. |
+| `read_only` | `true` or `false`, default `false`; nothing else is a boolean here, so `yes` is an error. `true` means Hearsay never writes to the source and its credentials need no write access: it is ingested in full, but its reactions are not gestures, its `/hearsay` comments are ordinary content that is distilled, and no command is registered, answered or replied to. People on it give feedback through `hearsay gestures` and `hearsay topics`. It changes nothing for a source type that never writes (Drive, Obsidian, agent). Switching a source to read-only leaves gestures and merges it already made in force; undo them with the CLI. |
 | `settings` | Opaque to Hearsay and passed to the connector, which rejects a field it does not have. What belongs here is documented by the connector. |
 | `secrets` | A map from the name the connector asks for to **the name of an environment variable**. A value that is not an environment variable name is an error, because a configuration repository is checked in and a token pasted here would be too. |
 
@@ -149,13 +151,21 @@ The commenter's GitHub account has to be one of a configured human's
 `identities`, and the scope's `ratified_by.principals` has to name that human.
 The assertion worker runs each command once, as it was written, and answers it
 with one reply comment saying what it did and how to undo it, or why it did
-nothing. It needs every GitHub source's token in its environment for that, and
-a token that is not set stops it starting. Deleting the command comment undoes
+nothing. It needs the token of every GitHub source that is not `read_only` in
+its environment for that, and a token that is not set stops it starting. Deleting the command comment undoes
 the command and revises the reply to say so; an undo of a merge that a later
 topic operation builds on is refused, and the reply says which operation to
 undo first. Editing a command comment runs nothing. Hearsay posts nothing else
 to GitHub. Command comments and Hearsay's replies are recorded in L0 but never
 distilled into the issue's or pull request's document.
+
+With `read_only: true`, none of that happens and the token needs no write
+access: a fine-grained token or an App installation with read access to
+Metadata, Contents, Issues and Pull requests is enough. A classic token has no
+read-only scope for private repositories; one with no scope reads public
+repositories. A `/hearsay` comment is an ordinary comment, distilled with the
+rest of the issue or pull request, and the assertion worker neither runs it
+nor needs the source's token.
 
 ### Discord source
 
@@ -210,6 +220,13 @@ The person's Discord account has to be one of a configured human's
 Otherwise the answer says why nothing happened. A command run in a channel the
 source does not ingest is refused. Each command is recorded in L0 as a
 `command` event and is never distilled.
+
+With `read_only: true`, reactions are ingested but are not gestures, and the
+API registers no command and answers no interaction for the source even if
+`application_id` and `public_key` are set, and does not need its bot token.
+Invite the bot with the `bot` scope alone, with View Channel and Read Message
+History; it needs no `applications.commands` scope, no Send Messages
+permission and no Interactions Endpoint URL.
 
 Run `hearsay connectors --config ./hearsay.yaml`. `/readyz` reports the
 connection state, last event time, retries, and allowlist drops. A bot token

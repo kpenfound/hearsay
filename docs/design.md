@@ -293,6 +293,8 @@ Hearsay answers only commands a person explicitly issued. Reactions receive no r
 
 Command events and Hearsay-authored replies are control traffic, not team content: they are excluded from L1 distillation, including the webhook echo of a GitHub reply. The echo cannot become a new command.
 
+A source may opt out of all of this with `read_only: true` in its configuration, so that Hearsay never needs write access to it. It is still ingested in full, but its reactions are not gestures, its `/hearsay` comments are ordinary content and are distilled like any other comment, no slash command is registered or answered for it, and nothing is posted to it: the write-back exception ADR-0022 makes does not apply to that source. People on a read-only source correct L2 through `hearsay gestures` and `hearsay topics` instead.
+
 ## Evaluation
 
 Log every bundle and what the consumer did next.
