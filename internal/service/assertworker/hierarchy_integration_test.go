@@ -4,6 +4,7 @@ package assertworker_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/bundle"
@@ -184,9 +186,40 @@ func TestASubIssueInheritsItsParentsStances(t *testing.T) {
 			want: []string{"readiness is its own endpoint"},
 		},
 	}
+	f := assertworker.NewFollower(pool, repo, time.Millisecond, l0.MaxLimit)
 	for _, step := range steps {
+		var held pgx.Tx
+		if step.file == "issues.edited.sub_issue" {
+			// Hold the feed head while the first delivery commits. This
+			// reproduces the zero-read window that parallel integration tests
+			// can create, so a one-shot follower would miss the placement.
+			tx, err := pool.Begin(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var xid string
+			if err := tx.QueryRow(t.Context(), `SELECT pg_current_xact_id()::text`).Scan(&xid); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+			held = tx
+		}
 		gh.deliver(step.event, step.file)
-		follow(t, pool, repo)
+		if held != nil {
+			go func() {
+				time.Sleep(100 * time.Millisecond)
+				_ = held.Rollback(context.Background())
+			}()
+		}
+		// An open transaction elsewhere in the cluster can make the feed
+		// temporarily empty, even after this delivery commits. Wait for the
+		// placement rather than treating one empty read as caught up.
+		waitFor(t, step.name, func() bool {
+			if _, err := f.Once(t.Context()); err != nil {
+				t.Fatalf("Once() = %v", err)
+			}
+			return slices.Equal(inherited(t, pool, item("11")), step.want)
+		})
 		if got := inherited(t, pool, item("11")); !slices.Equal(got, step.want) {
 			t.Fatalf("%s: #11 inherits %q, want %q", step.name, got, step.want)
 		}
