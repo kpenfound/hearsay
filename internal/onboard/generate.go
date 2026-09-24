@@ -194,7 +194,7 @@ func renderConfig(in Input, sources []source, all []*person, envs map[string]str
 		}
 		top = append(top, comment(key("scopes"),
 			"One scope per repository: its tracker is the repository's issues, and it is about the repository's code.",
-			"Every scope takes all of Discord and Drive; narrow a scope to the channels and folders about it with",
+			"Every scope takes all of Discord, Slack and Drive; narrow a scope to the channels and folders about it with",
 			"`- source: discord` and `containers: [...]`."),
 			seq(scopes...))
 	} else {
@@ -231,7 +231,7 @@ func renderConfig(in Input, sources []source, all []*person, envs map[string]str
 	}
 	principalsNote := []string{
 		"The people on the team. Each calls the API with the token in its token_env, and with no `scopes:` reads every scope.",
-		"A Discord or Drive identity is written only where the sources confirmed it. After the first ingest,",
+		"A Discord, Slack or Drive identity is written only where the sources confirmed it. After the first ingest,",
 		"`hearsay identities list` names the accounts nobody claims yet, with YAML to paste in here.",
 	}
 	if len(all) == 1 {

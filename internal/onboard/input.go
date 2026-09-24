@@ -20,6 +20,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector/discord"
 	"github.com/kpenfound/hearsay/internal/connector/drive"
 	"github.com/kpenfound/hearsay/internal/connector/github"
+	"github.com/kpenfound/hearsay/internal/connector/slack"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
@@ -30,6 +31,7 @@ const (
 	SourceGitHub  = "github"
 	SourceDiscord = "discord"
 	SourceDrive   = "drive"
+	SourceSlack   = "slack"
 )
 
 // The environment variables the generated configuration names for source and
@@ -40,6 +42,8 @@ const (
 	EnvGitHubWebhookSecret = "HEARSAY_GITHUB_WEBHOOK_SECRET"
 	EnvDiscordToken        = "HEARSAY_DISCORD_TOKEN"
 	EnvDriveCredentials    = "HEARSAY_DRIVE_CREDENTIALS"
+	EnvSlackAppToken       = "HEARSAY_SLACK_APP_TOKEN"
+	EnvSlackBotToken       = "HEARSAY_SLACK_BOT_TOKEN"
 	EnvAnthropicAPIKey     = "ANTHROPIC_API_KEY"
 )
 
@@ -49,6 +53,7 @@ type Input struct {
 	Operator Operator
 	GitHub   GitHub
 	Discord  Discord
+	Slack    Slack
 	Drive    Drive
 }
 
@@ -63,6 +68,8 @@ type Operator struct {
 	GitHub string
 	// Discord is their Discord user id.
 	Discord string
+	// Slack is their Slack user id, supplied by the operator.
+	Slack string
 	// Email is the Google account address Drive shares with them.
 	Email string
 }
@@ -90,11 +97,22 @@ type Drive struct {
 	APIURL string
 }
 
+// Slack is one workspace and its public channel ids. No workspace skips it.
+type Slack struct {
+	Workspace string
+	Channels  []string
+	// APIURL replaces Slack's Web API for a local fixture.
+	APIURL string
+}
+
 // HasGitHub reports whether the GitHub source is configured.
 func (in Input) HasGitHub() bool { return len(in.GitHub.Repos) > 0 }
 
 // HasDiscord reports whether the Discord source is configured.
 func (in Input) HasDiscord() bool { return in.Discord.Guild != "" }
+
+// HasSlack reports whether the Slack source is configured.
+func (in Input) HasSlack() bool { return in.Slack.Workspace != "" }
 
 // HasDrive reports whether the Drive source is configured.
 func (in Input) HasDrive() bool { return len(in.Drive.Folders) > 0 }
@@ -158,6 +176,29 @@ func CheckEmail(email string) error {
 	return nil
 }
 
+// CheckSlackID checks a workspace, channel or user id without accepting a
+// private-channel or direct-message prefix as a public channel.
+func CheckSlackID(what, id string) error {
+	prefix := byte('U')
+	switch what {
+	case "workspace":
+		prefix = 'T'
+	case "channel":
+		prefix = 'C'
+	}
+	if len(id) < 3 || id[0] != prefix {
+		return fmt.Errorf("%q is not a Slack %s id (%c…)", id, what, prefix)
+	}
+	for _, c := range id[1:] {
+		if c < 'A' || c > 'Z' {
+			if c < '0' || c > '9' {
+				return fmt.Errorf("%q is not a Slack %s id (%c…)", id, what, prefix)
+			}
+		}
+	}
+	return nil
+}
+
 // Check reports everything wrong with the input, not the first thing.
 func (in Input) Check() error {
 	var errs []error
@@ -189,6 +230,12 @@ func (in Input) Check() error {
 			errs = append(errs, errors.New("operator-email: names a Drive account, and Drive is skipped"))
 		}
 	}
+	if in.Operator.Slack != "" {
+		add("operator-slack", CheckSlackID("user", in.Operator.Slack))
+		if !in.HasSlack() {
+			errs = append(errs, errors.New("operator-slack: names a Slack account, and Slack is skipped"))
+		}
+	}
 	for _, r := range in.GitHub.Repos {
 		add("github-repo", CheckRepo(r))
 	}
@@ -209,17 +256,31 @@ func (in Input) Check() error {
 	if dup := duplicate(in.Discord.Channels, nil); dup != "" {
 		errs = append(errs, fmt.Errorf("discord-channel: %q is listed twice", dup))
 	}
+	if in.HasSlack() {
+		add("slack-workspace", CheckSlackID("workspace", in.Slack.Workspace))
+		if len(in.Slack.Channels) == 0 {
+			errs = append(errs, errors.New("slack-channel: name at least one public channel to ingest, or skip Slack"))
+		}
+	} else if len(in.Slack.Channels) > 0 {
+		errs = append(errs, errors.New("slack-channel: names channels, and Slack is skipped: give the workspace too"))
+	}
+	for _, c := range in.Slack.Channels {
+		add("slack-channel", CheckSlackID("channel", c))
+	}
+	if dup := duplicate(in.Slack.Channels, nil); dup != "" {
+		errs = append(errs, fmt.Errorf("slack-channel: %q is listed twice", dup))
+	}
 	for _, f := range in.Drive.Folders {
 		add("drive-folder", CheckFolder(f))
 	}
 	if dup := duplicate(in.Drive.Folders, nil); dup != "" {
 		errs = append(errs, fmt.Errorf("drive-folder: %q is listed twice", dup))
 	}
-	if !in.HasGitHub() && !in.HasDiscord() && !in.HasDrive() {
+	if !in.HasGitHub() && !in.HasDiscord() && !in.HasSlack() && !in.HasDrive() {
 		errs = append(errs, errors.New("every source is skipped: a configuration needs at least one to ingest anything"))
 	}
-	if in.Operator.GitHub == "" && in.Operator.Discord == "" && in.Operator.Email == "" {
-		errs = append(errs, errors.New("the operator needs an identity in a configured source: give your GitHub login, Discord user id or Drive email"))
+	if in.Operator.GitHub == "" && in.Operator.Discord == "" && in.Operator.Slack == "" && in.Operator.Email == "" {
+		errs = append(errs, errors.New("the operator needs an identity in a configured source: give your GitHub login, Discord user id, Slack user id or Drive email"))
 	}
 	return errors.Join(errs...)
 }
@@ -275,6 +336,15 @@ func (in Input) sources() []source {
 		}
 		if in.Discord.APIURL != "" {
 			src.settings = append(src.settings, pair{"api_url", in.Discord.APIURL})
+		}
+		out = append(out, src)
+	}
+	if in.HasSlack() {
+		src := source{id: SourceSlack, typ: slack.Type, containers: in.Slack.Channels,
+			settings: []pair{{"team", in.Slack.Workspace}},
+			secrets:  []pair{{slack.SecretAppToken, EnvSlackAppToken}, {slack.SecretBotToken, EnvSlackBotToken}}}
+		if in.Slack.APIURL != "" {
+			src.settings = append(src.settings, pair{"api_url", in.Slack.APIURL})
 		}
 		out = append(out, src)
 	}
