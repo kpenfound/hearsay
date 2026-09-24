@@ -6,15 +6,112 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/connector/agent"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/service/api"
+	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
+
+func TestNextActionTracesToLatestBundleOnItsScope(t *testing.T) {
+	w := newWorld(t)
+	source, session := w.src+"session", "session-next"
+	src := repo(w.src).Sources[0]
+	c, err := agent.New(src, repo(w.src).Principals, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(c.Handler(connector.NewGate(l0.New(w.pool), source, c.Describe(), connector.NewAllowlist(src))))
+	defer srv.Close()
+	started := time.Now().UTC().Add(-time.Minute)
+	postSession := func(kind connector.Kind, fields map[string]any, at time.Time) string {
+		t.Helper()
+		body := map[string]any{"on_behalf_of": "kyle", "session": session, "kind": kind, "started_at": started, "time": at}
+		for k, v := range fields {
+			body[k] = v
+		}
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, srv.URL, bytes.NewReader(mustJSON(t, body)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer test-shed-api-credential")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var accepted agent.Accepted
+		if err := json.NewDecoder(resp.Body).Decode(&accepted); err != nil || resp.StatusCode != http.StatusAccepted {
+			t.Fatalf("POST session event = %d %+v, %v", resp.StatusCode, accepted, err)
+		}
+		return accepted.ID
+	}
+	postSession(connector.KindAgentSession, map[string]any{"phase": "start"}, started)
+	directive := connector.Event{Source: w.src, NativeID: "next-conflict", Kind: connector.KindMessage, Time: day,
+		Payload: connector.Payload{Artifact: "next-conflict", Container: connector.Container{Kind: connector.ContainerChannel, NativeID: w.project},
+			Thread: w.project + "#12", Text: "where the lock lives",
+			Author:   &connector.Identity{Source: w.src, Kind: connector.IdentityUser, NativeID: kyleNode},
+			Mentions: []connector.Identity{{Source: w.src, Kind: connector.IdentityBot, NativeID: "shed-native", Handle: "shed[bot]"}}},
+		ACL: connector.ACL{{Kind: connector.ACLPublic}}}
+	if _, err := l0.New(w.pool).Append(t.Context(), directive); err != nil {
+		t.Fatal(err)
+	}
+	caller := api.Caller{Principal: "kyle", Agent: "shed", Session: session}
+	b := decodeBundle(t, w.http(t, caller, "get_bundle", map[string]any{"scope": w.scope, "directive": connector.EventID(w.src, directive.NativeID)}))
+	if len(b.Conflicts) == 0 {
+		t.Fatal("the served bundle has no flagged conflict")
+	}
+	otherScope := "code:" + w.project
+	w.http(t, caller, "get_bundle", map[string]any{"scope": otherScope})
+	w.http(t, caller, "get_bundle", map[string]any{"scope": w.scope})
+	nextID := postSession(connector.KindNextAction, map[string]any{"next": "1", "scope": w.scope, "action": "proceeded",
+		"verdicts": []agent.Verdict{{TopicID: b.Conflicts[0].TopicID, Verdict: "real"}}}, time.Now().UTC().Add(time.Minute))
+	nextEvent, err := l0.New(w.pool).Get(t.Context(), nextID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target, ok, err := distiller.TargetOf(t.Context(), nextEvent, nil); ok || err != nil {
+		t.Fatalf("next action distilled to %q, %v, %v", target, ok, err)
+	}
+	var asserted api.Asserted
+	if err := json.Unmarshal(w.http(t, caller, "assert", map[string]any{"topic": w.lockTopic(),
+		"position": "The lock remains in the worker", "evidence": []string{w.issue}}), &asserted); err != nil {
+		t.Fatal(err)
+	}
+	var trace api.SessionTrace
+	if err := json.Unmarshal(w.http(t, kyle, "get_session", map[string]any{"assertion": asserted.ID}), &trace); err != nil {
+		t.Fatal(err)
+	}
+	var scopedAudits []string
+	for _, ev := range trace.Events {
+		if ev.Kind != connector.KindAudit {
+			continue
+		}
+		var audit api.AuditRecord
+		if err := json.Unmarshal(ev.Payload.Native, &audit); err != nil {
+			t.Fatal(err)
+		}
+		if audit.Scope == w.scope {
+			scopedAudits = append(scopedAudits, ev.ID)
+		}
+	}
+	if len(scopedAudits) != 2 || len(trace.BundleAuditByNextAction) != 1 || trace.BundleAuditByNextAction[nextID] != scopedAudits[1] {
+		t.Fatalf("attribution = %v, scoped audits = %v", trace.BundleAuditByNextAction, scopedAudits)
+	}
+	if got := trace.Events[len(trace.Events)-1]; got.ID != nextID || got.Kind != connector.KindNextAction {
+		t.Fatalf("last trace event = %s %s, want next action %s", got.ID, got.Kind, nextID)
+	}
+	var native agent.Native
+	if err := json.Unmarshal(nextEvent.Payload.Native, &native); err != nil || native.Verdicts[0].TopicID != b.Conflicts[0].TopicID {
+		t.Fatalf("next action verdict = %+v, %v", native.Verdicts, err)
+	}
+}
 
 func TestAssertionTracesToSessionAndBundles(t *testing.T) {
 	w := newWorld(t)

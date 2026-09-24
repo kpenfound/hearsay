@@ -57,9 +57,10 @@ func (c *Calls) sessionSource(ctx context.Context, caller Caller, reader l1.Read
 // SessionTrace is a session's connector events and the bundle audits made in
 // it, in occurrence order. The assertion id is the handle used to find it.
 type SessionTrace struct {
-	Source   string            `json:"source"`
-	Artifact string            `json:"artifact"`
-	Events   []connector.Event `json:"events"`
+	Source                  string            `json:"source"`
+	Artifact                string            `json:"artifact"`
+	Events                  []connector.Event `json:"events"`
+	BundleAuditByNextAction map[string]string `json:"bundle_audit_by_next_action"`
 }
 
 func getSession(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, raw json.RawMessage) (any, error) {
@@ -125,7 +126,8 @@ ORDER BY coalesce(revision_edited_at, occurred_at), seq`, source, as.Session, Au
 		return nil, fmt.Errorf("listing session trace: %w", err)
 	}
 	defer rows.Close()
-	trace := SessionTrace{Source: source, Artifact: as.Session, Events: []connector.Event{}}
+	trace := SessionTrace{Source: source, Artifact: as.Session, Events: []connector.Event{}, BundleAuditByNextAction: map[string]string{}}
+	latestBundle := map[string]string{}
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
@@ -148,9 +150,26 @@ ORDER BY coalesce(revision_edited_at, occurred_at), seq`, source, as.Session, Au
 			// the caller.
 			if audit.Principal == caller.Principal && audit.Agent == as.Agent && reader.Effective.Grant.Scopes.Has(audit.Scope) {
 				trace.Events = append(trace.Events, item)
+				if audit.Call == "get_bundle" {
+					latestBundle[audit.Scope] = item.ID
+				}
 			}
 		} else if reader.Allows(item.ACL) {
 			// Session revisions may carry their own tightened ACLs.
+			if item.Kind == connector.KindNextAction {
+				var next struct {
+					Scope string `json:"scope"`
+				}
+				if err := json.Unmarshal(item.Payload.Native, &next); err != nil {
+					return nil, fmt.Errorf("decoding session next action: %w", err)
+				}
+				if !reader.Effective.Grant.Scopes.Has(next.Scope) {
+					continue
+				}
+				if bundleID := latestBundle[next.Scope]; bundleID != "" {
+					trace.BundleAuditByNextAction[item.ID] = bundleID
+				}
+			}
 			trace.Events = append(trace.Events, item)
 		}
 	}

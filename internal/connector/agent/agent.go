@@ -1,8 +1,8 @@
 // Package agent is the agent session source: an agent posts its own session
-// events — the session starting and ending, its turns and its tool calls — to
-// the connectors service, which writes them to L0 as `agent_session`,
-// `agent_turn` and `tool_call` events. It is a [connector.Pusher], mounted at
-// `/hooks/<source id>` like any other.
+// events — the session starting and ending, its turns, tool calls and next
+// actions — to the connectors service, which writes them to L0 as
+// `agent_session`, `agent_turn`, `tool_call` and `next_action` events. It is a
+// [connector.Pusher], mounted at `/hooks/<source id>` like any other.
 //
 // # Who is posting
 //
@@ -27,7 +27,7 @@
 // The artifact is the session: every event of one session carries the same
 // `payload.artifact`, the session id the agent supplies, and each event is one
 // revision of it, keyed by what it is — `<session>@start`, `<session>@end`,
-// `<session>@turn:<turn>`, `<session>@call:<call>`. So an artifact's history in
+// `<session>@turn:<turn>`, `<session>@call:<call>`, `<session>@next:<next>`. So an artifact's history in
 // L0 is the session in order, and the same event posted twice is the same
 // event id and writes nothing. The same key posted again with different
 // content is refused with 409: an event key names one thing that happened.
@@ -49,6 +49,10 @@
 //
 // These kinds are provenance rather than team knowledge, and the distiller
 // does not distil them.
+// A consumer sends a next action after using a bundle on a scope to report
+// whether it asked, proceeded or asserted, with verdicts for flagged conflicts
+// it evaluated. The API attributes it to the latest bundle audit in that
+// session and scope.
 //
 // The request, one event per POST, is documented with an example per kind in
 // docs/connector-contract.md; the source's configuration is docs/config.md.
@@ -153,9 +157,9 @@ func New(src connector.SourceConfig, principals []principal.Principal, lookup fu
 	return c, nil
 }
 
-// Describe declares the three session kinds.
+// Describe declares the four session kinds.
 func (c *Connector) Describe() connector.Descriptor {
-	return connector.Descriptor{Type: Type, Kinds: []connector.Kind{connector.KindAgentSession, connector.KindAgentTurn, connector.KindToolCall}}
+	return connector.Descriptor{Type: Type, Kinds: []connector.Kind{connector.KindAgentSession, connector.KindAgentTurn, connector.KindToolCall, connector.KindNextAction}}
 }
 
 // Health reports ok: a push source has nothing of its own to fail, and a quiet
@@ -185,8 +189,8 @@ func (c *Connector) agentFor(token string) (string, bool) {
 	return found, found != ""
 }
 
-// Request is one event, as an agent posts it. Exactly one of Phase, Turn and
-// Call is set, according to Kind.
+// Request is one event, as an agent posts it. Exactly one of Phase, Turn, Call
+// and Next is set, according to Kind.
 type Request struct {
 	// Agent, where set, must be the agent the token authenticates. It is a
 	// check, never a source of identity.
@@ -195,7 +199,7 @@ type Request struct {
 	OnBehalfOf string `json:"on_behalf_of"`
 	// Session is the agent's own id for the session: the artifact.
 	Session string `json:"session"`
-	// Kind is agent_session, agent_turn or tool_call.
+	// Kind is agent_session, agent_turn, tool_call or next_action.
 	Kind connector.Kind `json:"kind"`
 	// StartedAt is when the session started, the same on every event of it.
 	StartedAt time.Time `json:"started_at"`
@@ -209,6 +213,12 @@ type Request struct {
 	// tool_call.
 	Call string `json:"call,omitempty"`
 	Tool string `json:"tool,omitempty"`
+	// Next identifies one consumer action within the session. Scope is the
+	// bundle scope it followed; verdicts identify conflicts the consumer judged.
+	Next     string    `json:"next,omitempty"`
+	Scope    string    `json:"scope,omitempty"`
+	Action   string    `json:"action,omitempty"`
+	Verdicts []Verdict `json:"verdicts,omitempty"`
 	// Text is what the turn said. It is required on an agent_turn, and may
 	// annotate either of the others.
 	Text string `json:"text,omitempty"`
@@ -217,16 +227,26 @@ type Request struct {
 	Output json.RawMessage `json:"output,omitempty"`
 }
 
+// Verdict is a consumer's judgment of a conflict flagged in a bundle.
+type Verdict struct {
+	TopicID string `json:"topic_id"`
+	Verdict string `json:"verdict"`
+}
+
 // Native is what an event's payload.native holds: the parts of the request
 // the standard payload fields have no place for.
 type Native struct {
-	Session string          `json:"session"`
-	Phase   string          `json:"phase,omitempty"`
-	Turn    string          `json:"turn,omitempty"`
-	Call    string          `json:"call,omitempty"`
-	Tool    string          `json:"tool,omitempty"`
-	Input   json.RawMessage `json:"input,omitempty"`
-	Output  json.RawMessage `json:"output,omitempty"`
+	Session  string          `json:"session"`
+	Phase    string          `json:"phase,omitempty"`
+	Turn     string          `json:"turn,omitempty"`
+	Call     string          `json:"call,omitempty"`
+	Tool     string          `json:"tool,omitempty"`
+	Next     string          `json:"next,omitempty"`
+	Scope    string          `json:"scope,omitempty"`
+	Action   string          `json:"action,omitempty"`
+	Verdicts []Verdict       `json:"verdicts,omitempty"`
+	Input    json.RawMessage `json:"input,omitempty"`
+	Output   json.RawMessage `json:"output,omitempty"`
 }
 
 // The session phases.
@@ -235,10 +255,10 @@ const (
 	PhaseEnd   = "end"
 )
 
-// maxKey is the longest session, turn or call id.
+// maxKey is the longest session, turn, call or next id.
 const maxKey = 128
 
-// validKey reports whether s may be a session, turn or call id: 1 to [maxKey]
+// validKey reports whether s may be a session, turn, call or next id: 1 to [maxKey]
 // bytes of letters, digits, `-`, `_`, `.` and `:`. The set leaves out `@`,
 // which separates an artifact from its revision in a native id, and anything
 // an event id would have to escape.
@@ -281,7 +301,7 @@ func (c *Connector) event(agent string, req Request) (connector.Event, error) {
 		if req.Phase != PhaseStart && req.Phase != PhaseEnd {
 			return connector.Event{}, badRequest("an agent_session has a phase of start or end")
 		}
-		if req.Turn != "" || req.Call != "" || req.Tool != "" || req.Input != nil || req.Output != nil {
+		if req.Turn != "" || req.Call != "" || req.Tool != "" || req.Input != nil || req.Output != nil || hasNextFields(req) {
 			return connector.Event{}, badRequest("an agent_session has a phase and nothing of a turn or a tool call")
 		}
 		native.Phase, revision = req.Phase, req.Phase
@@ -292,7 +312,7 @@ func (c *Connector) event(agent string, req Request) (connector.Event, error) {
 		if req.Text == "" {
 			return connector.Event{}, badRequest("an agent_turn has text")
 		}
-		if req.Phase != "" || req.Call != "" || req.Tool != "" || req.Input != nil || req.Output != nil {
+		if req.Phase != "" || req.Call != "" || req.Tool != "" || req.Input != nil || req.Output != nil || hasNextFields(req) {
 			return connector.Event{}, badRequest("an agent_turn has a turn and text and nothing of a session phase or a tool call")
 		}
 		native.Turn, revision = req.Turn, "turn:"+req.Turn
@@ -303,13 +323,32 @@ func (c *Connector) event(agent string, req Request) (connector.Event, error) {
 		if req.Tool == "" {
 			return connector.Event{}, badRequest("a tool_call names its tool")
 		}
-		if req.Phase != "" || req.Turn != "" {
+		if req.Phase != "" || req.Turn != "" || hasNextFields(req) {
 			return connector.Event{}, badRequest("a tool_call has a call and a tool and nothing of a session phase or a turn")
 		}
 		native.Call, native.Tool, native.Input, native.Output = req.Call, req.Tool, req.Input, req.Output
 		revision = "call:" + req.Call
+	case connector.KindNextAction:
+		if !validKey(req.Next) {
+			return connector.Event{}, badRequest("a next_action has a next id of 1 to %d bytes of letters, digits, -, _, . and :", maxKey)
+		}
+		if req.Scope == "" || (req.Action != "asked" && req.Action != "proceeded" && req.Action != "asserted") {
+			return connector.Event{}, badRequest("a next_action has a scope and action of asked, proceeded or asserted")
+		}
+		if req.Phase != "" || req.Turn != "" || req.Call != "" || req.Tool != "" || req.Text != "" || req.Input != nil || req.Output != nil {
+			return connector.Event{}, badRequest("a next_action has no session phase, turn, tool call or text")
+		}
+		seen := make(map[string]bool, len(req.Verdicts))
+		for _, verdict := range req.Verdicts {
+			if verdict.TopicID == "" || (verdict.Verdict != "real" && verdict.Verdict != "spurious") || seen[verdict.TopicID] {
+				return connector.Event{}, badRequest("each verdict needs a distinct topic_id and a verdict of real or spurious")
+			}
+			seen[verdict.TopicID] = true
+		}
+		native.Next, native.Scope, native.Action, native.Verdicts = req.Next, req.Scope, req.Action, req.Verdicts
+		revision = "next:" + req.Next
 	default:
-		return connector.Event{}, badRequest("kind must be agent_session, agent_turn or tool_call")
+		return connector.Event{}, badRequest("kind must be agent_session, agent_turn, tool_call or next_action")
 	}
 	raw, err := json.Marshal(native)
 	if err != nil {
@@ -342,6 +381,10 @@ func (c *Connector) event(agent string, req Request) (connector.Event, error) {
 			{Kind: connector.ACLIdentity, Source: c.source, NativeID: req.OnBehalfOf},
 		},
 	}, nil
+}
+
+func hasNextFields(req Request) bool {
+	return req.Next != "" || req.Scope != "" || req.Action != "" || req.Verdicts != nil
 }
 
 // errBadRequest is a request the connector cannot turn into an event: the
