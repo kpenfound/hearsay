@@ -18,8 +18,6 @@ func TestRepoReaders(t *testing.T) {
 			"secrets: {token: SEED_GITHUB_TOKEN, webhook_secret: SEED_GITHUB_WEBHOOK_SECRET}\n",
 		"sources/github-oss.yaml": "id: github-oss\ntype: github\ncontainers: [acme/oss]\n" +
 			"secrets: {token: SEED_OSS_TOKEN}\n",
-		"sources/github-ro.yaml": "id: github-ro\ntype: github\ncontainers: [acme/docs]\nread_only: true\n" +
-			"secrets: {token: CMD_RO_TOKEN}\n",
 		"sources/vault.yaml": "id: vault\ntype: obsidian\ncontainers: [notes]\n",
 		"scopes/api.yaml":    "id: api\nsources: [github]\n",
 	}
@@ -98,6 +96,8 @@ func TestCommandRepliers(t *testing.T) {
 			"secrets: {token: CMD_GITHUB_TOKEN, webhook_secret: CMD_GITHUB_WEBHOOK_SECRET}\n",
 		"sources/github-oss.yaml": "id: github-oss\ntype: github\ncontainers: [acme/oss]\n" +
 			"secrets: {token: CMD_OSS_TOKEN}\n",
+		"sources/github-ro.yaml": "id: github-ro\ntype: github\ncontainers: [acme/docs]\nread_only: true\n" +
+			"secrets: {token: CMD_RO_TOKEN}\n",
 		"sources/vault.yaml": "id: vault\ntype: obsidian\ncontainers: [notes]\n",
 		"scopes/api.yaml":    "id: api\nsources: [github]\n",
 	}
