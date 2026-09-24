@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kpenfound/hearsay/internal/bundle"
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/db"
@@ -202,5 +203,48 @@ func TestBundleCacheFollowsCallInputsAndLayerWrites(t *testing.T) {
 	entries(bundleCacheLimit)
 	if _, ok := calls.cache.items[bundleKey{scope: scope, principal: "kyle", revision: baseRevision}]; ok {
 		t.Fatal("oldest entry was not evicted")
+	}
+
+	doc.ACL = event.ACL
+	if _, err := l1.New(pool).Put(t.Context(), doc); err != nil {
+		t.Fatal(err)
+	}
+	into := topic
+	from := l2.Topic{ID: l2.TopicID("cache-test", "issue", 1, "cache stance from another topic"), Scope: "cache-test", Name: "cache stance from another topic",
+		About: []string{scope}, ACL: event.ACL, OpenedBy: doc.ID}
+	if _, err := graph.OpenTopic(t.Context(), from); err != nil {
+		t.Fatal(err)
+	}
+	fromStance := l2.Stance{ID: l2.StanceID(from.ID, doc.ID, "another cache position", event.Time.Add(time.Minute), l2.TierInferred),
+		TopicID: from.ID, Position: "another cache position", Author: "kyle", StatedAt: event.Time.Add(time.Minute),
+		Evidence: []string{doc.ID}, Tier: l2.TierInferred, Judgement: l2.JudgementUnknown, ACL: event.ACL}
+	if _, _, err := graph.AppendStance(t.Context(), fromStance, event.Time.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	beforeMerge := request(calls, kyle, scope, "")
+	var beforeBundle bundle.Bundle
+	if err := json.Unmarshal(beforeMerge, &beforeBundle); err != nil {
+		t.Fatal(err)
+	}
+	if len(beforeBundle.Stances) != 2 {
+		t.Fatalf("bundle has %d topics before merge, want 2", len(beforeBundle.Stances))
+	}
+	beforeOperation := readRevision()
+	if _, err := l2.Operate(t.Context(), pool, repo, l2.OperationRequest{Kind: l2.OperationMerge, Principal: "kyle", Into: into.ID, From: from.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if readRevision() <= beforeOperation {
+		t.Fatal("topic operation did not advance the bundle watermark")
+	}
+	afterMerge := request(calls, kyle, scope, "")
+	if bytes.Equal(beforeMerge, afterMerge) {
+		t.Fatal("topic merge returned the cached pre-merge bundle")
+	}
+	var afterBundle bundle.Bundle
+	if err := json.Unmarshal(afterMerge, &afterBundle); err != nil {
+		t.Fatal(err)
+	}
+	if len(afterBundle.Stances) != 1 || afterBundle.Stances[0].TopicID != into.ID {
+		t.Fatalf("bundle topics after merge = %+v, want only merged-into topic %s", afterBundle.Stances, into.ID)
 	}
 }
