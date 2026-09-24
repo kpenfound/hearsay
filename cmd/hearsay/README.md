@@ -9,6 +9,7 @@ The one binary Hearsay ships. Each process is a subcommand of it (ADR-0003).
 | `hearsay assert-worker` | The assertion worker. L1 to L2. |
 | `hearsay api` | The read and assert API. |
 | `hearsay all` | All four in one process. Local development only. |
+| `hearsay init [--github-repo owner/name]... [--discord-guild id --discord-channel id...] [--drive-folder id]... [--force]` | Write a new team's single-file `hearsay.yaml` and a mode-0600 env file for its secrets. Prompts on a terminal; every prompt has a flag. No database. |
 | `hearsay config validate [path]` | Check a configuration repository. Prints every problem, with file and line. |
 | `hearsay migrate up\|status\|up-to <n>\|down` | Schema migrations, then exit. `down` refuses without `--i-know`. |
 | `hearsay l0 list\|get <id>\|count\|tail` | Inspect the L0 event store. Read-only. |

@@ -1,0 +1,6 @@
+{
+  "permissions": [
+    {"id": "01234567890123456789", "type": "user", "emailAddress": "kyle@acme.example", "displayName": "Kyle Penfound"},
+    {"id": "anyoneWithLink", "type": "anyone"}
+  ]
+}

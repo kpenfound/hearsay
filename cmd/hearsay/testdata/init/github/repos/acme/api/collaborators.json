@@ -1,0 +1,53 @@
+[
+  {
+    "login": "kpenfound",
+    "id": 1,
+    "node_id": "MDQ6VXNlcjE=",
+    "avatar_url": "https://avatars.githubusercontent.com/u/1?v=4",
+    "url": "https://api.github.com/users/kpenfound",
+    "html_url": "https://github.com/kpenfound",
+    "type": "User",
+    "site_admin": false,
+    "permissions": {"admin": false, "maintain": false, "push": true, "triage": true, "pull": true},
+    "role_name": "write"
+  }
+,
+  {
+    "login": "robinok",
+    "id": 2,
+    "node_id": "MDQ6VXNlcjI=",
+    "avatar_url": "https://avatars.githubusercontent.com/u/2?v=4",
+    "url": "https://api.github.com/users/robinok",
+    "html_url": "https://github.com/robinok",
+    "type": "User",
+    "site_admin": false,
+    "permissions": {"admin": false, "maintain": false, "push": true, "triage": true, "pull": true},
+    "role_name": "write"
+  }
+,
+  {
+    "login": "sam-r",
+    "id": 3,
+    "node_id": "MDQ6VXNlcjM=",
+    "avatar_url": "https://avatars.githubusercontent.com/u/3?v=4",
+    "url": "https://api.github.com/users/sam-r",
+    "html_url": "https://github.com/sam-r",
+    "type": "User",
+    "site_admin": false,
+    "permissions": {"admin": false, "maintain": false, "push": true, "triage": true, "pull": true},
+    "role_name": "write"
+  }
+,
+  {
+    "login": "dependabot[bot]",
+    "id": 49699333,
+    "node_id": "MDM6Qm90NDk2OTkzMzM=",
+    "avatar_url": "https://avatars.githubusercontent.com/u/49699333?v=4",
+    "url": "https://api.github.com/users/dependabot[bot]",
+    "html_url": "https://github.com/dependabot[bot]",
+    "type": "Bot",
+    "site_admin": false,
+    "permissions": {"admin": false, "maintain": false, "push": true, "triage": true, "pull": true},
+    "role_name": "write"
+  }
+]

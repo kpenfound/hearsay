@@ -49,6 +49,7 @@ func commands() []command {
 		{assertworker.Name, "", "Run the assertion worker. L1 to L2.", runAssertWorker},
 		{api.Name, "", "Run the read and assert API over MCP and HTTP.", runAPI},
 		{"all", "", "Run all four services in one process. Local development only.", runAll},
+		{"init", "[--github-repo owner/name]... [--discord-guild id --discord-channel id...] [--drive-folder id]... [--force]", "Write a new team's hearsay.yaml and the env file for its secrets.", runInit},
 		{"config", "validate [path]", "Check a configuration repository and say what is wrong with it.", runConfig},
 		{"migrate", "up|status|up-to <n>|down", "Apply schema migrations and exit.", runMigrate},
 		{"l0", "list|get <id>|count|tail", "Inspect the L0 event store.", runL0},

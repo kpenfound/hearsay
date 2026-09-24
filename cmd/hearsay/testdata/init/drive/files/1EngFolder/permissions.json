@@ -1,0 +1,10 @@
+{
+  "permissions": [
+    {"id": "01234567890123456789", "type": "user", "emailAddress": "kyle@acme.example", "displayName": "Kyle Penfound"},
+    {"id": "11234567890123456789", "type": "user", "emailAddress": "robin@acme.example", "displayName": "Robin Okonkwo"},
+    {"id": "21234567890123456789", "type": "user", "emailAddress": "shared@acme.example", "displayName": "Shared inbox"},
+    {"id": "09876543210987654321", "type": "group", "emailAddress": "eng@acme.example", "displayName": "Engineering"},
+    {"id": "acme.example", "type": "domain", "domain": "acme.example", "displayName": "Acme"},
+    {"id": "31234567890123456789", "type": "user", "emailAddress": "gone@acme.example", "displayName": "Gone", "deleted": true}
+  ]
+}
