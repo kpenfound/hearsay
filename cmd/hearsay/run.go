@@ -18,6 +18,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector/github"
 	"github.com/kpenfound/hearsay/internal/connector/obsidian"
 	"github.com/kpenfound/hearsay/internal/connector/slack"
+	"github.com/kpenfound/hearsay/internal/connector/tracker"
 	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/llm"
@@ -535,8 +536,8 @@ func checkListen(addr string) error {
 // wiring rather than from whatever happened to be linked in
 // (docs/connector-contract.md).
 //
-// It holds the GitHub, Discord, Slack, Drive, Obsidian and agent session
-// connectors. A source of any other type is a startup failure, as is a source
+// It holds the GitHub, Discord, Slack, Drive, Obsidian, generic tracker and
+// agent session connectors. A source of any other type is a startup failure, as is a source
 // whose connector rejects its config. The agent session connector authenticates agents by the
 // tokens their principals name, so it is built from the principals.
 func connectorRegistry(principals []principal.Principal) *connector.Registry {
@@ -548,6 +549,7 @@ func connectorRegistry(principals []principal.Principal) *connector.Registry {
 	_ = registry.Register(slack.Type, slack.Factory)
 	_ = registry.Register(drive.Type, drive.Factory)
 	_ = registry.Register(obsidian.Type, obsidian.Factory)
+	_ = registry.Register(tracker.Type, tracker.Factory)
 	_ = registry.Register(agent.Type, agent.NewFactory(principals, os.LookupEnv))
 	return registry
 }

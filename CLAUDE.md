@@ -124,9 +124,11 @@ flag too). It writes L0, so it refuses without a
 database too. GitHub (`internal/connector/github`), Discord
 (`internal/connector/discord`), Slack (`internal/connector/slack`, public
 channels over Socket Mode), Drive (`internal/connector/drive`), Obsidian
-(`internal/connector/obsidian`) and the agent session source
-(`internal/connector/agent`, which agents push their own session events to,
-authenticated by their API tokens) ship, and their package comments document
+(`internal/connector/obsidian`), the generic tracker source
+(`internal/connector/tracker`, which a team's own sender pushes tickets and
+comments to in a documented shape, authenticated by a bearer token) and the
+agent session source (`internal/connector/agent`, which agents push their own
+session events to, authenticated by their API tokens) ship, and their package comments document
 settings and deployment constraints. An unregistered type is a startup failure.
 
 The distiller and assertion worker expose `/healthz` and `/readyz` on

@@ -677,9 +677,10 @@ production, and assert on what the recorder received.
 ## Connector examples
 
 Written before the connectors, and checked on paper against the GitHub (v0.2.0),
-Discord (v0.3.0), Drive (v0.4.0) and Obsidian (v0.4.0) work. Slack (v0.10.0) was
-written with its connector, which is the check that a new source needs nothing
-outside its own package, its registration and these documents.
+Discord (v0.3.0), Drive (v0.4.0) and Obsidian (v0.4.0) work. Slack and the
+generic tracker (v0.10.0) were written with their connectors, which is the check
+that a new source needs nothing outside its own package, its registration and
+these documents.
 
 ### GitHub (issue #8)
 
@@ -1098,6 +1099,233 @@ The turn above is written as:
   ]
 }
 ```
+
+### Generic tracker (issue #213)
+
+| Artifact | kind | artifact id | native_id | container |
+|---|---|---|---|---|
+| Ticket | `issue` | `<project>#<ticket>` | `<artifact>@<content hash>` | project `<project>` |
+| Comment | `message` | `<project>#<ticket>:comment:<comment id>` | `<artifact>@<content hash>` | project |
+| Deleted ticket or comment | `tombstone` | `<artifact>:tombstone:<hash of the retracted native id>` | same, with `target` the artifact | project |
+
+The `tracker` connector (`internal/connector/tracker`) is a `Pusher` for any
+issue tracker with no connector of its own: Jira, Linear, an in-house one. A
+small sender that the team runs reads its tracker and posts tickets and comments
+in the shape below to `/hooks/<source id>`, one per POST. Hearsay never calls
+the tracker. There is no vendor adapter and no pull API. A backfill is the
+sender posting everything it holds again, which writes nothing that L0 already
+has.
+
+The sender authenticates with `Authorization: Bearer <token>`. The token is the
+value of the environment variable that the source's `secrets.token` names.
+The containers are project keys, and each one needs an access list in
+`settings.access` ([config](config.md#generic-tracker-source)). Project keys,
+ticket keys and comment ids are 1 to 128 bytes of letters, digits, `-`, `_`,
+`.` and `/`. They cannot contain `#`, `:` or `@`, because those separate the
+parts of an artifact id.
+
+A ticket's artifact is `<project>#<ticket>`, the shape a scope's `tracker:`
+mapping reads. So ticket `ENG-42` of project `ENG` in source `linear` is entity
+`tracker:linear:ENG#ENG-42`, and its document is the one `l3` finds for that
+entity. `parent` becomes `part_of` `<parent project>#<parent ticket>`. The
+parent's project defaults to the ticket's own and may be another project. The
+tracker's hierarchy therefore becomes entities through the scope mapping, the
+same way GitHub sub-issues do. A comment's `parent` and `thread` are its
+ticket. Tracker conversations have two levels, and the comment is part of the
+ticket's `issue` document. `title` and `body` become `payload.title` and
+`payload.text` (a comment's `body` is its text), and `url` becomes
+`payload.url`. `author` is the identity hint in this source: `id` becomes
+`native_id`, plus `handle`, `name` (as `display_name`) and `email`. Its `kind`
+is `user` or `bot`. The project and ticket keys, `status` and the
+`assignees` identities go in `payload.native`. `time` is `created_at` on every
+revision, and `updated_at` is `payload.revision.edited_at`, which orders
+revisions.
+
+The revision token is the first 16 hex digits of the SHA-256 of everything the
+event says: kind, times, payload and access list. The same revision posted
+again, in any JSON layout, has the same event id and writes nothing. Any
+change is a new revision, whether to the text, the status, the parent, the
+assignees, `updated_at` or the access list. A stale revision that arrives late
+is stored but does not become current, because its older `updated_at` orders
+it below the revision L0 already holds. A ticket that moves to another project
+is a new artifact. The sender deletes the old one.
+
+`deleted: true` is a deletion, and it reads only the ids. The connector reads
+the artifact's current revision from L0 through its sink and emits a tombstone
+with that revision's container, time and access list. The tombstone is named
+after the revision, as Drive's are, so posting a deletion twice produces the
+same tombstone. Deleting a ticket that came back after a deletion produces a
+new tombstone. Deleting something Hearsay does not hold, or holds no longer,
+emits nothing and is answered 204. Deleting a ticket leaves its comments in L0.
+They are no longer part of any document, because a document is built from its
+root. A sender that wants them gone deletes them too.
+
+Access fails closed. Each event carries its project's access list from
+config, in the contract's own ACL shape. An entry with no `source` is in this
+source. With `settings.ticket_acl: true`, a ticket may carry its own `acl`,
+which replaces its project's list. The list is validated as config's is:
+non-empty, and every `group` or `identity` names someone. A comment then
+carries its ticket's current list, read from L0. A comment on a ticket Hearsay
+does not hold is refused with 409, so under `ticket_acl` a sender posts a
+ticket before its comments. Without `ticket_acl`, a ticket that carries an
+`acl` is refused, and comments may arrive in any order. When a ticket's list
+changes, its comments keep the list they were posted with until they are
+posted again.
+
+The responses are:
+
+- 202 with `{"id": "<event id>"}` for an event that was written or was
+  already held.
+- 204 for a deletion of something Hearsay does not hold.
+- 400 for a request that is not a valid ticket or comment. The body says what
+  is wrong.
+- 401 for a missing or wrong token.
+- 403 for a project that is not one of the source's containers.
+- 405 for anything but POST.
+- 409 for a comment on an unheld ticket under `ticket_acl`.
+- 413 for a body over 4 MiB.
+
+Unknown fields are refused, so a misspelt field is not dropped silently. A
+field that does not apply to the request's `kind` is refused too.
+
+A ticket, a comment on it, and the ticket's deletion:
+
+```sh
+curl -sS https://hearsay.example/hooks/linear \
+  -H "Authorization: Bearer $HEARSAY_TRACKER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data-binary @- <<'EOF'
+{
+  "kind": "ticket",
+  "project": "ENG",
+  "id": "ENG-42",
+  "title": "Retry webhook deliveries with backoff",
+  "body": "Failed deliveries are dropped today. Retry them with exponential backoff.",
+  "status": "In Progress",
+  "parent": {"id": "ENG-7"},
+  "author": {"id": "u-17", "handle": "kyle", "name": "Kyle"},
+  "assignees": [{"id": "u-23", "handle": "robin"}],
+  "url": "https://tracker.example/ENG/42",
+  "created_at": "2026-09-20T09:00:00Z",
+  "updated_at": "2026-09-23T15:30:00Z"
+}
+EOF
+# {"id":"evt:linear:ENG#ENG-42@666042d1a079e88b"}
+```
+
+```json
+{
+  "kind": "comment",
+  "project": "ENG",
+  "ticket": "ENG-42",
+  "id": "9001",
+  "body": "Cap the backoff at an hour and give up after a day.",
+  "author": {"id": "u-23", "handle": "robin"},
+  "url": "https://tracker.example/ENG/42#comment-9001",
+  "created_at": "2026-09-23T16:00:00Z",
+  "updated_at": "2026-09-23T16:00:00Z"
+}
+```
+
+```json
+{"kind": "ticket", "project": "ENG", "id": "ENG-42", "deleted": true}
+```
+
+A comment is deleted the same way, with `"kind": "comment"` and its `ticket`.
+A ticket in a source with `ticket_acl: true` may add
+`"acl": [{"kind": "group", "native_id": "security"}]`. The ticket above is
+written as:
+
+```json
+{
+  "id": "evt:linear:ENG#ENG-42@666042d1a079e88b",
+  "source": "linear",
+  "native_id": "ENG#ENG-42@666042d1a079e88b",
+  "kind": "issue",
+  "time": "2026-09-20T09:00:00Z",
+  "payload": {
+    "artifact": "ENG#ENG-42",
+    "container": {"kind": "project", "native_id": "ENG", "name": "ENG"},
+    "url": "https://tracker.example/ENG/42",
+    "title": "Retry webhook deliveries with backoff",
+    "text": "Failed deliveries are dropped today. Retry them with exponential backoff.",
+    "author": {"source": "linear", "kind": "user", "native_id": "u-17", "handle": "kyle", "display_name": "Kyle"},
+    "part_of": "ENG#ENG-7",
+    "revision": {"token": "666042d1a079e88b", "edited_at": "2026-09-23T15:30:00Z"},
+    "native": {"project": "ENG", "id": "ENG-42", "status": "In Progress",
+               "assignees": [{"source": "linear", "kind": "user", "native_id": "u-23", "handle": "robin"}]}
+  },
+  "acl": [{"kind": "public"}]
+}
+```
+
+The sender belongs to the team and is outside Hearsay. It is a translation from
+the tracker's objects to this shape, plus a loop. Here is a sketch in Python
+with only the standard library, for a tracker whose webhook sends
+`{"event": ..., "issue": {...}}`:
+
+```python
+import json, os, urllib.error, urllib.request
+
+HOOK = "https://hearsay.example/hooks/linear"
+TOKEN = os.environ["HEARSAY_TRACKER_TOKEN"]
+
+def person(u):
+    return {"id": u["accountId"], "handle": u.get("username"), "name": u.get("displayName")}
+
+def ticket(issue, deleted=False):
+    project, key = issue["project"]["key"], issue["key"]
+    if deleted:
+        return {"kind": "ticket", "project": project, "id": key, "deleted": True}
+    body = {
+        "kind": "ticket", "project": project, "id": key,
+        "title": issue["summary"], "body": issue.get("description") or "",
+        "status": issue["status"]["name"],
+        "author": person(issue["reporter"]),
+        "assignees": [person(a) for a in issue.get("assignees", [])],
+        "url": issue["url"],
+        "created_at": issue["created"], "updated_at": issue["updated"],
+    }
+    if issue.get("parent"):
+        body["parent"] = {"project": issue["parent"]["project"]["key"], "id": issue["parent"]["key"]}
+    return body
+
+def comment(issue, c, deleted=False):
+    body = {"kind": "comment", "project": issue["project"]["key"], "ticket": issue["key"], "id": str(c["id"])}
+    if deleted:
+        return body | {"deleted": True}
+    return body | {"body": c["body"], "author": person(c["author"]), "url": c["url"],
+                   "created_at": c["created"], "updated_at": c["updated"]}
+
+def post(body):
+    req = urllib.request.Request(HOOK, data=json.dumps(body).encode(), method="POST", headers={
+        "Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status
+    except urllib.error.HTTPError as e:
+        if e.code >= 500:
+            raise          # Hearsay could not store it: retry later
+        print(e.code, e.read().decode())  # 4xx: the request is wrong, and a retry will not fix it
+        return e.code
+
+# Live: for each webhook the tracker sends.
+def on_webhook(event):
+    issue = event["issue"]
+    if event["event"] == "issue_deleted":
+        post(ticket(issue, deleted=True))
+    else:
+        post(ticket(issue))
+        for c in issue.get("comments", []):
+            post(comment(issue, c))
+
+# Backfill: post everything again. Anything L0 already holds writes nothing.
+def backfill(issues):
+    for issue in issues:
+        on_webhook({"event": "issue_updated", "issue": issue})
+```
+
+Times are RFC 3339. A `null` is read as an absent field.
 
 ## Changing this contract
 
