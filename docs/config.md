@@ -330,9 +330,10 @@ visibility, or the re-sync cannot read the artifacts it must re-emit.
 ### Slack source
 
 A Slack source is one workspace, read over Socket Mode: the connectors service
-dials Slack, so it needs no public URL. Only **public channels** are ingested
-in this version. Private channels, direct messages and Slack Connect channels
-shared with another organisation are refused, and so is `*`.
+dials Slack, so it needs no public URL. Configure **public channels** by id. If one becomes private or archived,
+its previously ingested content is re-synced under a restricted channel ACL.
+Direct messages and Slack Connect channels shared with another organisation
+are refused, and so is `*`.
 
 ```yaml
 sources:
@@ -349,8 +350,8 @@ sources:
 
 Create the app at https://api.slack.com/apps from the manifest in the
 `internal/connector/slack` package comment. It turns on Socket Mode,
-subscribes the bot to `message.channels`, `reaction_added` and
-`reaction_removed`, and asks for the bot scopes `channels:history`,
+subscribes the bot to `message.channels`, `reaction_added`,
+`reaction_removed`, `channel_archive`, `channel_unarchive` and `channel_deleted`, and asks for the bot scopes `channels:history`,
 `channels:read` and `reactions:read`, all read-only. Under Basic Information,
 generate an app-level token with the `connections:write` scope; that is
 `app_token`. Install the app to the workspace; its Bot User OAuth Token is
