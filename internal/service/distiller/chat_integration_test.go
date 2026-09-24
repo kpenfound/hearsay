@@ -405,3 +405,156 @@ func TestChatPumpCollapsesMessagesInOneWindow(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 }
+
+// replyTo is a reply on a two-level chat source such as Slack: its thread and
+// its parent are the message it answers.
+func replyTo(root connector.Event, id, body string, when time.Time) connector.Event {
+	ev := chatMessage(root.Source, id, body, when)
+	ev.Payload.Parent, ev.Payload.Thread = root.Payload.Artifact, root.Payload.Artifact
+	return ev
+}
+
+func chatTombstone(src, target string, when time.Time) connector.Event {
+	ev := chatMessage(src, target+":tombstone", "", when)
+	ev.Kind = connector.KindTombstone
+	ev.Payload.Target = target
+	ev.Payload.Author = nil
+	return ev
+}
+
+// TestChatRepliesDistilUnderTheMessageTheyAnswer: a message whose replies
+// name it as their thread heads a chat_thread keyed by its own artifact, which
+// follows the message's edit and goes when its replies do.
+func TestChatRepliesDistilUnderTheMessageTheyAnswer(t *testing.T) {
+	pool := newPool(t)
+	src := newSource(t)
+	root := chatMessage(src, "C1/1758700000.000100", "Should we ship the retry change?", day)
+	answer := replyTo(root, "C1/1758700060.000200", "Yes, once the tests pass.", day.Add(time.Minute))
+	edited := revised(root, "edit-1", day.Add(2*time.Minute))
+	edited.Payload.Text = "Should we ship the retry change on Friday?"
+	repo := chatRepo(src)
+	resolver, _ := repo.Resolver()
+	fixtures := llm.NewFixtures()
+	var docs []l1.Document
+	for _, head := range []connector.Event{root, edited} {
+		doc, replies, err := l1.BuildChatReplies(head, []connector.Event{answer}, resolver, repo)
+		if err != nil || len(replies) != 1 {
+			t.Fatalf("BuildChatReplies() = %d replies, %v", len(replies), err)
+		}
+		docs = append(docs, doc)
+		budget, _ := repo.LLM.Tier(llm.TierDistill)
+		body, _ := json.Marshal(map[string]any{"summary": "Shipping waits for the tests.", "question": head.Payload.Text, "outcome_kind": "decided", "outcome": "Ship once the tests pass."})
+		if err := fixtures.Add(llm.CompletionFixture{Tier: llm.TierDistill, Request: distiller.RequestFor(doc, budget.MaxTokens), Response: llm.Response{JSON: body, StopReason: llm.StopEnd}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	registry, err := llm.NewFake(repo.LLM, fixtures)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Repo = repo
+	d, err := distiller.New(pool, registry, &cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := l1.New(pool)
+	id := l1.DocID(src, root.Payload.Artifact)
+
+	ingest(t, pool, []connector.Event{root})
+	if result, err := d.Distill(t.Context(), id); err != nil || result.Written || !result.Skipped {
+		t.Fatalf("Distill(a message nobody answered) = %+v, %v; want skipped", result, err)
+	}
+	ingest(t, pool, []connector.Event{answer})
+	for i, event := range []connector.Event{answer, edited} {
+		if i > 0 {
+			ingest(t, pool, []connector.Event{event})
+		}
+		result, err := d.Distill(t.Context(), id)
+		if err != nil || !result.Written || !result.Asserting {
+			t.Fatalf("Distill(state %d) = %+v, %v", i, result, err)
+		}
+		stored, err := store.Get(t.Context(), id)
+		if err != nil || stored.Kind != l1.KindChatThread || !slices.Equal(stored.L0Refs, docs[i].L0Refs) {
+			t.Fatalf("stored (state %d) = %+v, %v; want refs %v", i, stored, err, docs[i].L0Refs)
+		}
+	}
+	ingest(t, pool, []connector.Event{chatTombstone(src, answer.Payload.Artifact, day.Add(3*time.Minute))})
+	if result, err := d.Distill(t.Context(), id); err != nil || !result.Deleted {
+		t.Fatalf("Distill(after its only reply was deleted) = %+v, %v; want deleted", result, err)
+	}
+	if _, err := store.Get(t.Context(), id); !errors.Is(err, l1.ErrNotFound) {
+		t.Errorf("the conversation outlived its replies: %v", err)
+	}
+}
+
+// TestChatPumpEnqueuesTheConversationAMessageHeads: an edit to a message that
+// replies answer, or its deletion, changes the conversation it heads as well
+// as its channel window.
+func TestChatPumpEnqueuesTheConversationAMessageHeads(t *testing.T) {
+	pool := newPool(t)
+	pump := distiller.NewPump(pool, distiller.PumpOptions{Batch: l0.MaxLimit})
+	client, err := queue.New(pool, queue.Config{Kind: distiller.JobKind()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		progress, err := pump.Once(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if progress.Events < l0.MaxLimit {
+			break
+		}
+	}
+	src := newSource(t)
+	root := chatMessage(src, "C1/1758700000.000100", "Should we ship?", day)
+	lone := chatMessage(src, "C1/1758700030.000300", "Unrelated.", day.Add(30*time.Second))
+	answer := replyTo(root, "C1/1758700060.000200", "Yes.", day.Add(time.Minute))
+	window := l1.DocID(src, l1.ChatWindowKey(root))
+	head := l1.DocID(src, root.Payload.Artifact)
+	editedRoot := revised(root, "edit-1", day.Add(2*time.Minute))
+	editedRoot.Payload.Text = "Should we ship on Friday?"
+	editedLone := revised(lone, "edit-1", day.Add(2*time.Minute))
+	editedLone.Payload.Text = "Still unrelated."
+	for _, step := range []struct {
+		name   string
+		events []connector.Event
+		want   []string
+	}{
+		{"a message, a reply and a message nobody answered", []connector.Event{root, lone, answer}, []string{window, head}},
+		{"an edit to each message", []connector.Event{editedLone, editedRoot}, []string{window, head}},
+		{"an edit to the message nobody answered", []connector.Event{revised(editedLone, "edit-2", day.Add(3*time.Minute))}, []string{window}},
+		{"the answered message deleted", []connector.Event{chatTombstone(src, root.Payload.Artifact, day.Add(4*time.Minute))}, []string{window, head}},
+	} {
+		// What an earlier step enqueued is out of the way, so a job pending
+		// from it cannot stand in for one this step owes.
+		if _, err := pool.Exec(t.Context(), `DELETE FROM queue_job WHERE target_id LIKE $1`, l1.DocID(src, "")+"%"); err != nil {
+			t.Fatal(err)
+		}
+		ingest(t, pool, step.events)
+		deadline := time.Now().Add(30 * time.Second)
+		var targets []string
+		for {
+			if _, err := pump.Once(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			targets = fromSource(pendingTargets(t, client), src)
+			if len(targets) >= len(step.want) || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		// One more pass, so a job the step should not have caused has had its
+		// chance to appear.
+		if _, err := pump.Once(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		targets = fromSource(pendingTargets(t, client), src)
+		slices.Sort(targets)
+		want := slices.Sorted(slices.Values(step.want))
+		if !slices.Equal(targets, want) {
+			t.Errorf("%s: the pump enqueued %v, want %v", step.name, targets, want)
+		}
+	}
+}

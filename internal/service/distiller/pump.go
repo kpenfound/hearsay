@@ -171,19 +171,28 @@ func (p *Pump) Once(ctx context.Context) (Progress, error) {
 		if err != nil {
 			return Progress{}, err
 		}
-		if !ok || seen[target] {
-			continue
-		}
-		seen[target] = true
-		// No trace carrier: internal/telemetry has no propagator yet
-		// (ADR-0008's tracing is a later issue), and a carrier this package
-		// invented would be one the worker could not read.
-		enqueued, err := queue.Enqueue(ctx, tx, queue.Request{Kind: JobKind(), TargetID: target})
+		head, headed, err := threadHeadOf(ctx, change.Event, events)
 		if err != nil {
 			return Progress{}, err
 		}
-		if enqueued.Stored {
-			progress.Jobs++
+		for _, target := range []struct {
+			id string
+			ok bool
+		}{{target, ok}, {head, headed}} {
+			if !target.ok || seen[target.id] {
+				continue
+			}
+			seen[target.id] = true
+			// No trace carrier: internal/telemetry has no propagator yet
+			// (ADR-0008's tracing is a later issue), and a carrier this package
+			// invented would be one the worker could not read.
+			enqueued, err := queue.Enqueue(ctx, tx, queue.Request{Kind: JobKind(), TargetID: target.id})
+			if err != nil {
+				return Progress{}, err
+			}
+			if enqueued.Stored {
+				progress.Jobs++
+			}
 		}
 	}
 	if _, err := l0.NewCursors(tx).Save(ctx, Consumer, progress.Cursor); err != nil {
@@ -242,6 +251,39 @@ func TargetOf(ctx context.Context, ev connector.Event, hidden Hidden) (string, b
 	}
 	target, ok := targetOf(retracted)
 	return target, ok, nil
+}
+
+// threadHeadOf is the second document an event changes, where it has one: a
+// channel message that replies name as their `thread` heads a conversation of
+// its own ([l1.ChatRoot]), so an edit to it or its retraction changes that
+// conversation as well as the channel window [TargetOf] names. A message
+// nothing hangs off yet heads nothing, and one whose replies all name it only
+// as `parent` gets a job that finds nothing to write.
+func threadHeadOf(ctx context.Context, ev connector.Event, events *l0.Store) (string, bool, error) {
+	if ev.Kind == connector.KindTombstone || ev.Payload.BaseKind == connector.KindTombstone {
+		if ev.Payload.Container.Kind != connector.ContainerChannel {
+			return "", false, nil
+		}
+		retracted, err := events.Retracted(ctx, ev.Source, ev.Payload.Target)
+		if errors.Is(err, l0.ErrNotFound) {
+			return "", false, nil
+		}
+		if err != nil {
+			return "", false, fmt.Errorf("reading what %s retracts: %w", ev.NativeID, err)
+		}
+		ev = retracted
+	}
+	if !distilled(ev) || !l1.ChatRoot(ev) {
+		return "", false, nil
+	}
+	replies, err := events.Current(ctx, l0.ListOptions{Filter: l0.Filter{Source: ev.Source, Thread: ev.Payload.Artifact}, Limit: 1})
+	if err != nil {
+		return "", false, fmt.Errorf("reading what hangs off %s: %w", ev.Payload.Artifact, err)
+	}
+	if len(replies) == 0 {
+		return "", false, nil
+	}
+	return l1.DocID(ev.Source, ev.Payload.Artifact), true, nil
 }
 
 // undistilled are the kinds that belong to no document. An agent's session,
