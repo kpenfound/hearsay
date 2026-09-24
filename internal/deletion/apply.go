@@ -60,8 +60,8 @@ func CheckOperator(repo config.Repo, id string) error {
 // rolls all of it back.
 //
 // The running distiller does the rebuild: each document is re-distilled from
-// what is still visible, or deleted if nothing is. L2 follows the documents
-// (issue #159).
+// what is still visible, or deleted if nothing is, and L2 follows the
+// documents as it follows a source tombstone.
 func Apply(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, sel Selector, reason, operator string) (Applied, error) {
 	if err := check(sel, reason); err != nil {
 		return Applied{}, err
