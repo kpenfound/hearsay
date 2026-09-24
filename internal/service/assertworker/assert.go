@@ -101,6 +101,9 @@ type Result struct {
 // a hold that outlived its process, and is done.
 func (a *Asserter) Handle(ctx context.Context, job queue.Job) error {
 	log := telemetry.Logger(ctx)
+	if strings.HasPrefix(job.TargetID, gestureTarget) {
+		return a.applyDiscordGesture(ctx, job)
+	}
 	if strings.HasPrefix(job.TargetID, l2.OperationTarget) || strings.HasPrefix(job.TargetID, l2.GestureHoldTarget) {
 		// A topic operation or a gesture held the scope under this job and
 		// died holding it. It committed with the job's completion or not at

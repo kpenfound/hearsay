@@ -124,10 +124,20 @@ sources:
     settings:
       guild: "824100000000000000"
       intents: 34305
+      # ratify_emoji: "✅" # optional; reaction that ratifies stances
+      # demote_emoji: "👎" # optional; reaction that demotes stances
       # api_url: https://discord.com/api/v10 # optional; localhost for fixtures
     secrets:
       token: HEARSAY_DISCORD_BOT_TOKEN
 ```
+
+The optional `ratify_emoji` and `demote_emoji` settings select the reactions
+the assertion worker treats as human gestures. They default to ✅ and 👎.
+Use a Unicode emoji string or a custom Discord emoji's numeric id, as the
+Gateway reports it. The two values must be distinct and have no surrounding
+whitespace. Other reactions have no effect. A mapped, authorized reaction
+applies to the live stances drawn from the containing thread or burst;
+removing it undoes that gesture. Hearsay sends no reaction reply.
 
 Run `hearsay connectors --config ./hearsay.yaml`. `/readyz` reports the
 connection state, last event time, retries, and allowlist drops. A bot token

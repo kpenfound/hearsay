@@ -41,10 +41,27 @@ const (
 
 // Settings configures a guild Gateway stream.
 type Settings struct {
-	Guild      string `json:"guild"`
-	Intents    int    `json:"intents"`
-	GatewayURL string `json:"gateway_url"`
-	APIURL     string `json:"api_url"`
+	Guild       string `json:"guild"`
+	Intents     int    `json:"intents"`
+	GatewayURL  string `json:"gateway_url"`
+	APIURL      string `json:"api_url"`
+	RatifyEmoji string `json:"ratify_emoji"`
+	DemoteEmoji string `json:"demote_emoji"`
+}
+
+// ReactionEmojis returns the configured gesture emoji, with defaults.
+func (s Settings) ReactionEmojis() (string, string, error) {
+	ratify, demote := s.RatifyEmoji, s.DemoteEmoji
+	if ratify == "" {
+		ratify = "✅"
+	}
+	if demote == "" {
+		demote = "👎"
+	}
+	if strings.TrimSpace(ratify) != ratify || strings.TrimSpace(demote) != demote || ratify == demote {
+		return "", "", errors.New("discord ratify_emoji and demote_emoji must be distinct, nonblank emoji identifiers without surrounding whitespace")
+	}
+	return ratify, demote, nil
 }
 
 // Connector maintains one Discord Gateway session for a source.
@@ -85,6 +102,9 @@ func Factory(_ context.Context, src connector.SourceConfig) (connector.Connector
 func New(src connector.SourceConfig) (*Connector, error) {
 	var s Settings
 	if err := src.DecodeSettings(&s); err != nil {
+		return nil, err
+	}
+	if _, _, err := s.ReactionEmojis(); err != nil {
 		return nil, err
 	}
 	if !snowflake(s.Guild) {

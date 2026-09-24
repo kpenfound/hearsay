@@ -86,6 +86,7 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 		return err
 	}
 	follower := NewFollower(deps.Pool, cfg.Repo, 0, 0)
+	gestures := NewGestureFollower(deps.Pool, cfg.Repo)
 	log.InfoContext(ctx, "assertion worker started", "config_digest", cfg.Repo.Digest, "swept", enqueued)
 
 	// The two loops stop together, as the distiller's do: the first to return
@@ -95,6 +96,7 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 	loops := map[string]func(context.Context) error{
 		"worker":    worker.Run,
 		"hierarchy": follower.Run,
+		"gestures":  gestures.Run,
 	}
 	errs := make([]error, 0, len(loops))
 	var mu sync.Mutex
