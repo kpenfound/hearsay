@@ -193,6 +193,13 @@ evaluating the binary looks like. Configuration is read once
 ([ADR-0009](../../docs/adr/0009-configuration-as-a-gitops-directory.md)), so
 this package has no reload path to maintain.
 
+`hearsay distiller` serves `/healthz` and `/readyz` on `--listen` (default
+`:8082`, environment `HEARSAY_DISTILLER_LISTEN`). `hearsay assert-worker`
+serves the same paths on `--listen` (default `:8083`, environment
+`HEARSAY_ASSERT_WORKER_LISTEN`). Both use the API's database and schema
+readiness response. `hearsay all` runs these listeners too; move them with
+`--distiller-listen` and `--assert-worker-listen`.
+
 **Belongs here:** flag parsing, building config and dependencies, and calling
 `Run`. Nothing else. A subcommand is a thin wrapper over
 `internal/service/<name>.Run`; anything you would want to unit-test belongs one

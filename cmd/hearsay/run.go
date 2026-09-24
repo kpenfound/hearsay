@@ -200,6 +200,7 @@ func instanceName() string {
 // (ADR-0005, ADR-0009).
 func runDistiller(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, cfg, configPath := newFlagSet(distiller.Name, stderr)
+	listen := fs.String("listen", envOr("HEARSAY_DISTILLER_LISTEN", distiller.DefaultListen), "address the distiller serves /healthz and /readyz on")
 	resolveDatabase := databaseFlag(fs, cfg)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -207,6 +208,9 @@ func runDistiller(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	resolveDatabase()
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	if *listen == "" {
+		return errors.New("--listen is empty: it is the address the health probes are served on")
 	}
 	ctx, err := withLogger(ctx, distiller.Name, cfg, stderr)
 	if err != nil {
@@ -227,7 +231,7 @@ func runDistiller(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	if err != nil {
 		return err
 	}
-	return distiller.Run(ctx, cfg, distiller.Deps{Pool: pool, LLM: registry})
+	return distiller.Run(ctx, cfg, distiller.Deps{Pool: pool, LLM: registry, Listen: *listen})
 }
 
 // runAssertWorker runs the assertion worker. It has the distiller's
@@ -240,6 +244,7 @@ func runDistiller(ctx context.Context, args []string, stdout, stderr io.Writer) 
 // ([commandRepliers]), which is how a `/hearsay` comment command is answered.
 func runAssertWorker(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, cfg, configPath := newFlagSet(assertworker.Name, stderr)
+	listen := fs.String("listen", envOr("HEARSAY_ASSERT_WORKER_LISTEN", assertworker.DefaultListen), "address the assertion worker serves /healthz and /readyz on")
 	resolveDatabase := databaseFlag(fs, cfg)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -247,6 +252,9 @@ func runAssertWorker(ctx context.Context, args []string, stdout, stderr io.Write
 	resolveDatabase()
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	if *listen == "" {
+		return errors.New("--listen is empty: it is the address the health probes are served on")
 	}
 	ctx, err := withLogger(ctx, assertworker.Name, cfg, stderr)
 	if err != nil {
@@ -275,7 +283,7 @@ func runAssertWorker(ctx context.Context, args []string, stdout, stderr io.Write
 	if err != nil {
 		return err
 	}
-	return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry, Repos: repos, Replies: replies})
+	return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry, Repos: repos, Replies: replies, Listen: *listen})
 }
 
 // repoReaders builds the reader entity seeding reads repositories through: one
@@ -547,6 +555,8 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	fs, cfg, configPath := newFlagSet("all", stderr)
 	resolveDatabase := databaseFlag(fs, cfg)
 	listen := listenFlag(fs)
+	distillerListen := fs.String("distiller-listen", envOr("HEARSAY_DISTILLER_LISTEN", distiller.DefaultListen), "address the distiller serves health probes on")
+	assertWorkerListen := fs.String("assert-worker-listen", envOr("HEARSAY_ASSERT_WORKER_LISTEN", assertworker.DefaultListen), "address the assertion worker serves health probes on")
 	apiListen := fs.String("api-listen", envOr("HEARSAY_API_LISTEN", api.DefaultListen),
 		"address the API service serves HTTP, MCP and its health on")
 	if err := fs.Parse(args); err != nil {
@@ -561,6 +571,9 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	}
 	if *apiListen == "" {
 		return errors.New("--api-listen is empty: it is the address the API is served on")
+	}
+	if *distillerListen == "" || *assertWorkerListen == "" {
+		return errors.New("worker health probe listen address is empty")
 	}
 	// No service name on the process logger: RunAll names each of the four.
 	ctx, err := withLogger(ctx, "", cfg, stderr)
@@ -612,10 +625,10 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 			return connectors.Run(ctx, cfg, connectors.Deps{Pool: pool, Registry: connectorRegistry(cfg.Repo.Principals), Listen: *listen})
 		},
 		distiller.Name: func(ctx context.Context) error {
-			return distiller.Run(ctx, cfg, distiller.Deps{Pool: pool, LLM: registry})
+			return distiller.Run(ctx, cfg, distiller.Deps{Pool: pool, LLM: registry, Listen: *distillerListen})
 		},
 		assertworker.Name: func(ctx context.Context) error {
-			return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry, Repos: repos, Replies: replies})
+			return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry, Repos: repos, Replies: replies, Listen: *assertWorkerListen})
 		},
 		api.Name: func(ctx context.Context) error {
 			return api.Run(ctx, cfg, api.Deps{Pool: pool, LLM: registry, Listen: *apiListen, Discord: apps})

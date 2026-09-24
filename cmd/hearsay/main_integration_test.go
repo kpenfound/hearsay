@@ -34,7 +34,7 @@ func TestAllMigratesTheDatabaseItIsPointedAt(t *testing.T) {
 		// Port 0: `all` runs the connectors service, which listens, and a test
 		// binds what the operating system gives it rather than the port a
 		// deployment uses.
-		done <- run(ctx, []string{"all", "--listen", "127.0.0.1:0", "--api-listen", "127.0.0.1:0", "--log-format", "json"}, io.Discard, stderr)
+		done <- run(ctx, []string{"all", "--listen", "127.0.0.1:0", "--api-listen", "127.0.0.1:0", "--distiller-listen", "127.0.0.1:0", "--assert-worker-listen", "127.0.0.1:0", "--log-format", "json"}, io.Discard, stderr)
 	}()
 
 	// Cancel once the schema line and the listening services' own lines have
@@ -43,7 +43,7 @@ func TestAllMigratesTheDatabaseItIsPointedAt(t *testing.T) {
 	started := func() bool {
 		out := stderr.String()
 		return strings.Contains(out, "schema is current") && strings.Contains(out, "connectors started") &&
-			strings.Contains(out, "api started")
+			strings.Contains(out, "api started") && strings.Contains(out, `"service":"distiller"`) && strings.Contains(out, `"service":"assert-worker"`) && strings.Count(out, "health probes started") >= 2
 	}
 	deadline := time.Now().Add(10 * time.Second)
 	for !started() {

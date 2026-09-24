@@ -105,6 +105,12 @@ database too. GitHub (`internal/connector/github`), Discord
 authenticated by their API tokens) ship, and their package comments document
 settings and deployment constraints. An unregistered type is a startup failure.
 
+The distiller and assertion worker expose `/healthz` and `/readyz` on
+`:8082` and `:8083` by default. Their `--listen` flags and
+`HEARSAY_DISTILLER_LISTEN` / `HEARSAY_ASSERT_WORKER_LISTEN` variables move
+those listeners; `all` uses `--distiller-listen` and
+`--assert-worker-listen` for the same endpoints.
+
 The assertion worker is not a stub. The distiller enqueues a serialized `assert`
 job, keyed by scope, in the transaction that writes a document whose outcome is
 decided, proposed or resolved; the worker reads it with the `assert` tier,
