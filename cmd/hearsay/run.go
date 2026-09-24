@@ -235,7 +235,8 @@ func runDistiller(ctx context.Context, args []string, stdout, stderr io.Writer) 
 //
 // It is also given a repository reader for every GitHub source `code/` names
 // ([repoReaders]), which is how CODEOWNERS files and repository layout reach
-// the entity map.
+// the entity map, and a replier for every GitHub source ([commandRepliers]),
+// which is how a `/hearsay` comment command is answered.
 func runAssertWorker(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, cfg, configPath := newFlagSet(assertworker.Name, stderr)
 	resolveDatabase := databaseFlag(fs, cfg)
@@ -269,7 +270,11 @@ func runAssertWorker(ctx context.Context, args []string, stdout, stderr io.Write
 	if err != nil {
 		return err
 	}
-	return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry, Repos: repos})
+	replies, err := commandRepliers(cfg.Repo, os.LookupEnv)
+	if err != nil {
+		return err
+	}
+	return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry, Repos: repos, Replies: replies})
 }
 
 // repoReaders builds the reader entity seeding reads repositories through: one
@@ -292,12 +297,7 @@ func repoReaders(repo config.Repo, lookup func(string) (string, bool)) (l2.RepoR
 		if !ok || src.Type != github.Type {
 			continue
 		}
-		if env, ok := src.Secrets[github.SecretToken]; ok {
-			src.Secrets = map[string]string{github.SecretToken: env}
-		} else {
-			src.Secrets = nil
-		}
-		resolved, err := connector.ResolveSecrets(src, lookup)
+		resolved, err := githubToken(src, lookup)
 		if err != nil {
 			return nil, err
 		}
@@ -311,6 +311,43 @@ func repoReaders(repo config.Repo, lookup func(string) (string, bool)) (l2.RepoR
 		return nil, nil
 	}
 	return readers, nil
+}
+
+// commandRepliers builds what the assertion worker answers GitHub `/hearsay`
+// commands through: a replier for every GitHub source, with its token, which
+// has to be allowed to write issue and pull request comments. A token that is
+// not in the environment is a startup failure, as it is for the connector: a
+// worker that could not answer would run commands and leave the person who
+// gave them no word of it.
+func commandRepliers(repo config.Repo, lookup func(string) (string, bool)) (assertworker.Replies, error) {
+	replies := assertworker.Replies{}
+	for _, src := range repo.Sources {
+		if src.Type != github.Type {
+			continue
+		}
+		resolved, err := githubToken(src, lookup)
+		if err != nil {
+			return nil, err
+		}
+		replier, err := github.NewReplier(resolved)
+		if err != nil {
+			return nil, fmt.Errorf("source %q: %w", src.ID, err)
+		}
+		replies[src.ID] = replier
+	}
+	return replies, nil
+}
+
+// githubToken is a GitHub source with its token resolved from the
+// environment, and nothing else: the webhook secret is the connectors
+// service's.
+func githubToken(src connector.SourceConfig, lookup func(string) (string, bool)) (connector.SourceConfig, error) {
+	if env, ok := src.Secrets[github.SecretToken]; ok {
+		src.Secrets = map[string]string{github.SecretToken: env}
+	} else {
+		src.Secrets = nil
+	}
+	return connector.ResolveSecrets(src, lookup)
 }
 
 // runAPI runs the read and assert API. It reads L0, L1 and L2, writes an audit
@@ -559,6 +596,10 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	if err != nil {
 		return err
 	}
+	replies, err := commandRepliers(cfg.Repo, os.LookupEnv)
+	if err != nil {
+		return err
+	}
 	apps, err := discordApps(cfg.Repo, os.LookupEnv)
 	if err != nil {
 		return err
@@ -572,7 +613,7 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 			return distiller.Run(ctx, cfg, distiller.Deps{Pool: pool, LLM: registry})
 		},
 		assertworker.Name: func(ctx context.Context) error {
-			return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry, Repos: repos})
+			return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry, Repos: repos, Replies: replies})
 		},
 		api.Name: func(ctx context.Context) error {
 			return api.Run(ctx, cfg, api.Deps{Pool: pool, LLM: registry, Listen: *apiListen, Discord: apps})

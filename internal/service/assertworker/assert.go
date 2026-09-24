@@ -47,6 +47,15 @@ type Asserter struct {
 	tier    llm.Completer
 	repo    config.Repo
 	timeout time.Duration
+	replies Replies
+}
+
+// WithReplies sets the repliers GitHub commands are answered through, and
+// returns the asserter. Without one for a source, its commands run and are
+// not answered.
+func (a *Asserter) WithReplies(replies Replies) *Asserter {
+	a.replies = replies
+	return a
 }
 
 // New builds the asserter. The `assert` tier is resolved here, so a
@@ -96,11 +105,17 @@ type Result struct {
 // is the key the queue is actually serializing on.
 //
 // A job whose target is an `assertion` event is an agent's stance, appended
-// with no model call ([AppendAssertion]). One whose target is a topic
+// with no model call ([AppendAssertion]). One whose target is a gesture's
+// event ([l2.GestureTarget]) is a GitHub `/hearsay` command, or the deletion of
+// one, run and answered with no model call ([CommandFollower]). One whose
+// target is a topic
 // operation's ([l2.OperationTarget]) or a gesture's ([l2.GestureHoldTarget]) is
 // a hold that outlived its process, and is done.
 func (a *Asserter) Handle(ctx context.Context, job queue.Job) error {
 	log := telemetry.Logger(ctx)
+	if strings.HasPrefix(job.TargetID, l2.GestureTarget) {
+		return a.githubGesture(ctx, job)
+	}
 	if strings.HasPrefix(job.TargetID, l2.OperationTarget) || strings.HasPrefix(job.TargetID, l2.GestureHoldTarget) {
 		// A topic operation or a gesture held the scope under this job and
 		// died holding it. It committed with the job's completion or not at

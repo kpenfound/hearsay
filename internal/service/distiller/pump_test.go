@@ -265,6 +265,23 @@ func TestTargetOf(t *testing.T) {
 		}(),
 		want: "",
 	}, {
+		name: "a GitHub /hearsay comment on an issue is not distilled",
+		ev:   reply(event(source, connector.KindCommand, repo+"#12:comment:5", at(1), who(source, "u2", "samr"), "", "/hearsay ratify"), repo+"#12"),
+		want: "",
+	}, {
+		name: "Hearsay's reply to one is not distilled either",
+		ev: func() connector.Event {
+			ev := reply(event(source, "github.reply", repo+"#12:comment:6", at(1), who(source, "b1", "hearsay[bot]"), "", "Ratified."), repo+"#12")
+			ev.Payload.BaseKind = connector.KindCommand
+			return ev
+		}(),
+		want: "",
+	}, {
+		name:   "the tombstone of a command comment has no target",
+		ev:     tombstoneFor(repo + "#12:comment:5"),
+		hidden: hidden{repo + "#12:comment:5": reply(event(source, connector.KindCommand, repo+"#12:comment:5", at(1), who(source, "u2", "samr"), "", "/hearsay ratify"), repo+"#12")},
+		want:   "",
+	}, {
 		name:   "a tombstone for an agent turn has no target",
 		ev:     tombstoneFor("session-1:turn:1"),
 		hidden: hidden{"session-1:turn:1": agentEvent(connector.KindAgentTurn, "session-1")},

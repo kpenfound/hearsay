@@ -14,7 +14,10 @@
 // enqueues every such document it has not read yet, so documents written
 // before it was deployed, and jobs that ran out of attempts, are picked up by a
 // restart. Between startups the [Follower] keeps the tracker hierarchy in step
-// with the L0 change feed.
+// with the L0 change feed, and the [CommandFollower] puts each GitHub
+// `/hearsay` comment command, and each deletion of one, on the queue, where
+// it is run under its scope's key and answered with one reply comment
+// (ADR-0022).
 //
 // What a topic and a stance are is internal/l2's. What this package owns is the
 // prompt, the schema an answer has to satisfy, and the loop.
@@ -54,11 +57,15 @@ type Deps struct {
 	// GitHub source those entries name. Nil seeds from `code/` alone, and says
 	// so when an entry names a CODEOWNERS file.
 	Repos l2.RepoReader
+	// Replies answer GitHub `/hearsay` commands; the binary builds a
+	// github.Replier with each GitHub source's token. A source with none runs
+	// its commands and does not answer them.
+	Replies Replies
 }
 
 // Run seeds the entity map, enqueues what has not been read, and works the
-// queue and follows the tracker hierarchy until ctx is cancelled. It returns
-// nil when it stops that way.
+// queue, follows the tracker hierarchy and GitHub commands until ctx is
+// cancelled. It returns nil when it stops that way.
 func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 	if deps.Pool == nil {
 		return errors.New("the assertion worker needs a database: pass --database-url or set HEARSAY_DATABASE_URL")
@@ -85,16 +92,19 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 	if err != nil {
 		return err
 	}
+	asserter.WithReplies(deps.Replies)
 	follower := NewFollower(deps.Pool, cfg.Repo, 0, 0)
+	commands := NewCommandFollower(deps.Pool, cfg.Repo, 0, 0)
 	log.InfoContext(ctx, "assertion worker started", "config_digest", cfg.Repo.Digest, "swept", enqueued)
 
-	// The two loops stop together, as the distiller's do: the first to return
+	// The loops stop together, as the distiller's do: the first to return
 	// stops the other.
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()
 	loops := map[string]func(context.Context) error{
 		"worker":    worker.Run,
 		"hierarchy": follower.Run,
+		"commands":  commands.Run,
 	}
 	errs := make([]error, 0, len(loops))
 	var mu sync.Mutex
@@ -163,8 +173,8 @@ func SeedEntities(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, rea
 
 // Sweep enqueues an assert job for every document whose outcome enters the
 // pipeline and whose current version has not been read, and for every
-// `assertion` event no stance was appended from, and returns how many it asked
-// for. It is what makes a restart pick up documents written before the
+// `assertion` event no stance was appended from, and for every GitHub command
+// whose reply is still owed, and returns how many it asked for. It is what makes a restart pick up documents written before the
 // worker was deployed and jobs that failed for good. A pending job for a
 // document collapses the enqueue (ADR-0007), so sweeping twice costs a
 // statement per document and no model call.
@@ -196,7 +206,11 @@ func Sweep(ctx context.Context, pool *pgxpool.Pool, repo config.Repo) (int, erro
 		enqueued++
 	}
 	assertions, err := sweepAssertions(ctx, pool)
-	return enqueued + assertions, err
+	if err != nil {
+		return enqueued + assertions, err
+	}
+	replies, err := sweepReplies(ctx, pool)
+	return enqueued + assertions + replies, err
 }
 
 // sweepAssertions enqueues a job for every `assertion` event no stance was

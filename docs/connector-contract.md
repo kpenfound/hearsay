@@ -145,7 +145,7 @@ wherever the source has something that behaves like one.
 | `audit` | A bundle served: who asked, on whose behalf, what was filtered | yes | no |
 | `tombstone` | An artifact deleted at the source | no | no |
 | `deletion` | L0 events an operator deleted in Hearsay | yes | no |
-| `command` | A command a person gave Hearsay in a source, such as a Discord slash command; control traffic, never distilled | yes | no |
+| `command` | A command a person gave Hearsay in a source, such as a Discord slash command or a GitHub `/hearsay` comment; control traffic, never distilled | yes | no |
 
 `assertion`, `audit` and `deletion` are written by Hearsay itself rather than by
 a connector, under source `hearsay` (`connector.SelfSource`). They are in the
@@ -155,9 +155,11 @@ tombstone: it records that an operator redacted events with `hearsay delete
 rows carry the deletion that hid them.
 
 A `command` is written under the source it was given in, by the runtime
-component that received it rather than by the connector: a Discord slash
-command by the API's interaction adapter (ADR-0022). The distiller reads no
-document from it.
+component that received it: a Discord slash command by the API's interaction
+adapter (ADR-0024), and a GitHub `/hearsay` comment, which arrives with the
+comment webhook, by the GitHub connector. Hearsay's reply to a GitHub command
+is `github.reply`, based on `command`. The distiller reads no document from
+either, and leaves both out of the conversation they hang off (ADR-0022).
 
 **Extension kinds.** A source with something genuinely different emits
 `<vendor>.<name>` — two lowercase words separated by a dot, `figma.file_comment`,
@@ -672,6 +674,8 @@ Discord (v0.3.0), Drive (v0.4.0) and Obsidian (v0.4.0) work.
 |---|---|---|---|---|
 | Issue | `issue` | `acme/api#12` | `acme/api#12@<updated_at>`, or `…@<updated_at>+parent:<parent artifact>` for a sub-issue | repository `acme/api` |
 | Issue or PR comment | `message` | `acme/api#12:comment:998` | `…@<updated_at>` | repository |
+| `/hearsay` command comment | `command` | `acme/api#12:comment:998` | `…@<updated_at>` | repository |
+| Hearsay's reply to a command | `github.reply`, base `command` | `acme/api#12:comment:999` | `…@<updated_at>` | repository |
 | Pull request | `pull_request` | `acme/api#31` | `…@<updated_at>`, or `…@<updated_at>+paths:<hash of its paths>` where it touches any | repository |
 | Review | `review` | `acme/api#31:review:77` | `…@<hash of state and body>` ([ADR-0012](adr/0012-a-github-review-is-versioned-by-a-hash-of-its-content.md)) | repository |
 | Review comment | `review_comment` | `acme/api#31:comment:88` | `…@<updated_at>` | repository |
@@ -688,6 +692,17 @@ list endpoints with the page cursor; `repository.privatized` is a
 repository, with no start date. Deleting a comment sends
 `issue_comment.deleted`, which is a `tombstone` with artifact
 `acme/api#12:comment:998:tombstone` and `target` the comment's artifact id.
+
+An issue or pull request comment whose first line starts with the word
+`/hearsay` is a `command`, with the same artifact, parent and thread as any
+comment. Its `native` is the command read from it —
+`{"id": 998, "repository": "acme/api", "issue": 12, "command": "merge", "args": ["topic:…", "topic:…"]}` —
+and `"edited": true` on a revision whose `updated_at` is after its
+`created_at`, which Hearsay does not run. A comment carrying the invisible
+line `<!-- hearsay:reply comment=<id> -->`, which every reply Hearsay posts to
+a command ends with, is a `github.reply` naming that command in
+`native.reply_to`, whatever its text says, so a reply's webhook echo is never
+a command. Deleting either is the same tombstone as for any comment.
 
 A sub-issue is `part_of` its parent issue, `acme/api#10` or an issue in another
 repository, read from the `parent_issue_url` the REST lists and the webhooks

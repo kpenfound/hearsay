@@ -117,7 +117,15 @@ names (`github.Reader`, with the source's token), and from the tracker
 hierarchy L0 holds — GitHub sub-issues, `part_of` their parent issue — and
 enqueues every such document it has not read. Between startups it follows the
 L0 change feed and places each tracker item again when its issue changes. It
-needs Postgres and refuses without it.
+follows the feed for GitHub `/hearsay` comment commands too, which the GitHub
+connector emits as `command` events (and Hearsay's replies as `github.reply`,
+based on `command`, which nothing distils): it enqueues a `gesture:<event id>`
+assert job per command as written and per deletion of one, runs the command
+under the scope's key through `ApplyGesture` or `ApplyOperation`, records it in
+`github_command_replies`, and answers it with one reply comment through a
+`github.Replier` with the source's token, which needs issue and pull request
+write access. Deleting the command comment undoes it and revises the reply
+(ADR-0022). It needs Postgres and refuses without it.
 
 Topic merge, split and undo are `l2.Operate`: one row appended to the
 `l2_topic_operations` ledger, recorded while holding the scope's `assert` serial
@@ -127,8 +135,9 @@ Every read and the assertion worker's matching follow the ledger: a topic
 merged away reads, and is written to, as the topic it went into, and a split's
 topic is a topic of its own that gets a row when its first new stance lands
 ([ADR-0021](docs/adr/0021-reads-follow-the-topic-ledger.md)). `hearsay topics`
-and Discord's `/hearsay merge` call `Operate`; the GitHub gestures will call it
-too.
+and Discord's `/hearsay merge` call `Operate`; GitHub's `/hearsay merge` runs
+inside an assert job already holding the key, and calls
+`l2.Store.ApplyOperation`, its in-transaction form.
 
 A person's ratify, demote and pin, and the undo of one, are `l2.RecordGesture`
 (or `l2.Store.ApplyGesture` inside a job already holding the key): one row in

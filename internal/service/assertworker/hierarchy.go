@@ -12,7 +12,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l2"
-	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
 // HierarchyConsumer is the name the worker reads the L0 change feed under for
@@ -78,28 +77,7 @@ func NewFollower(pool *pgxpool.Pool, repo config.Repo, interval time.Duration, b
 // Run reads the feed until ctx is cancelled, and returns nil when it stops that
 // way. A read that fails is logged and retried at the next tick.
 func (f *Follower) Run(ctx context.Context) error {
-	log := telemetry.Logger(ctx)
-	tick := time.NewTicker(f.interval)
-	defer tick.Stop()
-	for {
-		for ctx.Err() == nil {
-			n, err := f.Once(ctx)
-			if err != nil {
-				if ctx.Err() == nil {
-					log.ErrorContext(ctx, "following the tracker hierarchy failed", "error", err)
-				}
-				break
-			}
-			if n < f.batch {
-				break
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-tick.C:
-		}
-	}
+	return follow(ctx, f.interval, f.batch, f.Once, "tracker hierarchy")
 }
 
 // Once reads one batch of the feed, places what it changed, and returns how
