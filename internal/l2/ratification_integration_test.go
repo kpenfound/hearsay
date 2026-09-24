@@ -137,6 +137,24 @@ func TestRatificationsReplayStandingOverTheRecordedTimes(t *testing.T) {
 	read(shipped, 7)
 	written(arrived, shipped, "vendor it", 1, 7)
 
+	// Ratified at hour 2 by a gesture whose event an operator deletion has
+	// since deleted: out of force throughout, as it is for every read.
+	voided := namedTopic(t, store, "eng", "voided")
+	voidedDoc := chat()
+	written(voided, voidedDoc, "a deleted ratification", 1, 1)
+	event := ratify(voidedDoc, 2)
+	if _, err := pool.Exec(ctx, `INSERT INTO l0_events (id, source, native_id, kind, artifact, occurred_at, payload, acl)
+VALUES ($1, 'discord', $1, 'message', $1, $2, '{}', '[{"kind": "public"}]')`, event, hour(2)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO l0_deletions (id, operator, reason, selector, events, documents, retraction)
+VALUES ('del_voided', 'kyle', 'test', '{}', ARRAY[$1], '{}', 'evt:hearsay:deletion-voided')`, event); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE l0_events SET deletion = 'del_voided' WHERE id = $1`, event); err != nil {
+		t.Fatal(err)
+	}
+
 	// Merged away into byHand: it is read as the topic it went into, and has
 	// no entry of its own.
 	away := namedTopic(t, store, "eng", "merged away")
@@ -167,7 +185,7 @@ func TestRatificationsReplayStandingOverTheRecordedTimes(t *testing.T) {
 			want: map[string]want{
 				byHand.ID: {0, 0, 10}, undone.ID: {1, 1, 2}, byEvidence.ID: {0, 0, 4}, reread.ID: {0, 0, 6},
 				demoted.ID: {1, 3, 5}, open.ID: {2, 2, never}, late.ID: {2, 2, 9}, arrived.ID: {7, never, never},
-				elsewhere.ID: {0, 0, never},
+				voided.ID: {1, 1, never}, elsewhere.ID: {0, 0, never},
 			},
 		},
 		{
@@ -175,6 +193,7 @@ func TestRatificationsReplayStandingOverTheRecordedTimes(t *testing.T) {
 			want: map[string]want{
 				byHand.ID: {0, 0, never}, undone.ID: {1, 1, 2}, byEvidence.ID: {0, 0, 4}, reread.ID: {0, 0, 6},
 				demoted.ID: {1, 3, 5}, open.ID: {2, 2, never}, late.ID: {2, 2, never}, arrived.ID: {7, never, never},
+				voided.ID: {1, 1, never},
 			},
 		},
 		{
@@ -182,7 +201,7 @@ func TestRatificationsReplayStandingOverTheRecordedTimes(t *testing.T) {
 			want: map[string]want{
 				byHand.ID: {0, 0, never}, undone.ID: {never, never, never}, byEvidence.ID: {0, 0, never}, reread.ID: {0, 0, never},
 				demoted.ID: {never, never, never}, open.ID: {never, never, never}, late.ID: {never, never, never},
-				arrived.ID: {never, never, never},
+				arrived.ID: {never, never, never}, voided.ID: {never, never, never},
 			},
 		},
 	}
@@ -238,7 +257,7 @@ func TestRatificationsReplayStandingOverTheRecordedTimes(t *testing.T) {
 
 	t.Run("topics opened", func(t *testing.T) {
 		// Every topic opened at hour 0 but one, opened at hour 20.
-		if _, err := pool.Exec(ctx, `UPDATE l2_topics SET created_at = CASE WHEN id = $2 THEN $1 ELSE $3 END`, hour(20), open.ID, hour(0)); err != nil {
+		if _, err := pool.Exec(ctx, `UPDATE l2_topics SET created_at = CASE WHEN id = $2 THEN $1::timestamptz ELSE $3::timestamptz END`, hour(20), open.ID, hour(0)); err != nil {
 			t.Fatal(err)
 		}
 		split := operate(t, pool, repo, l2.OperationRequest{Kind: l2.OperationSplit, Principal: "kyle", Topic: byHand.ID,
@@ -254,11 +273,11 @@ func TestRatificationsReplayStandingOverTheRecordedTimes(t *testing.T) {
 			since, until time.Time
 			want         int
 		}{
-			{"every scope", "", time.Time{}, time.Time{}, 10},
-			{"one scope", "eng", time.Time{}, time.Time{}, 9},
+			{"every scope", "", time.Time{}, time.Time{}, 11},
+			{"one scope", "eng", time.Time{}, time.Time{}, 10},
 			{"another scope", "web", time.Time{}, time.Time{}, 1},
 			{"from hour 20", "eng", hour(20), time.Time{}, 1},
-			{"before hour 20", "eng", time.Time{}, hour(20), 8},
+			{"before hour 20", "eng", time.Time{}, hour(20), 9},
 			{"until is exclusive", "eng", hour(19), hour(20), 0},
 		} {
 			got, err := store.TopicsOpened(ctx, tc.scope, tc.since, tc.until)

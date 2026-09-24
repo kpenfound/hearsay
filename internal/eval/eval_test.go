@@ -226,15 +226,15 @@ scope   api
 time to ratification
   topics               2
   ratified             1
-  still unratified     1      50.0%
+  still unratified     1  50.0%
   median               36h0m0s
   p90                  36h0m0s
   ratified on arrival  1
 
 topic merge and split rate
-  topics opened        4
-  merges               1      0.250 per topic  1 undone
-  splits               0      0.000 per topic  0 undone
+  topics opened  4
+  merges         1  0.250 per topic  1 undone
+  splits         0  0.000 per topic  0 undone
 `
 	if text.String() != wantText {
 		t.Errorf("text =\n%s\nwant\n%s", text.String(), wantText)
@@ -257,9 +257,9 @@ time to ratification
   ratified on arrival  0
 
 topic merge and split rate
-  topics opened        0
-  merges               0  - per topic  0 undone
-  splits               0  - per topic  0 undone
+  topics opened  0
+  merges         0  - per topic  0 undone
+  splits         0  - per topic  0 undone
 `
 	if text.String() != wantEmpty {
 		t.Errorf("text of an empty report =\n%s\nwant\n%s", text.String(), wantEmpty)
