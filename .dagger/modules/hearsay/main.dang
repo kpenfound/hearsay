@@ -372,6 +372,176 @@ type Hearsay {
   }
 
   """
+  The production compose deployment in deploy/compose, as docs/deploy.md
+  describes it.
+  """
+  let composeDir(ws: Workspace!): Directory! {
+    ws.directory("/deploy/compose")
+  }
+
+  """
+  The Docker CLI with the compose plugin, and jq to read what compose prints.
+  """
+  let composeCli: Container! {
+    container
+      .from("docker:28-cli")
+      .withExec(["apk", "add", "--no-cache", "jq"])
+  }
+
+  """
+  Checks deploy/compose without a Docker daemon.
+
+  Compose parses compose.yaml against env.example with its empty values filled
+  in, and the result it prints is held to the production shape: Postgres on a
+  named volume, the migration job, the four services each waiting on both and
+  mounting the configuration read-only, and nothing published but the API and
+  the connectors, on loopback. env.example has to name every variable
+  compose.yaml or the example configuration reads, and the image has to accept
+  that configuration.
+  """
+  composeCheck(ws: Workspace!): Void @check {
+    {{
+      compose: composeCli
+        .withDirectory("/deploy", composeDir(ws))
+        .withWorkdir("/deploy")
+        .withExec(["sh", "-c", """
+          set -eu
+          # Every variable compose.yaml interpolates, and every one the example
+          # configuration names, is an entry in env.example.
+          missing=""
+          for v in $( { grep -oE '[$][{][A-Z0-9_]+' compose.yaml | cut -c3-; grep -rhoE 'HEARSAY_[A-Z0-9_]+' config; } | sort -u); do
+            grep -qE "^$v=" env.example || missing="$missing $v"
+          done
+          if [ -n "$missing" ]; then echo "env.example does not name:$missing"; exit 1; fi
+
+          # What an operator writes: env.example with every blank filled in.
+          sed -E 's/^([A-Z0-9_]+)=$/\1=example-value/' env.example > .env
+          image=$(grep -E '^HEARSAY_IMAGE=' .env | cut -d= -f2-)
+          docker compose config --format json > /tmp/compose.json
+          jq -r --arg img "$image" -f /dev/stdin /tmp/compose.json > /tmp/failures <<'JQ'
+          . as $c
+          | {"connectors": "8081", "distiller": "8082", "assert-worker": "8083", "api": "8080"} as $port
+          | [
+            (if ($c.services | keys) != ["api", "assert-worker", "connectors", "distiller", "migrate", "postgres"]
+              then "services are " + ($c.services | keys | join(", ")) + "; want postgres, migrate, connectors, distiller, assert-worker and api" else empty end),
+            ([$c.services | to_entries[] | .key as $k | (.value.ports // [])[] | $k + " " + (.host_ip // "") + ":" + (.published | tostring) + ":" + (.target | tostring)] | sort) as $pub
+            | (if $pub != ["api 127.0.0.1:8080:8080", "connectors 127.0.0.1:8081:8081"]
+              then "published ports are [" + ($pub | join(", ")) + "]; want only the API's 8080 and the connectors' 8081, on loopback" else empty end),
+            ($c.services.postgres as $p
+              | (if ($p.image | test("^pgvector/pgvector:pg(1[6-9]|[2-9][0-9])")) | not then "postgres: " + $p.image + " is not pgvector on Postgres 16 or later" else empty end),
+                (if ([$p.volumes[]? | select(.type == "volume" and .source == "pgdata" and .target == "/var/lib/postgresql/data")] | length) != 1 then "postgres: its data is not on the named volume pgdata" else empty end),
+                (if ($p.environment | keys) != ["POSTGRES_DB", "POSTGRES_PASSWORD", "POSTGRES_USER"] then "postgres: sees " + ($p.environment | keys | join(", ")) + "; want only its own settings" else empty end),
+                (if $p.healthcheck.test == null then "postgres: no healthcheck" else empty end)),
+            ($c.services.migrate as $m
+              | (if $m.command != ["migrate", "up"] then "migrate: command is not migrate up" else empty end),
+                (if $m.image != $img then "migrate: image is not HEARSAY_IMAGE" else empty end),
+                (if $m.depends_on.postgres.condition != "service_healthy" then "migrate: does not wait for a healthy postgres" else empty end),
+                (if ($m.environment | keys) != ["HEARSAY_DATABASE_URL"] then "migrate: sees " + ($m.environment | keys | join(", ")) + "; want only HEARSAY_DATABASE_URL" else empty end),
+                (if ($m.restart // "no") != "no" then "migrate: restarts; it is a job" else empty end)),
+            ($port | keys[] as $n | $c.services[$n] as $s
+              | (if $s.command != [$n] then $n + ": command is not " + $n else empty end),
+                (if $s.image != $img then $n + ": image is not HEARSAY_IMAGE" else empty end),
+                (if $s.depends_on.postgres.condition != "service_healthy" then $n + ": does not wait for a healthy postgres" else empty end),
+                (if $s.depends_on.migrate.condition != "service_completed_successfully" then $n + ": does not wait for the migration job to succeed" else empty end),
+                (if $s.environment.HEARSAY_CONFIG != "/etc/hearsay" then $n + ": HEARSAY_CONFIG is not /etc/hearsay" else empty end),
+                (if ([$s.volumes[]? | select(.target == "/etc/hearsay" and .read_only == true)] | length) != 1 then $n + ": the configuration is not mounted read-only at /etc/hearsay" else empty end),
+                (if ($s.environment.HEARSAY_DATABASE_URL // "") == "" then $n + ": does not read HEARSAY_DATABASE_URL from .env" else empty end),
+                (if ($s.healthcheck.test // [] | join(" ")) != ("CMD wget -q -O /dev/null http://127.0.0.1:" + $port[$n] + "/readyz") then $n + ": healthcheck is not its own /readyz" else empty end))
+          ] | .[]
+          JQ
+          if [ -s /tmp/failures ]; then cat /tmp/failures; exit 1; fi
+        """])
+        .sync,
+      config: image(ws)
+        .withDirectory("/etc/hearsay", composeDir(ws).directory("config"))
+        .withExec(["config", "validate", "/etc/hearsay"], useEntrypoint: true)
+        .sync,
+    }}
+    null
+  }
+
+  """
+  Runs deploy/compose for real, in a Docker daemon of its own, and checks that
+  the migration job succeeds, all four services report healthy, and only the
+  API and the connectors are published. The image is the one built from the
+  working tree; env.example is filled in with generated secrets. Returns the
+  transcript, and fails if any of that does not hold.
+
+  Not a check: the daemon needs a privileged container.
+
+      dagger api call hearsay compose-smoke
+  """
+  composeSmoke(ws: Workspace!): String! {
+    # Compose asks the daemon to bind-mount ./config, and the daemon resolves
+    # that path on its own filesystem, so the daemon has the directory too.
+    let dockerd = container
+      .from("docker:28-dind")
+      .withEnvVariable("DOCKER_TLS_CERTDIR", "")
+      .withDirectory("/deploy", composeDir(ws))
+      .withExposedPort(2375)
+      .asService(useEntrypoint: true, insecureRootCapabilities: true)
+    composeCli
+      .withServiceBinding("docker", dockerd)
+      .withEnvVariable("DOCKER_HOST", "tcp://docker:2375")
+      .withFile("/images/hearsay.tar", image(ws).asTarball)
+      .withFile("/images/postgres.tar", container.from("pgvector/pgvector:pg16").asTarball)
+      .withDirectory("/deploy", composeDir(ws))
+      .withWorkdir("/deploy")
+      .withExec(["sh", "-c", """
+        set -eu
+        i=0
+        until docker info >/dev/null 2>&1; do
+          i=$((i + 1)); [ "$i" -lt 60 ] || { echo "the Docker daemon did not start"; exit 1; }
+          sleep 1
+        done
+        # Both images come from Dagger, so the daemon pulls nothing.
+        docker tag "$(docker load -q -i /images/hearsay.tar | awk '{print $NF}')" hearsay:compose-smoke
+        docker tag "$(docker load -q -i /images/postgres.tar | awk '{print $NF}')" pgvector/pgvector:pg16
+
+        secret() { head -c 32 /dev/urandom | od -An -tx1 | tr -d ' ' | tr -d '[:space:]'; }
+        password=$(secret)
+        operator=$(secret)
+        sed -E \
+          -e "s|^HEARSAY_IMAGE=.*|HEARSAY_IMAGE=hearsay:compose-smoke|" \
+          -e "s|^POSTGRES_PASSWORD=$|POSTGRES_PASSWORD=$password|" \
+          -e "s|^HEARSAY_DATABASE_URL=$|HEARSAY_DATABASE_URL=postgres://hearsay:$password@postgres:5432/hearsay?sslmode=disable|" \
+          -e "s|^HEARSAY_OPERATOR_TOKEN=$|HEARSAY_OPERATOR_TOKEN=$operator|" \
+          -e "s|^HEARSAY_ASSISTANT_TOKEN=$|HEARSAY_ASSISTANT_TOKEN=$(secret)|" \
+          -e "s|^ANTHROPIC_API_KEY=$|ANTHROPIC_API_KEY=not-a-real-key|" \
+          env.example > .env
+
+        if ! docker compose up -d --wait --wait-timeout 180; then
+          docker compose ps -a
+          docker compose logs --no-color
+          exit 1
+        fi
+        docker compose ps -a --format '{{.Service}}	{{.State}}	{{.Health}}	{{.ExitCode}}	{{.Publishers}}'
+
+        fail=0
+        [ "$(docker compose ps -a migrate --format '{{.State}} {{.ExitCode}}')" = "exited 0" ] || { echo "FAIL: migrate did not exit 0"; fail=1; }
+        for s in connectors distiller assert-worker api; do
+          [ "$(docker compose ps $s --format '{{.Health}}')" = "healthy" ] || { echo "FAIL: $s is not healthy"; fail=1; }
+        done
+        published=$(docker compose ps -a --format json | jq -rs '[.[] | .Service as $s | (.Publishers // [])[] | select(.PublishedPort > 0) | "\($s) \(.URL):\(.PublishedPort)->\(.TargetPort)"] | sort | join(", ")')
+        echo "published: $published"
+        [ "$published" = "api 127.0.0.1:8080->8080, connectors 127.0.0.1:8081->8081" ] || { echo "FAIL: published ports"; fail=1; }
+
+        # An authenticated call, from inside the API's container: the tokens in
+        # .env reached it, and the configuration mounted at /etc/hearsay is the
+        # one it serves.
+        code=$(docker compose exec -T api wget -q -S -O /dev/null \
+          --header 'Hearsay-Principal: operator' --header "Authorization: Bearer $operator" \
+          --post-data '{"scope":"team"}' http://127.0.0.1:8080/v1/get_bundle 2>&1 | awk '/HTTP\//{print $2}' | tail -1)
+        echo "get_bundle as operator: $code"
+        [ "$code" = "200" ] || { echo "FAIL: get_bundle"; fail=1; }
+
+        if [ "$fail" -ne 0 ]; then docker compose logs --no-color; exit 1; fi
+        echo "compose smoke: ok"
+      """])
+      .stdout
+  }
+
+  """
   The local stack: Postgres with pgvector, and all four services in one process
   (ADR-0003's `hearsay all`).
 

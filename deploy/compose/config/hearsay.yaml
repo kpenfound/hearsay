@@ -1,0 +1,34 @@
+# An example configuration for the compose deployment, and nothing more: it
+# ingests only what an agent posts to the agent session source, so the stack
+# comes up healthy without a GitHub, Discord or Drive credential. Replace it
+# with your team's own, which `hearsay init` writes (docs/config.md), before
+# you point anything real at Hearsay. docs/deploy.md has the steps.
+#
+# Every principal id, token_env name and source id here is an example.
+sources:
+  - id: agent-sessions
+    type: agent
+    containers: ["*"]
+
+scopes:
+  - id: team
+    name: Example team
+    sources: [agent-sessions]
+
+principals:
+  - id: operator
+    name: Example operator
+    token_env: HEARSAY_OPERATOR_TOKEN
+    identities:
+      - source: agent-sessions
+        native_id: operator
+
+  - id: assistant
+    name: Example agent
+    kind: agent
+    class: worker
+    token_env: HEARSAY_ASSISTANT_TOKEN
+    scopes: ["*"]
+    identities:
+      - source: agent-sessions
+        native_id: assistant
