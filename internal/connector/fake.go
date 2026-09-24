@@ -207,6 +207,11 @@ func (f *Fake) Backfill(ctx context.Context, sink Sink, from Cursor) (BackfillRe
 
 // Handler implements [Pusher]. It emits the event, or array of events, posted
 // to it, which is as close as a fake gets to a webhook.
+//
+// A post with the query parameter `command` is a chat command instead: the
+// body is a [Command], handed to the sink's [CommandSink], and the answer is
+// the [CommandResult] as JSON — or 204 and no body where the source takes no
+// commands, which is a source that answers nothing.
 func (f *Fake) Handler(sink Sink) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -218,6 +223,10 @@ func (f *Fake) Handler(sink Sink) http.Handler {
 		body, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
 		if err != nil {
 			http.Error(w, "reading body", http.StatusBadRequest)
+			return
+		}
+		if r.URL.Query().Has("command") {
+			f.command(w, r, sink, body)
 			return
 		}
 
@@ -242,6 +251,31 @@ func (f *Fake) Handler(sink Sink) http.Handler {
 		}
 		w.WriteHeader(http.StatusAccepted)
 	})
+}
+
+// command hands a posted command to the runtime and answers with its result.
+func (f *Fake) command(w http.ResponseWriter, r *http.Request, sink Sink, body []byte) {
+	var cmd Command
+	if err := json.Unmarshal(body, &cmd); err != nil {
+		http.Error(w, "body is not a command", http.StatusBadRequest)
+		return
+	}
+	commands, ok := sink.(CommandSink)
+	if !ok {
+		http.Error(w, "the sink takes no commands", http.StatusNotImplemented)
+		return
+	}
+	res, err := commands.Command(r.Context(), cmd)
+	switch {
+	case errors.Is(err, ErrReadOnly):
+		w.WriteHeader(http.StatusNoContent)
+		return
+	case err != nil:
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(res)
 }
 
 func (f *Fake) emit(ctx context.Context, sink Sink, ev Event) error {

@@ -91,6 +91,11 @@ type Gate struct {
 	resyncs  ResyncStore
 	wake     chan struct{}
 	pollWake chan struct{}
+
+	// commands and readOnly are set by the runtime: what a [Command] is
+	// applied through, and whether the source takes commands at all.
+	commands CommandApplier
+	readOnly bool
 }
 
 // NewGate returns the gate for one connector: the source it was configured for,

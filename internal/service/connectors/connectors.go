@@ -1,6 +1,9 @@
 // Package connectors hosts the source connectors. Connectors write L0 and
 // nothing else: they turn a Slack thread, a GitHub webhook or a Drive change
-// into events, and every layer above is someone else's job.
+// into events, and every layer above is someone else's job. The one exception
+// is the process's, not a connector's: a chat command a connector receives is
+// applied here, through the shared applier ([l2.Commands], ADR-0025), so the
+// connector can answer it.
 //
 // One process can host several connectors; which ones it hosts is the
 // `--source` selection (ADR-0003). What it hosts them with is
@@ -29,6 +32,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/l0"
+	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
@@ -69,6 +73,10 @@ type Deps struct {
 	// containers L0 serves as public. Nil is the store over [Deps.Pool].
 	Resyncs  connector.ResyncStore
 	Exposure connector.ExposureReader
+	// Commands is what the chat commands a connector receives are applied
+	// through. Nil is [l2.Commands] over [Deps.Pool] and the configuration;
+	// with no pool either, commands are refused unrecorded.
+	Commands connector.CommandApplier
 	// Listener is what the HTTP surface is served on. Nil is a listener on
 	// [Deps.Listen]; a test passes one bound to port 0 so that it knows the
 	// address.
@@ -114,6 +122,14 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 		return stoppingEarly(ctx, err)
 	}
 	resyncs, exposure := resyncStores(deps)
+	commands := deps.Commands
+	if commands == nil && deps.Pool != nil {
+		c, err := l2.NewCommands(deps.Pool, cfg.Repo)
+		if err != nil {
+			return errors.Join(err, listener.Close())
+		}
+		commands = c
+	}
 	runtime, err := connector.NewRuntime(ctx, connector.RuntimeOptions{
 		Sources:  sources,
 		Registry: registry,
@@ -121,6 +137,7 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 		Cursors:  cursors,
 		Resyncs:  resyncs,
 		Exposure: exposure,
+		Commands: commands,
 		Cadence:  deps.Cadence,
 	})
 	if err != nil {

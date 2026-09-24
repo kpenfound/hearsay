@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,9 +16,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/discord"
 	"github.com/kpenfound/hearsay/internal/l0"
-	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
-	"github.com/kpenfound/hearsay/internal/principal"
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
@@ -48,14 +45,17 @@ const followUpWithin = 5 * time.Minute
 // answer is deferred and edited in once it is done, with the interaction's
 // token. Nothing else is written to Discord.
 //
+// Applying the command is [l2.Commands], the applier every process that
+// receives a chat command shares (ADR-0025); this adapter records the command,
+// and turns what the applier returns into the answer's words.
+//
 // Autocomplete offers the topics the person may read, through the same view
 // as `hearsay topics list` ([l2.View]), across every scope key the
 // configuration can produce, and a merge refuses a topic they may not read as
 // one that does not exist.
 type Interactions struct {
 	db           *pgxpool.Pool
-	repo         config.Repo
-	resolver     *principal.Resolver
+	commands     *l2.Commands
 	allow        connector.Allowlist
 	apps         map[string]*discord.App
 	answerWithin time.Duration
@@ -66,12 +66,12 @@ type Interactions struct {
 
 // NewInteractions builds the adapter for these applications.
 func NewInteractions(pool *pgxpool.Pool, repo config.Repo, apps ...*discord.App) (*Interactions, error) {
-	resolver, err := repo.Resolver()
+	commands, err := l2.NewCommands(pool, repo)
 	if err != nil {
-		return nil, fmt.Errorf("building the identity resolver: %w", err)
+		return nil, err
 	}
 	stopping, stop := context.WithCancel(context.Background())
-	h := &Interactions{db: pool, repo: repo, resolver: resolver, allow: repo.Allowlist(), apps: map[string]*discord.App{},
+	h := &Interactions{db: pool, commands: commands, allow: repo.Allowlist(), apps: map[string]*discord.App{},
 		answerWithin: DefaultAnswerWithin, stopping: stopping, stop: stop}
 	for _, app := range apps {
 		h.apps[app.Source] = app
@@ -200,7 +200,6 @@ func (h *Interactions) command(w http.ResponseWriter, r *http.Request, app *disc
 // run does what a command asks and returns the answer: the result, or why
 // nothing was done.
 func (h *Interactions) run(ctx context.Context, app *discord.App, in discord.Interaction) string {
-	log := telemetry.Logger(ctx)
 	switch {
 	case in.Guild != app.Guild:
 		return "Hearsay takes commands only in the server it is configured for."
@@ -210,169 +209,97 @@ func (h *Interactions) run(ctx context.Context, app *discord.App, in discord.Int
 		return "Hearsay could not tell who ran this command, so it did nothing."
 	}
 	if container := in.Channel.Container(); container == "" || !h.allow.Allows(app.Source, container) {
-		return "Hearsay does not read this channel, so it takes no commands here. Run the command in a channel Hearsay reads."
+		return answerText(connector.CommandResult{Outcome: connector.CommandNotRead}, in.Subcommand)
 	}
 	ev := app.CommandEvent(in)
-	appended, err := l0.New(h.db).Append(ctx, ev)
+	deleted, err := l0.New(h.db).RecordCommand(ctx, ev)
 	switch {
-	case errors.Is(err, l0.ErrRewrite):
 	case err != nil:
-		log.ErrorContext(ctx, "recording a discord command", "source", app.Source, "interaction", in.ID, "error", err)
-		return "Hearsay could not record this command, so it did nothing. Try again."
-	case appended.Dropped != "":
-		return "This command was deleted from Hearsay, so it did nothing."
+		telemetry.Logger(ctx).ErrorContext(ctx, "recording a discord command", "source", app.Source, "interaction", in.ID, "error", err)
+		return answerText(connector.CommandResult{Outcome: connector.CommandNotRecorded}, in.Subcommand)
+	case deleted:
+		return answerText(connector.CommandResult{Outcome: connector.CommandDeleted}, in.Subcommand)
 	}
-	event := connector.EventID(ev.Source, ev.NativeID)
-	human, refusal := h.person(app, in)
-	if refusal != "" {
-		return refusal
-	}
-	view, err := l2.NewView(ctx, l2.New(h.db), h.repo, human)
-	if err != nil {
-		log.ErrorContext(ctx, "reading as a discord user's principal", "principal", human.ID, "error", err)
-		return "Hearsay could not read the graph as you, so it did nothing."
-	}
+	req := connector.CommandRequest{Source: app.Source, Event: connector.EventID(ev.Source, ev.NativeID), Invoker: app.Author(in),
+		Verb: connector.CommandMerge, From: in.Options[discord.OptionFrom], Into: in.Options[discord.OptionInto]}
 	if in.Subcommand == discord.CommandPin {
-		return h.pin(ctx, app, in, view, human, event)
+		req.Verb = connector.CommandPin
+		if in.Channel.IsThread() {
+			req.Target = discord.ThreadArtifact(in.Channel.ID)
+		}
 	}
-	return h.merge(ctx, in, view, human)
+	return answerText(h.commands.Apply(ctx, req), in.Subcommand)
 }
 
-// person is the configured human a Discord user maps to, or the refusal that
-// explains why there is none.
-func (h *Interactions) person(app *discord.App, in discord.Interaction) (principal.Principal, string) {
-	res := h.resolver.Resolve(app.Author(in))
-	switch res.Status {
-	case principal.Resolved:
-	case principal.Ambiguous:
-		return principal.Principal{}, fmt.Sprintf("Your Discord account maps to more than one Hearsay principal (%s), so Hearsay did nothing. Ask whoever configures Hearsay to fix the mapping.", strings.Join(res.Candidates, ", "))
-	default:
-		return principal.Principal{}, "Your Discord account is not mapped to a Hearsay principal, so Hearsay did nothing. Ask whoever configures Hearsay to add it to your principal's identities."
-	}
-	if res.Principal.Kind != principal.KindHuman {
-		return principal.Principal{}, fmt.Sprintf("Your Discord account maps to %q, which is a %s. Only a person can pin or merge.", res.Principal.ID, res.Principal.Kind)
-	}
-	return res.Principal, ""
-}
-
-// pin pins the thread the command was run in: its L1 document, as an anchor
-// in its scope.
-func (h *Interactions) pin(ctx context.Context, app *discord.App, in discord.Interaction, view *l2.View, human principal.Principal, event string) string {
-	if !in.Channel.IsThread() {
+// answerText is the ephemeral answer to a command that came to this result.
+func answerText(res connector.CommandResult, verb string) string {
+	switch res.Outcome {
+	case connector.CommandPinned:
+		return fmt.Sprintf("Pinned this thread in scope %s, as gesture %d. Undo it with `hearsay gestures undo %d`.", res.Scope, res.Gesture, res.Gesture)
+	case connector.CommandAlreadyPinned:
+		return fmt.Sprintf("This command already pinned the thread in scope %s, as gesture %d.", res.Scope, res.Gesture)
+	case connector.CommandMerged:
+		return fmt.Sprintf("Merged %q into %q in scope %s, as operation %d. Undo it with `hearsay topics undo %d`.", res.FromName, res.IntoName, res.Scope, res.Operation, res.Operation)
+	case connector.CommandNotRead:
+		return "Hearsay does not read this channel, so it takes no commands here. Run the command in a channel Hearsay reads."
+	case connector.CommandNotRecorded:
+		return "Hearsay could not record this command, so it did nothing. Try again."
+	case connector.CommandDeleted:
+		return "This command was deleted from Hearsay, so it did nothing."
+	case connector.CommandUnknown:
+		return "Hearsay has no such command. It has `/hearsay pin` and `/hearsay merge`."
+	case connector.CommandAmbiguous:
+		return fmt.Sprintf("Your Discord account maps to more than one Hearsay principal (%s), so Hearsay did nothing. Ask whoever configures Hearsay to fix the mapping.", strings.Join(res.Candidates, ", "))
+	case connector.CommandUnmapped:
+		return "Your Discord account is not mapped to a Hearsay principal, so Hearsay did nothing. Ask whoever configures Hearsay to add it to your principal's identities."
+	case connector.CommandNotHuman:
+		return fmt.Sprintf("Your Discord account maps to %q, which is a %s. Only a person can pin or merge.", res.Principal, res.Kind)
+	case connector.CommandViewFailed:
+		return "Hearsay could not read the graph as you, so it did nothing."
+	case connector.CommandNoTarget:
 		return "Run `/hearsay pin` inside a thread. It pins the thread's distilled document, and this channel is not a thread."
-	}
-	const undistilled = "Hearsay has not distilled this thread yet, so there is nothing to pin. Try again once it has."
-	doc := l1.DocID(app.Source, discord.ThreadArtifact(in.Channel.ID))
-	got, err := l1.New(h.db).Get(ctx, doc)
-	switch {
-	case errors.Is(err, l1.ErrNotFound):
-		return undistilled
-	case err != nil:
-		telemetry.Logger(ctx).ErrorContext(ctx, "reading a thread to pin", "document", doc, "error", err)
-		return "Hearsay could not read this thread, so it pinned nothing. Try again."
-	case !view.Reader().MayRead(got.Document):
-		return undistilled
-	}
-	g, recorded, err := l2.RecordGesture(ctx, h.db, h.repo, l2.GestureRequest{Event: event, Principal: human.ID, Action: l2.GesturePin, Documents: []string{doc}})
-	if err != nil {
-		return refused(ctx, "pin this thread", err)
-	}
-	if !recorded {
-		return fmt.Sprintf("This command already pinned the thread in scope %s, as gesture %d.", g.Scope, g.ID)
-	}
-	return fmt.Sprintf("Pinned this thread in scope %s, as gesture %d. Undo it with `hearsay gestures undo %d`.", g.Scope, g.ID, g.ID)
-}
-
-// merge merges one topic the person may read into another.
-func (h *Interactions) merge(ctx context.Context, in discord.Interaction, view *l2.View, human principal.Principal) string {
-	from, into := in.Options[discord.OptionFrom], in.Options[discord.OptionInto]
-	if from == into {
+	case connector.CommandUndistilled:
+		return "Hearsay has not distilled this thread yet, so there is nothing to pin. Try again once it has."
+	case connector.CommandSameTopic:
 		return "Pick two different topics: a topic cannot be merged into itself."
+	case connector.CommandNoSuchTopic:
+		return fmt.Sprintf("Hearsay has no topic %q that you can read, so it merged nothing. Pick both topics from the list Discord offers.", res.Topic)
 	}
-	names := map[string]string{}
-	for _, id := range []string{from, into} {
-		a, err := view.Topic(ctx, id)
-		if err != nil {
-			telemetry.Logger(ctx).ErrorContext(ctx, "reading a topic to merge", "topic", id, "error", err)
-			return "Hearsay could not read the topics, so it merged nothing. Try again."
+	what := "merge these topics"
+	if verb == discord.CommandPin {
+		what = "pin this thread"
+	}
+	switch res.Outcome {
+	case connector.CommandReadFailed:
+		if verb == discord.CommandPin {
+			return "Hearsay could not read this thread, so it pinned nothing. Try again."
 		}
-		if a == nil {
-			return fmt.Sprintf("Hearsay has no topic %q that you can read, so it merged nothing. Pick both topics from the list Discord offers.", id)
-		}
-		names[id] = a.Topic.Name
+		return "Hearsay could not read the topics, so it merged nothing. Try again."
+	case connector.CommandNotAllowed:
+		return fmt.Sprintf("You may not %s: %s.", what, res.Reason)
+	case connector.CommandRejected:
+		return fmt.Sprintf("Hearsay could not %s: %s.", what, res.Reason)
 	}
-	op, err := l2.Operate(ctx, h.db, h.repo, l2.OperationRequest{Kind: l2.OperationMerge, Principal: human.ID, From: from, Into: into})
-	if err != nil {
-		return refused(ctx, "merge these topics", err)
-	}
-	return fmt.Sprintf("Merged %q into %q in scope %s, as operation %d. Undo it with `hearsay topics undo %d`.", names[from], names[into], op.Scope, op.ID, op.ID)
-}
-
-// refused explains an error from the ledger: a refusal says why, and
-// anything else is logged and answered as a failure.
-func refused(ctx context.Context, what string, err error) string {
-	switch {
-	case errors.Is(err, l2.ErrNotAllowed):
-		return fmt.Sprintf("You may not %s: %v.", what, err)
-	case errors.Is(err, l2.ErrInvalid), errors.Is(err, l2.ErrNotFound), errors.Is(err, l2.ErrConflict):
-		return fmt.Sprintf("Hearsay could not %s: %v.", what, err)
-	}
-	telemetry.Logger(ctx).ErrorContext(ctx, "applying a discord command", "error", err)
 	return fmt.Sprintf("Hearsay could not %s because of an internal error, and changed nothing. Try again.", what)
 }
 
 // choices are the topics a `/hearsay merge` argument may take: those the
-// person may read whose name or id holds what they have typed. For `into`,
-// once `from` names a topic they may read, only the other topics in its
-// scope, since a merge stays inside one scope. Anyone Hearsay cannot map to
+// person may read whose name or id holds what they have typed
+// ([l2.Commands.MergeChoices]). For `into`, once `from` names a topic they
+// may read, only the other topics in its scope. Anyone Hearsay cannot map to
 // a person is offered nothing, and so is a request out of time.
 func (h *Interactions) choices(ctx context.Context, app *discord.App, in discord.Interaction) []discord.Choice {
 	if in.Guild != app.Guild || in.Command != discord.CommandName || in.Subcommand != discord.CommandMerge ||
 		(in.Focused != discord.OptionFrom && in.Focused != discord.OptionInto) {
 		return nil
 	}
-	human, refusal := h.person(app, in)
-	if refusal != "" {
-		return nil
-	}
-	log := telemetry.Logger(ctx)
-	view, err := l2.NewView(ctx, l2.New(h.db), h.repo, human)
-	if err != nil {
-		log.ErrorContext(ctx, "reading as a discord user's principal", "principal", human.ID, "error", err)
-		return nil
-	}
-	typed := strings.ToLower(strings.TrimSpace(in.Options[in.Focused]))
-	scopes := l2.ScopeKeys(h.repo)
-	exclude := ""
+	req := l2.ChoiceRequest{Invoker: app.Author(in), Typed: in.Options[in.Focused], Limit: discord.MaxChoices}
 	if in.Focused == discord.OptionInto {
-		if from := in.Options[discord.OptionFrom]; from != "" {
-			a, err := view.Topic(ctx, from)
-			if err != nil {
-				log.ErrorContext(ctx, "reading a topic to merge", "topic", from, "error", err)
-				return nil
-			}
-			if a != nil {
-				scopes, exclude = []string{a.Topic.Scope}, a.Topic.ID
-			}
-		}
+		req.From = in.Options[discord.OptionFrom]
 	}
 	var out []discord.Choice
-	for _, scope := range scopes {
-		topics, err := view.TopicsWhere(ctx, scope, func(t l2.Topic) bool {
-			return t.ID != exclude && (typed == "" || strings.Contains(strings.ToLower(t.Name), typed) || strings.Contains(t.ID, typed))
-		})
-		if err != nil {
-			if ctx.Err() == nil {
-				log.ErrorContext(ctx, "listing topics to merge", "scope", scope, "error", err)
-			}
-			break
-		}
-		for _, a := range topics {
-			out = append(out, discord.Choice{Name: a.Topic.Name + " · " + scope, Value: a.Topic.ID})
-		}
-		if len(out) >= discord.MaxChoices {
-			break
-		}
+	for _, t := range h.commands.MergeChoices(ctx, req) {
+		out = append(out, discord.Choice{Name: t.Name + " · " + t.Scope, Value: t.ID})
 	}
 	return out
 }

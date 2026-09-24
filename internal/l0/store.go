@@ -188,6 +188,21 @@ func (s *Store) Emit(ctx context.Context, ev connector.Event) error {
 	return err
 }
 
+// RecordCommand implements [connector.CommandRecorder]: it appends a
+// command's event and reports whether it is a replay of one an operator
+// deleted, which is not applied again. A command id already on record with
+// other content is the command on record, and is applied as it was given.
+func (s *Store) RecordCommand(ctx context.Context, ev connector.Event) (bool, error) {
+	appended, err := s.Append(ctx, ev)
+	switch {
+	case errors.Is(err, ErrRewrite):
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	return appended.Dropped != "", nil
+}
+
 // Append writes one event, and is idempotent on the event id: the id is derived
 // from the source and the native id (connector.EventID), an artifact that
 // changed carries a new revision token in its native id, and so re-emitting an

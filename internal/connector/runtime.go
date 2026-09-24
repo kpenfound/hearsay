@@ -87,6 +87,10 @@ type RuntimeOptions struct {
 	// rather than setting variables on the process it shares with every other
 	// test.
 	Lookup func(string) (string, bool)
+	// Commands is what the chat commands a connector hands its sink
+	// ([CommandSink]) are applied through: `internal/l2`'s applier in a
+	// process. Nil records and applies none, and says so to the connector.
+	Commands CommandApplier
 	// Cadence is the runtime's own timings. Its zero value is the defaults.
 	Cadence Cadence
 }
@@ -278,6 +282,7 @@ func NewRuntime(ctx context.Context, opts RuntimeOptions) (*Runtime, error) {
 		}
 		h := &hosted{src: src, conn: conn, gate: NewGate(opts.Sink, src.ID, conn.Describe(), allow)}
 		h.gate.pollWake = make(chan struct{}, 1)
+		h.gate.commands, h.gate.readOnly = opts.Commands, src.ReadOnly
 		if _, ok := conn.(Resyncer); ok && opts.Resyncs != nil {
 			h.gate.resyncs = opts.Resyncs
 			h.gate.wake = make(chan struct{}, 1)
