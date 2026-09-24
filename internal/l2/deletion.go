@@ -109,5 +109,82 @@ ON CONFLICT (id) DO NOTHING`, id, st.TopicID, position, st.Author, st.StatedAt,
 	if err != nil {
 		return false, fmt.Errorf("superseding stance %s after evidence deletion: %w", st.ID, err)
 	}
+	if err := s.redact(ctx, []string{st.TopicID}); err != nil {
+		return false, err
+	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// Redacted is the text an operator deletion leaves in place of a superseded
+// stance's position or a topic's name.
+const Redacted = "[redacted]"
+
+// redactStancesSQL replaces the position of every stance on these topics that
+// is superseded and was written before an operator deletion rebuilt one of its
+// documents: its text may have been read from what the operator deleted. A
+// stance still current keeps its text until something supersedes it, since a
+// stance is never overwritten while it stands. A withdrawal says only
+// `evidence deleted` and is left alone. The earliest deletion is the one
+// named.
+const redactStancesSQL = `
+UPDATE l2_stances s SET position = $2, redacted_by = r.deletion
+FROM (
+    SELECT DISTINCT ON (o.id) o.id, d.deletion
+    FROM l2_stances o
+    JOIN l0_deletion_rebuilds d ON d.document = ANY(o.evidence) AND d.rebuilt_at > o.created_at
+    WHERE o.topic_id = ANY($1) AND o.redacted_by IS NULL AND NOT o.withdrawn
+      AND EXISTS (SELECT 1 FROM l2_stances n WHERE n.supersedes = o.id)
+    ORDER BY o.id, d.rebuilt_at, d.deletion
+) r
+WHERE s.id = r.id`
+
+// redactTopicsSQL replaces the name of every topic on the list whose opening
+// document an operator deletion removed, and which no document still in L1
+// supports: a name read only from deleted content. A topic a surviving
+// document still cites keeps its name.
+const redactTopicsSQL = `
+UPDATE l2_topics t SET name = $2, redacted_by = r.deletion
+FROM (
+    SELECT DISTINCT ON (o.id) o.id, d.deletion
+    FROM l2_topics o
+    JOIN l0_deletion_rebuilds d ON d.document = o.opened_by AND d.outcome = 'deleted' AND d.rebuilt_at > o.created_at
+    WHERE o.id = ANY($1) AND o.redacted_by IS NULL
+      AND NOT EXISTS (SELECT 1 FROM l1_docs l WHERE l.id = o.opened_by)
+      AND NOT EXISTS (SELECT 1 FROM l2_stances s JOIN l1_docs l ON l.id = ANY(s.evidence) WHERE s.topic_id = o.id)
+    ORDER BY o.id, d.rebuilt_at, d.deletion
+) r
+WHERE t.id = r.id`
+
+// RedactDeleted redacts, on every topic these L1 documents opened or are
+// evidence on, the text an operator deletion took the ground from: see
+// redactStancesSQL and redactTopicsSQL. The distiller calls it in the
+// transaction that records the documents' rebuild; the store calls it again
+// whenever a stance is superseded, which is when a stance that was current at
+// the rebuild becomes redactable. A source tombstone records no rebuild, so it
+// redacts nothing.
+func RedactDeleted(ctx context.Context, q Querier, docIDs []string) error {
+	if len(docIDs) == 0 {
+		return nil
+	}
+	var topics []string
+	if err := q.QueryRow(ctx, `SELECT coalesce(array_agg(DISTINCT id), '{}') FROM (
+    SELECT topic_id AS id FROM l2_stances WHERE evidence && $1::text[]
+    UNION SELECT id FROM l2_topics WHERE opened_by = ANY($1::text[])) affected`, docIDs).Scan(&topics); err != nil {
+		return fmt.Errorf("finding the topics of rebuilt documents: %w", err)
+	}
+	return New(q).redact(ctx, topics)
+}
+
+// redact applies an operator deletion's redactions on these topics.
+func (s *Store) redact(ctx context.Context, topics []string) error {
+	if len(topics) == 0 {
+		return nil
+	}
+	if _, err := s.db.Exec(ctx, redactStancesSQL, topics, Redacted); err != nil {
+		return fmt.Errorf("redacting superseded stances: %w", err)
+	}
+	if _, err := s.db.Exec(ctx, redactTopicsSQL, topics, Redacted); err != nil {
+		return fmt.Errorf("redacting topic names: %w", err)
+	}
+	return nil
 }

@@ -397,7 +397,14 @@ operator deleted stores nothing, returns no error and is counted on the
 deletion record, so a backfill or a redelivery neither restores the content nor
 stalls the connector. A new revision of the artifact — a new event id — is
 admitted, the same as after a tombstone
-([ADR-0018](adr/0018-operator-deletion-redacts-l0-in-place.md)).
+([ADR-0018](adr/0018-operator-deletion-redacts-l0-in-place.md)). The L1
+documents built from the deleted events are re-distilled or deleted, the
+stances resting on them are superseded, and the text L2 read from the deleted
+content is redacted once it is no longer current; a tombstone gets the same
+rebuild without that redaction
+([ADR-0019](adr/0019-operator-deletion-redacts-superseded-l2-text.md)).
+`hearsay delete list` and `hearsay delete show <id>` are the record of each
+deletion and of what it rebuilt.
 
 A tombstone carries the same ACL as the artifact it retracts, so that the
 retraction is visible to exactly the people the artifact was.

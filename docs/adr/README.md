@@ -26,6 +26,7 @@ The format, numbering and supersession rules are in [ADR-0001](0001-record-archi
 | [0016](0016-entity-hierarchy-sources-are-ranked-and-replace.md) | Entity hierarchy sources are ranked, and the highest replaces the rest | accepted | 2026-09-23 |
 | [0017](0017-api-calls-name-an-agent-session.md) | API calls name an agent session | accepted | 2026-09-23 |
 | [0018](0018-operator-deletion-redacts-l0-in-place.md) | Operator deletion redacts L0 in place | accepted | 2026-09-23 |
+| [0019](0019-operator-deletion-redacts-superseded-l2-text.md) | Operator deletion redacts superseded L2 text in place | accepted | 2026-09-24 |
 
 ## Names other work depends on
 

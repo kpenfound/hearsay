@@ -14,6 +14,7 @@ The one binary Hearsay ships. Each process is a subcommand of it (ADR-0003).
 | `hearsay l0 list\|get <id>\|count\|tail` | Inspect the L0 event store. Read-only. |
 | `hearsay aliases list\|confirm <entity> <name>\|reject <entity> <name>` | List candidates and decide their names as a configured human. |
 | `hearsay delete --event <l0-id>\|--artifact <source> <artifact-id>\|--author <identity> [--apply]` | Preview deletion provenance; with `--apply`, redact L0 and re-distill what depended on it. |
+| `hearsay delete list\|show <deletion-id>` | The deletions applied and what each rebuilt. Read-only. |
 | `hearsay version` | Version, commit and build date. |
 
 `hearsay aliases` requires `--config` and `--principal <human-id>`. Its list shows
@@ -40,7 +41,16 @@ with `--json` the same as an object. Events an earlier deletion already covered
 are left alone. `hearsay l0 get` on a deleted event fails naming the deletion
 and operator, and prints no content.
 
-`migrate`, `config`, `l0` and `aliases` take an action word, and flags go on either side of
+`hearsay delete list` prints every deletion, newest first: id, time, operator,
+status, selector and reason. `hearsay delete show <id>` prints one in full: the
+events redacted, each queued document and whether it was re-distilled, deleted
+or is still pending, the stances superseded whose position was redacted, and
+the topics whose name was. Both take `--json` and no other flag but the
+database's. The status is `complete` once every queued document is rebuilt and
+no `distill` or `assert` job on what the rebuild touched is still to run, and
+`rebuilding` until then.
+
+`migrate`, `config`, `l0`, `aliases` and `delete list|show` take an action word, and flags go on either side of
 it and after its argument: `hearsay l0 get <id> --database-url x` and
 `hearsay l0 --database-url x get <id>` are the same command. Each action reads
 its own flags — `l0 list` and `l0 tail` take `--source`, `--kind` and

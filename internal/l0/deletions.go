@@ -145,3 +145,41 @@ UPDATE l0_events e
                'native_id', e.payload->'container'->'native_id'),
            'redacted', jsonb_build_object('deletion', $1::text)))
  WHERE e.id = ANY($2)`
+
+// Rebuild outcomes recorded by [RecordRebuilt].
+const (
+	RebuiltRedistilled = "redistilled"
+	RebuiltDeleted     = "deleted"
+)
+
+// RecordRebuilt records, on every deletion that queued one of these L1
+// documents and has not recorded it yet, that it was rebuilt: re-distilled
+// when it is in redistilled, deleted when it is in deleted. The distiller
+// calls it in the transaction that wrote or removed the documents, so the
+// record and the rebuild commit together.
+//
+// Only the first rebuild after a deletion is recorded; a document re-distilled
+// again later, for a reason of its own, leaves the record as it was. It
+// returns how many records it wrote, which is zero for a document no deletion
+// is waiting on.
+func RecordRebuilt(ctx context.Context, tx pgx.Tx, redistilled, deleted []string) (int64, error) {
+	var recorded int64
+	for _, set := range []struct {
+		outcome string
+		docs    []string
+	}{{RebuiltRedistilled, redistilled}, {RebuiltDeleted, deleted}} {
+		if len(set.docs) == 0 {
+			continue
+		}
+		tag, err := tx.Exec(ctx, `
+INSERT INTO l0_deletion_rebuilds (deletion, document, outcome)
+SELECT d.id, doc, $2 FROM unnest($1::text[]) AS doc
+  JOIN l0_deletions d ON d.documents @> ARRAY[doc]
+ON CONFLICT (deletion, document) DO NOTHING`, set.docs, set.outcome)
+		if err != nil {
+			return 0, fmt.Errorf("recording %s documents on their deletions: %w", set.outcome, err)
+		}
+		recorded += tag.RowsAffected()
+	}
+	return recorded, nil
+}

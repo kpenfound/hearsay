@@ -1,4 +1,5 @@
-// Package deletion expands operator selectors and walks their forward provenance.
+// Package deletion expands operator selectors, walks their forward provenance,
+// applies a deletion, and reads the record of each one and what it rebuilt.
 package deletion
 
 import (
