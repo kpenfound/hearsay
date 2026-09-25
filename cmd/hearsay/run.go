@@ -287,7 +287,7 @@ func runAssertWorker(ctx context.Context, args []string, stdout, stderr io.Write
 	if err != nil {
 		return err
 	}
-	return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry, Repos: repos, Replies: replies, Listen: *listen})
+	return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry, Connectors: connectorRegistry(cfg.Repo.Principals), Repos: repos, Replies: replies, Listen: *listen})
 }
 
 // repoReaders builds the reader entity seeding reads repositories through: one
@@ -547,6 +547,8 @@ func connectorRegistry(principals []principal.Principal) *connector.Registry {
 	_ = registry.Register(github.Type, github.Factory)
 	_ = registry.Register(discord.Type, discord.Factory)
 	_ = registry.Register(slack.Type, slack.Factory)
+	_ = registry.RegisterReactionGestures(discord.Type, discord.ReactionGestureConfig)
+	_ = registry.RegisterReactionGestures(slack.Type, slack.ReactionGestureConfig)
 	_ = registry.Register(drive.Type, drive.Factory)
 	_ = registry.Register(obsidian.Type, obsidian.Factory)
 	_ = registry.Register(tracker.Type, tracker.Factory)
@@ -634,7 +636,7 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 			return distiller.Run(ctx, cfg, distiller.Deps{Pool: pool, LLM: registry, Listen: *distillerListen})
 		},
 		assertworker.Name: func(ctx context.Context) error {
-			return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry, Repos: repos, Replies: replies, Listen: *assertWorkerListen})
+			return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry, Connectors: connectorRegistry(cfg.Repo.Principals), Repos: repos, Replies: replies, Listen: *assertWorkerListen})
 		},
 		api.Name: func(ctx context.Context) error {
 			return api.Run(ctx, cfg, api.Deps{Pool: pool, LLM: registry, Listen: *apiListen, Discord: apps})

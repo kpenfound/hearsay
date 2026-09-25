@@ -95,6 +95,17 @@ func (s Settings) ReactionEmojis() (string, string, error) {
 	return ratify, demote, nil
 }
 
+// ReactionGestureConfig supplies this source's gesture settings to the shared
+// worker without exposing Discord's settings shape there.
+func ReactionGestureConfig(src connector.SourceConfig) (connector.ReactionGestures, error) {
+	var s Settings
+	if err := src.DecodeSettings(&s); err != nil {
+		return connector.ReactionGestures{}, err
+	}
+	r, d, err := s.ReactionEmojis()
+	return connector.ReactionGestures{Ratify: r, Demote: d}, err
+}
+
 // Connector maintains one Discord Gateway session for a source.
 type Connector struct {
 	source, guild, token, gateway string

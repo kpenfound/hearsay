@@ -196,6 +196,19 @@ type Descriptor struct {
 	Kinds []Kind
 }
 
+// ReactionGestures names the two reaction identifiers a source treats as
+// gestures. Identifiers have the source's native form (Unicode emoji for
+// Discord, shortcodes for Slack); they are compared with L0 reaction payloads.
+type ReactionGestures struct {
+	Ratify string
+	Demote string
+}
+
+// ReactionGestureConfig decodes a source's settings and returns its validated
+// gesture identifiers. The connector package owns defaults and validation.
+// It must not need resolved secrets or a network connection.
+type ReactionGestureConfig func(SourceConfig) (ReactionGestures, error)
+
 // Health is a connector's own account of whether it is working.
 type Health struct {
 	Status HealthStatus
@@ -292,11 +305,47 @@ type Factory func(ctx context.Context, src SourceConfig) (Connector, error)
 type Registry struct {
 	mu        sync.RWMutex
 	factories map[string]Factory
+	gestures  map[string]ReactionGestureConfig
 }
 
 // NewRegistry returns an empty registry.
 func NewRegistry() *Registry {
-	return &Registry{factories: make(map[string]Factory)}
+	return &Registry{factories: make(map[string]Factory), gestures: make(map[string]ReactionGestureConfig)}
+}
+
+// RegisterReactionGestures declares the optional reaction gesture capability
+// for a registered connector type. The worker consults it using SourceConfig,
+// without constructing a connector or knowing the source's settings shape.
+func (r *Registry) RegisterReactionGestures(connectorType string, config ReactionGestureConfig) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.factories[connectorType]; !ok {
+		return fmt.Errorf("registering gestures: %w: %q", ErrUnknownType, connectorType)
+	}
+	if config == nil {
+		return errors.New("registering gestures: config is nil")
+	}
+	if r.gestures[connectorType] != nil {
+		return fmt.Errorf("registering gestures: %w: %q", ErrDuplicateType, connectorType)
+	}
+	r.gestures[connectorType] = config
+	return nil
+}
+
+// ReactionGestures reports the configured capability. A read-only source is
+// never gesture-capable, although its reactions remain ordinary L0 events.
+func (r *Registry) ReactionGestures(src SourceConfig) (ReactionGestures, bool, error) {
+	if r == nil || src.ReadOnly {
+		return ReactionGestures{}, false, nil
+	}
+	r.mu.RLock()
+	config := r.gestures[src.Type]
+	r.mu.RUnlock()
+	if config == nil {
+		return ReactionGestures{}, false, nil
+	}
+	gestures, err := config(src)
+	return gestures, true, err
 }
 
 // Register adds a factory under a connector type. Registering a type twice is

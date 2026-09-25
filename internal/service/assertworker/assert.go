@@ -14,9 +14,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
-	"github.com/kpenfound/hearsay/internal/connector/discord"
 	"github.com/kpenfound/hearsay/internal/connector/github"
-	"github.com/kpenfound/hearsay/internal/connector/slack"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
@@ -44,13 +42,14 @@ const (
 // Asserter reads one L1 document and writes what it asserts into L2. It is the
 // whole of what an `assert` job does, and a value a test can drive directly.
 type Asserter struct {
-	pool    *pgxpool.Pool
-	docs    *l1.Store
-	events  *l0.Store
-	tier    llm.Completer
-	repo    config.Repo
-	timeout time.Duration
-	replies Replies
+	pool       *pgxpool.Pool
+	docs       *l1.Store
+	events     *l0.Store
+	tier       llm.Completer
+	repo       config.Repo
+	connectors *connector.Registry
+	timeout    time.Duration
+	replies    Replies
 }
 
 // WithReplies sets the repliers GitHub commands are answered through, and
@@ -64,7 +63,7 @@ func (a *Asserter) WithReplies(replies Replies) *Asserter {
 // New builds the asserter. The `assert` tier is resolved here, so a
 // configuration that names none is a startup failure rather than a job that
 // fails an hour later (ADR-0005).
-func New(pool *pgxpool.Pool, registry llm.Registry, cfg *config.Config) (*Asserter, error) {
+func New(pool *pgxpool.Pool, registry llm.Registry, cfg *config.Config, registries ...*connector.Registry) (*Asserter, error) {
 	if pool == nil {
 		return nil, errors.New("the assertion worker needs a database")
 	}
@@ -75,13 +74,18 @@ func New(pool *pgxpool.Pool, registry llm.Registry, cfg *config.Config) (*Assert
 	if err != nil {
 		return nil, err
 	}
+	var connectors *connector.Registry
+	if len(registries) > 0 {
+		connectors = registries[0]
+	}
 	return &Asserter{
-		pool:    pool,
-		docs:    l1.New(pool),
-		events:  l0.New(pool),
-		tier:    tier,
-		repo:    cfg.Repo,
-		timeout: CallTimeout,
+		pool:       pool,
+		docs:       l1.New(pool),
+		events:     l0.New(pool),
+		tier:       tier,
+		repo:       cfg.Repo,
+		connectors: connectors,
+		timeout:    CallTimeout,
 	}, nil
 }
 
@@ -109,7 +113,7 @@ type Result struct {
 //
 // A job whose target is an `assertion` event is an agent's stance, appended
 // with no model call ([AppendAssertion]). One whose target is a gesture's
-// event ([l2.GestureTarget]) is a Discord or Slack reaction or GitHub `/hearsay`
+// event ([l2.GestureTarget]) is a configured reaction or GitHub `/hearsay`
 // command, or the deletion of one, handled by its source with no model call.
 // One whose
 // target is a topic
@@ -130,11 +134,15 @@ func (a *Asserter) Handle(ctx context.Context, job queue.Job) error {
 		if !ok {
 			return nil
 		}
-		switch src.Type {
-		case discord.Type, slack.Type:
-			return a.applyReactionGesture(ctx, job)
-		case github.Type:
+		if src.Type == github.Type {
 			return a.githubGesture(ctx, job)
+		}
+		_, eligible, err := a.connectors.ReactionGestures(src)
+		if err != nil {
+			return err
+		}
+		if eligible {
+			return a.applyReactionGesture(ctx, job)
 		}
 		return nil
 	}
