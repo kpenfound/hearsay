@@ -68,7 +68,8 @@ flowchart LR
 GitHub, Discord and Slack (public channels) connectors ship today, along with Drive folder and
 Obsidian vault backfill, a generic tracker source that any tracker's sender posts tickets to, and
 an agent session source that agents post their own sessions to. Drive change sync, Obsidian live
-sync and Slack gestures are where the design points next.
+sync are where the design points next. Slack reactions and `/hearsay` commands
+support gestures in public channels.
 
 ## Quick start
 

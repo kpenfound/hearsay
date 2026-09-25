@@ -189,7 +189,7 @@ renamed afterwards ([connector contract](connector-contract.md#source-ids)).
 | `type` | The connector type: `github`, `discord`, `slack`, `drive`, `obsidian`, `tracker`, `agent`, or a third party's. |
 | `containers` | The repositories, channels or folders this source may ingest, **by native id** — a repository full name, a channel id, a folder id, never a display name. This is control point 1 of [access control](design.md#access-control): default deny, so a container that is not listed is not ingested. `*` widens it to everything the credentials can see, and must then be the only entry. |
 | `refresh` | A duration (`30s`, `5m`, `1h`). The poll interval and base retry interval for a stream. Ignored by a connector that only receives pushes; the runtime applies its own floor and jitter — never more often than every 30 seconds, and each tick up to a tenth of the interval later than it is due. Without it, polls run every five minutes and failed streams retry from a 30-second base. |
-| `read_only` | `true` or `false`, default `false`; nothing else is a boolean here, so `yes` is an error. `true` means Hearsay never writes to the source and its credentials need no write access: it is ingested in full, but its reactions are not gestures, its `/hearsay` comments are ordinary content that is distilled, and no command is registered, answered or replied to. People on it give feedback through `hearsay gestures` and `hearsay topics`. It changes nothing for a source type that never writes (Slack in this version, Drive, Obsidian, tracker, agent). Switching a source to read-only leaves gestures and merges it already made in force; undo them with the CLI. |
+| `read_only` | `true` or `false`, default `false`; nothing else is a boolean here, so `yes` is an error. `true` means Hearsay never writes to the source and its credentials need no write access: it is ingested in full, but its reactions are not gestures, its `/hearsay` comments are ordinary content that is distilled, and no command is registered, answered or replied to. People on it give feedback through `hearsay gestures` and `hearsay topics`. Switching a source to read-only leaves gestures and merges it already made in force; undo them with the CLI. |
 | `settings` | Opaque to Hearsay and passed to the connector, which rejects a field it does not have. What belongs here is documented by the connector. |
 | `secrets` | A map from the name the connector asks for to **the name of an environment variable**. A value that is not an environment variable name is an error, because a configuration repository is checked in and a token pasted here would be too. |
 
@@ -351,6 +351,8 @@ sources:
     settings:
       team: T0123ABCD                   # the workspace id
       # api_url: https://slack.com/api  # optional; localhost for fixtures
+      # ratify_emoji: white_check_mark   # optional; defaults shown
+      # demote_emoji: "-1"
     secrets:
       app_token: HEARSAY_SLACK_APP_TOKEN  # xapp-…, scope connections:write
       bot_token: HEARSAY_SLACK_BOT_TOKEN  # xoxb-…
@@ -361,7 +363,9 @@ Create the app at https://api.slack.com/apps from the manifest in the
 subscribes the bot to `message.channels`, `reaction_added`,
 `reaction_removed`, `channel_archive`, `channel_unarchive` and
 `channel_deleted`. The bot scopes are `channels:history`, `channels:read`,
-`reactions:read`, `users:read` and `users:read.email`, all read-only. The user
+`reactions:read`, `users:read` and `users:read.email`, all read-only. Enable
+Interactivity and Slash Commands for `/hearsay` in the app manifest; both
+arrive on the Socket Mode connection and need no public request URL. The user
 scopes let `hearsay init` match identities by email; the stream does not
 require them. Under Basic Information,
 generate an app-level token with the `connections:write` scope; that is
@@ -383,9 +387,14 @@ connection. Messages from any other workspace are dropped.
 Messages, thread replies, edits, deletions and reactions are ingested. A thread
 reply's conversation is the message it answers, so a thread is distilled as a
 `chat_thread` of that message and its replies, and a message is also part of its
-channel's 30-minute conversation. Reactions are plain L0: nothing reads them as
-gestures yet, and Hearsay answers no slash command and writes nothing to Slack,
-so `read_only` changes nothing for a Slack source today.
+channel's 30-minute conversation. Configured reactions ratify or demote the
+containing thread or burst; removing one undoes its gesture. Reactions receive
+no reply. `/hearsay merge <from topic id> <into topic id>` and `/hearsay pin
+<thread message link>` are answered only to their invoker through Slack's
+`response_url`. Slack's standard slash-command payload has no thread target,
+so give `pin` a message link; clients that include `thread_ts` may omit it.
+No channel message is posted. With `read_only: true`, reactions remain L0
+observations and slash commands receive no answer.
 
 Run `hearsay connectors --config ./hearsay.yaml`. `/readyz` reports the socket:
 `connecting`, `connected`, `reconnecting` after a break, or failed with the

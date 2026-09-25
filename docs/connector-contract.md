@@ -27,7 +27,7 @@ A connector turns one source into L0 events. That is all it does.
 - It emits everything it is allowed to and nothing it is not. What may be
   ingested is config, not a judgement the connector makes.
 
-This includes Discord reactions and slash commands and GitHub `/hearsay`
+This includes Discord and Slack reactions and slash commands and GitHub `/hearsay`
 issue or PR comment commands. Their source actor, target, event identity and
 command data are described in L0. The assertion worker's L0 change-feed
 follower interprets reactions and GitHub commands after mapping a human
@@ -934,7 +934,9 @@ Slack's events carry no names, so there is no `handle` or `display_name`.
 `https://slack.com/archives/<channel>/p<ts without the dot>`, with
 `?thread_ts=<root ts>&cid=<channel>` on a reply. A reaction's name is its Slack
 shortcode (`+1`, `white_check_mark`, `thumbsup::skin-tone-2`), URL-escaped in the
-artifact id and kept verbatim in `native.emoji`. Its `parent` is the message.
+artifact id and kept verbatim in `native.emoji`. Its `parent` is the message;
+the shared gesture worker resolves the message's whole thread or burst before
+applying a configured emoji's action.
 
 Deletions carry no time, so a tombstone's `time` is the deleted message's `ts`
 and its id is fixed: a redelivered deletion is the same event. A deleted
@@ -960,8 +962,16 @@ checks previously public containers. Re-sync reads current L0 artifacts,
 which remains possible when Slack no longer lets the bot read the channel,
 and emits new revisions under the restricted group ACL.
 
-Slash commands and interactions are not answered in this version, and no
-`command` kind is declared.
+The connector also declares `command`. A Socket Mode `slash_commands` envelope
+for `/hearsay pin` or `/hearsay merge` is acknowledged before the runtime
+records or applies it. The command event uses the trigger id for stable native
+identity, the Slack user as author, and the channel as container. A pin names
+the thread root through `thread_ts` where supplied or a message permalink
+argument; a merge passes its two topic ids as plain text. The runtime applies
+the request, and the connector sends the result or refusal through the
+envelope's `response_url` with `response_type: ephemeral`. It uses no channel
+posting API. A read-only source acknowledges the envelope without recording,
+applying or answering it; reactions remain ordinary L0 observations.
 
 ### Google Drive (issue #15)
 
