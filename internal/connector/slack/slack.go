@@ -35,6 +35,11 @@
 //	  bot_user:
 //	    display_name: Hearsay
 //	    always_online: false
+//	  slash_commands:
+//	    - command: /hearsay
+//	      description: Pin a thread or merge topics
+//	      usage_hint: pin <message link> | merge <from topic id> <into topic id>
+//	      should_escape: false
 //	oauth_config:
 //	  scopes:
 //	    bot:
@@ -53,14 +58,13 @@
 //	      - channel_unarchive
 //	      - channel_deleted
 //	  interactivity:
-//	    is_enabled: false
+//	    is_enabled: true
 //	  org_deploy_enabled: false
 //	  socket_mode_enabled: true
 //	  token_rotation_enabled: false
 //
-// Every scope is read-only: the connector never writes to Slack, so a source
-// configured `read_only: true` is ingested exactly the same way. Reactions are
-// ingested as `reaction` events, and nothing reads them as gestures yet.
+// The bot scopes are read-only. Commands are answered only through Slack's
+// ephemeral response_url; a read_only source ignores commands altogether.
 //
 // What the connector emits is in docs/connector-contract.md (Slack). Messages,
 // thread replies, edits, deletions and reactions are ingested; a reply's
@@ -111,7 +115,24 @@ type Settings struct {
 	// Team is the workspace id. Events from any other workspace are dropped.
 	Team string `json:"team"`
 	// APIURL replaces Slack's Web API base, for a local fixture.
-	APIURL string `json:"api_url"`
+	APIURL      string `json:"api_url"`
+	RatifyEmoji string `json:"ratify_emoji"`
+	DemoteEmoji string `json:"demote_emoji"`
+}
+
+// ReactionEmojis returns Slack shortcodes used as gestures.
+func (s Settings) ReactionEmojis() (string, string, error) {
+	r, d := s.RatifyEmoji, s.DemoteEmoji
+	if r == "" {
+		r = "white_check_mark"
+	}
+	if d == "" {
+		d = "-1"
+	}
+	if strings.TrimSpace(r) != r || strings.TrimSpace(d) != d || r == d {
+		return "", "", errors.New("slack ratify_emoji and demote_emoji must be distinct nonblank shortcodes without surrounding whitespace")
+	}
+	return r, d, nil
 }
 
 // Connector holds one Socket Mode connection for a source.
@@ -131,6 +152,8 @@ type Connector struct {
 	notMember          []string
 	restricted         map[string]bool
 	nextRequest        time.Time
+	readOnly           bool
+	commands           sync.WaitGroup
 }
 
 var _ connector.Streamer = (*Connector)(nil)
@@ -147,6 +170,9 @@ func Factory(_ context.Context, src connector.SourceConfig) (connector.Connector
 func New(src connector.SourceConfig) (*Connector, error) {
 	var s Settings
 	if err := src.DecodeSettings(&s); err != nil {
+		return nil, err
+	}
+	if _, _, err := s.ReactionEmojis(); err != nil {
 		return nil, err
 	}
 	if !slackID(s.Team, 'T') {
@@ -183,6 +209,7 @@ func New(src connector.SourceConfig) (*Connector, error) {
 		http:       &http.Client{Timeout: 30 * time.Second},
 		containers: containers,
 		restricted: map[string]bool{},
+		readOnly:   src.ReadOnly,
 		status:     connector.HealthDegraded, detail: "connecting",
 	}, nil
 }
@@ -234,10 +261,9 @@ func apiURL(api string) (string, error) {
 	return strings.TrimRight(api, "/"), nil
 }
 
-// Describe declares the kinds the stream emits. There is no `command`: this
-// version answers no slash command, whatever `read_only` says.
+// Describe declares the kinds the stream emits and records.
 func (c *Connector) Describe() connector.Descriptor {
-	return connector.Descriptor{Type: Type, Kinds: []connector.Kind{connector.KindMessage, connector.KindReaction, connector.KindTombstone}}
+	return connector.Descriptor{Type: Type, Kinds: []connector.Kind{connector.KindMessage, connector.KindReaction, connector.KindTombstone, connector.KindCommand}}
 }
 
 // Health reports the cached socket state without network IO.
@@ -296,6 +322,7 @@ func (c *Connector) Stream(ctx context.Context, sink connector.Sink) error {
 	c.mu.Unlock()
 	defer func() {
 		cancel()
+		c.commands.Wait()
 		c.mu.Lock()
 		c.active = nil
 		c.stop = nil
@@ -427,9 +454,28 @@ func (c *Connector) session(ctx context.Context, sink connector.Sink) error {
 			if err := ack(e.EnvelopeID); err != nil {
 				return fmt.Errorf("acknowledging a slack event: %w", err)
 			}
+		case "slash_commands":
+			if !hello {
+				return errors.New("slack sent a command before hello")
+			}
+			cmd, responseURL, ok := c.parseCommand(e.Payload)
+			if err := ack(e.EnvelopeID); err != nil {
+				return fmt.Errorf("acknowledging a slack command: %w", err)
+			}
+			if ok && !c.readOnly {
+				if commands, yes := sink.(connector.CommandSink); yes {
+					c.commands.Add(1)
+					go func() {
+						defer c.commands.Done()
+						result, err := commands.Command(ctx, cmd)
+						if errors.Is(err, connector.ErrReadOnly) {
+							return
+						}
+						c.respond(ctx, responseURL, cmd.Verb, result, err)
+					}()
+				}
+			}
 		}
-		// Slash commands and interactions are not answered in this version:
-		// Slack tells the person that nothing handled them.
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/discord"
+	"github.com/kpenfound/hearsay/internal/connector/slack"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
@@ -22,6 +23,84 @@ import (
 	"github.com/kpenfound/hearsay/internal/queue"
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
 )
+
+func TestSlackReactionUsesSharedGestureLedger(t *testing.T) {
+	pool := scratchPool(t)
+	src := newSource(t)
+	const channel, root, user = "C0PUBLIC", "C0PUBLIC/1758700000.000100", "U0SAM"
+	at := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	acl := connector.ACL{{Kind: connector.ACLPublic}}
+	container := connector.Container{Kind: connector.ContainerChannel, NativeID: channel}
+	repo := config.Repo{
+		Sources:    []connector.SourceConfig{{ID: src, Type: slack.Type, Settings: json.RawMessage(`{"team":"T0001","ratify_emoji":"+1","demote_emoji":"-1"}`)}},
+		Scopes:     []config.Scope{{ID: src, Sources: []config.ScopeSource{{Source: src, Containers: []string{channel}}}}},
+		Principals: []principal.Principal{{ID: "sam", Kind: principal.KindHuman, Identities: []principal.Identity{{Source: src, NativeID: user}}}},
+	}
+	message := connector.Event{Source: src, NativeID: root + "@v1", Kind: connector.KindMessage, Time: at, ACL: acl,
+		Payload: connector.Payload{Artifact: root, Container: container, Text: "decision", Author: &connector.Identity{Source: src, Kind: connector.IdentityUser, NativeID: user}, Revision: &connector.Revision{Token: "v1"}}}
+	if _, err := l0.New(pool).Append(t.Context(), message); err != nil {
+		t.Fatal(err)
+	}
+	doc := l1.Document{ID: l1.DocID(src, root), Kind: l1.KindChatThread, ArtifactClass: config.ArtifactChatThread,
+		Source: l1.Source{System: src, NativeID: root}, L0Refs: []string{connector.EventID(src, message.NativeID)},
+		Time: l1.Times{Created: at, Updated: at, LastActivity: at}, Scope: []string{"chat"}, ACL: acl,
+		Text: "decision", RawText: "decision", Body: l1.Body{Summary: "decision", OutcomeKind: l1.OutcomeDecided}}
+	if _, err := l1.New(pool).Put(t.Context(), doc); err != nil {
+		t.Fatal(err)
+	}
+	graph := l2.New(pool)
+	topic := l2.Topic{ID: l2.TopicID(src, doc.ID, 0, "decision"), Scope: src, Name: "decision", ACL: acl, OpenedBy: doc.ID}
+	if _, err := graph.OpenTopic(t.Context(), topic); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := graph.AppendStance(t.Context(), l2.Stance{ID: l2.StanceID(topic.ID, doc.ID, "yes", at, l2.TierInferred), TopicID: topic.ID, Position: "yes", StatedAt: at, Evidence: []string{doc.ID}, Tier: l2.TierInferred, ACL: acl}, at); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Repo = repo
+	registry, err := llm.NewFake(llm.Default(), llm.NewFixtures())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := assertworker.New(pool, registry, &cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := root + ":reaction:" + user + ":%2B1"
+	reaction := connector.Event{Source: src, NativeID: artifact, Kind: connector.KindReaction, Time: at, ACL: acl,
+		Payload: connector.Payload{Artifact: artifact, Container: container, Parent: root, Author: &connector.Identity{Source: src, Kind: connector.IdentityUser, NativeID: user}, Native: json.RawMessage(`{"emoji":"+1"}`)}}
+	if _, err := l0.New(pool).Append(t.Context(), reaction); err != nil {
+		t.Fatal(err)
+	}
+	reaction.ID = connector.EventID(src, artifact)
+	if _, err := assertworker.NewGestureFollower(pool, repo).Once(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var queued int
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM queue_job WHERE target_id = $1`, "gesture:"+reaction.ID).Scan(&queued); err != nil || queued != 1 {
+		t.Fatalf("queued Slack reaction = %d, %v", queued, err)
+	}
+	if err := a.Handle(t.Context(), queue.Job{Kind: l2.AssertKind(), TargetID: "gesture:" + reaction.ID, SerialKey: src}); err != nil {
+		t.Fatal(err)
+	}
+	gs, err := graph.Gestures(t.Context(), src)
+	if err != nil || len(gs) != 1 || gs[0].Action != l2.GestureRatify || len(gs[0].Documents) != 1 || gs[0].Documents[0] != doc.ID {
+		t.Fatalf("ratify = %+v, %v", gs, err)
+	}
+	tombstone := connector.Event{Source: src, NativeID: artifact + ":tombstone", Kind: connector.KindTombstone, Time: at, ACL: acl,
+		Payload: connector.Payload{Artifact: artifact + ":tombstone", Target: artifact, Container: container}}
+	if _, err := l0.New(pool).Append(t.Context(), tombstone); err != nil {
+		t.Fatal(err)
+	}
+	tombstone.ID = connector.EventID(src, tombstone.NativeID)
+	if err := a.Handle(t.Context(), queue.Job{Kind: l2.AssertKind(), TargetID: "gesture:" + tombstone.ID, SerialKey: src}); err != nil {
+		t.Fatal(err)
+	}
+	gs, err = graph.Gestures(t.Context(), src)
+	if err != nil || len(gs) != 2 || gs[1].Action != l2.GestureUndo || gs[0].UndoneBy != gs[1].ID {
+		t.Fatalf("undo = %+v, %v", gs, err)
+	}
+}
 
 func TestDiscordReactionGestures(t *testing.T) {
 	pool := scratchPool(t)
