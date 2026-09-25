@@ -135,6 +135,17 @@ func (s Settings) ReactionEmojis() (string, string, error) {
 	return r, d, nil
 }
 
+// ReactionGestureConfig supplies this source's gesture settings to the shared
+// worker without exposing Slack's settings shape there.
+func ReactionGestureConfig(src connector.SourceConfig) (connector.ReactionGestures, error) {
+	var s Settings
+	if err := src.DecodeSettings(&s); err != nil {
+		return connector.ReactionGestures{}, err
+	}
+	r, d, err := s.ReactionEmojis()
+	return connector.ReactionGestures{Ratify: r, Demote: d}, err
+}
+
 // Connector holds one Socket Mode connection for a source.
 type Connector struct {
 	source, team, api  string

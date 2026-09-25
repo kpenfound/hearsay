@@ -25,6 +25,24 @@ import (
 )
 
 func TestSlackReactionUsesSharedGestureLedger(t *testing.T) {
+	runReactionUsesSharedGestureLedger(t, slack.Type, gestureRegistry(t))
+}
+
+func TestRegisteredReactionSourceUsesSharedGestureLedger(t *testing.T) {
+	const sourceType = "test-chat"
+	r := gestureRegistry(t)
+	if err := r.Register(sourceType, func(_ context.Context, src connector.SourceConfig) (connector.Connector, error) {
+		return connector.NewFake(src), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RegisterReactionGestures(sourceType, slack.ReactionGestureConfig); err != nil {
+		t.Fatal(err)
+	}
+	runReactionUsesSharedGestureLedger(t, sourceType, r)
+}
+
+func runReactionUsesSharedGestureLedger(t *testing.T, sourceType string, connectors *connector.Registry) {
 	pool := scratchPool(t)
 	src := newSource(t)
 	const channel, root, user = "C0PUBLIC", "C0PUBLIC/1758700000.000100", "U0SAM"
@@ -32,7 +50,7 @@ func TestSlackReactionUsesSharedGestureLedger(t *testing.T) {
 	acl := connector.ACL{{Kind: connector.ACLPublic}}
 	container := connector.Container{Kind: connector.ContainerChannel, NativeID: channel}
 	repo := config.Repo{
-		Sources:    []connector.SourceConfig{{ID: src, Type: slack.Type, Settings: json.RawMessage(`{"team":"T0001","ratify_emoji":"+1","demote_emoji":"-1"}`)}},
+		Sources:    []connector.SourceConfig{{ID: src, Type: sourceType, Settings: json.RawMessage(`{"team":"T0001","ratify_emoji":"+1","demote_emoji":"-1"}`)}},
 		Scopes:     []config.Scope{{ID: src, Sources: []config.ScopeSource{{Source: src, Containers: []string{channel}}}}},
 		Principals: []principal.Principal{{ID: "sam", Kind: principal.KindHuman, Identities: []principal.Identity{{Source: src, NativeID: user}}}},
 	}
@@ -62,7 +80,7 @@ func TestSlackReactionUsesSharedGestureLedger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := assertworker.New(pool, registry, &cfg)
+	a, err := assertworker.New(pool, registry, &cfg, connectors)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +91,7 @@ func TestSlackReactionUsesSharedGestureLedger(t *testing.T) {
 		t.Fatal(err)
 	}
 	reaction.ID = connector.EventID(src, artifact)
-	if _, err := assertworker.NewGestureFollower(pool, repo).Once(t.Context()); err != nil {
+	if _, err := assertworker.NewGestureFollower(pool, repo, connectors).Once(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	var queued int
@@ -147,7 +165,7 @@ func TestDiscordReactionGestures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := assertworker.New(pool, registry, &cfg)
+	a, err := assertworker.New(pool, registry, &cfg, gestureRegistry(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +223,7 @@ func TestDiscordReactionGestures(t *testing.T) {
 	}
 	repo.Sources[0].Settings = json.RawMessage(`{"guild":"123456789012345677"}`)
 	cfg.Repo = repo
-	a, err = assertworker.New(pool, registry, &cfg)
+	a, err = assertworker.New(pool, registry, &cfg, gestureRegistry(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +233,7 @@ func TestDiscordReactionGestures(t *testing.T) {
 	if err != nil || len(gs) != 4 || gs[3].Action != l2.GestureRatify {
 		t.Fatalf("default ratify = %+v, %v", gs, err)
 	}
-	follower := assertworker.NewGestureFollower(pool, repo)
+	follower := assertworker.NewGestureFollower(pool, repo, gestureRegistry(t))
 	if _, err := follower.Once(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +309,7 @@ func TestReadOnlyDiscordReactionsAreNotGestures(t *testing.T) {
 		t.Helper()
 		cfg := config.Default()
 		cfg.Repo = repo
-		a, err := assertworker.New(pool, registry, &cfg)
+		a, err := assertworker.New(pool, registry, &cfg, gestureRegistry(t))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -338,7 +356,7 @@ func TestReadOnlyDiscordReactionsAreNotGestures(t *testing.T) {
 		t.Errorf("gestures = %+v, %v, want only the ratify from before, not undone", gs, err)
 	}
 
-	readThrough(t, pool, "assert-worker:gestures", assertworker.NewGestureFollower(pool, readOnly).Once, last)
+	readThrough(t, pool, "assert-worker:gestures", assertworker.NewGestureFollower(pool, readOnly, gestureRegistry(t)).Once, last)
 	var queued int
 	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM queue_job WHERE target_id LIKE 'gesture:%'`).Scan(&queued); err != nil {
 		t.Fatal(err)
@@ -363,4 +381,25 @@ func readThrough(t *testing.T, pool *pgxpool.Pool, consumer string, once func(co
 		}
 		return at == last
 	})
+}
+
+func gestureRegistry(t *testing.T) *connector.Registry {
+	t.Helper()
+	r := connector.NewRegistry()
+	for _, entry := range []struct {
+		typeName string
+		factory  connector.Factory
+		gestures connector.ReactionGestureConfig
+	}{
+		{discord.Type, discord.Factory, discord.ReactionGestureConfig},
+		{slack.Type, slack.Factory, slack.ReactionGestureConfig},
+	} {
+		if err := r.Register(entry.typeName, entry.factory); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.RegisterReactionGestures(entry.typeName, entry.gestures); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return r
 }

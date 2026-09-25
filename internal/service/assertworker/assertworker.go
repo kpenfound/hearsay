@@ -36,6 +36,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/llm"
@@ -52,6 +53,8 @@ const DefaultListen = ":8083"
 
 // Deps are what the process builds and hands to [Run].
 type Deps struct {
+	// Connectors describes optional source capabilities to the worker.
+	Connectors *connector.Registry
 	// Listener is an optional pre-bound probe listener, useful in tests.
 	Listener net.Listener
 	// Listen is the probe address when Listener is nil; empty uses DefaultListen.
@@ -96,7 +99,7 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 		log.InfoContext(ctx, "assertion worker stopped")
 		return nil
 	}
-	asserter, err := New(deps.Pool, deps.LLM, cfg)
+	asserter, err := New(deps.Pool, deps.LLM, cfg, deps.Connectors)
 	if err != nil {
 		return err
 	}
@@ -113,7 +116,7 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 	}
 	asserter.WithReplies(deps.Replies)
 	follower := NewFollower(deps.Pool, cfg.Repo, 0, 0)
-	gestures := NewGestureFollower(deps.Pool, cfg.Repo)
+	gestures := NewGestureFollower(deps.Pool, cfg.Repo, deps.Connectors)
 	commands := NewCommandFollower(deps.Pool, cfg.Repo, 0, 0)
 	log.InfoContext(ctx, "assertion worker started", "config_digest", cfg.Repo.Digest, "swept", enqueued)
 

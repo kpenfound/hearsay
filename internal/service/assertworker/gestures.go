@@ -13,8 +13,6 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
-	"github.com/kpenfound/hearsay/internal/connector/discord"
-	"github.com/kpenfound/hearsay/internal/connector/slack"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
@@ -29,13 +27,14 @@ const gestureConsumer = "assert-worker:gestures"
 // cursor and the jobs commit together, so a restart cannot miss a reaction. A
 // read-only source's reactions are not gestures, and are passed over.
 type GestureFollower struct {
-	pool *pgxpool.Pool
-	repo config.Repo
+	pool       *pgxpool.Pool
+	repo       config.Repo
+	connectors *connector.Registry
 }
 
 // NewGestureFollower builds the reaction feed reader.
-func NewGestureFollower(pool *pgxpool.Pool, repo config.Repo) *GestureFollower {
-	return &GestureFollower{pool: pool, repo: repo}
+func NewGestureFollower(pool *pgxpool.Pool, repo config.Repo, connectors *connector.Registry) *GestureFollower {
+	return &GestureFollower{pool: pool, repo: repo, connectors: connectors}
 }
 
 // Run follows the feed until the context is cancelled.
@@ -75,13 +74,20 @@ func (f *GestureFollower) Once(ctx context.Context) (int, error) {
 		for _, change := range changes {
 			ev := change.Event
 			src, ok := f.repo.Source(ev.Source)
-			if !ok || (src.Type != discord.Type && src.Type != slack.Type) || src.ReadOnly || (ev.Kind != connector.KindReaction && ev.Kind != connector.KindTombstone) {
+			if !ok || (ev.Kind != connector.KindReaction && ev.Kind != connector.KindTombstone) {
+				continue
+			}
+			_, eligible, err := f.connectors.ReactionGestures(src)
+			if err != nil {
+				return err
+			}
+			if !eligible {
 				continue
 			}
 			if ev.Kind == connector.KindTombstone && !strings.Contains(ev.Payload.Target, ":reaction:") {
 				continue
 			}
-			_, err := queue.Enqueue(ctx, tx, queue.Request{Kind: l2.AssertKind(), TargetID: l2.GestureTarget + ev.ID,
+			_, err = queue.Enqueue(ctx, tx, queue.Request{Kind: l2.AssertKind(), TargetID: l2.GestureTarget + ev.ID,
 				SerialKey: l2.ScopeKey(f.repo, ev.Source, ev.Payload.Container.NativeID)})
 			if err != nil {
 				return err
@@ -102,12 +108,15 @@ func (a *Asserter) applyReactionGesture(ctx context.Context, job queue.Job) erro
 		return err
 	}
 	src, ok := a.repo.Source(ev.Source)
-	if !ok || (src.Type != discord.Type && src.Type != slack.Type) || src.ReadOnly {
+	if !ok {
 		return nil
 	}
-	ratify, demote, err := gestureEmojis(src)
+	gestures, eligible, err := a.connectors.ReactionGestures(src)
 	if err != nil {
 		return err
+	}
+	if !eligible {
+		return nil
 	}
 	var req l2.GestureRequest
 	var actorID string
@@ -132,9 +141,9 @@ func (a *Asserter) applyReactionGesture(ctx context.Context, job queue.Job) erro
 			return fmt.Errorf("reading reaction %s: %w", ev.ID, err)
 		}
 		switch native.Emoji {
-		case ratify:
+		case gestures.Ratify:
 			req.Action = l2.GestureRatify
-		case demote:
+		case gestures.Demote:
 			req.Action = l2.GestureDemote
 		default:
 			return nil
@@ -193,19 +202,4 @@ func (a *Asserter) applyReactionGesture(ctx context.Context, job queue.Job) erro
 		}
 		return err
 	})
-}
-
-func gestureEmojis(src connector.SourceConfig) (string, string, error) {
-	if src.Type == slack.Type {
-		var settings slack.Settings
-		if err := src.DecodeSettings(&settings); err != nil {
-			return "", "", err
-		}
-		return settings.ReactionEmojis()
-	}
-	var settings discord.Settings
-	if err := src.DecodeSettings(&settings); err != nil {
-		return "", "", err
-	}
-	return settings.ReactionEmojis()
 }

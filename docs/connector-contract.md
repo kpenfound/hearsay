@@ -518,6 +518,29 @@ A connector is a Go module that exports a `Factory`. Whoever builds the binary
 registers it; there is no global registry and no `init`-time registration, so
 what a binary can ingest is readable from its wiring.
 
+A connector whose `reaction` events can ratify or demote also exports a
+`ReactionGestureConfig` function and registers it with
+`Registry.RegisterReactionGestures` after its factory. This optional capability
+has the shared shape:
+
+```go
+type ReactionGestures struct { Ratify, Demote string }
+type ReactionGestureConfig func(SourceConfig) (ReactionGestures, error)
+```
+
+The function decodes that connector's source settings, applies its defaults and
+rejects invalid identifiers. It needs no secrets or network connection. The
+registry returns the configured identifiers for a source, or reports that its
+type has no gesture capability. It reports read-only sources as ineligible even
+if their type registered the capability. The assertion worker uses this lookup
+for reaction and reaction-removal job dispatch and for matching the `emoji`
+identifier in a reaction's L0 native payload. A connector that declares this
+capability emits reaction artifacts ending in `:reaction:<user id>:<emoji>` and
+removal tombstones targeting those artifacts; this lets the shared follower
+distinguish reaction removals from other tombstones. The gesture applies to the
+containing chat thread or burst document. A third chat source provides its
+own decoder and registry entry; the worker has no source-specific cases.
+
 ```go
 type Factory func(ctx context.Context, src SourceConfig) (Connector, error)
 
@@ -833,6 +856,9 @@ content into the revision token instead of using `updated_at`.
 
 ### Discord (issue #13)
 
+Discord registers `ReactionGestureConfig`; it reads `ratify_emoji` and
+`demote_emoji` from Discord settings, defaulting to `✅` and `👎`.
+
 | Artifact | kind | artifact id | native_id | container |
 |---|---|---|---|---|
 | Message | `message` | `<message id>` | `<id>@perm:<hash>` or `<id>@<edited_timestamp>+perm:<hash>` when edited | channel `<channel id>` |
@@ -900,6 +926,9 @@ reconnects replay. Hanging the tombstone off a fixed artifact id,
 else.
 
 ### Slack (issue #210)
+
+Slack registers `ReactionGestureConfig`; it reads `ratify_emoji` and
+`demote_emoji` from Slack settings, defaulting to `white_check_mark` and `-1`.
 
 | Artifact | kind | artifact id | native_id | container |
 |---|---|---|---|---|
