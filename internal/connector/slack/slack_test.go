@@ -582,8 +582,8 @@ func TestNewValidatesSource(t *testing.T) {
 					t.Fatalf("New() = %v", err)
 				}
 				desc := c.Describe()
-				if desc.Type != slack.Type || slices.Contains(desc.Kinds, connector.KindCommand) {
-					t.Errorf("Describe() = %+v, want slack with no command kind", desc)
+				if desc.Type != slack.Type || !slices.Contains(desc.Kinds, connector.KindCommand) {
+					t.Errorf("Describe() = %+v, want slack with command kind", desc)
 				}
 				if h := c.Health(t.Context()); h.Status != connector.HealthDegraded || h.Detail != "connecting" {
 					t.Errorf("Health() before a connection = %+v", h)

@@ -14,6 +14,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/discord"
+	"github.com/kpenfound/hearsay/internal/connector/slack"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
@@ -24,7 +25,7 @@ import (
 
 const gestureConsumer = "assert-worker:gestures"
 
-// GestureFollower places Discord reaction changes on the assertion queue. Its
+// GestureFollower places chat reaction changes on the assertion queue. Its
 // cursor and the jobs commit together, so a restart cannot miss a reaction. A
 // read-only source's reactions are not gestures, and are passed over.
 type GestureFollower struct {
@@ -32,7 +33,7 @@ type GestureFollower struct {
 	repo config.Repo
 }
 
-// NewGestureFollower builds the Discord reaction feed reader.
+// NewGestureFollower builds the reaction feed reader.
 func NewGestureFollower(pool *pgxpool.Pool, repo config.Repo) *GestureFollower {
 	return &GestureFollower{pool: pool, repo: repo}
 }
@@ -74,7 +75,7 @@ func (f *GestureFollower) Once(ctx context.Context) (int, error) {
 		for _, change := range changes {
 			ev := change.Event
 			src, ok := f.repo.Source(ev.Source)
-			if !ok || src.Type != discord.Type || src.ReadOnly || (ev.Kind != connector.KindReaction && ev.Kind != connector.KindTombstone) {
+			if !ok || (src.Type != discord.Type && src.Type != slack.Type) || src.ReadOnly || (ev.Kind != connector.KindReaction && ev.Kind != connector.KindTombstone) {
 				continue
 			}
 			if ev.Kind == connector.KindTombstone && !strings.Contains(ev.Payload.Target, ":reaction:") {
@@ -91,7 +92,7 @@ func (f *GestureFollower) Once(ctx context.Context) (int, error) {
 	})
 }
 
-func (a *Asserter) applyDiscordGesture(ctx context.Context, job queue.Job) error {
+func (a *Asserter) applyReactionGesture(ctx context.Context, job queue.Job) error {
 	id := strings.TrimPrefix(job.TargetID, l2.GestureTarget)
 	ev, err := a.events.Get(ctx, id)
 	if errors.Is(err, l0.ErrRetracted) || errors.Is(err, l0.ErrDeleted) {
@@ -101,14 +102,10 @@ func (a *Asserter) applyDiscordGesture(ctx context.Context, job queue.Job) error
 		return err
 	}
 	src, ok := a.repo.Source(ev.Source)
-	if !ok || src.Type != discord.Type || src.ReadOnly {
+	if !ok || (src.Type != discord.Type && src.Type != slack.Type) || src.ReadOnly {
 		return nil
 	}
-	var settings discord.Settings
-	if err := src.DecodeSettings(&settings); err != nil {
-		return err
-	}
-	ratify, demote, err := settings.ReactionEmojis()
+	ratify, demote, err := gestureEmojis(src)
 	if err != nil {
 		return err
 	}
@@ -153,7 +150,7 @@ func (a *Asserter) applyDiscordGesture(ctx context.Context, job queue.Job) error
 		}
 		resolved := resolver.Resolve(connector.Identity{Source: ev.Source, Kind: connector.IdentityUser, NativeID: userID})
 		if resolved.Status != principal.Resolved || userID == "" {
-			telemetry.Logger(ctx).DebugContext(ctx, "discord reaction identity not mapped", "discord_user_id", userID)
+			telemetry.Logger(ctx).DebugContext(ctx, "reaction identity not mapped", "source", ev.Source, "user_id", userID)
 			return nil
 		}
 		req.Event, req.Principal = ev.ID, resolved.Principal.ID
@@ -191,9 +188,24 @@ func (a *Asserter) applyDiscordGesture(ctx context.Context, job queue.Job) error
 			}
 		}
 		if errors.Is(err, l2.ErrNotAllowed) || errors.Is(err, l2.ErrNotFound) {
-			telemetry.Logger(ctx).DebugContext(ctx, "discord reaction gesture refused", "discord_user_id", actorID, "l0_id", ev.ID)
+			telemetry.Logger(ctx).DebugContext(ctx, "reaction gesture refused", "source", ev.Source, "user_id", actorID, "l0_id", ev.ID)
 			return nil
 		}
 		return err
 	})
+}
+
+func gestureEmojis(src connector.SourceConfig) (string, string, error) {
+	if src.Type == slack.Type {
+		var settings slack.Settings
+		if err := src.DecodeSettings(&settings); err != nil {
+			return "", "", err
+		}
+		return settings.ReactionEmojis()
+	}
+	var settings discord.Settings
+	if err := src.DecodeSettings(&settings); err != nil {
+		return "", "", err
+	}
+	return settings.ReactionEmojis()
 }

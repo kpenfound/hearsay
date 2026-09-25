@@ -16,6 +16,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/discord"
 	"github.com/kpenfound/hearsay/internal/connector/github"
+	"github.com/kpenfound/hearsay/internal/connector/slack"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
@@ -108,7 +109,7 @@ type Result struct {
 //
 // A job whose target is an `assertion` event is an agent's stance, appended
 // with no model call ([AppendAssertion]). One whose target is a gesture's
-// event ([l2.GestureTarget]) is a Discord reaction or GitHub `/hearsay`
+// event ([l2.GestureTarget]) is a Discord or Slack reaction or GitHub `/hearsay`
 // command, or the deletion of one, handled by its source with no model call.
 // One whose
 // target is a topic
@@ -130,8 +131,8 @@ func (a *Asserter) Handle(ctx context.Context, job queue.Job) error {
 			return nil
 		}
 		switch src.Type {
-		case discord.Type:
-			return a.applyDiscordGesture(ctx, job)
+		case discord.Type, slack.Type:
+			return a.applyReactionGesture(ctx, job)
 		case github.Type:
 			return a.githubGesture(ctx, job)
 		}

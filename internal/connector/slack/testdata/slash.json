@@ -1,0 +1,20 @@
+[
+  {
+    "type": "slash_commands",
+    "envelope_id": "env-1",
+    "accepts_response_payload": true,
+    "payload": {
+      "token": "verification-token",
+      "team_id": "T0001",
+      "team_domain": "acme",
+      "channel_id": "C0PUBLIC",
+      "channel_name": "eng",
+      "user_id": "U0SAM",
+      "user_name": "sam",
+      "command": "/hearsay",
+      "text": "merge topic:vault topic:lock",
+      "response_url": "https://hooks.slack.com/commands/T0001/example",
+      "trigger_id": "1758700200.123.abc"
+    }
+  }
+]
