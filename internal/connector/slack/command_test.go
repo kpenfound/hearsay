@@ -22,6 +22,18 @@ type commandApplier struct {
 	result  connector.CommandResult
 }
 
+func slashFixture(t *testing.T, text, thread, response string) map[string]any {
+	t.Helper()
+	frame := frames(t, "slash")[0]
+	payload := frame["payload"].(map[string]any)
+	payload["text"] = text
+	payload["response_url"] = response
+	if thread != "" {
+		payload["thread_ts"] = thread
+	}
+	return frame
+}
+
 func (a *commandApplier) Apply(_ context.Context, req connector.CommandRequest) connector.CommandResult {
 	a.called <- req
 	<-a.release
@@ -57,10 +69,7 @@ func TestSlashCommandIsAckedBeforeApplicationAndAnsweredEphemerally(t *testing.T
 			fake := newFakeSlack(t, func(_ int, ws *websocket.Conn) {
 				_ = ws.WriteJSON(map[string]any{"type": "hello"})
 				start := time.Now()
-				_ = ws.WriteJSON(map[string]any{"type": "slash_commands", "envelope_id": "env-1", "payload": map[string]string{
-					"team_id": "T0001", "channel_id": public, "user_id": "U0SAM", "user_name": "sam", "command": "/hearsay", "text": tc.text,
-					"thread_ts": tc.thread, "trigger_id": "1758700200.123.abc", "response_url": response.URL + "/answer",
-				}})
+				_ = ws.WriteJSON(slashFixture(t, tc.text, tc.thread, response.URL+"/answer"))
 				var ack map[string]any
 				_ = ws.SetReadDeadline(time.Now().Add(time.Second))
 				if err := ws.ReadJSON(&ack); err != nil || ack["envelope_id"] != "env-1" {
@@ -126,9 +135,9 @@ func TestReadOnlyIgnoresSlashCommands(t *testing.T) {
 	acked := make(chan struct{}, 1)
 	fake := newFakeSlack(t, func(_ int, ws *websocket.Conn) {
 		_ = ws.WriteJSON(map[string]any{"type": "hello"})
-		_ = ws.WriteJSON(map[string]any{"type": "slash_commands", "envelope_id": "read-only", "payload": map[string]string{
-			"team_id": "T0001", "channel_id": public, "user_id": "U0SAM", "command": "/hearsay", "text": "merge topic:a topic:b", "trigger_id": "1758700200.123.abc", "response_url": response.URL,
-		}})
+		frame := slashFixture(t, "merge topic:a topic:b", "", response.URL)
+		frame["envelope_id"] = "read-only"
+		_ = ws.WriteJSON(frame)
 		var ack map[string]any
 		if err := ws.ReadJSON(&ack); err != nil || ack["envelope_id"] != "read-only" {
 			t.Errorf("ack = %v, %v", ack, err)
