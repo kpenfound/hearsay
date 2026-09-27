@@ -38,6 +38,10 @@ func TestConnectorRegistry(t *testing.T) {
 			src:  connector.SourceConfig{ID: "drive", Type: "drive", Containers: []string{"folder"}},
 		},
 		{
+			name: "osmia is registered",
+			src:  connector.SourceConfig{ID: "osmia-owner", Type: "osmia", Containers: []string{"p_0123456789abcdef0123456789abcdef"}},
+		},
+		{
 			name: "obsidian is registered",
 			src:  connector.SourceConfig{ID: "notes", Type: "obsidian", Containers: []string{"notes"}, Settings: json.RawMessage(`{"root":"/missing-vault","owner":{"source":"notes","kind":"user","native_id":"owner"}}`)},
 		},
