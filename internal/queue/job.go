@@ -129,10 +129,10 @@ type Request struct {
 // limit of its own, so this is the queue's: an id long enough to matter is a
 // caller passing something that is not an id.
 //
-// It is set above the longest id anything mints today — `internal/connector`
-// bounds an L0 event id at 1605 bytes — with room for the L1 and L2 ids that
-// come later. The number is not read from that package on purpose: the queue
-// takes an opaque id and does not depend on the layers that mint one.
+// It is set above the longest L0 event id — `internal/connector` bounds one at
+// 1605 bytes — with room for the L1 and L2 ids. The number is not read from
+// that package on purpose: the queue takes an opaque id and does not depend on
+// the layers that mint one.
 const MaxIDLen = 2048
 
 // validID refuses what the text columns cannot store. Postgres rejects a NUL

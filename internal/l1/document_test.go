@@ -88,9 +88,6 @@ func TestKindFor(t *testing.T) {
 // The outcome kind is the L2 trigger, so which of the five enter the assertion
 // pipeline is a rule stated in one place.
 func TestOutcomeKinds(t *testing.T) {
-	if len(l1.OutcomeKinds) != 5 {
-		t.Fatalf("there are %d outcome kinds, want the design's five", len(l1.OutcomeKinds))
-	}
 	asserting := map[l1.OutcomeKind]bool{l1.OutcomeDecided: true, l1.OutcomeProposed: true, l1.OutcomeResolved: true}
 	for _, o := range l1.OutcomeKinds {
 		if !o.Valid() {

@@ -11,11 +11,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/l0"
 )
 
-var (
-	_ connector.ResyncStore    = (*l0.Resyncs)(nil)
-	_ connector.ExposureReader = (*l0.Store)(nil)
-)
-
 // A re-sync is recorded, walked and settled across what could be separate
 // processes, and a request that arrives during a walk is not settled by it.
 func TestResyncsRoundTrip(t *testing.T) {

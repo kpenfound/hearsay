@@ -240,11 +240,11 @@ func topicName(t *testing.T, pool *pgxpool.Pool, id string) string {
 	return name
 }
 
-// The acceptance criteria end to end: an operator deletes the issue that
-// quoted a secret, the distiller and the assertion worker rebuild what rested
-// on it, and afterwards `show` reports complete and names the stances
-// superseded and the topic redacted. No row of L0, L1 or L2 holds the secret,
-// while every stance id and supersession edge is still there.
+// End to end: an operator deletes the issue that quoted a secret, the
+// distiller and the assertion worker rebuild what rested on it, and afterwards
+// `show` reports complete and names the stances superseded and the topic
+// redacted. No row of L0, L1 or L2 holds the secret, while every stance id and
+// supersession edge is still there.
 func TestAnOperatorDeletionRedactsL2AndRecordsTheRebuild(t *testing.T) {
 	w := newGraphWorld(t)
 	ctx := t.Context()

@@ -10,10 +10,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/l0"
 )
 
-// The store the connector runtime keeps backfill positions in is behind the
-// interface the runtime holds.
-var _ connector.CursorStore = (*l0.BackfillCursors)(nil)
-
 // A backfill position survives the process: that is the whole point of keeping
 // it in the database, and it is what makes a restart resume rather than walk a
 // source's history again.

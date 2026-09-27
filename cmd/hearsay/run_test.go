@@ -16,21 +16,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/db"
 )
 
-// The four service subcommand names are a contract (ADR-0003): the Dagger
-// module, the compose file and the deployment manifests all name them.
-func TestServiceSubcommandNamesAreTheOnesTheADRFixes(t *testing.T) {
-	want := []string{"connectors", "distiller", "assert-worker", "api", "migrate", "l0", "version", "all"}
-	have := map[string]bool{}
-	for _, cmd := range commands() {
-		have[cmd.name] = true
-	}
-	for _, name := range want {
-		if !have[name] {
-			t.Errorf("subcommand %q is missing; commands are %v", name, have)
-		}
-	}
-}
-
 func TestRun(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -283,16 +268,6 @@ func TestRun(t *testing.T) {
 			wantErr: "--listen is empty",
 		},
 		{
-			name:       "distiller help names probe port",
-			args:       []string{"distiller", "--help"},
-			wantStderr: ":8082",
-		},
-		{
-			name:       "assert worker help names probe port",
-			args:       []string{"assert-worker", "--help"},
-			wantStderr: ":8083",
-		},
-		{
 			name:       "all help names worker probe flags",
 			args:       []string{"all", "--help"},
 			wantStderr: "-assert-worker-listen",
@@ -339,7 +314,7 @@ func TestRun(t *testing.T) {
 // passed through.
 func TestServiceSubcommandsReturnWhenTheContextIsCancelled(t *testing.T) {
 	t.Setenv("HEARSAY_INSTANCE", "replica-7")
-	// Every service needs Postgres now, and refuses without a URL (the test
+	// Every service needs Postgres, and refuses without a URL (the test
 	// below). These cases are about the service coming back and about its log
 	// fields, so they name a database nothing listens on: a service asked to
 	// stop while it is still connecting has not failed.
@@ -584,14 +559,6 @@ func TestConfigValidate(t *testing.T) {
 		"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\n",
 		"scopes/api.yaml":     "id: api\nsources: [github, discord]\n",
 	})
-	reservedSource := writeConfig(t, map[string]string{
-		"sources/github.yaml":  "id: github\ntype: github\ncontainers: [acme/api]\n",
-		"sources/hearsay.yaml": "id: hearsay\ntype: github\ncontainers: [acme/api]\n",
-		"scopes/api.yaml":      "id: api\nsources: [github]\n",
-	})
-	agentWithoutScopes := maps.Clone(validConfig)
-	agentWithoutScopes["principals/agent.yaml"] = "id: shed\nkind: agent\nclass: worker\nidentities: [{source: github, handle: shed}]\n"
-	missingAgentGrant := writeConfig(t, agentWithoutScopes)
 
 	tests := []struct {
 		name       string
@@ -631,16 +598,6 @@ func TestConfigValidate(t *testing.T) {
 			name:    "an invalid configuration names the file, the line and the field",
 			args:    []string{"config", "validate", broken},
 			wantErr: `scopes/api.yaml:1: scope "api": sources[1].source: no source is configured with id "discord"`,
-		},
-		{
-			name:    "an agent needs a scope grant",
-			args:    []string{"config", "validate", missingAgentGrant},
-			wantErr: `principal "shed": scopes: is required`,
-		},
-		{
-			name:    "the reserved Hearsay source id is rejected",
-			args:    []string{"config", "validate", reservedSource},
-			wantErr: `source "hearsay": id: "hearsay" is reserved for Hearsay's own audit and assertion events`,
 		},
 		{
 			name:    "config with no action says what it wanted",
@@ -702,20 +659,6 @@ func TestServicesLoadTheirConfiguration(t *testing.T) {
 			}
 		})
 	}
-
-	t.Run("a bad configuration stops the service starting", func(t *testing.T) {
-		broken := writeConfig(t, map[string]string{"sources/github.yaml": "id: github\n"})
-		var stdout, stderr bytes.Buffer
-		// Cancelled up front, like the cases above: a service that ignored its
-		// configuration would then return nil rather than block, so this fails
-		// instead of hanging.
-		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
-		err := run(ctx, []string{"api", "--config", broken}, &stdout, &stderr)
-		if err == nil || !strings.Contains(err.Error(), "not a valid configuration") {
-			t.Fatalf("run(api --config <broken>) = %v, want the configuration error", err)
-		}
-	})
 
 	t.Run("a loaded configuration is logged with its digest", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer

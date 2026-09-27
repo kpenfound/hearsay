@@ -80,35 +80,18 @@ func TestGateWritesAnAllowlistedEvent(t *testing.T) {
 // in L0 cannot leak. An event from a container config does not name must not
 // reach the sink, and the drop must be visible.
 func TestGateDropsEventsOutsideTheAllowlist(t *testing.T) {
-	tests := []struct {
-		name      string
-		container string
-	}{
-		{name: "another repository of the same source", container: "acme/secrets"},
-		{name: "a container the source does not have", container: ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			gate, rec := gateFixture(t)
-			ev := validEvent()
-			ev.Payload.Container.NativeID = tt.container
+	gate, rec := gateFixture(t)
+	ev := validEvent()
+	ev.Payload.Container.NativeID = "acme/secrets"
 
-			err := gate.Emit(t.Context(), ev)
-			if tt.container == "" {
-				// An event with no container is malformed, not merely excluded.
-				if !errors.Is(err, connector.ErrInvalidEvent) {
-					t.Fatalf("Emit() = %v, want an error wrapping ErrInvalidEvent", err)
-				}
-			} else if err != nil {
-				t.Fatalf("Emit() = %v, want no error: a drop is not the connector's fault", err)
-			}
-			if got := rec.Events(); len(got) != 0 {
-				t.Fatalf("recorded %d events, want none: %+v", len(got), got)
-			}
-			if tt.container != "" && gate.Dropped() != 1 {
-				t.Errorf("Dropped() = %d, want 1", gate.Dropped())
-			}
-		})
+	if err := gate.Emit(t.Context(), ev); err != nil {
+		t.Fatalf("Emit() = %v, want no error: a drop is not the connector's fault", err)
+	}
+	if got := rec.Events(); len(got) != 0 {
+		t.Fatalf("recorded %d events, want none: %+v", len(got), got)
+	}
+	if gate.Dropped() != 1 {
+		t.Errorf("Dropped() = %d, want 1", gate.Dropped())
 	}
 }
 

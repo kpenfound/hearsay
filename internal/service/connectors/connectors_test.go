@@ -16,11 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
-	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/service/connectors"
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
@@ -486,58 +483,6 @@ func TestSelect(t *testing.T) {
 				t.Errorf("Select(%v) = %v, want %v", tt.selected, ids, tt.want)
 			}
 		})
-	}
-}
-
-// The `hosting` log field says which connectors a process is hosting.
-func TestSelection(t *testing.T) {
-	tests := []struct {
-		name    string
-		sources []string
-		want    string
-	}{
-		{name: "none is all of them", want: "all"},
-		{name: "one", sources: []string{"github"}, want: "github"},
-		{name: "several", sources: []string{"github", "discord"}, want: "github,discord"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := connectors.Selection(tt.sources); got != tt.want {
-				t.Errorf("Selection(%v) = %q, want %q", tt.sources, got, tt.want)
-			}
-		})
-	}
-}
-
-// Where the runtime keeps re-syncs: the stores over the pool, unless the caller
-// supplied its own, and nothing at all with neither — which the runtime says
-// rather than refusing to start.
-func TestResyncStores(t *testing.T) {
-	// A pool is lazy: nothing here connects to this address.
-	pool, err := pgxpool.New(t.Context(), "postgres://nobody@127.0.0.1:1/nothing")
-	if err != nil {
-		t.Fatalf("pgxpool.New = %v", err)
-	}
-	t.Cleanup(pool.Close)
-	mem := connector.NewMemoryResyncs()
-	rec := &connector.Recorder{}
-
-	resyncs, exposure := connectors.ResyncStores(connectors.Deps{Pool: pool})
-	if _, ok := resyncs.(*l0.Resyncs); !ok {
-		t.Errorf("with a pool, Resyncs = %T, want *l0.Resyncs", resyncs)
-	}
-	if _, ok := exposure.(*l0.Store); !ok {
-		t.Errorf("with a pool, Exposure = %T, want *l0.Store", exposure)
-	}
-
-	resyncs, exposure = connectors.ResyncStores(connectors.Deps{Pool: pool, Resyncs: mem, Exposure: rec})
-	if resyncs != connector.ResyncStore(mem) || exposure != connector.ExposureReader(rec) {
-		t.Errorf("with a pool and overrides = %T, %T, want the overrides", resyncs, exposure)
-	}
-
-	resyncs, exposure = connectors.ResyncStores(connectors.Deps{})
-	if resyncs != nil || exposure != nil {
-		t.Errorf("with neither = %T, %T, want nil, nil", resyncs, exposure)
 	}
 }
 

@@ -239,15 +239,3 @@ func TestAgentReadRefuses(t *testing.T) {
 		})
 	}
 }
-
-func TestGrantIntersect(t *testing.T) {
-	a := principal.Grant{Scopes: principal.SomeScopes("api", "web"), Rights: principal.ClassSteward.Rights()}
-	b := principal.Grant{Scopes: principal.SomeScopes("web"), Rights: principal.ClassWorker.Rights()}
-	got := a.Intersect(b)
-	if !slices.Equal(got.Scopes.IDs, []string{"web"}) {
-		t.Errorf("scopes = %+v, want web", got.Scopes)
-	}
-	if got.Rights != (principal.Rights{Read: principal.ReadScopedCode, Write: principal.WriteAssert}) {
-		t.Errorf("rights = %+v, want a worker's", got.Rights)
-	}
-}

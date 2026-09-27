@@ -16,7 +16,8 @@ type Graph interface {
 	// grant may name an entity before it arrives from L0 (docs/config.md).
 	Descendants(ctx context.Context, ids []string) ([]string, error)
 	// LinkedCode is the code entities the pull requests about one of these
-	// entities touch — the edges #142 records — and every entity under them.
+	// entities touch — the `system` references L1 lists on their documents —
+	// and every entity under them.
 	LinkedCode(ctx context.Context, ids []string) ([]string, error)
 }
 

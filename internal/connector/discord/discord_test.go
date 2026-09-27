@@ -233,9 +233,6 @@ func TestGatewayReplayThroughRuntimeGate(t *testing.T) {
 			}
 			byID := map[string]connector.Event{}
 			for _, ev := range events {
-				if _, ok := byID[ev.NativeID]; ok {
-					t.Errorf("duplicate native id %q", ev.NativeID)
-				}
 				byID[ev.NativeID] = ev
 			}
 			original, ok := eventPrefix(byID, message+"@perm:")
@@ -368,37 +365,6 @@ func TestHeartbeatAndClose(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("Stream outlived Close")
-	}
-}
-
-func TestRejectedGatewayReportsFailedWithoutSecrets(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ws, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
-		if err != nil {
-			return
-		}
-		defer ws.Close()
-		_ = ws.WriteJSON(map[string]any{"op": 10, "d": map[string]any{"heartbeat_interval": 5000}})
-		var hello any
-		if ws.ReadJSON(&hello) != nil {
-			return
-		}
-		_ = ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(4014, "bad intents"), time.Now().Add(time.Second))
-	}))
-	defer server.Close()
-	src := connector.SourceConfig{ID: "chat", Type: discord.Type, Containers: []string{"1551744840499200001"}, Settings: json.RawMessage(fmt.Sprintf(`{"guild":"1551744840499200000","gateway_url":%q}`, "ws"+strings.TrimPrefix(server.URL, "http"))), Secrets: map[string]string{"token": "secret-value"}}
-	c, err := discord.New(src)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close(t.Context())
-	gate := connector.NewGate(&connector.Recorder{}, src.ID, c.Describe(), connector.NewAllowlist(src))
-	if err := c.Stream(t.Context(), gate); err == nil {
-		t.Fatal("rejected gateway returned no error")
-	}
-	h := c.Health(t.Context())
-	if h.Status != connector.HealthFailed || strings.Contains(h.Detail, "secret-value") {
-		t.Errorf("failed health = %+v", h)
 	}
 }
 

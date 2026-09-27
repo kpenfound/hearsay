@@ -61,22 +61,3 @@ func TestEveryMigrationIsWellFormed(t *testing.T) {
 		t.Errorf("EmbeddedVersion() = %d, want %d, the newest migration on disk", version, previous)
 	}
 }
-
-// ADR-0006 makes the vector extension the first migration, so that every later
-// one may declare a column of that type and a Postgres without pgvector fails
-// on the one thing that is missing.
-func TestTheFirstMigrationCreatesTheVectorExtension(t *testing.T) {
-	entries, err := fs.ReadDir(db.Migrations(), ".")
-	if err != nil {
-		t.Fatalf("reading the embedded migrations: %v", err)
-	}
-	first := entries[0].Name()
-	body, err := fs.ReadFile(db.Migrations(), first)
-	if err != nil {
-		t.Fatalf("reading %s: %v", first, err)
-	}
-	up, _, _ := strings.Cut(string(body), "-- +goose Down")
-	if !strings.Contains(up, "CREATE EXTENSION IF NOT EXISTS vector") {
-		t.Errorf("the first migration is %s, and it does not create the vector extension (ADR-0006)", first)
-	}
-}

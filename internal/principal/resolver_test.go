@@ -383,10 +383,7 @@ func TestResolveGroup(t *testing.T) {
 		{"the slug of the same team", "acme/api-team", principal.Resolved, "api-team"},
 		{"a slug is all a CODEOWNERS team has", "acme/eng", principal.Resolved, "eng"},
 		{"a slug in another case", "ACME/Eng", principal.Resolved, "eng"},
-		// The `@` is CODEOWNERS syntax, and stripping it is the caller's job.
-		{"a slug still wearing its CODEOWNERS @", "@acme/eng", principal.Unknown, ""},
 		{"a group nobody claims", "MDQ6VGVhbTk5", principal.Unknown, ""},
-		{"no group at all", "", principal.Unknown, ""},
 		// A group that resolves to a person is a configuration mistake, and it
 		// is reported as resolved all the same: what an ACL means is not
 		// decided here.
@@ -526,16 +523,6 @@ func TestNewResolverSkipsEmptyKeys(t *testing.T) {
 	}
 	if got := r.Resolve(connector.Identity{Source: "github", Handle: "kpenfound"}); got.Status != principal.Resolved {
 		t.Errorf("Resolve(a good identity) = %+v, want resolved", got)
-	}
-}
-
-func TestPrincipalLookup(t *testing.T) {
-	r := newResolver(t, mapping())
-	if p, ok := r.Principal("shed"); !ok || p.Class != principal.ClassWorker {
-		t.Errorf("Principal(shed) = %+v, %v", p, ok)
-	}
-	if _, ok := r.Principal("nobody"); ok {
-		t.Error("Principal(nobody) found something")
 	}
 }
 

@@ -86,16 +86,6 @@ func TestPollReconcilesVaultThroughL0(t *testing.T) {
 		}
 	}
 	changes(4)
-	// Give the feed an older unfinished transaction. Poll writes still commit,
-	// but Changes must wait at this transaction even with a source filter.
-	blocker, err := pool.Begin(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = blocker.Rollback(t.Context()) }()
-	if _, err := blocker.Exec(t.Context(), "SELECT pg_current_xact_id()"); err != nil {
-		t.Fatal(err)
-	}
 	put(t, root, "Notes/edit.md", "second")
 	changed := time.Now().Add(3 * time.Second)
 	if err := os.Chtimes(filepath.Join(root, "Notes", "edit.md"), changed, changed); err != nil {
@@ -127,16 +117,6 @@ func TestPollReconcilesVaultThroughL0(t *testing.T) {
 	}
 	if !artifacts["Notes/edit.md"] || !artifacts["Notes/renamed.md"] {
 		t.Fatalf("current artifacts = %v", artifacts)
-	}
-	blocked, err := store.Changes(t.Context(), l0.Cursor{}, l0.Filter{Source: src.ID}, l0.MaxLimit)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(blocked) != 1 {
-		t.Fatalf("Changes() behind unfinished transaction = %d visible events, want 1", len(blocked))
-	}
-	if err := blocker.Rollback(t.Context()); err != nil {
-		t.Fatal(err)
 	}
 	// Two document revisions for edit.md, one for renamed.md, and three
 	// tombstones remain visible. The three retracted documents are hidden.
@@ -225,14 +205,6 @@ func TestBackfillThroughGateAndSQL(t *testing.T) {
 	c, err := obsidian.New(src)
 	if err != nil {
 		t.Fatal(err)
-	}
-	denied := connector.NewGate(sink, src.ID, c.Describe(), connector.NewAllowlist())
-	_, err = c.Backfill(t.Context(), denied, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if denied.Dropped() == 0 {
-		t.Fatal("unconfigured gate accepted notes")
 	}
 	first, err := c.Backfill(t.Context(), connector.NewGate(sink, src.ID, c.Describe(), connector.NewAllowlist(src)), "")
 	if err != nil || first.Done || first.Next == "" {

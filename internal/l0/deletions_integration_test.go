@@ -16,9 +16,9 @@ import (
 
 const secret = "tangerine-otter-42"
 
-// The acceptance criteria at L0: an operator deletion redacts the row in
-// place, every read hides it, a read by id names the deletion rather than a
-// tombstone, a replay is dropped and counted, and a new revision is admitted.
+// At L0, an operator deletion redacts the row in place, every read hides it, a
+// read by id names the deletion rather than a tombstone, a replay is dropped and
+// counted, and a new revision is admitted.
 func TestAnOperatorDeletionRedactsTheRowAndHidesIt(t *testing.T) {
 	pool := newPool(t)
 	fake, source := newFake(t)

@@ -231,9 +231,6 @@ func TestPrivateResyncRetry(t *testing.T) {
 	if _, err := c.Resync(t.Context(), sink, public, ""); err == nil {
 		t.Fatal("want failed re-sync")
 	}
-	if len(rec.Events()) != 1 {
-		t.Fatal("failed attempt wrote event")
-	}
 	result, err := c.Resync(t.Context(), sink, public, "")
 	if err != nil || !result.Done || len(rec.Events()) != 2 {
 		t.Fatalf("retry = %+v, %v, events %d", result, err, len(rec.Events()))

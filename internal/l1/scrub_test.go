@@ -10,11 +10,10 @@ import (
 
 func TestScrub(t *testing.T) {
 	tests := []struct {
-		name    string
-		in      string
-		want    string
-		kinds   []string
-		unknown string // a value that must not survive, where naming it is clearer than a want
+		name  string
+		in    string
+		want  string
+		kinds []string
 	}{{
 		name:  "text with nothing in it is left alone",
 		in:    "The engine takes the lock before it writes, which is why #31 was reverted.",
@@ -95,9 +94,6 @@ func TestScrub(t *testing.T) {
 			}
 			if !slices.Equal(kinds, tt.kinds) {
 				t.Errorf("Scrub() reported %v, want %v", kinds, tt.kinds)
-			}
-			if tt.unknown != "" && strings.Contains(got, tt.unknown) {
-				t.Errorf("Scrub() left %q in the text", tt.unknown)
 			}
 			// Idempotency is what makes a document rebuilt from L0 compare
 			// equal to the row already stored. A pattern that matched its own

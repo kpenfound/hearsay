@@ -25,7 +25,7 @@ import (
 
 // reachWorld is a repository with two directories, a pull request that
 // touched one of them, and agents of every class scoped to that pull request's
-// tracker item (#148).
+// tracker item.
 //
 //	code:P            the repository; the readme is about it alone
 //	├─ code:P:engine  the pull request touched it; the engine doc is about it

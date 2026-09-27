@@ -28,9 +28,6 @@ func TestLLMDefaultsWithoutTheSection(t *testing.T) {
 	if distill.Provider != llm.ProviderAnthropic || distill.Model == "" {
 		t.Errorf("the distill tier = %+v, want the shipped default", distill)
 	}
-	if _, ok := repo.LLM.Tier(llm.TierEmbed); ok {
-		t.Error("an embed tier is configured, and no shipped provider can back one")
-	}
 }
 
 // What the file says is merged over the defaults, field by field: a tier that

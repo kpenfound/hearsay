@@ -13,7 +13,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
 )
 
-// Issue #172: a document whose join keys find a topic that was merged away is
+// A document whose join keys find a topic that was merged away is
 // offered the topic it went into, with that topic's current position, and its
 // stance is written there: no duplicate topic, and nothing on the merged-away
 // row. The fake answers only the requests recorded here, so a prompt that

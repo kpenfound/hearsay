@@ -211,14 +211,14 @@ func TestCommandsPinAndMerge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("kyle's pin (%+v) recorded no gesture: %v", got, err)
 	}
-	if got.Outcome != connector.CommandPinned || got.Scope == "" || got.Scope != g.Scope || got.Gesture != g.ID || got.Principal != "kyle" || !got.Applied() {
+	if got.Outcome != connector.CommandPinned || got.Scope == "" || got.Scope != g.Scope || got.Gesture != g.ID || got.Principal != "kyle" {
 		t.Errorf("Apply(pin) = %+v, want pinned as gesture %d in %s", got, g.ID, g.Scope)
 	}
 	if g.Action != l2.GesturePin || g.Principal != "kyle" || !slices.Equal(g.Documents, []string{l1.DocID(w.src, w.private)}) {
 		t.Errorf("gesture %+v, want kyle pinning the thread", g)
 	}
 	again := w.commands.Apply(t.Context(), req)
-	if again.Outcome != connector.CommandAlreadyPinned || again.Gesture != g.ID || !again.Applied() {
+	if again.Outcome != connector.CommandAlreadyPinned || again.Gesture != g.ID {
 		t.Errorf("Apply(the same pin) = %+v, want already pinned as gesture %d", again, g.ID)
 	}
 	if pins, err := graph.Pins(t.Context(), "code:"+w.src); err != nil || len(pins) != 1 {

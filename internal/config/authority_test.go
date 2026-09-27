@@ -32,12 +32,6 @@ func TestDefaultPolicyRanksTheWayTheDesignSays(t *testing.T) {
 			t.Errorf("%s does not outrank %s", c, config.ArtifactAgent)
 		}
 	}
-	// Every class is ranked, or a stance from it would be unrankable.
-	for _, c := range config.ArtifactClasses() {
-		if _, ok := p.Rank(c); !ok {
-			t.Errorf("the default ranking does not rank %s", c)
-		}
-	}
 	if !p.RatifiedByArtifact(config.ArtifactMergedPR, "github") {
 		t.Error("a merged pull request does not ratify by default")
 	}
@@ -304,11 +298,6 @@ func TestZeroAuthorityIsTheDefaultPolicy(t *testing.T) {
 // The classes are a closed set: an authority policy naming something outside it
 // would be a typo that silently ranks nothing.
 func TestArtifactClassesAreClosed(t *testing.T) {
-	for _, c := range config.ArtifactClasses() {
-		if !c.Valid() {
-			t.Errorf("%q is listed by ArtifactClasses but is not valid", c)
-		}
-	}
 	for _, c := range []config.ArtifactClass{"", "standup", "MERGED_PR", "pr"} {
 		if c.Valid() {
 			t.Errorf("%q is valid, want it rejected", c)

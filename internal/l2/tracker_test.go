@@ -71,7 +71,7 @@ func TestPlacementOf(t *testing.T) {
 	}
 }
 
-// Issue #120: seeding merges the tracker's hierarchy at its rank (ADR-0016):
+// Seeding merges the tracker's hierarchy at its rank (ADR-0016):
 // under configuration, over repository structure, with a cycle's closing edge
 // dropped. A placement with no parent adds no entity.
 func TestSeedMergesTheTrackersHierarchy(t *testing.T) {

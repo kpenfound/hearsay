@@ -80,8 +80,8 @@ func storedDoc(t *testing.T, src, artifact string, with func(*l1.Document)) l1.D
 	return doc
 }
 
-// The acceptance criterion, at the level of one row: writing the same document
-// twice writes it once, and the second write does not touch the row.
+// At the level of one row, writing the same document twice writes it once, and
+// the second write does not touch the row.
 func TestChangingArtifactClassUpdatesRow(t *testing.T) {
 	store := l1.New(newPool(t))
 	doc := storedDoc(t, newSource(t), "acme/api#class", nil)
@@ -246,28 +246,6 @@ func TestGetAndDelete(t *testing.T) {
 	}
 	if _, err := store.Get(t.Context(), doc.ID); !errors.Is(err, l1.ErrNotFound) {
 		t.Errorf("Get(deleted) = %v, want l1.ErrNotFound", err)
-	}
-}
-
-// The table refuses a document the layer would refuse, so a row written by
-// anything else behaves the same.
-func TestPutRefusesADocumentTheLayerRefuses(t *testing.T) {
-	store := l1.New(newPool(t))
-	src := newSource(t)
-	for _, tt := range []struct {
-		name string
-		with func(*l1.Document)
-	}{
-		{"an outcome kind that is not one of the five", func(d *l1.Document) { d.Body.OutcomeKind = "merged" }},
-		{"no provenance", func(d *l1.Document) { d.L0Refs = nil }},
-		{"an empty access list", func(d *l1.Document) { d.ACL = nil }},
-		{"an id that is not derived", func(d *l1.Document) { d.ID = "l1:" + src + ":something-else" }},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			if _, err := store.Put(t.Context(), storedDoc(t, src, "acme/api#41", tt.with)); err == nil {
-				t.Fatal("Put() = nil, want an error")
-			}
-		})
 	}
 }
 

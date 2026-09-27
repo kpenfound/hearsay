@@ -577,8 +577,6 @@ func containsSubstring(problems []string, want string) bool {
 	return false
 }
 
-// A problem is reachable through the aggregate, so a caller can pick out the
-// file and line rather than parsing the message.
 // A `principals/` that is valid comes out as the identity model, and the Repo
 // builds the resolver ingest resolves identity hints against.
 func TestLoadPrincipalsAndResolver(t *testing.T) {
@@ -635,6 +633,8 @@ func TestLoadPrincipalsAndResolver(t *testing.T) {
 	}
 }
 
+// A problem is reachable through the aggregate, so a caller can pick out the
+// file and line rather than parsing the message.
 func TestInvalidErrorUnwrapsToProblems(t *testing.T) {
 	root := writeFiles(t, with(map[string]string{"scopes/api.yaml": "id: api\nsources: [github, discord]\n"}))
 	_, err := config.Load(root)

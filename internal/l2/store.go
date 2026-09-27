@@ -301,9 +301,9 @@ LIMIT $4`, scope, keys, aclJSON(readers), limit)
 
 // TopicsBySimilarity is the second half: the topics in one scope whose evidence
 // is nearest the document by embedding, within a cosine distance, excluding the
-// ones already found. It reads the vectors #50 stores on L1 and makes no model
-// call, and it finds nothing for a document that has not been embedded — which
-// is every document in a deployment with no `embed` tier. Like
+// ones already found. It reads the vectors stored on L1 documents and makes no
+// model call, and it finds nothing for a document that has not been embedded —
+// which is every document in a deployment with no `embed` tier. Like
 // [Store.TopicsByJoinKeys] it finds topics as the ledger makes them now.
 func (s *Store) TopicsBySimilarity(ctx context.Context, scope, docID string, readers connector.ACL, maxDistance float64, limit int, exclude []string) ([]Topic, error) {
 	if limit <= 0 {

@@ -597,10 +597,8 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 		return err
 	}
 	if cfg.Database.URL == "" {
-		// `all` runs the distiller, which reads L0 and writes L1. It used to be
-		// four stubs and could be looked at with nothing behind it; it is not
-		// any more, and a process that cannot store what it distils is not
-		// worth starting.
+		// `all` runs the distiller, which reads L0 and writes L1, and a
+		// process that cannot store what it distils is not worth starting.
 		return db.ErrNoDatabaseURL
 	}
 	if err := migrateForDev(setup, cfg); err != nil {

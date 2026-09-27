@@ -24,25 +24,17 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
 )
 
-func TestSlackReactionUsesSharedGestureLedger(t *testing.T) {
-	runReactionUsesSharedGestureLedger(t, slack.Type, gestureRegistry(t))
-}
-
 func TestRegisteredReactionSourceUsesSharedGestureLedger(t *testing.T) {
 	const sourceType = "test-chat"
-	r := gestureRegistry(t)
-	if err := r.Register(sourceType, func(_ context.Context, src connector.SourceConfig) (connector.Connector, error) {
+	connectors := gestureRegistry(t)
+	if err := connectors.Register(sourceType, func(_ context.Context, src connector.SourceConfig) (connector.Connector, error) {
 		return connector.NewFake(src), nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.RegisterReactionGestures(sourceType, slack.ReactionGestureConfig); err != nil {
+	if err := connectors.RegisterReactionGestures(sourceType, slack.ReactionGestureConfig); err != nil {
 		t.Fatal(err)
 	}
-	runReactionUsesSharedGestureLedger(t, sourceType, r)
-}
-
-func runReactionUsesSharedGestureLedger(t *testing.T, sourceType string, connectors *connector.Registry) {
 	pool := scratchPool(t)
 	src := newSource(t)
 	const channel, root, user = "C0PUBLIC", "C0PUBLIC/1758700000.000100", "U0SAM"

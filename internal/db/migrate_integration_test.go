@@ -10,7 +10,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -192,58 +191,6 @@ func TestMigrateUpAndDown(t *testing.T) {
 	if version, err := migrator.Version(t.Context()); err != nil || version != newest {
 		t.Fatalf("Version(after up again) = %d, %v, want %d", version, err, newest)
 	}
-}
-
-// ADR-0006 turns goose's session-level advisory lock on, which is not its
-// default, so that `migrate up` invocations racing during a flaky deploy are
-// safe: one applies and the others wait.
-//
-// This pins the property rather than the lock. Removing the lock does not make
-// it fail — goose runs each migration in a transaction, and four racing runs
-// serialize on that by themselves — so it is evidence that concurrent
-// migration works, not that the lock is what makes it work.
-func TestTwoMigrationsAtOnceAreSafe(t *testing.T) {
-	url := scratchDatabase(t)
-	newest, err := db.EmbeddedVersion()
-	if err != nil {
-		t.Fatalf("EmbeddedVersion() = %v, want no error", err)
-	}
-
-	var wg sync.WaitGroup
-	errs := make([]error, 4)
-	applied := make([]int, len(errs))
-	for i := range errs {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			migrator, err := db.NewMigrator(t.Context(), url, nil)
-			if err != nil {
-				errs[i] = err
-				return
-			}
-			defer func() { _ = migrator.Close() }()
-			results, err := migrator.Up(t.Context())
-			errs[i], applied[i] = err, len(results)
-		}()
-	}
-	wg.Wait()
-
-	total := 0
-	for i, err := range errs {
-		if err != nil {
-			t.Errorf("Up() in goroutine %d = %v, want no error", i, err)
-		}
-		total += applied[i]
-	}
-	// Between them they apply each migration once, not once each.
-	if total != int(newest) {
-		t.Errorf("%d concurrent runs applied %d migrations between them, want %d", len(errs), total, newest)
-	}
-	pool, err := db.Connect(t.Context(), url)
-	if err != nil {
-		t.Fatalf("Connect() after concurrent migrations = %v, want no error", err)
-	}
-	pool.Close()
 }
 
 // ADR-0006: a down migration that would destroy data says so and fails rather

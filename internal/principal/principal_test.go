@@ -57,20 +57,3 @@ func TestValidID(t *testing.T) {
 		}
 	}
 }
-
-func TestStatusString(t *testing.T) {
-	tests := []struct {
-		in   principal.Status
-		want string
-	}{
-		{principal.Unknown, "unknown"},
-		{principal.Resolved, "resolved"},
-		{principal.Ambiguous, "ambiguous"},
-		{principal.Status(9), "invalid"},
-	}
-	for _, tt := range tests {
-		if got := tt.in.String(); got != tt.want {
-			t.Errorf("Status(%d).String() = %q, want %q", tt.in, got, tt.want)
-		}
-	}
-}

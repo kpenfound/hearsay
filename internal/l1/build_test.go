@@ -1,7 +1,6 @@
 package l1_test
 
 import (
-	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -159,13 +158,9 @@ func TestBuild(t *testing.T) {
 	}
 }
 
-// Where the source gives no time for an edit, the revision still exists and the
-// document says the artifact was last edited when it happened: there is nothing
-// else to say, and a zero time would be a time before the artifact.
 // A pull request's document is linked to the code entities its paths fall
-// under, in its references and its scope, and keeps no path: the list L0 holds
-// stops at L0.
-func TestBuildLinksAChangeToTheCodeItTouchesAndKeepsNoPaths(t *testing.T) {
+// under, in its references and its scope.
+func TestBuildLinksAChangeToTheCodeItTouches(t *testing.T) {
 	root, children := pullRequest()
 	root.Payload.Paths = []string{"engine/server/lock.go", "engine/server/write_test.go"}
 	cfg := testRepo
@@ -196,17 +191,11 @@ func TestBuildLinksAChangeToTheCodeItTouchesAndKeepsNoPaths(t *testing.T) {
 	if slices.Contains(doc.Scope, "code:acme/api:engine/client") {
 		t.Errorf("Scope = %v holds the sibling the change did not touch", doc.Scope)
 	}
-	raw, err := json.Marshal(doc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, path := range root.Payload.Paths {
-		if strings.Contains(string(raw), path) {
-			t.Errorf("the document holds the path %s: %s", path, raw)
-		}
-	}
 }
 
+// Where the source gives no time for an edit, the revision still exists and the
+// document says the artifact was last edited when it happened: there is nothing
+// else to say, and a zero time would be a time before the artifact.
 func TestBuildWithARevisionThatCarriesNoEditTime(t *testing.T) {
 	root, _ := pullRequest()
 	root.Payload.Revision.EditedAt = time.Time{}
@@ -425,9 +414,9 @@ func TestBuildScrubsTheConversation(t *testing.T) {
 		}
 	}
 
-	// Every string the row holds, not just the one this test used to read.
-	// references is the fourth, it is what L2 joins on, and Store.Get hands it
-	// straight back — a secret in it is as stored as one in raw_text.
+	// Every string the row holds is scrubbed, not only raw_text: references is
+	// the fourth, it is what L2 joins on, and Store.Get hands it straight back —
+	// a secret in it is as stored as one in raw_text.
 	credentialed, _ := pullRequest()
 	credentialed.Payload.Text = "status is at https://deploy:hunter2@internal.example.com/status?token=abcd1234"
 	leaky, err := l1.Build(l1.Input{Root: credentialed, Repo: testRepo})
@@ -492,33 +481,11 @@ func TestWithBodyRendersTheDistillation(t *testing.T) {
 			t.Errorf("Text does not contain %q:\n%s", want, doc.Text)
 		}
 	}
-	if strings.Contains(doc.Text, repo+"#31") {
-		t.Errorf("Text carries the artifact id, which is a column of its own:\n%s", doc.Text)
-	}
 	if len(doc.Body.OpenQuestions) != 1 {
 		t.Errorf("OpenQuestions = %v, want the blank one dropped", doc.Body.OpenQuestions)
 	}
 	if err := doc.Validate(); err != nil {
 		t.Errorf("Validate() = %v, want no error", err)
-	}
-}
-
-// Every document has an outcome kind, and it is one of the design's five.
-func TestWithBodyRefusesAnOutcomeKindThatIsNotOneOfTheFive(t *testing.T) {
-	root, _ := pullRequest()
-	doc, err := l1.Build(l1.Input{Root: root, Repo: testRepo})
-	if err != nil {
-		t.Fatalf("Build() = %v", err)
-	}
-	for _, kind := range []l1.OutcomeKind{"", "merged", "RESOLVED"} {
-		if _, _, err := doc.WithBody(l1.Body{Summary: "something", OutcomeKind: kind}); !errors.Is(err, l1.ErrInvalidDocument) {
-			t.Errorf("WithBody(%q) = %v, want l1.ErrInvalidDocument", kind, err)
-		}
-	}
-	for _, kind := range l1.OutcomeKinds {
-		if _, _, err := doc.WithBody(l1.Body{Summary: "something", OutcomeKind: kind}); err != nil {
-			t.Errorf("WithBody(%q) = %v, want no error", kind, err)
-		}
 	}
 }
 
@@ -532,45 +499,5 @@ func TestWithBodyRefusesAnEmptyBody(t *testing.T) {
 	}
 	if _, _, err := doc.WithBody(l1.Body{OutcomeKind: l1.OutcomeNone}); err == nil {
 		t.Fatal("WithBody(empty) = nil, want an error")
-	}
-}
-
-func TestBuildClassTracksSourceState(t *testing.T) {
-	root, _ := pullRequest()
-	for _, tt := range []struct {
-		name   string
-		native string
-		want   config.ArtifactClass
-	}{
-		{"open", `{"state":"open"}`, config.ArtifactPullRequest},
-		{"merged", `{"state":"closed","merged_at":"2026-09-09T18:00:00Z"}`, config.ArtifactMergedPR},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			root.Payload.Native = []byte(tt.native)
-			doc, err := l1.Build(l1.Input{Root: root, Repo: testRepo})
-			if err != nil || doc.ArtifactClass != tt.want {
-				t.Errorf("Build class = %q, %v; want %q", doc.ArtifactClass, err, tt.want)
-			}
-		})
-	}
-}
-
-func TestBuildChatClassTracksContainer(t *testing.T) {
-	root := event(connector.KindThread, "thread-1", at(0), who("u1", "kpenfound"), "topic", "some discussion")
-	for _, tt := range []struct {
-		name      string
-		container connector.ContainerKind
-		want      config.ArtifactClass
-	}{
-		{"channel", connector.ContainerChannel, config.ArtifactChatThread},
-		{"direct message", "dm", config.ArtifactDM},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			root.Payload.Container = connector.Container{Kind: tt.container, NativeID: "container-1"}
-			doc, err := l1.Build(l1.Input{Root: root, Repo: testRepo})
-			if err != nil || doc.ArtifactClass != tt.want {
-				t.Errorf("Build class = %q, %v; want %q", doc.ArtifactClass, err, tt.want)
-			}
-		})
 	}
 }

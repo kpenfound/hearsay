@@ -281,9 +281,8 @@ func decodeBundle(t *testing.T, body []byte) bundle.Bundle {
 	return b
 }
 
-// The acceptance criterion: the same request over MCP and HTTP returns
-// byte-identical bundles — and the same for every other call, and for a
-// refusal.
+// The same request over MCP and HTTP returns byte-identical bundles — and the
+// same for every other call, and for a refusal.
 func TestTheSameRequestIsByteIdenticalOverMCPAndHTTP(t *testing.T) {
 	w := newWorld(t)
 	cases := []struct {
@@ -329,8 +328,8 @@ func TestTheSameRequestIsByteIdenticalOverMCPAndHTTP(t *testing.T) {
 	})
 }
 
-// The acceptance criterion: same scope, same principal, no new events yields
-// the same bundle; a new event on the scope changes it.
+// Same scope, same principal, no new events yields the same bundle; a new event
+// on the scope changes it.
 func TestABundleChangesOnlyWhenTheScopeDoes(t *testing.T) {
 	w := newWorld(t)
 	args := map[string]any{"scope": w.scope}
@@ -362,8 +361,8 @@ func TestABundleChangesOnlyWhenTheScopeDoes(t *testing.T) {
 	}
 }
 
-// The acceptance criterion: every line in a bundle carries an L1 or L0 id that
-// resolves through get_l1 or get_l0 — for the reader it was served to.
+// Every line in a bundle carries an L1 or L0 id that resolves through get_l1 or
+// get_l0 — for the reader it was served to.
 func TestEveryLineCarriesAnIDThatResolves(t *testing.T) {
 	w := newWorld(t)
 	for _, caller := range []api.Caller{kyle, sam, shedKyle} {
@@ -504,11 +503,11 @@ func TestEveryReadIsFilteredByPrincipal(t *testing.T) {
 	}
 }
 
-// Issue #114: a topic and every stance on it are served on what their documents
-// allow now. When the repository's documents are re-synced private, an outside
-// reader loses the topic and its whole history — the superseded stances too —
-// and a retracted document takes stances resting only on it with it. A topic
-// with no surviving stance becomes unavailable.
+// A topic and every stance on it are served on what their documents allow now.
+// When the repository's documents are re-synced private, an outside reader
+// loses the topic and its whole history — the superseded stances too — and a
+// retracted document takes stances resting only on it with it. A topic with no
+// surviving stance becomes unavailable.
 func TestStancesAndTopicsFollowTheirEvidenceAfterAResync(t *testing.T) {
 	w := newWorld(t)
 	ctx := t.Context()
@@ -616,8 +615,8 @@ func TestEveryBundleServedIsAnAuditEvent(t *testing.T) {
 			if len(ev.ACL) != 1 || ev.ACL[0].NativeID != rec.Principal {
 				t.Errorf("the audit event's acl = %+v, want the principal it was served for alone", ev.ACL)
 			}
-			// Readable by nobody through the API yet — not even the principal
-			// it was served for, who holds no identity in the `hearsay` source.
+			// get_l0 serves it to nobody — not even the principal it was
+			// served for, who holds no identity in the `hearsay` source.
 			body, _ := json.Marshal(map[string]string{"id": ev.ID})
 			if status, got := w.post(t, "/v1/get_l0", api.Caller{Principal: rec.Principal}, string(body)); status != http.StatusNotFound {
 				t.Errorf("get_l0 of %s's own audit event = %d %s, want 404", rec.Principal, status, got)
@@ -639,11 +638,11 @@ func TestEveryBundleServedIsAnAuditEvent(t *testing.T) {
 	}
 }
 
-// Review round 1: every topic any document in a repository opened is about the
-// repository's code entity, because a document's scope is. Another item's
-// topics are inherited by this one, never its own, and however many ratified
-// stances they carry the bundle stays within its budget — while the item whose
-// topics they are still holds them as its own.
+// Every topic any document in a repository opened is about the repository's
+// code entity, because a document's scope is. Another item's topics are
+// inherited by this one, never its own, and however many ratified stances they
+// carry the bundle stays within its budget — while the item whose topics they
+// are still holds them as its own.
 func TestAnotherItemsTopicsAreInheritedAndDropFirst(t *testing.T) {
 	w := newWorld(t)
 	public := connector.ACL{{Kind: connector.ACLPublic}}
@@ -1012,11 +1011,11 @@ func (w *world) standingOf(t *testing.T, calls *api.Calls, authority config.Auth
 	return got
 }
 
-// The acceptance criterion: a topic becomes contested when an issue changes
-// what another issue said, and settles when a merged pull request lands — and
-// L3, the bundle and stance_history serve the same current stance and tier at
-// every step. The tier is computed on the read, so a scope's policy that stops
-// merged pull requests ratifying takes effect with nothing rewritten.
+// A topic becomes contested when an issue changes what another issue said, and
+// settles when a merged pull request lands — and L3, the bundle and
+// stance_history serve the same current stance and tier at every step. The tier
+// is computed on the read, so a scope's policy that stops merged pull requests
+// ratifying takes effect with nothing rewritten.
 func TestATopicIsContestedUntilAMergedPullRequestSettlesIt(t *testing.T) {
 	w := newWorld(t)
 	ctx := t.Context()

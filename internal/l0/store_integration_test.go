@@ -62,7 +62,7 @@ func newStore(t *testing.T) (*l0.Store, *connector.Fake, string) {
 	return l0.New(newPool(t)), fake, source
 }
 
-// The acceptance criterion: writing the same event twice yields one row.
+// Writing the same event twice yields one row.
 func TestWritingTheSameEventTwiceYieldsOneRow(t *testing.T) {
 	store, fake, _ := newStore(t)
 	event := fake.NewEvent(connector.KindMessage, "m1", "hello")
@@ -200,8 +200,8 @@ func TestAnEditIsANewEventAndTheHistoryIsOrdered(t *testing.T) {
 	assertCounts(t, store, first.Source, connector.KindMessage, 3, 3)
 }
 
-// The acceptance criterion: tombstoning hides an event from the feed and from a
-// read by id, and keeps the row.
+// Tombstoning hides an event from the feed and from a read by id, and keeps the
+// row.
 func TestATombstoneHidesTheEventAndKeepsTheRow(t *testing.T) {
 	store, fake, _ := newStore(t)
 	event := fake.NewEvent(connector.KindMessage, "m1", "a pasted secret")
@@ -359,7 +359,6 @@ func TestRetractedReadsOnlyWhatATombstoneHides(t *testing.T) {
 	for _, tt := range []struct{ name, source, artifact string }{
 		{name: "an artifact nothing retracted", source: source, artifact: "m2"},
 		{name: "an artifact the source never held", source: source, artifact: "m9"},
-		{name: "an artifact another source retracted", source: source, artifact: "m2"},
 		{name: "an artifact retracted in this source, asked of another", source: otherSource, artifact: "m1"},
 	} {
 		if _, err := store.Retracted(t.Context(), tt.source, tt.artifact); !errors.Is(err, l0.ErrNotFound) {

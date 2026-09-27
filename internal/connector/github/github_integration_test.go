@@ -16,7 +16,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/l0"
 )
 
-// The acceptance criteria against the real store: a backfill of a named
+// Against the real store: a backfill of a named
 // repository lands its issues, pull requests, reviews and commits in L0 with
 // the contract's native ids; a second backfill writes nothing new; webhook
 // events for the same objects are deduplicated against the backfilled ones;
@@ -113,10 +113,9 @@ func TestBackfillAndWebhooksLandInL0Once(t *testing.T) {
 	}
 }
 
-// Issue #73 against the real store: a review edited after it was ingested is
-// read again by a backfill over a cleared cursor, which lands a second revision
-// instead of failing with ErrRewrite, and the edit's webhook deduplicates
-// against it.
+// Against the real store: a review edited after it was ingested is read again
+// by a backfill over a cleared cursor, which lands a second revision rather
+// than failing with ErrRewrite, and the edit's webhook deduplicates against it.
 func TestABackfillOverAnEditedReviewLandsANewRevision(t *testing.T) {
 	url := os.Getenv("HEARSAY_DATABASE_URL")
 	if url == "" {
