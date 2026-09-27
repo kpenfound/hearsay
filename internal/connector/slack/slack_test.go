@@ -232,105 +232,101 @@ func TestStreamThroughRuntimeGate(t *testing.T) {
 		root:  time.Unix(1758700000, 100000).UTC(),
 		reply: time.Unix(1758700060, 200000).UTC(),
 	}
-	for _, readOnly := range []bool{false, true} {
-		t.Run(fmt.Sprintf("read_only %v", readOnly), func(t *testing.T) {
-			refreshed := make(chan struct{})
-			holdThird := make(chan struct{})
-			third := make(chan struct{})
-			release := sync.OnceFunc(func() { close(holdThird) })
-			defer release()
-			fake := newFakeSlack(t, func(n int, ws *websocket.Conn) {
-				switch n {
-				case 1:
-					deliver(t, ws, frames(t, "first"))
-					// Slack closes the socket some seconds after its disconnect frame.
-					_, _, _ = ws.ReadMessage()
-				case 2:
-					close(refreshed)
-					// A connection that breaks without warning, after Slack
-					// redelivers the reply it believes was never acknowledged.
-					deliver(t, ws, frames(t, "second"))
-				case 3:
-					close(third)
-					<-holdThird
-					deliver(t, ws, frames(t, "second")[:1])
-					_, _, _ = ws.ReadMessage()
-				}
-			})
-			reg := connector.NewRegistry()
-			if err := reg.Register(slack.Type, slack.Factory); err != nil {
-				t.Fatal(err)
-			}
-			sink := &deduplicating{seen: map[string]bool{}}
-			rt, err := connector.NewRuntime(t.Context(), connector.RuntimeOptions{
-				Sources: []connector.SourceConfig{fake.source(readOnly)}, Registry: reg, Sink: sink, Lookup: lookup,
-				Cadence: connector.Cadence{MinRefresh: time.Millisecond, Refresh: time.Millisecond, MaxBackoff: 5 * time.Millisecond, Shutdown: time.Second},
-			})
+	refreshed := make(chan struct{})
+	holdThird := make(chan struct{})
+	third := make(chan struct{})
+	release := sync.OnceFunc(func() { close(holdThird) })
+	defer release()
+	fake := newFakeSlack(t, func(n int, ws *websocket.Conn) {
+		switch n {
+		case 1:
+			deliver(t, ws, frames(t, "first"))
+			// Slack closes the socket some seconds after its disconnect frame.
+			_, _, _ = ws.ReadMessage()
+		case 2:
+			close(refreshed)
+			// A connection that breaks without warning, after Slack
+			// redelivers the reply it believes was never acknowledged.
+			deliver(t, ws, frames(t, "second"))
+		case 3:
+			close(third)
+			<-holdThird
+			deliver(t, ws, frames(t, "second")[:1])
+			_, _, _ = ws.ReadMessage()
+		}
+	})
+	reg := connector.NewRegistry()
+	if err := reg.Register(slack.Type, slack.Factory); err != nil {
+		t.Fatal(err)
+	}
+	sink := &deduplicating{seen: map[string]bool{}}
+	rt, err := connector.NewRuntime(t.Context(), connector.RuntimeOptions{
+		Sources: []connector.SourceConfig{fake.source(false)}, Registry: reg, Sink: sink, Lookup: lookup,
+		Cadence: connector.Cadence{MinRefresh: time.Millisecond, Refresh: time.Millisecond, MaxBackoff: 5 * time.Millisecond, Shutdown: time.Second},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- rt.Run(ctx) }()
+	defer func() {
+		cancel()
+		release()
+		select {
+		case err := <-done:
 			if err != nil {
-				t.Fatal(err)
+				t.Error(err)
 			}
-			ctx, cancel := context.WithCancel(t.Context())
-			done := make(chan error, 1)
-			go func() { done <- rt.Run(ctx) }()
-			defer func() {
-				cancel()
-				release()
-				select {
-				case err := <-done:
-					if err != nil {
-						t.Error(err)
-					}
-				case <-time.After(5 * time.Second):
-					t.Error("runtime did not stop")
-				}
-			}()
+		case <-time.After(5 * time.Second):
+			t.Error("runtime did not stop")
+		}
+	}()
 
-			select {
-			case <-refreshed:
-			case <-time.After(5 * time.Second):
-				t.Fatal("the connector did not open a new connection when Slack asked")
-			}
-			select {
-			case <-third:
-			case <-time.After(5 * time.Second):
-				t.Fatal("the runtime did not reconnect a broken stream")
-			}
-			// Slack's refresh is not a failure; the broken connection is.
-			h := rt.Health(t.Context()).Sources[0]
-			if h.Status != connector.HealthDegraded || h.Detail != "reconnecting" || h.StreamFailures != 1 {
-				t.Errorf("health while reconnecting = %+v, want degraded, reconnecting, one stream failure", h)
-			}
-			release()
-			waitFor(t, "a connected stream", func() bool { return rt.Health(t.Context()).Sources[0].Status == connector.HealthOK })
-			h = rt.Health(t.Context()).Sources[0]
-			if h.Detail != "connected" || h.Dropped != 1 || h.LastEventAt.IsZero() {
-				t.Errorf("connected health = %+v, want connected, one allowlist drop, a last event", h)
-			}
+	select {
+	case <-refreshed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the connector did not open a new connection when Slack asked")
+	}
+	select {
+	case <-third:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the runtime did not reconnect a broken stream")
+	}
+	// Slack's refresh is not a failure; the broken connection is.
+	h := rt.Health(t.Context()).Sources[0]
+	if h.Status != connector.HealthDegraded || h.Detail != "reconnecting" || h.StreamFailures != 1 {
+		t.Errorf("health while reconnecting = %+v, want degraded, reconnecting, one stream failure", h)
+	}
+	release()
+	waitFor(t, "a connected stream", func() bool { return rt.Health(t.Context()).Sources[0].Status == connector.HealthOK })
+	h = rt.Health(t.Context()).Sources[0]
+	if h.Detail != "connected" || h.Dropped != 1 || h.LastEventAt.IsZero() {
+		t.Errorf("connected health = %+v, want connected, one allowlist drop, a last event", h)
+	}
 
-			got := sink.recorder.Events()
-			if len(got) != len(wants) {
-				for _, ev := range got {
-					t.Logf("emitted %s", ev.NativeID)
-				}
-				t.Fatalf("emitted %d events, want %d", len(got), len(wants))
-			}
-			for i, w := range wants {
-				ev := got[i]
-				check(t, ev, w)
-				if at, ok := times[w.artifact]; ok && !ev.Time.Equal(at) {
-					t.Errorf("%s time = %v, want %v", ev.NativeID, ev.Time, at)
-				}
-			}
-			// The thread root reported again for its reply, and the reply Slack
-			// redelivered, are the observations already held.
-			deliveries := sink.delivered()
-			if len(deliveries) != len(wants)+2 || deliveries[2] != deliveries[0] || deliveries[len(deliveries)-1] != deliveries[1] {
-				t.Errorf("deliveries = %v, want the root's and the reply's repeats to reuse their ids", deliveries)
-			}
-			if got[1].ID == got[2].ID {
-				t.Error("an edited reply kept the id of the reply it revises")
-			}
-		})
+	got := sink.recorder.Events()
+	if len(got) != len(wants) {
+		for _, ev := range got {
+			t.Logf("emitted %s", ev.NativeID)
+		}
+		t.Fatalf("emitted %d events, want %d", len(got), len(wants))
+	}
+	for i, w := range wants {
+		ev := got[i]
+		check(t, ev, w)
+		if at, ok := times[w.artifact]; ok && !ev.Time.Equal(at) {
+			t.Errorf("%s time = %v, want %v", ev.NativeID, ev.Time, at)
+		}
+	}
+	// The thread root reported again for its reply, and the reply Slack
+	// redelivered, are the observations already held.
+	deliveries := sink.delivered()
+	if len(deliveries) != len(wants)+2 || deliveries[2] != deliveries[0] || deliveries[len(deliveries)-1] != deliveries[1] {
+		t.Errorf("deliveries = %v, want the root's and the reply's repeats to reuse their ids", deliveries)
+	}
+	if got[1].ID == got[2].ID {
+		t.Error("an edited reply kept the id of the reply it revises")
 	}
 }
 

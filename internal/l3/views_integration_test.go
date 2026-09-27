@@ -272,9 +272,9 @@ func TestCurrentStancesAreTheHeadsTheReaderMayRead(t *testing.T) {
 	}
 }
 
-// Issue #114: a topic and its stance are read on what their documents allow
-// now. The access lists written on them say everyone may read both, and none of
-// them is what decides.
+// A topic and its stance are read on what their documents allow now. The
+// access lists written on them say everyone may read both, and none of them is
+// what decides.
 func TestStancesFollowEveryPieceOfTheirEvidenceNow(t *testing.T) {
 	pool := newPool(t)
 	ctx := t.Context()
@@ -709,8 +709,8 @@ func TestAnAnchorIsNotRepeatedInRecent(t *testing.T) {
 	}
 }
 
-// Issue #119: an entity nobody configured a parent for inherits through the
-// parent its path patterns imply, once seeding has stored it.
+// An entity nobody configured a parent for inherits through the parent its
+// path patterns imply, once seeding has stored it.
 func TestAStanceIsInheritedThroughADerivedParent(t *testing.T) {
 	pool := newPool(t)
 	ctx := t.Context()

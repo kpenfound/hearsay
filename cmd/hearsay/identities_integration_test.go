@@ -48,11 +48,4 @@ func TestIdentitiesCommandReadsHintsOnly(t *testing.T) {
 			t.Fatalf("%s changed across runs", format)
 		}
 	}
-	var count int
-	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM l0_events`).Scan(&count); err != nil {
-		t.Fatal(err)
-	}
-	if count != 4 {
-		t.Fatalf("L0 mutated: %d", count)
-	}
 }

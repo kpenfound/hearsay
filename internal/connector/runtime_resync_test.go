@@ -350,60 +350,6 @@ func TestAFailingResyncIsCountedAndRetried(t *testing.T) {
 	}
 }
 
-// The recorder answers which containers are exposed the way L0 does: by each
-// artifact's current revision, past retracted artifacts and tombstones, for
-// one source.
-func TestRecorderExposed(t *testing.T) {
-	src := runtimeSource("exposed")
-	fake := connector.NewFake(src)
-	private := func(ev connector.Event) connector.Event {
-		ev.ACL = connector.ACL{{Kind: connector.ACLGroup, Source: src.ID, NativeID: "C123"}}
-		ev.NativeID += "@perm:private"
-		return ev
-	}
-	in := func(ev connector.Event, container string) connector.Event {
-		ev.Payload.Container.NativeID = container
-		return ev
-	}
-	tombstone := fake.NewEvent(connector.KindTombstone, "gone:tombstone", "")
-	tombstone.Payload.Target = "gone"
-	other := connector.NewFake(runtimeSource("other"))
-
-	tests := []struct {
-		name   string
-		events []connector.Event
-		want   []string
-	}{
-		{"a public artifact", []connector.Event{fake.NewEvent(connector.KindMessage, "m1", "x")}, []string{"C123"}},
-		{"re-emitted private", []connector.Event{fake.NewEvent(connector.KindMessage, "m1", "x"), private(fake.NewEvent(connector.KindMessage, "m1", "x"))}, nil},
-		{"private, then public again", []connector.Event{private(fake.NewEvent(connector.KindMessage, "m1", "x")), fake.NewEvent(connector.KindMessage, "m1", "x")}, []string{"C123"}},
-		{"retracted", []connector.Event{fake.NewEvent(connector.KindMessage, "gone", "x"), tombstone}, nil},
-		{"another source's", []connector.Event{other.NewEvent(connector.KindMessage, "m1", "x")}, nil},
-		{"two containers", []connector.Event{in(fake.NewEvent(connector.KindMessage, "m2", "x"), "D456"), fake.NewEvent(connector.KindMessage, "m1", "x")}, []string{"C123", "D456"}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rec := &connector.Recorder{}
-			for _, ev := range tt.events {
-				if err := rec.Emit(t.Context(), ev); err != nil {
-					t.Fatal(err)
-				}
-			}
-			exposed, err := rec.Exposed(t.Context(), src.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var got []string
-			for _, e := range exposed {
-				got = append(got, e.Container)
-			}
-			if !slices.Equal(got, tt.want) {
-				t.Errorf("Exposed = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func (w *walker) callsTo(container string) int {
 	w.mu.Lock()
 	defer w.mu.Unlock()

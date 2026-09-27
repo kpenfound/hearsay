@@ -115,10 +115,6 @@ func TestDirectiveConflicts(t *testing.T) {
 		{"text match", func(in *bundle.Inputs) {
 			in.Directive = &bundle.Directive{Text: "Please review the position on beta before merging"}
 		}, 10000, []string{"topic:beta"}, false},
-		{"unreadable stance excluded upstream", func(in *bundle.Inputs) {
-			in.Directive = &bundle.Directive{Text: "the position on beta"}
-			in.Stances = in.Stances[1:]
-		}, 10000, nil, false},
 		{"budget trimmed stance", func(in *bundle.Inputs) {
 			in.Directive = &bundle.Directive{Text: "the position on beta"}
 		}, 1, []string{"topic:beta"}, true},
@@ -293,9 +289,9 @@ func TestLine(t *testing.T) {
 	}
 }
 
-// reference is Build's trim as it was first written: re-encode the whole bundle,
-// drop one element, repeat. It is quadratic and obviously right, which is what a
-// faster trim is checked against.
+// reference is the simplest trim there is: re-encode the whole bundle, drop one
+// element, repeat. It is quadratic and obviously right, which is what Build's
+// linear trim is checked against.
 func reference(b bundle.Bundle, budget int) (bundle.Bundle, bundle.Trimmed, int) {
 	var trimmed bundle.Trimmed
 	for {
@@ -351,9 +347,9 @@ func mixed(n int) bundle.Inputs {
 	return in
 }
 
-// Review round 2: the faster trim keeps exactly what re-encoding after every
-// drop kept — the same stances, the same counts, the same size — at every
-// budget from nothing to everything.
+// Build's trim keeps exactly what re-encoding after every drop keeps — the same
+// stances, the same counts, the same size — at every budget from nothing to
+// everything.
 func TestTrimMatchesReEncodingAfterEveryDrop(t *testing.T) {
 	for _, n := range []int{0, 1, 2, 7, 40} {
 		in := mixed(n)
@@ -380,9 +376,9 @@ func TestTrimMatchesReEncodingAfterEveryDrop(t *testing.T) {
 	}
 }
 
-// Review round 2: a repository's worth of inherited ratified stances. What
-// survives is the scope's own stances and the longest prefix of the inherited
-// ones that fits, found here by encoding candidate bundles directly.
+// A repository's worth of inherited ratified stances. What survives is the
+// scope's own stances and the longest prefix of the inherited ones that fits,
+// found here by encoding candidate bundles directly.
 func TestTrimOfThousandsOfInheritedStances(t *testing.T) {
 	const n = 4000
 	in := inputs()
@@ -426,8 +422,8 @@ func TestTrimOfThousandsOfInheritedStances(t *testing.T) {
 			t.Fatalf("stance %d is inherited; the scope's own come first and stay", i)
 		}
 	}
-	// Generous enough for -race on a slow machine; the quadratic trim took
-	// seconds at half this size without it.
+	// Generous enough for -race on a slow machine; a trim that re-encodes the
+	// bundle after every drop takes seconds at half this size without it.
 	if elapsed > 2*time.Second {
 		t.Errorf("trimming %d stances took %s", n, elapsed)
 	}

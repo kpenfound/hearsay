@@ -202,13 +202,13 @@ func TestRegister(t *testing.T) {
 	}
 
 	rest.status = []int{http.StatusForbidden}
-	if err := app.Register(t.Context()); err == nil || strings.Contains(err.Error(), "bot-secret") {
-		t.Errorf("Register() against a 403 = %v, want an error without the token", err)
+	if err := app.Register(t.Context()); err == nil {
+		t.Error("Register() against a 403 = nil, want an error")
 	}
 }
 
-// An edit uses the interaction's token and not the bot's, retries while
-// Discord has not seen the deferral, and never puts the token in an error.
+// An edit uses the interaction's token and not the bot's, and retries while
+// Discord has not seen the deferral.
 func TestEdit(t *testing.T) {
 	rest := &fakeREST{status: []int{http.StatusNotFound}}
 	app := restApp(t, rest)
@@ -230,8 +230,25 @@ func TestEdit(t *testing.T) {
 		t.Errorf("Edit sent %s", call.body)
 	}
 	rest.status = []int{http.StatusBadRequest}
-	if err := app.Edit(t.Context(), "interaction-token", "x"); err == nil || strings.Contains(err.Error(), "interaction-token") {
-		t.Errorf("Edit() against a 400 = %v, want an error without the token", err)
+	if err := app.Edit(t.Context(), "interaction-token", "x"); err == nil {
+		t.Error("Edit() against a 400 = nil, want an error")
+	}
+}
+
+// The edit's URL holds the interaction token, and a request that never reaches
+// Discord fails with an error that would quote that URL.
+func TestAnEditThatCannotReachDiscordDoesNotQuoteTheToken(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	srv.Close()
+	pub, _ := testKey(t)
+	app, err := discord.NewApp(appSource(map[string]any{"guild": appGuild, "application_id": testApp,
+		"public_key": hex.EncodeToString(pub), "api_url": srv.URL + "/api/v10"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = app.Edit(t.Context(), "interaction-token", "Pinned.")
+	if err == nil || strings.Contains(err.Error(), "interaction-token") {
+		t.Errorf("Edit() against a closed server = %v, want an error without the token", err)
 	}
 }
 

@@ -82,10 +82,10 @@ func state(t *testing.T, pool *pgxpool.Pool) string {
 	return s
 }
 
-// The acceptance criteria for applying: the operator is a configured human or
-// nothing is written, a failure anywhere leaves no partial redaction, record,
-// event or job, and a successful apply records the human as operator and
-// queues the documents the walk found.
+// Applying a deletion: the operator is a configured human or nothing is
+// written, a failure anywhere leaves no partial redaction, record, event or
+// job, and a successful apply records the human as operator and queues the
+// documents the walk found.
 func TestApplyIsAllOrNothing(t *testing.T) {
 	pool := scratch(t)
 	ctx := t.Context()

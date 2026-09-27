@@ -9,7 +9,7 @@
 // Discord's REST lists expose current messages but no deleted-message list.
 //
 // Slash commands are not the connector's. `/hearsay pin` and `/hearsay merge`
-// are answered by the API runtime's interaction adapter (ADR-0022) through
+// are answered by the API runtime's interaction adapter (ADR-0024) through
 // [App], for a source whose settings also name `application_id` and
 // `public_key` (the application's hex Ed25519 key, from the developer
 // portal). Invite the bot with the `applications.commands` OAuth2 scope as

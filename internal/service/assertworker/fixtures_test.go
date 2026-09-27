@@ -356,16 +356,3 @@ func TestJudgementResponseShape(t *testing.T) {
 		})
 	}
 }
-
-// The request is a function of what the team said: two sources holding the same
-// conversation ask the model the same thing, which is what lets a test take a
-// source of its own and still replay the recording.
-func TestTheRequestDoesNotDependOnTheSource(t *testing.T) {
-	a, _ := documents(t, "github-acme")
-	b, _ := documents(t, "github-other")
-	candidates := []assertworker.Candidate{{Name: topicName, Current: issuePosition}}
-	if llm.FixtureKey(llm.TierAssert, assertworker.RequestFor(a, candidates, 0)) !=
-		llm.FixtureKey(llm.TierAssert, assertworker.RequestFor(b, candidates, 0)) {
-		t.Error("the same conversation in two sources makes two different requests")
-	}
-}

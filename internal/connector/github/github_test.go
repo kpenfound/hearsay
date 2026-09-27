@@ -777,9 +777,9 @@ func TestBackfillAtASmallPageSizeEmitsEverything(t *testing.T) {
 	}
 }
 
-// The reviewer's case: an item already read changes while the walk is between
-// two pages, and the item at the page boundary — which did not change, so no
-// webhook brings it — is still emitted.
+// An item already read changes while the walk is between two pages, and the
+// item at the page boundary — which did not change, so no webhook brings it —
+// is still emitted.
 func TestBackfillEmitsWhatDidNotChangeWhileSomethingElseDid(t *testing.T) {
 	t.Cleanup(github.SetPageSize(2))
 	tests := []struct {
@@ -850,22 +850,6 @@ func TestBackfillOfCommitsStaysOnTheHistoryItStarted(t *testing.T) {
 	})
 	if got := nativeIDs(rec.Events()); !slices.Equal(got, []string{"acme/api@" + sha1, "acme/api@" + sha2}) {
 		t.Errorf("native ids = %v, want both commits", got)
-	}
-}
-
-// Backfilling the same repository twice emits the same events, so a second
-// backfill writes nothing new.
-func TestBackfillTwiceEmitsTheSameEvents(t *testing.T) {
-	gh := newFakeGitHub(t)
-	src := newSource(t, gh, sourceID, nil)
-	first, second := &connector.Recorder{}, &connector.Recorder{}
-	c := newConnector(t, src)
-	backfillAll(t, c, gateFor(src, c, first))
-	again := newConnector(t, src)
-	backfillAll(t, again, gateFor(src, again, second))
-
-	if a, b := asJSON(t, first.Events()), asJSON(t, second.Events()); a != b {
-		t.Errorf("the second backfill emitted\n%s\nthe first\n%s", b, a)
 	}
 }
 
@@ -1380,7 +1364,7 @@ func TestWebhookTombstones(t *testing.T) {
 
 // A review edited or dismissed after it was ingested is a new revision of the
 // same artifact, whether a webhook brings the change or a later backfill reads
-// it, and the two agree on the event (issue #73).
+// it, and the two agree on the event.
 func TestAReviewEditedOrDismissedIsANewRevision(t *testing.T) {
 	const reviews = "/repos/acme/api/pulls/2/reviews"
 	submitted := string(hook(t, "pull_request_review.submitted"))
@@ -1714,9 +1698,9 @@ func TestRepositoryGoingPrivateResyncsEveryArtifact(t *testing.T) {
 	}
 }
 
-// The reviewer's second case: a push emits a commit dated before the start
-// date, and the re-sync after the repository goes private re-emits it, because
-// a re-sync reaches whatever a webhook may have emitted.
+// A push emits a commit dated before the start date, and the re-sync after the
+// repository goes private re-emits it, because a re-sync reaches whatever a
+// webhook may have emitted.
 func TestResyncReachesACommitAPushEmittedBeforeTheStartDate(t *testing.T) {
 	gh := newFakeGitHub(t)
 	src := newSource(t, gh, sourceID, map[string]any{"since": "2026-09-01"})
@@ -1743,10 +1727,9 @@ func TestResyncReachesACommitAPushEmittedBeforeTheStartDate(t *testing.T) {
 	}
 }
 
-// Issue #75, the first way a re-sync was lost: the process stops partway
-// through the walk. A new runtime, with a new connector and nothing but the
-// re-sync store and L0 from the old one, resumes where the walk had got to
-// and finishes it.
+// A re-sync survives a restart: the process stops partway through the walk. A
+// new runtime, with a new connector and nothing but the re-sync store and L0
+// from the old one, resumes where the walk had got to and finishes it.
 func TestAResyncInterruptedByARestartResumes(t *testing.T) {
 	gh := newFakeGitHub(t)
 	src := newSource(t, gh, sourceID, nil)
@@ -1785,11 +1768,11 @@ func TestAResyncInterruptedByARestartResumes(t *testing.T) {
 	assertEveryArtifactPrivate(t, public, l0)
 }
 
-// Issue #75, the second way: the delivery saying the repository went private
-// is never handled — here it fails, because the process has nowhere to record
-// the re-sync; a process that was down never sees it at all. The next runtime
-// is told nothing, finds the repository L0 still serves as public, asks GitHub,
-// and re-syncs it. A runtime after that has nothing left to do.
+// A re-sync survives a lost delivery: the delivery saying the repository went
+// private is never handled — here it fails, because the process has nowhere to
+// record the re-sync; a process that was down never sees it at all. The next
+// runtime is told nothing, finds the repository L0 still serves as public, asks
+// GitHub, and re-syncs it. A runtime after that has nothing left to do.
 func TestAResyncWhoseDeliveryWasNeverHandledRunsAtStartup(t *testing.T) {
 	gh := newFakeGitHub(t)
 	src := newSource(t, gh, sourceID, nil)
@@ -1880,9 +1863,9 @@ func hierarchyList(t *testing.T) []map[string]any {
 	return items
 }
 
-// Issue #120: a sub-issue is part_of its parent, from the backfill and from
-// every sub_issues delivery after it — added, moved to another parent, taken
-// out — and each of those is a new revision.
+// A sub-issue is part_of its parent, from the backfill and from every
+// sub_issues delivery after it — added, moved to another parent, taken out —
+// and each of those is a new revision.
 func TestASubIssueIsPartOfItsParent(t *testing.T) {
 	gh := newFakeGitHub(t)
 	gh.setList("/repos/acme/api/issues", hierarchyList(t))

@@ -131,9 +131,9 @@ func assertDoc(t *testing.T, a *assertworker.Asserter, docID, scope string) asse
 	return result
 }
 
-// The acceptance criterion: an issue that proposes X and a later merged pull
-// request that does Y yield one topic and two stances, the second superseding
-// the first, with evidence pointing at both documents.
+// An issue that proposes X and a later merged pull request that does Y yield
+// one topic and two stances, the second superseding the first, with evidence
+// pointing at both documents.
 func TestAnIssueThenAMergedPullRequestIsOneTopicWithTwoStances(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
@@ -206,7 +206,7 @@ func TestAnIssueThenAMergedPullRequestIsOneTopicWithTwoStances(t *testing.T) {
 	}
 }
 
-// Issue #114: the worker offers a document only the topics, and the positions,
+// The worker offers a document only the topics, and the positions,
 // everyone who may read it may read now — decided by the documents they rest
 // on, not the access lists the topic and stance were written with. The fake
 // answers only the request recorded here, so a prompt that offered anything
@@ -292,7 +292,7 @@ func TestTheWorkerOffersOnlyWhatTheDocumentsReadersMayReadNow(t *testing.T) {
 				t.Fatalf("Topics() = %+v, %v, want the issue's", topics, err)
 			}
 			tt.hide(t, pool, src, topics[0])
-			// Were the hidden topic offered as before, the pull request's
+			// Were the hidden topic still offered, the pull request's
 			// recorded answer would continue it and open nothing.
 			if r := assertDoc(t, a, f.prID, scope); r.TopicsOpened != tt.opened || r.StancesWritten != 1 {
 				t.Errorf("Assert(pull request) = %+v, want %d topics opened and one stance", r, tt.opened)
@@ -406,9 +406,8 @@ func TestAProposedPullRequestBecomesRatifiedWithTheSamePosition(t *testing.T) {
 	}
 }
 
-// The other acceptance criterion: re-running over the same documents — a
-// restart, a job run twice — does not duplicate stances, and does not ask the
-// model again.
+// Re-running over the same documents — a restart, a job run twice — does not
+// duplicate stances, and does not ask the model again.
 func TestTheWorkerIsIdempotentAcrossRestarts(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
@@ -486,7 +485,7 @@ func TestRetryingTheSameVersionWritesNothingTwice(t *testing.T) {
 	}
 }
 
-// The #51 fixture plus one comment (#72): the issue proposes (S1), the merged
+// The fixture plus one comment: the issue proposes (S1), the merged
 // pull request does otherwise (S2), and the issue, commented on after the merge
 // and re-distilled, is read again and restated in other words (S3). S3 replaces
 // the issue's own S1; it is not recorded as reversing the merged pull request,

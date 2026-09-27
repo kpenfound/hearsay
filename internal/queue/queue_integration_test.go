@@ -89,9 +89,9 @@ func stats(t *testing.T, client *queue.Client) queue.Stats {
 	return s
 }
 
-// The acceptance criterion: a job is enqueued in the transaction that causes
-// it, so a rollback takes the job with it. That is the whole reason the queue
-// is in the same Postgres as the data (ADR-0007).
+// A job is enqueued in the transaction that causes it, so a rollback takes the
+// job with it. That is the whole reason the queue is in the same Postgres as
+// the data (ADR-0007).
 func TestEnqueueRollsBackWithTheTransactionThatWroteIt(t *testing.T) {
 	kind := newKind(t, false)
 	client := newClient(t, queue.Config{Kind: kind})
@@ -116,10 +116,9 @@ func TestEnqueueRollsBackWithTheTransactionThatWroteIt(t *testing.T) {
 	}
 }
 
-// The acceptance criterion: enqueueing twice for one target while a job is
-// pending collapses, and — the part that matters — does not surface a unique
-// violation into the caller's transaction, which would abort the L0 or L1
-// write that was the point of it.
+// Enqueueing twice for one target while a job is pending collapses, and — the
+// part that matters — does not surface a unique violation into the caller's
+// transaction, which would abort the L0 or L1 write that was the point of it.
 func TestADuplicateEnqueueCollapsesWithoutAbortingTheTransaction(t *testing.T) {
 	kind := newKind(t, false)
 	client := newClient(t, queue.Config{Kind: kind})
@@ -237,8 +236,8 @@ func TestEnqueueingForARunningJobIsANewJob(t *testing.T) {
 	}
 }
 
-// The acceptance criterion for unserialized kinds: workers claiming the same
-// backlog step over each other's rows rather than taking them twice.
+// On an unserialized kind, workers claiming the same backlog step over each
+// other's rows rather than taking them twice.
 func TestConcurrentWorkersNeverClaimOneRowTwice(t *testing.T) {
 	const (
 		jobs    = 60
@@ -606,8 +605,8 @@ func TestASerializedClaimSkipsABusyKeyAndTakesAnother(t *testing.T) {
 	}
 }
 
-// The acceptance criterion: a job that runs out of attempts lands in failed
-// and stays there, queryable, with what went wrong on it.
+// A job that runs out of attempts lands in failed and stays there, queryable,
+// with what went wrong on it.
 func TestAJobThatRunsOutOfAttemptsFailsAndStays(t *testing.T) {
 	kind := newKind(t, false)
 	client := newClient(t, queue.Config{
@@ -1184,10 +1183,10 @@ func listJobs(t *testing.T, client *queue.Client, state queue.State) []queue.Job
 	return jobs
 }
 
-// Issue #65: a target can have a job running and another pending, because a
-// running job does not occupy the pending-target index. A retry of the running
-// one used to move it back to pending and violate that index; now it is
-// superseded by the pending job, unless its attempts are spent (ADR-0011).
+// A target can have a job running and another pending, because a running job
+// does not occupy the pending-target index. A retry of the running one is
+// superseded by the pending job rather than moved back to pending, unless its
+// attempts are spent (ADR-0011).
 func TestARetryOfATargetThatIsAlreadyPending(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -1234,9 +1233,9 @@ func TestARetryOfATargetThatIsAlreadyPending(t *testing.T) {
 	}
 }
 
-// Issue #65's other half: the reclaim sweep is one statement over the kind, so
-// one expired job whose target is already pending used to abort it for every
-// other expired job of the kind.
+// The reclaim sweep is one statement over the kind: an expired job whose target
+// is already pending is superseded, and every other expired job of the kind is
+// still reclaimed.
 func TestReclaimSweepsTheKindWhenOneTargetIsAlreadyPending(t *testing.T) {
 	const lease = 50 * time.Millisecond
 	kind := newKind(t, false)

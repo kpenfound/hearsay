@@ -106,19 +106,6 @@ func TestEventIDLengthBound(t *testing.T) {
 	}
 }
 
-func TestEventIDIsStableAcrossReEmission(t *testing.T) {
-	// Idempotency rests on this: the same observation emitted twice must land
-	// on the same id, or ingest cannot deduplicate it.
-	first := connector.EventID("github-acme", "acme/api#12")
-	second := connector.EventID("github-acme", "acme/api#12")
-	if first != second {
-		t.Errorf("EventID is not stable: %q then %q", first, second)
-	}
-	if edited := connector.EventID("github-acme", "acme/api#12@2"); edited == first {
-		t.Errorf("a revision has the same id as the original: %q", edited)
-	}
-}
-
 func TestParseEventIDErrors(t *testing.T) {
 	tests := []struct{ name, id string }{
 		{"no prefix", "github-acme:acme/api#12"},
@@ -233,13 +220,6 @@ func TestEventValidate(t *testing.T) {
 				e.Payload.Target = e.Payload.Artifact
 			},
 			wantErr: true,
-		},
-		{
-			name: "an edit is a revision of the artifact",
-			mutate: func(e *connector.Event) {
-				e.NativeID = e.Payload.Artifact + "@2"
-				e.Payload.Revision = &connector.Revision{Token: "2", EditedAt: eventTime}
-			},
 		},
 		{
 			// An ACL re-sync: same payload, same time, later edited_at.

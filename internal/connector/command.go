@@ -157,12 +157,6 @@ type CommandResult struct {
 	Reason string
 }
 
-// Applied reports whether the command changed anything, now or when this
-// same command was first applied.
-func (r CommandResult) Applied() bool {
-	return r.Outcome == CommandPinned || r.Outcome == CommandAlreadyPinned || r.Outcome == CommandMerged
-}
-
 // CommandSink is the runtime's command capability. A connector that receives
 // chat commands type-asserts its sink to it and hands it each command it
 // parses; the result, or [ErrReadOnly], tells it what to answer. It is safe

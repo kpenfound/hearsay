@@ -195,7 +195,7 @@ func TestDeletePreviewSelectorsAndNoWrites(t *testing.T) {
 	}
 }
 
-// The acceptance criteria for the operator: applying needs a configured human,
+// Applying a deletion needs a configured human as its operator,
 // named with --principal, and anything else is refused before a write — before
 // the database is even opened. The preview needs none. `l0 get` names an
 // operator deletion and returns no content, and a tombstone keeps its source.

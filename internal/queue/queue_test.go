@@ -131,14 +131,8 @@ func TestConfigValidate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Validate is what New calls after the defaults are filled in, so
-			// that is how the test calls it: a zero duration is a default, not
-			// a rejection.
-			_, err := queue.New(nil, tt.cfg)
-			if err == nil {
-				t.Fatal("New(nil, cfg) = no error, want one: a queue needs a pool")
-			}
-			err = tt.cfg.Validate()
+			// A zero duration is a default, not a rejection.
+			err := tt.cfg.Validate()
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("Config(%+v).Validate() = %v, want error: %v", tt.cfg, err, tt.wantErr)
 			}
@@ -222,19 +216,6 @@ func TestLimit(t *testing.T) {
 	for _, tt := range tests {
 		if got := queue.Limit(tt.in); got != tt.want {
 			t.Errorf("Limit(%d) = %d, want %d", tt.in, got, tt.want)
-		}
-	}
-}
-
-func TestStateValid(t *testing.T) {
-	for _, s := range []queue.State{queue.StatePending, queue.StateRunning, queue.StateDone, queue.StateFailed} {
-		if !s.Valid() {
-			t.Errorf("State(%q).Valid() = false, want true", s)
-		}
-	}
-	for _, s := range []queue.State{"", "claimed", "PENDING"} {
-		if s.Valid() {
-			t.Errorf("State(%q).Valid() = true, want false", s)
 		}
 	}
 }

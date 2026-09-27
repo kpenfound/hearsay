@@ -224,7 +224,7 @@ type Revision struct {
 }
 
 // Identity is who a source says someone is. It is a hint: a connector never
-// mints or resolves a Hearsay principal id (that is internal/principal, #6),
+// mints or resolves a Hearsay principal id (that is internal/principal),
 // and it never guesses that two sources mean the same person.
 type Identity struct {
 	// Source is the source the identity belongs to. It is usually the event's

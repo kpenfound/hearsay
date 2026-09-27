@@ -86,9 +86,8 @@ func ids(hits []l1.Hit) []string {
 	return out
 }
 
-// The acceptance criterion: a document only the words find and a document only
-// the vectors find both come back from one query, and a document found by both
-// halves beats either.
+// A document only the words find and a document only the vectors find both
+// come back from one query, and a document found by both halves beats either.
 func TestSearchFusesWhatEachHalfFinds(t *testing.T) {
 	pool := newPool(t)
 	store := l1.New(pool)
@@ -183,9 +182,8 @@ func scores(hits []l1.Hit) map[string]float64 {
 	return out
 }
 
-// The other acceptance criterion: a document the caller may not read does not
-// appear at any rank — not last, not at all — even when it is the best match
-// both halves have.
+// A document the caller may not read does not appear at any rank — not last,
+// not at all — even when it is the best match both halves have.
 func TestSearchNeverReturnsADocumentTheReaderMayNotRead(t *testing.T) {
 	pool := newPool(t)
 	store := l1.New(pool)

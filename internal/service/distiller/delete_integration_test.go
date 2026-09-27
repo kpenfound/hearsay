@@ -21,7 +21,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
-// The acceptance criteria end to end: a comment pasting a secret is distilled
+// End to end: a comment pasting a secret is distilled
 // into the issue's document, an operator deletes it, and the running distiller
 // re-distils the issue without it from the recorded answer for the repository
 // as it was before the paste. Afterwards the secret is in no L0 read, no L1

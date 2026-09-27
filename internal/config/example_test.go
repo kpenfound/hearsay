@@ -10,7 +10,6 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
-	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
@@ -64,154 +63,6 @@ func TestDocsExampleLoadsBothWays(t *testing.T) {
 	if !strings.HasPrefix(fromFile.Digest, "sha256:") {
 		t.Errorf("digest = %q, want it to name the algorithm", fromFile.Digest)
 	}
-}
-
-// TestDocsExampleIsTheConfigurationItDescribes checks the parts of the example
-// a reader is most likely to rely on, so that changing the example without
-// meaning to changes a test.
-func TestDocsExampleIsTheConfigurationItDescribes(t *testing.T) {
-	repo := loadExample(t)
-
-	scope, ok := repo.Scope("api")
-	if !ok {
-		t.Fatalf("Scope(api) not found; scopes are %v", scopeIDs(repo))
-	}
-	// The scope takes one Discord channel of the two the source ingests: a
-	// scope filters, and it cannot widen what the source allows.
-	if got, want := scope.Covers("discord", "824100000000000001"), true; got != want {
-		t.Errorf("scope covers #eng = %v, want %v", got, want)
-	}
-	if got, want := scope.Covers("discord", "824100000000000002"), false; got != want {
-		t.Errorf("scope covers #eng-infra = %v, want %v", got, want)
-	}
-	// Writing a source id on its own takes every container it ingests.
-	if got, want := scope.Covers("github", "acme/infra"), true; got != want {
-		t.Errorf("scope covers acme/infra = %v, want %v", got, want)
-	}
-
-	if got, ok := scope.TrackerItemID("1234"); !ok || got != "tracker:github:acme/api#1234" {
-		t.Errorf("TrackerItemID(1234) = %q, %v, want tracker:github:acme/api#1234, true", got, ok)
-	}
-
-	// The scope's policy sets a ranking and the artifacts that ratify, and
-	// inherits the principals from the `*` policy.
-	policy := repo.Authority.ForScope("api")
-	// The example's whole point as an override: this team decides in meetings,
-	// so the scope inverts the two positions the default fixes.
-	if !policy.Outranks(config.ArtifactMeeting, config.ArtifactMergedPR) {
-		t.Error("a meeting does not outrank a merged PR in scope api, and the example says it does")
-	}
-	if !repo.Authority.Default().Outranks(config.ArtifactMergedPR, config.ArtifactMeeting) {
-		t.Error("overriding one scope's ranking changed the default the other scopes inherit")
-	}
-	if !policy.RatifiedByArtifact(config.ArtifactSpec, "drive") {
-		t.Error("a spec does not ratify in scope api, and the example says it does")
-	}
-	if !policy.RatifiedByPrincipal("kyle") || policy.RatifiedByPrincipal("shed") {
-		t.Errorf("ratifiers in scope api = %v, want the inherited [kyle robin]", policy.RatifiedBy.Principals)
-	}
-	// The scope's ranking lists every class, so nothing in it is unranked: a
-	// class that ratifies and does not rank is a contradiction the loader
-	// refuses, and an example that reads as a model to copy has to be clear of
-	// it.
-	for _, c := range config.ArtifactClasses() {
-		if _, ok := policy.Rank(c); !ok {
-			t.Errorf("the example's ranking for scope api leaves out %s", c)
-		}
-	}
-
-	agent, ok := repo.Principal("shed")
-	if !ok || agent.Kind != principal.KindAgent || agent.Class != principal.ClassWorker {
-		t.Errorf("principal shed = %+v, %v, want an agent of class worker", agent, ok)
-	}
-	human, ok := repo.Principal("kyle")
-	if !ok || human.Kind != principal.KindHuman {
-		t.Errorf("principal kyle = %+v, %v, want a human", human, ok)
-	}
-	// The example's team is a GitHub team, so the source holds the membership
-	// and the mapping only names it.
-	team, ok := repo.Principal("api-team")
-	if !ok || team.Kind != principal.KindTeam || len(team.Members) != 0 || len(team.Identities) != 1 {
-		t.Errorf("principal api-team = %+v, %v, want a team that claims a group", team, ok)
-	}
-
-	// Principals come out as the identity model, so the resolver the example
-	// describes is the one it builds.
-	resolver, err := repo.Resolver()
-	if err != nil {
-		t.Fatalf("Resolver: %v", err)
-	}
-	for _, tt := range []struct {
-		hint connector.Identity
-		want string
-	}{
-		{connector.Identity{Source: "github", Kind: connector.IdentityUser, NativeID: "MDQ6VXNlcjE="}, "kyle"},
-		{connector.Identity{Source: "discord", Kind: connector.IdentityUser, Handle: "Robin"}, "robin"},
-		{connector.Identity{Source: "drive", Kind: connector.IdentityUser, Email: "kyle@acme.example"}, "kyle"},
-		{connector.Identity{Source: "github", Kind: connector.IdentityBot, Handle: "shed-agent[bot]"}, "shed"},
-		{connector.Identity{Source: "github", Kind: connector.IdentityUser, NativeID: "MDQ6VGVhbTE="}, "api-team"},
-	} {
-		if got := resolver.Resolve(tt.hint); got.Status != principal.Resolved || got.Principal.ID != tt.want {
-			t.Errorf("the example resolves %+v to %+v, want %s", tt.hint, got, tt.want)
-		}
-	}
-	// An owner may be a team as well as a person.
-	engine, ok := repo.CodeEntity("code:acme/api:engine/server")
-	if !ok || !slices.Equal(engine.Owners, []string{"kyle", "api-team"}) {
-		t.Errorf("the engine's owners = %v", engine.Owners)
-	}
-
-	// Sources come out as what the connector runtime consumes, allowlist and
-	// all, with no second shape in between.
-	allow := repo.Allowlist()
-	if !allow.Allows("github", "acme/api") || allow.Allows("github", "acme/other") {
-		t.Error("the ingest allowlist does not match the configured containers")
-	}
-	src, ok := repo.Source("drive")
-	if !ok {
-		t.Fatal("Source(drive) not found")
-	}
-	if src.Refresh.String() != "15m0s" {
-		t.Errorf("drive refresh = %v, want 15m", src.Refresh)
-	}
-	if got, want := string(src.Settings), `{"meeting_transcript_label_id":"1PublishedLabelId","transcript_candidate_folder_ids":["1MeetingsFolderId"]}`; got != want {
-		t.Errorf("drive settings = %s, want %s", got, want)
-	}
-	if got, want := src.Secrets["credentials"], "HEARSAY_DRIVE_CREDENTIALS"; got != want {
-		t.Errorf("drive credentials secret = %q, want %q", got, want)
-	}
-
-	// The `llm:` section overrides what it names and keeps the rest of the
-	// shipped default, which is the thing a reader is most likely to get wrong
-	// about it.
-	distill, ok := repo.LLM.Tier(llm.TierDistill)
-	if !ok {
-		t.Fatal("the example has no distill tier")
-	}
-	if distill.MaxTokens != 4096 {
-		t.Errorf("the example's distill budget = %d, want the 4096 it sets", distill.MaxTokens)
-	}
-	if distill.Provider != llm.ProviderAnthropic || distill.Model != llm.Default().Tiers[llm.TierDistill].Model {
-		t.Errorf("the example's distill tier = %+v, want the default provider and model it does not name", distill)
-	}
-	assertTier, _ := repo.LLM.Tier(llm.TierAssert)
-	if assertTier.Model != "claude-opus-5" || assertTier.Temperature == nil {
-		t.Errorf("the example's assert tier = %+v, want the model and temperature it names", assertTier)
-	}
-	if _, ok := repo.LLM.Tier(llm.TierEmbed); ok {
-		t.Error("the example configures an embed tier, and no shipped provider can back one")
-	}
-}
-
-// loadExample loads the single-file example from the documentation.
-func loadExample(t *testing.T) config.Repo {
-	t.Helper()
-	dir := writeFiles(t, filesUnder(t, docExamples(t), "single"))
-	repo, err := config.Load(filepath.Join(dir, "hearsay.yaml"))
-	if err != nil {
-		t.Fatalf("Load(the example) = %v, want no error", err)
-	}
-	return repo
 }
 
 // docExamples extracts the example files from the schema documentation. Each is
@@ -296,12 +147,4 @@ func normalize(r config.Repo) config.Repo {
 	slices.SortFunc(r.Principals, func(a, b principal.Principal) int { return strings.Compare(a.ID, b.ID) })
 	slices.SortFunc(r.Code, func(a, b config.CodeEntity) int { return strings.Compare(a.ID, b.ID) })
 	return r
-}
-
-func scopeIDs(r config.Repo) []string {
-	ids := make([]string, 0, len(r.Scopes))
-	for _, s := range r.Scopes {
-		ids = append(ids, s.ID)
-	}
-	return ids
 }

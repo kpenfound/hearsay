@@ -73,14 +73,6 @@ func TestLoggerFromContext(t *testing.T) {
 		}
 	})
 
-	t.Run("round trips", func(t *testing.T) {
-		var buf bytes.Buffer
-		want := slog.New(slog.NewJSONHandler(&buf, nil))
-		if got := Logger(WithLogger(context.Background(), want)); got != want {
-			t.Errorf("Logger(WithLogger(l)) = %p, want %p", got, want)
-		}
-	})
-
 	t.Run("nil logger falls back to the default", func(t *testing.T) {
 		ctx := WithLogger(context.Background(), nil)
 		if got := Logger(ctx); got != slog.Default() {

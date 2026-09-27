@@ -24,7 +24,6 @@ func TestEvalRefusesBeforeOpeningTheDatabase(t *testing.T) {
 		{"--since after --until", with("--since", "2026-09-02T00:00:00Z", "--until", "2026-09-01T00:00:00Z"), "is not before --until"},
 		{"--since equal to --until", with("--since", "2026-09-01T00:00:00Z", "--until", "2026-09-01T00:00:00Z"), "is not before --until"},
 		{"--since in the future", with("--since", "2999-01-01T00:00:00Z"), "is not before --until"},
-		{"a flag it does not have", with("--principal", "kyle"), "flag provided but not defined: -principal"},
 		{"no config", []string{"--database-url", "postgres://hearsay@nowhere.invalid:1/hearsay"}, "eval needs --config"},
 		{"an invalid config", []string{"--database-url", "postgres://hearsay@nowhere.invalid:1/hearsay", "--config", t.TempDir() + "/missing"}, "missing"},
 	}

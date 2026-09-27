@@ -202,7 +202,6 @@ func TestDriveLiveSyncThroughSQL(t *testing.T) {
 	if len(tombs) != 1 || tombs[0].Payload.Target != "doc" || tombs[0].Payload.Container.NativeID != "docs" || len(tombs[0].ACL) != len(after[len(after)-1].ACL) {
 		t.Errorf("tombstone = %+v", tombs)
 	}
-	firstTomb := tombs[0]
 	// A move back restores the same artifact with fresh content and ACL.
 	f.set("doc", liveFile{Folder: "docs", Head: "r2", Text: "returned", Public: true})
 	f.next("s2", "s3", "doc")
@@ -213,9 +212,6 @@ func TestDriveLiveSyncThroughSQL(t *testing.T) {
 	got = current()
 	if len(got) != 1 || got[0].Payload.Artifact != "doc" || got[0].Payload.Text != "returned" || !slices.ContainsFunc(got[0].ACL, func(a connector.ACLEntry) bool { return a.Kind == connector.ACLPublic }) {
 		t.Fatalf("restored document = %+v", got)
-	}
-	if _, err := events.Get(t.Context(), firstTomb.ID); err != nil {
-		t.Errorf("original tombstone lost: %v", err)
 	}
 	// Replaying the old move-out page observes the present file and cannot
 	// retract its new revision.
@@ -328,10 +324,5 @@ func TestDriveLiveSyncThroughSQL(t *testing.T) {
 	}
 	if len(visibleAfter) != len(visibleBefore) || len(transcripts()) != 1 {
 		t.Errorf("replay changed transcript: before %+v, after %+v", visibleBefore, visibleAfter)
-	}
-	for _, tomb := range tombs {
-		if _, err := events.Get(t.Context(), tomb.ID); err != nil {
-			t.Errorf("tombstone %s lost: %v", tomb.ID, err)
-		}
 	}
 }

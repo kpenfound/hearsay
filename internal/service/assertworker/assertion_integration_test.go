@@ -65,7 +65,7 @@ func writeAssertion(t *testing.T, pool *pgxpool.Pool, as l2.Assertion, when time
 	return appended.ID
 }
 
-// The acceptance criterion from the worker's side: an assertion becomes a
+// From the worker's side, an assertion becomes a
 // stance on its topic with no model call — the fake here has no answer to
 // give — of class agent, by the agent, citing what it cited; and one whose job
 // never ran is picked up at startup.

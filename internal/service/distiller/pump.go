@@ -183,9 +183,9 @@ func (p *Pump) Once(ctx context.Context) (Progress, error) {
 				continue
 			}
 			seen[target.id] = true
-			// No trace carrier: internal/telemetry has no propagator yet
-			// (ADR-0008's tracing is a later issue), and a carrier this package
-			// invented would be one the worker could not read.
+			// No trace carrier: internal/telemetry has no propagator yet, and
+			// a carrier this package invented would be one the worker could
+			// not read.
 			enqueued, err := queue.Enqueue(ctx, tx, queue.Request{Kind: JobKind(), TargetID: target.id})
 			if err != nil {
 				return Progress{}, err
@@ -289,7 +289,7 @@ func threadHeadOf(ctx context.Context, ev connector.Event, events *l0.Store) (st
 // undistilled are the kinds that belong to no document. An agent's session,
 // its turns, tool calls and next actions are provenance — what an agent was doing when
 // it said something — rather than team knowledge, and distilling every tool
-// call would flood L1 (#22). A command a person gave Hearsay is control
+// call would flood L1. A command a person gave Hearsay is control
 // traffic, not team content (ADR-0022).
 var undistilled = []connector.Kind{connector.KindAgentSession, connector.KindAgentTurn, connector.KindToolCall, connector.KindNextAction, connector.KindCommand}
 

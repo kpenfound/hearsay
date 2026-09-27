@@ -108,14 +108,13 @@ func TestIdentityGroupingAndFormats(t *testing.T) {
 	}
 }
 
-func TestIdentitiesRejectsMissingInputsAndPrincipal(t *testing.T) {
+func TestIdentitiesRejectsMissingInputs(t *testing.T) {
 	for _, tc := range []struct {
 		args []string
 		want string
 	}{
 		{[]string{"identities", "list", "--database-url", "postgres://unused"}, "needs --config"},
 		{[]string{"identities", "list", "--config", "x"}, "needs --database-url"},
-		{[]string{"identities", "list", "--principal", "alice"}, "flag provided but not defined"},
 		{[]string{"identities", "list", "--json", "--yaml"}, "cannot be combined"},
 	} {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {

@@ -160,7 +160,7 @@ func (*restFixture) message(channel, id string) map[string]any {
 	return map[string]any{"id": id, "guild_id": testGuild, "channel_id": channel, "content": "decision", "timestamp": "2026-09-22T00:00:00Z", "author": map[string]any{"id": "1551744840499200007", "username": "alice"}}
 }
 
-func TestChannelReplyKeepsParentWithoutInventingThread(t *testing.T) {
+func TestChannelReplyKeepsParent(t *testing.T) {
 	f := &restFixture{}
 	first := f.message(testChannel, "1551744840499200011")
 	reply := f.message(testChannel, "1551744840499200012")
@@ -179,7 +179,7 @@ func TestChannelReplyKeepsParentWithoutInventingThread(t *testing.T) {
 		if ev.Payload.Artifact != "1551744840499200012" {
 			continue
 		}
-		if ev.Payload.Parent != "1551744840499200011" || ev.Payload.Thread != "" || ev.Payload.Container.NativeID != testChannel {
+		if ev.Payload.Parent != "1551744840499200011" || ev.Payload.Container.NativeID != testChannel {
 			t.Errorf("channel reply = %+v", ev.Payload)
 		}
 		return

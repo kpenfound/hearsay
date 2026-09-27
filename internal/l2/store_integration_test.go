@@ -147,7 +147,7 @@ func TestEntitiesAreSeededAndCreatedOnReference(t *testing.T) {
 		t.Errorf("Resolve() = %q, want %q", matched, want)
 	}
 
-	// Issue #120: the tracker items the tracker places are seeded with their
+	// The tracker items the tracker places are seeded with their
 	// parents, and one it no longer places keeps its row and loses them.
 	placed := item
 	placed.PartOf = []string{"tracker:github-acme:acme/api#10"}
@@ -266,7 +266,7 @@ func TestStancesAreSupersededNeverOverwritten(t *testing.T) {
 }
 
 // A document read again in a new version replaces its own stance on a topic
-// rather than answering whatever is newest there (#72).
+// rather than answering whatever is newest there.
 func TestANewReadingOfADocumentRetiresItsOwnStance(t *testing.T) {
 	pool := newPool(t)
 	store := l2.New(pool)
@@ -299,9 +299,9 @@ func TestANewReadingOfADocumentRetiresItsOwnStance(t *testing.T) {
 		return out
 	}
 
-	// The #51 fixture plus a comment: the issue proposes, the merged pull
-	// request does otherwise, and the issue, re-distilled after the merge,
-	// restates its proposal in other words.
+	// The issue proposes, the merged pull request does otherwise, and the
+	// issue, re-distilled after a comment following the merge, restates its
+	// proposal in other words.
 	s1 := add(stance(topic, "l1:s:issue", "move the lock into the queue", 1))
 	s2 := add(stance(topic, "l1:s:pr", "the engine takes the lock", 3))
 	s3 := add(stance(topic, "l1:s:issue", "the queue should hold the lock", 5))
@@ -490,7 +490,7 @@ func TestTopicsAreOnlyOfferedToDocumentsTheirReadersMayRead(t *testing.T) {
 	}
 }
 
-// Issue #114: who a topic is offered to is its opening document's access list
+// Who a topic is offered to is its opening document's access list
 // now, not the one the topic was written with.
 func TestATopicIsOfferedByItsOpeningDocumentAsItIsNow(t *testing.T) {
 	pool := newPool(t)
@@ -532,7 +532,7 @@ func TestATopicIsOfferedByItsOpeningDocumentAsItIsNow(t *testing.T) {
 	}
 }
 
-// Issue #114: a position is shown to a document only where everyone who may
+// A position is shown to a document only where everyone who may
 // read the document may read every piece of the position's evidence now.
 func TestEvidenceIsReadableOnlyWhenEveryPieceIs(t *testing.T) {
 	pool := newPool(t)
@@ -572,7 +572,7 @@ func TestEvidenceIsReadableOnlyWhenEveryPieceIs(t *testing.T) {
 	}
 }
 
-// Issue #114: [l2.Access] decides from L1 as it is now, and fails closed on a
+// [l2.Access] decides from L1 as it is now, and fails closed on a
 // document it cannot find.
 func TestAccessIsTheEvidenceAsItIsNow(t *testing.T) {
 	pool := newPool(t)

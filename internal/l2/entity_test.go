@@ -222,7 +222,7 @@ func TestSeedSkipsARepositoryNoReaderSupports(t *testing.T) {
 	}
 }
 
-// Issue #119: seeding ranks the hierarchy's sources. `code/`'s part_of stands
+// Seeding ranks the hierarchy's sources. `code/`'s part_of stands
 // where it sets any; everywhere else an entity is part of the nearest entity
 // its path patterns lie under, configured or seeded from the layout; and the
 // derived edge that would close a cycle with configuration is dropped.

@@ -142,21 +142,3 @@ func TestWriteHasAndString(t *testing.T) {
 		}
 	}
 }
-
-func TestReadString(t *testing.T) {
-	tests := []struct {
-		in   principal.Read
-		want string
-	}{
-		{principal.ReadNone, "none"},
-		{principal.ReadScoped, "scoped"},
-		{principal.ReadScopedCode, "scoped+code"},
-		{principal.ReadAll, "all"},
-		{principal.Read(9), "unknown"},
-	}
-	for _, tt := range tests {
-		if got := tt.in.String(); got != tt.want {
-			t.Errorf("Read(%d).String() = %q, want %q", tt.in, got, tt.want)
-		}
-	}
-}

@@ -156,26 +156,3 @@ func TestTheRuntimeRecordsAndAppliesACommand(t *testing.T) {
 		})
 	}
 }
-
-// A result applied it, now or when the same command was first applied; every
-// refusal changed nothing.
-func TestCommandResultApplied(t *testing.T) {
-	tests := []struct {
-		outcome connector.CommandOutcome
-		want    bool
-	}{
-		{connector.CommandPinned, true},
-		{connector.CommandAlreadyPinned, true},
-		{connector.CommandMerged, true},
-		{connector.CommandNotAllowed, false},
-		{connector.CommandUnmapped, false},
-		{connector.CommandNotRead, false},
-	}
-	for _, tt := range tests {
-		t.Run(string(tt.outcome), func(t *testing.T) {
-			if got := (connector.CommandResult{Outcome: tt.outcome}).Applied(); got != tt.want {
-				t.Errorf("Applied() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}

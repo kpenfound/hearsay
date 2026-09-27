@@ -150,7 +150,7 @@ func inherited(t *testing.T, pool *pgxpool.Pool, entity string) []string {
 	return out
 }
 
-// Issue #120, from GitHub's recorded deliveries to a bundle: a sub-issue
+// From GitHub's recorded deliveries to a bundle: a sub-issue
 // inherits its parent's stances, and its grandparent's; moving it to another
 // parent changes what it inherits, and taking its parent out of the
 // grandparent takes the grandparent's away.

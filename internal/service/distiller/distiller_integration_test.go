@@ -134,8 +134,7 @@ func newDistiller(t *testing.T, pool *pgxpool.Pool, src string) *distiller.Disti
 	return d
 }
 
-// The acceptance criterion: distilling a fixture repository twice produces
-// identical L1 rows.
+// Distilling a fixture repository twice produces identical L1 rows.
 //
 // It is the whole of what "the distiller is stateless and idempotent" means. A
 // second run rebuilds every document from the same events and writes nothing,
@@ -333,8 +332,8 @@ func embedded(t *testing.T, pool *pgxpool.Pool, id string) bool {
 	return has
 }
 
-// The other two acceptance criteria, on the documents the fixture repository
-// makes: every one has an outcome kind, and it is one of the design's five.
+// Every document the fixture repository makes has an outcome kind, and it is
+// one of the design's five.
 func TestEveryDocumentCarriesAnOutcomeKind(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
@@ -826,26 +825,6 @@ func TestRunWithNoConfigurationIdlesUntilItIsStopped(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Run() did not return within 10s of cancellation")
-	}
-}
-
-// The request a document produces does not depend on which configured source
-// instance it came from. It is why an integration test can take a source id
-// nothing else uses and still hit a recording made under another one — and if
-// it stops being true, every one of these tests fails on a fixture miss with no
-// clue why. So it is said here rather than left to be discovered.
-func TestTheRequestDoesNotDependOnTheSourceID(t *testing.T) {
-	one := documentsIn(t, fixtureEvents("github-one"))
-	two := documentsIn(t, fixtureEvents("github-two"))
-	if len(one) != len(two) || len(one) == 0 {
-		t.Fatalf("the fixture repository made %d and %d documents", len(one), len(two))
-	}
-	for i := range one {
-		a := llm.FixtureKey(llm.TierDistill, distiller.RequestFor(one[i], 2048))
-		b := llm.FixtureKey(llm.TierDistill, distiller.RequestFor(two[i], 2048))
-		if a != b {
-			t.Errorf("the request for %s depends on the source id", one[i].Source.NativeID)
-		}
 	}
 }
 

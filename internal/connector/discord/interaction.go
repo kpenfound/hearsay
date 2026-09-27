@@ -85,7 +85,7 @@ func Commands() []Command {
 }
 
 // App is a source's Discord application as the API runtime's interaction
-// adapter uses it (ADR-0022): the public key its interactions are verified
+// adapter uses it (ADR-0024): the public key its interactions are verified
 // with, and the bot token that registers its commands. The connector never
 // uses it; the connector writes L0 only.
 type App struct {

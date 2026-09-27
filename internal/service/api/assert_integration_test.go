@@ -51,11 +51,10 @@ func (w *world) history(t *testing.T, caller api.Caller, topic string) api.Histo
 	return h
 }
 
-// The acceptance criteria: an agent's assertion is an L0 event, the job that
-// appends it is enqueued under the topic's scope, and once the worker has run
-// it is a stance in stance_history — by the agent, citing every document, and
-// not ratified. The same request over MCP is the same answer, and writes
-// nothing more.
+// An agent's assertion is an L0 event, the job that appends it is enqueued
+// under the topic's scope, and once the worker has run it is a stance in
+// stance_history — by the agent, citing every document, and not ratified. The
+// same request over MCP is the same answer, and writes nothing more.
 func TestAnAgentAssertsAStanceThatStanceHistoryServes(t *testing.T) {
 	w := newWorld(t)
 	topic := w.lockTopic()
@@ -140,10 +139,10 @@ func assertionEqual(a, b l2.Assertion) bool {
 	return a.Topic == b.Topic && a.Position == b.Position && slices.Equal(a.Evidence, b.Evidence) && a.Agent == b.Agent && a.Principal == b.Principal
 }
 
-// The acceptance criteria: a person, an observer, and a topic or evidence the
-// effective principal cannot read are refused; the refusals for a missing and
-// an unreadable id are one answer, so neither says which; every piece of
-// evidence is checked; and nothing is written for a refusal.
+// A person, an observer, and a topic or evidence the effective principal cannot
+// read are refused; the refusals for a missing and an unreadable id are one
+// answer, so neither says which; every piece of evidence is checked; and
+// nothing is written for a refusal.
 func TestAssertRefusesWithoutRevealingWhatExists(t *testing.T) {
 	w := newWorld(t)
 	topic := w.lockTopic()

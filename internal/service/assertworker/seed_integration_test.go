@@ -142,7 +142,7 @@ func logged(t *testing.T) (context.Context, *bytes.Buffer) {
 
 const noReaderWarning = "no repository reader"
 
-// The acceptance criterion: startup seeds the top-level directories of a
+// Startup seeds the top-level directories of a
 // configured GitHub repository as modules and imports owners from its
 // CODEOWNERS file, from recorded GitHub answers, reading the repository's
 // metadata, its root listing and that one file and nothing else.
@@ -232,7 +232,7 @@ func TestStartupSeedingFromGitHubFailures(t *testing.T) {
 	})
 }
 
-// Issue #119: startup stores the hierarchy the sources merge to — a configured
+// Startup stores the hierarchy the sources merge to — a configured
 // entity with no part_of is part of the directory the layout seeded above it.
 func TestStartupStoresTheDerivedHierarchy(t *testing.T) {
 	pool := scratchPool(t)

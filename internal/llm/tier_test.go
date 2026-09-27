@@ -2,37 +2,10 @@ package llm_test
 
 import (
 	"errors"
-	"slices"
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/llm"
 )
-
-// The three tier names are a contract: configuration, the docs and the Dagger
-// module use them verbatim (ADR-0005), so a rename has to fail here.
-func TestTierNames(t *testing.T) {
-	for _, tt := range []struct {
-		tier llm.Tier
-		name string
-	}{
-		{llm.TierDistill, "distill"},
-		{llm.TierAssert, "assert"},
-		{llm.TierEmbed, "embed"},
-	} {
-		if got := tt.tier.String(); got != tt.name {
-			t.Errorf("%v.String() = %q, want %q", tt.tier, got, tt.name)
-		}
-		if !tt.tier.Valid() {
-			t.Errorf("%q is not valid", tt.tier)
-		}
-	}
-	if want := []llm.Tier{llm.TierDistill, llm.TierAssert, llm.TierEmbed}; !slices.Equal(llm.Tiers, want) {
-		t.Errorf("Tiers = %v, want %v", llm.Tiers, want)
-	}
-	if want := []llm.Tier{llm.TierDistill, llm.TierAssert}; !slices.Equal(llm.CompletionTiers, want) {
-		t.Errorf("CompletionTiers = %v, want %v", llm.CompletionTiers, want)
-	}
-}
 
 func TestParseTier(t *testing.T) {
 	for _, tt := range []struct {

@@ -3,10 +3,7 @@ package config_test
 import (
 	"testing"
 
-	"github.com/kpenfound/hearsay/internal/connector/obsidian"
-
 	"github.com/kpenfound/hearsay/internal/config"
-	"github.com/kpenfound/hearsay/internal/principal"
 )
 
 // A scope covers a container or it does not; there is no "probably", because
@@ -72,85 +69,5 @@ func TestTrackerItemID(t *testing.T) {
 	web, _ := repo.Scope("web")
 	if got, ok := web.TrackerItemID("1234"); ok || got != "" {
 		t.Errorf("TrackerItemID on a scope with no tracker = %q, %v, want it refused", got, ok)
-	}
-}
-
-// The lookups are what every consumer of the configuration starts with, and a
-// miss has to be a miss rather than a zero value that looks configured.
-func TestRepoLookups(t *testing.T) {
-	repo, err := config.Load(writeFiles(t, map[string]string{
-		"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\n",
-		"scopes/api.yaml":     "id: api\nsources: [github]\n",
-		"principals/p.yaml":   "id: kyle\nidentities: [{source: github, handle: kpenfound}]\n",
-		"code/c.yaml":         "id: code:acme/api\ntype: project\n",
-	}))
-	if err != nil {
-		t.Fatalf("Load() = %v, want no error", err)
-	}
-
-	if s, ok := repo.Source("github"); !ok || s.Type != "github" {
-		t.Errorf("Source(github) = %+v, %v", s, ok)
-	}
-	if _, ok := repo.Source("gh"); ok {
-		t.Error("Source(gh) found something")
-	}
-	if _, ok := repo.Scope("api"); !ok {
-		t.Error("Scope(api) not found")
-	}
-	if _, ok := repo.Scope(""); ok {
-		t.Error("Scope() found something")
-	}
-	if p, ok := repo.Principal("kyle"); !ok || p.Kind != principal.KindHuman || len(p.Identities) != 1 {
-		t.Errorf("Principal(kyle) = %+v, %v", p, ok)
-	}
-	if _, ok := repo.Principal("robin"); ok {
-		t.Error("Principal(robin) found something")
-	}
-	if e, ok := repo.CodeEntity("code:acme/api"); !ok || e.Type != config.TypeProject {
-		t.Errorf("CodeEntity(code:acme/api) = %+v, %v", e, ok)
-	}
-	if _, ok := repo.CodeEntity("code:nope"); ok {
-		t.Error("CodeEntity(code:nope) found something")
-	}
-
-	if repo.Path == "" || repo.Digest == "" {
-		t.Errorf("Repo.Path = %q and Digest = %q, want both set", repo.Path, repo.Digest)
-	}
-}
-
-// The zero Repo is a process started with no configuration. It has to answer
-// rather than panic, because that is the state `hearsay api` runs in until it
-// is pointed at one.
-func TestZeroRepo(t *testing.T) {
-	var r config.Repo
-	if _, ok := r.Source("github"); ok {
-		t.Error("the zero Repo has a source")
-	}
-	if _, ok := r.Scope("api"); ok {
-		t.Error("the zero Repo has a scope")
-	}
-	if r.Allowlist().Allows("github", "acme/api") {
-		t.Error("the zero Repo allows ingest, and ingest is default deny")
-	}
-}
-
-func TestObsidianSettingsReachConnector(t *testing.T) {
-	repo, err := config.Load(writeFiles(t, map[string]string{
-		"sources/notes.yaml": "id: notes\ntype: obsidian\ncontainers: [Notes]\nsettings:\n  root: /mnt/vault\n  owner: {source: people, kind: user, native_id: owner-1}\n  templates: [Notes/Templates]\n",
-		"scopes/notes.yaml":  "id: notes\nsources: [notes]\n",
-	}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	src, ok := repo.Source("notes")
-	if !ok || src.Type != "obsidian" || len(src.Containers) != 1 || src.Containers[0] != "Notes" {
-		t.Fatalf("source = %+v, %v", src, ok)
-	}
-	var got obsidian.Settings
-	if err := src.DecodeSettings(&got); err != nil {
-		t.Fatal(err)
-	}
-	if got.Root != "/mnt/vault" || got.Owner.NativeID != "owner-1" || got.Public {
-		t.Fatalf("settings = %+v", got)
 	}
 }

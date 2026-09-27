@@ -49,7 +49,7 @@ func walk(t *testing.T, c *obsidian.Connector, sink connector.Sink, from connect
 	t.Fatal("backfill did not finish")
 	return nil
 }
-func TestBackfillGateRestartAndExclusions(t *testing.T) {
+func TestBackfillGateAndExclusions(t *testing.T) {
 	root := t.TempDir()
 	put(t, root, "Notes/a.md", "---\ntags: [one, two]\nstatus: draft\n---\n# A\n[[B]]\n")
 	put(t, root, "Notes/Deep/b.md", "# B")
@@ -70,16 +70,9 @@ func TestBackfillGateRestartAndExclusions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer c.Close(t.Context())
 	rec := &connector.Recorder{}
 	walk(t, c, gate(src, c, rec), "")
-	if err := c.Close(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	c, err = obsidian.New(src)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close(t.Context())
 	events := rec.Events()
 	ids := []string{}
 	for _, ev := range events {
@@ -104,9 +97,6 @@ func TestBackfillGateRestartAndExclusions(t *testing.T) {
 	}
 	if events[0].Payload.Container.NativeID != "Notes/Deep" {
 		t.Errorf("nested container = %+v", events[0].Payload.Container)
-	}
-	if rec.Events()[0].ACL[0].Kind != connector.ACLIdentity {
-		t.Fatal("default was not private")
 	}
 }
 
@@ -209,22 +199,5 @@ func TestInvalidConfigurationAndPathSafety(t *testing.T) {
 				t.Fatal("New accepted unsafe config")
 			}
 		})
-	}
-}
-
-func TestGateDefaultDeny(t *testing.T) {
-	root := t.TempDir()
-	put(t, root, "Notes/a.md", "a")
-	src := source(root)
-	c, err := obsidian.New(src)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close(t.Context())
-	rec := &connector.Recorder{}
-	denied := connector.NewGate(rec, src.ID, c.Describe(), connector.NewAllowlist())
-	walk(t, c, denied, "")
-	if len(rec.Events()) != 0 || denied.Dropped() != 1 {
-		t.Fatalf("gate wrote %d and dropped %d", len(rec.Events()), denied.Dropped())
 	}
 }

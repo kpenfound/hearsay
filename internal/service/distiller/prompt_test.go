@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/l1"
-	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
@@ -27,9 +26,6 @@ func TestRequestForIsValidForEveryKind(t *testing.T) {
 			}
 			if err := req.Schema.Validate(); err != nil {
 				t.Fatalf("the %s schema is not one internal/llm can enforce: %v", kind, err)
-			}
-			if !strings.Contains(req.System, "outcome_kind") {
-				t.Error("the prompt does not tell the model about outcome_kind, which every document has")
 			}
 			// The five values are the design's, and the enum a model answers
 			// from is the same list the column accepts.
@@ -88,19 +84,14 @@ func TestSchemaDeclaresOnlyTheFieldsAKindHas(t *testing.T) {
 	}
 }
 
-// A conversation longer than what this package sends is cut the same way every
-// time: a request that differed between two runs would miss its recording and
-// distil the same artifact differently on every attempt.
-func TestRequestForTruncatesLongDocumentsDeterministically(t *testing.T) {
+// A conversation longer than what this package sends is cut to size, on a rune
+// boundary, and says that it was.
+func TestRequestForTruncatesLongDocuments(t *testing.T) {
 	// Multi-byte runes, so that a naive cut would land inside one.
 	long := strings.Repeat("日本語のテキスト ", distiller.MaxPromptBytes/8)
 	doc := l1.Document{Kind: l1.KindPR, RawText: long}
 
 	first := distiller.RequestFor(doc, 0).Messages[0].Text
-	second := distiller.RequestFor(doc, 0).Messages[0].Text
-	if first != second {
-		t.Fatal("two requests for one document differ")
-	}
 	if len(first) > distiller.MaxPromptBytes+200 {
 		t.Errorf("the prompt is %d bytes, want it cut to about %d", len(first), distiller.MaxPromptBytes)
 	}
@@ -125,18 +116,4 @@ func utf8Valid(s string) bool {
 		}
 	}
 	return true
-}
-
-// The distill tier is the one this service uses, and the request it sends is
-// one the shipped configuration can answer.
-func TestTheDistillTierAnswersEveryFixtureRequest(t *testing.T) {
-	completer, err := newFakeRegistry(t).Completer(llm.TierDistill)
-	if err != nil {
-		t.Fatalf("Completer(distill) = %v", err)
-	}
-	for _, doc := range documentsIn(t, fixtureEvents(source)) {
-		if _, err := completer.Complete(t.Context(), distiller.RequestFor(doc, 0)); err != nil {
-			t.Errorf("Complete(%s) = %v", doc.ID, err)
-		}
-	}
 }

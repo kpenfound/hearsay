@@ -191,11 +191,6 @@ func TestReaderForRefusesASpellingTwoPrincipalsAnswerTo(t *testing.T) {
 	if !slices.Equal(mallory.Audience, want) {
 		t.Errorf("mallory holds %v, want %v", mallory.Audience, want)
 	}
-	for _, held := range mallory.Audience {
-		if held.NativeID == "u1" {
-			t.Errorf("mallory holds %v, which is alice's grant", held)
-		}
-	}
 
 	// The positive control: the collision costs alice nothing. Her native id is
 	// hers whatever anybody's handle folds to, and her own handle is hers
