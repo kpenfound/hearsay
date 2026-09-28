@@ -500,6 +500,47 @@ new permission revisions. If an ACL is changed back to a prior value, set a new
 `permission_version` to prevent an earlier identical revision from deduplicating
 that transition.
 
+### Osmia source
+
+Mount the Osmia root read-only into the connectors process. List explicit project
+IDs; wildcard containers and symlink trace directories are refused. This source
+uses no credentials and writes nothing back to Osmia.
+
+```yaml
+sources:
+  - id: osmia-owner
+    type: osmia
+    read_only: true
+    containers: [p_0123456789abcdef0123456789abcdef]
+    settings:
+      root: /mnt/osmia
+      channel: owner
+      owner: {source: osmia-owner, kind: user, native_id: local}
+  - id: osmia-work
+    type: osmia
+    read_only: true
+    containers: [p_0123456789abcdef0123456789abcdef]
+    settings:
+      root: /mnt/osmia
+      channel: work
+      owner: {source: osmia-owner, kind: user, native_id: local}
+```
+
+Map `osmia-owner/local` to the human principal. Add both sources to the project
+scope; its authority policy can ratify `spec` artifacts from `osmia-owner`, while
+artifacts from `osmia-work` remain inferred. Do not widen the ratifying source
+list to include the work channel. Original owner rulings enter once; chief relays
+are not a second decision. The connector writes L0 only. Pin charter, subsystem
+prose and specifications through authorized `gestures pin --artifact` calls after
+distillation. Osmia's `project memory` command exports configuration fragments,
+entity mappings and anchor handles for review and merging.
+
+Pages read immutable Git commits and retain their cursor across restart. Empty
+document revisions and removed containers produce tombstones. Increment
+`settings.permission_version` when restoring an earlier ACL or re-adding a
+removed project. Historical and terminal traces are ingested; local runtime
+settings, private role notes and watch cursors are excluded.
+
 ### Generic tracker source
 
 For a tracker with no connector of its own (Jira, Linear, an in-house one), a

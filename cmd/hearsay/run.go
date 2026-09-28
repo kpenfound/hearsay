@@ -17,6 +17,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector/drive"
 	"github.com/kpenfound/hearsay/internal/connector/github"
 	"github.com/kpenfound/hearsay/internal/connector/obsidian"
+	"github.com/kpenfound/hearsay/internal/connector/osmia"
 	"github.com/kpenfound/hearsay/internal/connector/slack"
 	"github.com/kpenfound/hearsay/internal/connector/tracker"
 	"github.com/kpenfound/hearsay/internal/db"
@@ -551,6 +552,7 @@ func connectorRegistry(principals []principal.Principal) *connector.Registry {
 	_ = registry.RegisterReactionGestures(slack.Type, slack.ReactionGestureConfig)
 	_ = registry.Register(drive.Type, drive.Factory)
 	_ = registry.Register(obsidian.Type, obsidian.Factory)
+	_ = registry.Register(osmia.Type, osmia.Factory)
 	_ = registry.Register(tracker.Type, tracker.Factory)
 	_ = registry.Register(agent.Type, agent.NewFactory(principals, os.LookupEnv))
 	return registry

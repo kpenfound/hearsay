@@ -1,0 +1,184 @@
+{
+  "files": {
+    "sources/osmia-p_0123456789abcdef0123456789abcdef.yaml": [
+      {
+        "id": "osmia-owner-0123456789abcdef0123456789abcdef",
+        "type": "osmia",
+        "containers": [
+          "p_0123456789abcdef0123456789abcdef"
+        ],
+        "read_only": true,
+        "settings": {
+          "root": "/mnt/osmia",
+          "owner": {
+            "source": "osmia-owner-0123456789abcdef0123456789abcdef",
+            "kind": "user",
+            "native_id": "local"
+          },
+          "channel": "owner"
+        }
+      },
+      {
+        "id": "osmia-work-0123456789abcdef0123456789abcdef",
+        "type": "osmia",
+        "containers": [
+          "p_0123456789abcdef0123456789abcdef"
+        ],
+        "read_only": true,
+        "settings": {
+          "root": "/mnt/osmia",
+          "owner": {
+            "source": "osmia-owner-0123456789abcdef0123456789abcdef",
+            "kind": "user",
+            "native_id": "local"
+          },
+          "channel": "work"
+        }
+      }
+    ],
+    "principals/osmia-p_0123456789abcdef0123456789abcdef.yaml": [
+      {
+        "id": "osmia-owner",
+        "kind": "human",
+        "token_env": "HEARSAY_OWNER_TOKEN",
+        "scopes": [
+          "code:owner/example"
+        ],
+        "identities": [
+          {
+            "source": "osmia-owner-0123456789abcdef0123456789abcdef",
+            "native_id": "local"
+          }
+        ]
+      },
+      {
+        "id": "osmia-worker",
+        "kind": "agent",
+        "class": "worker",
+        "token_env": "HEARSAY_OSMIA_WORKER_TOKEN",
+        "scopes": [
+          "code:owner/example"
+        ],
+        "identities": [
+          {
+            "source": "osmia-work-0123456789abcdef0123456789abcdef",
+            "native_id": "worker"
+          }
+        ]
+      },
+      {
+        "id": "osmia-orchestrator",
+        "kind": "agent",
+        "class": "orchestrator",
+        "token_env": "HEARSAY_OSMIA_ORCHESTRATOR_TOKEN",
+        "scopes": [
+          "code:owner/example"
+        ],
+        "identities": [
+          {
+            "source": "osmia-work-0123456789abcdef0123456789abcdef",
+            "native_id": "orchestrator"
+          }
+        ]
+      },
+      {
+        "id": "osmia-observer",
+        "kind": "agent",
+        "class": "observer",
+        "token_env": "HEARSAY_OSMIA_OBSERVER_TOKEN",
+        "scopes": [
+          "code:owner/example"
+        ],
+        "identities": [
+          {
+            "source": "osmia-work-0123456789abcdef0123456789abcdef",
+            "native_id": "observer"
+          }
+        ]
+      }
+    ],
+    "code/osmia-p_0123456789abcdef0123456789abcdef.yaml": [
+      {
+        "id": "code:owner/example",
+        "type": "project",
+        "name": "Example"
+      },
+      {
+        "id": "code:owner/example:storage",
+        "type": "module",
+        "name": "Storage",
+        "aliases": [
+          "storage"
+        ],
+        "path_patterns": [
+          "internal/storage/**"
+        ],
+        "part_of": [
+          "code:owner/example"
+        ],
+        "repo": {
+          "source": "osmia-work-0123456789abcdef0123456789abcdef",
+          "project": "p_0123456789abcdef0123456789abcdef"
+        }
+      }
+    ],
+    "scopes/osmia-p_0123456789abcdef0123456789abcdef.yaml": [
+      {
+        "id": "osmia-0123456789abcdef0123456789abcdef",
+        "name": "Example",
+        "sources": [
+          "osmia-owner-0123456789abcdef0123456789abcdef",
+          "osmia-work-0123456789abcdef0123456789abcdef"
+        ],
+        "entities": [
+          "code:owner/example"
+        ]
+      },
+      {
+        "id": "osmia-0123456789abcdef-49a25f9feefaffecad0fcd30c50dc933",
+        "name": "Storage",
+        "sources": [
+          "osmia-owner-0123456789abcdef0123456789abcdef",
+          "osmia-work-0123456789abcdef0123456789abcdef"
+        ],
+        "entities": [
+          "code:owner/example:storage"
+        ]
+      }
+    ],
+    "authority/osmia-p_0123456789abcdef0123456789abcdef.yaml": [
+      {
+        "scope": "osmia-0123456789abcdef0123456789abcdef",
+        "ratified_by": {
+          "principals": [
+            "osmia-owner"
+          ],
+          "sources": [
+            "osmia-owner-0123456789abcdef0123456789abcdef"
+          ],
+          "artifacts": [
+            "spec"
+          ]
+        }
+      },
+      {
+        "scope": "osmia-0123456789abcdef-49a25f9feefaffecad0fcd30c50dc933",
+        "ratified_by": {
+          "principals": [
+            "osmia-owner"
+          ],
+          "sources": [
+            "osmia-owner-0123456789abcdef0123456789abcdef"
+          ],
+          "artifacts": [
+            "spec"
+          ]
+        }
+      }
+    ]
+  },
+  "hearsay_scope": "osmia-0123456789abcdef0123456789abcdef",
+  "hearsay_entities": {
+    "storage": "osmia-0123456789abcdef-49a25f9feefaffecad0fcd30c50dc933"
+  }
+}

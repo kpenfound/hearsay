@@ -45,6 +45,7 @@ type Hearsay {
   goTestBase(ws: Workspace!): Container! {
     container
       .from("golang:" + goVersion(ws) + "-alpine")
+      .withExec(["apk", "add", "--no-cache", "git"])
       .withServiceBinding("postgres", postgres)
       .withEnvVariable("HEARSAY_DATABASE_URL", databaseUrl)
   }
@@ -222,7 +223,7 @@ type Hearsay {
     let base = if (platform == null) { container } else { container(platform: platform) }
     base
       .from("alpine:3.22")
-      .withExec(["apk", "add", "--no-cache", "ca-certificates", "tzdata"])
+      .withExec(["apk", "add", "--no-cache", "ca-certificates", "tzdata", "git"])
       .withFile("/usr/local/bin/hearsay", build(ws, version: version, platform: platform))
       .withUser("nobody")
       .withEntrypoint(["/usr/local/bin/hearsay"])
