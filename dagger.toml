@@ -4,11 +4,11 @@
 #   dagger install github.com/dagger/dagger/modules/wolfi
 
 [modules.go]
-source = "github.com/dagger/go"
+source = "github.com/dagger/go@main"
 
 [modules.go.settings]
 includeExtraFiles = ["docs/config.md", "docs/connector-contract.md", "cmd/hearsay/README.md"]
-base = "hearsay:go-test-base"
+base = "dag://hearsay/go-test-base"
 lint = ["!**"]
 
 [modules.dagger-dang-sdk]
