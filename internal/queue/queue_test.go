@@ -68,6 +68,13 @@ func TestRequestValidate(t *testing.T) {
 	}{
 		{name: "unserialized", req: queue.Request{Kind: distill, TargetID: "evt:github-acme:pr-1"}},
 		{name: "serialized with a key", req: queue.Request{Kind: assert, TargetID: "l1-1", SerialKey: "scope-payments"}},
+		{name: "debounced", req: queue.Request{Kind: distill, TargetID: "e1", Debounce: &queue.Debounce{Quiet: time.Second, Max: time.Minute}}},
+		{name: "equal debounce bounds", req: queue.Request{Kind: distill, TargetID: "e1", Debounce: &queue.Debounce{Quiet: time.Second, Max: time.Second}}},
+		{name: "debounce with delay", req: queue.Request{Kind: distill, TargetID: "e1", Delay: time.Second, Debounce: &queue.Debounce{Quiet: time.Second, Max: time.Minute}}, wantErr: true},
+		{name: "zero quiet", req: queue.Request{Kind: distill, TargetID: "e1", Debounce: &queue.Debounce{Max: time.Minute}}, wantErr: true},
+		{name: "negative quiet", req: queue.Request{Kind: distill, TargetID: "e1", Debounce: &queue.Debounce{Quiet: -time.Second, Max: time.Minute}}, wantErr: true},
+		{name: "maximum below quiet", req: queue.Request{Kind: distill, TargetID: "e1", Debounce: &queue.Debounce{Quiet: time.Second, Max: time.Millisecond}}, wantErr: true},
+		{name: "zero maximum", req: queue.Request{Kind: distill, TargetID: "e1", Debounce: &queue.Debounce{Quiet: time.Second}}, wantErr: true},
 		{name: "delayed", req: queue.Request{Kind: distill, TargetID: "e1", Delay: time.Minute}},
 		{name: "no target", req: queue.Request{Kind: distill}, wantErr: true},
 		{name: "an invalid kind is reported by the request", req: queue.Request{Kind: queue.Kind{Name: "Distill"}, TargetID: "e1"}, wantErr: true},
@@ -99,6 +106,12 @@ func TestRequestValidate(t *testing.T) {
 			err := tt.req.Validate()
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("Request(%+v).Validate() = %v, want error: %v", tt.req, err, tt.wantErr)
+			}
+			if tt.wantErr {
+				// A nil Querier would panic if Enqueue tried any SQL.
+				if _, err := queue.Enqueue(t.Context(), nil, tt.req); !errors.Is(err, queue.ErrInvalidJob) {
+					t.Errorf("Enqueue = %v, want validation before SQL", err)
+				}
 			}
 			if err != nil && !errors.Is(err, queue.ErrInvalidJob) {
 				t.Errorf("Request(%+v).Validate() = %v, want it to wrap ErrInvalidJob", tt.req, err)
@@ -227,5 +240,25 @@ func TestJobStringNamesIdsOnly(t *testing.T) {
 	want := "assert job 7 for l1-42 on scope-payments (attempt 2)"
 	if got := job.String(); got != want {
 		t.Errorf("Job.String() = %q, want %q", got, want)
+	}
+}
+
+func TestExpediteValidatesBeforeSQL(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		kind   queue.Kind
+		target string
+	}{
+		{name: "invalid kind", kind: queue.Kind{Name: "Invalid"}, target: "doc-1"},
+		{name: "empty target", kind: queue.Kind{Name: "distill"}},
+		{name: "NUL target", kind: queue.Kind{Name: "distill"}, target: "doc-\x00"},
+		{name: "invalid UTF-8 target", kind: queue.Kind{Name: "distill"}, target: "doc-\xff"},
+		{name: "oversized target", kind: queue.Kind{Name: "distill"}, target: strings.Repeat("x", queue.MaxIDLen+1)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if ok, err := queue.Expedite(t.Context(), nil, tt.kind, tt.target); ok || !errors.Is(err, queue.ErrInvalidJob) {
+				t.Errorf("Expedite = %v, %v, want false and validation before SQL", ok, err)
+			}
+		})
 	}
 }

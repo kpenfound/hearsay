@@ -93,6 +93,14 @@ func (s State) Valid() bool {
 	return false
 }
 
+// Debounce coalesces enqueues for a pending target until it has been quiet for
+// Quiet, bounded by Max from the first enqueue. A job that is already due stays
+// due, even when another debounced request arrives before it is claimed.
+type Debounce struct {
+	Quiet time.Duration
+	Max   time.Duration
+}
+
 // Request is a job to enqueue.
 type Request struct {
 	// Kind is the job kind, and it decides what else this request needs: a
@@ -118,6 +126,10 @@ type Request struct {
 	// by the enqueuing process, so a skewed clock cannot schedule a job into
 	// the past or the far future.
 	Delay time.Duration
+
+	// Debounce postpones a pending job for this target instead of merely
+	// collapsing into it. It cannot be combined with Delay.
+	Debounce *Debounce
 
 	// TraceContext is the propagation carrier of the trace that enqueued the
 	// job (ADR-0008), handed back to the worker so the work joins the trace
@@ -189,6 +201,12 @@ func (r Request) Validate() error {
 		return fmt.Errorf("%w: %s is not a serialized kind, so its jobs must not carry a serial key (%q would be ignored)", ErrInvalidJob, r.Kind.Name, r.SerialKey)
 	case r.Delay < 0:
 		return fmt.Errorf("%w: a %s job is delayed by %s, which is in the past", ErrInvalidJob, r.Kind.Name, r.Delay)
+	case r.Debounce != nil && r.Delay != 0:
+		return fmt.Errorf("%w: a %s job combines debounce with delay", ErrInvalidJob, r.Kind.Name)
+	case r.Debounce != nil && r.Debounce.Quiet <= 0:
+		return fmt.Errorf("%w: a %s job's debounce quiet period must be positive", ErrInvalidJob, r.Kind.Name)
+	case r.Debounce != nil && r.Debounce.Max < r.Debounce.Quiet:
+		return fmt.Errorf("%w: a %s job's debounce maximum is less than its quiet period", ErrInvalidJob, r.Kind.Name)
 	case r.Priority > math.MaxInt32 || r.Priority < math.MinInt32:
 		return fmt.Errorf("%w: priority %d does not fit the column, which is a 32-bit integer", ErrInvalidJob, r.Priority)
 	}
@@ -197,14 +215,13 @@ func (r Request) Validate() error {
 
 // Enqueued is what one enqueue did.
 type Enqueued struct {
-	// ID is the job's id, and is zero when Stored is false: the row that
-	// collapsed this one may belong to a transaction that has not committed,
-	// so reading its id back is not something an enqueue can promise.
+	// ID is the inserted or updated job's id, and is zero when Stored is false.
 	ID int64
 
-	// Stored reports that this call wrote a row. False means a job of the same
-	// kind for the same target was already pending and this enqueue collapsed
-	// into it, which is the ordinary outcome of re-deriving something.
+	// Stored reports that this call inserted or updated a row. A debounced
+	// update reports true even if the scheduling formula leaves run_after
+	// unchanged. False means this enqueue collapsed into a pending job without
+	// updating it, including a debounced enqueue of a job that is already due.
 	Stored bool
 }
 
