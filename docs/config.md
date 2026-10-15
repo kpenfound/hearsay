@@ -526,6 +526,17 @@ sources:
 The sender sends `Authorization: Bearer <token>` with the value of the named
 variable. A request without it is refused with 401 and nothing is read.
 
+A ticket request may include `state`: one of `proposed`, `started`, `blocked`,
+`completed` or `abandoned`, mapped by the sender. For example,
+`"state": "started", "status": "In review"` emits
+`payload.state = {"core": "started", "native": "In review"}`. An empty
+`status` omits `state.native`. `status` remains a free string in
+`payload.native`, and without `state` no state is inferred from it or from
+text. An unknown or empty `state`, or a `status` over 64 bytes when `state` is
+given, is refused with 400 and writes nothing. `state` is ticket-only: a
+non-deletion comment carrying it is also refused with 400 and writes nothing,
+as are other fields inapplicable to its kind. Deletions still read only ids.
+
 Access fails closed. Each project in `containers` needs an access list in
 `settings.access`, written the way the
 [contract](connector-contract.md#acl-entries) writes one. `public` means
