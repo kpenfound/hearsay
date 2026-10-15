@@ -14,7 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Querier is what [Enqueue] runs on: a pgx pool, or — the point of the
+// Querier is what [Enqueue] and [Expedite] run on: a pgx pool, or — the point of the
 // interface — a transaction the caller is already in. A job row is written in
 // the same transaction as the L0 or L1 write that causes it, so either both
 // happen or neither does (ADR-0007).
@@ -55,6 +55,23 @@ WITH inserted AS (
 )
 SELECT inserted.id FROM inserted, LATERAL (SELECT pg_notify($7, '')) AS announced`
 
+// debounceSQL keeps the original enqueue time and all other job metadata.
+// clock_timestamp() is deliberately the wall clock at the conflict check:
+// now() is the transaction start, and even statement_timestamp() could precede
+// an Expedite whose row lock this statement waited for. ON CONFLICT re-reads
+// that committed row; a job due by then must stay due.
+const debounceSQL = `
+WITH stored AS (
+    INSERT INTO queue_job (kind, target_id, serial_key, priority, run_after, trace_context)
+    VALUES ($1, $2, $3, $4, now() + make_interval(secs => $5), $6)
+    ON CONFLICT (kind, target_id) WHERE state = 'pending' DO UPDATE
+    SET run_after = LEAST(GREATEST(queue_job.run_after, now() + make_interval(secs => $5)),
+                         queue_job.enqueued_at + make_interval(secs => $8))
+    WHERE queue_job.run_after > clock_timestamp()
+    RETURNING id
+)
+SELECT stored.id FROM stored, LATERAL (SELECT pg_notify($7, '')) AS announced`
+
 // Enqueue adds one job, inside whatever transaction the caller is in.
 //
 // It cannot abort that transaction: the request is validated before any SQL
@@ -62,6 +79,8 @@ SELECT inserted.id FROM inserted, LATERAL (SELECT pg_notify($7, '')) AS announce
 // collapses into that one rather than raising a unique violation. Enqueueing
 // again while a job is *running* is a new job, because the running one may
 // already have read the state this enqueue is about.
+// With Debounce set, a pending job that is not yet due has its run_after
+// updated within the maximum delay from its first enqueue. Due jobs stay due.
 func Enqueue(ctx context.Context, q Querier, req Request) (Enqueued, error) {
 	if err := req.Validate(); err != nil {
 		return Enqueued{}, err
@@ -72,10 +91,17 @@ func Enqueue(ctx context.Context, q Querier, req Request) (Enqueued, error) {
 	}
 
 	var id int64
-	err = q.QueryRow(ctx, enqueueSQL,
-		req.Kind.Name, req.TargetID, req.SerialKey, req.Priority,
-		req.Delay.Seconds(), trace, req.Kind.Channel(),
-	).Scan(&id)
+	if req.Debounce == nil {
+		err = q.QueryRow(ctx, enqueueSQL,
+			req.Kind.Name, req.TargetID, req.SerialKey, req.Priority,
+			req.Delay.Seconds(), trace, req.Kind.Channel(),
+		).Scan(&id)
+	} else {
+		err = q.QueryRow(ctx, debounceSQL,
+			req.Kind.Name, req.TargetID, req.SerialKey, req.Priority,
+			req.Debounce.Quiet.Seconds(), trace, req.Kind.Channel(), req.Debounce.Max.Seconds(),
+		).Scan(&id)
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Enqueued{}, nil
 	}
@@ -83,6 +109,39 @@ func Enqueue(ctx context.Context, q Querier, req Request) (Enqueued, error) {
 		return Enqueued{}, fmt.Errorf("enqueueing a %s job for %s: %w", req.Kind.Name, req.TargetID, err)
 	}
 	return Enqueued{ID: id, Stored: true}, nil
+}
+
+const expediteSQL = `
+WITH expedited AS (
+    UPDATE queue_job SET run_after = LEAST(run_after, now())
+    WHERE kind = $1 AND target_id = $2 AND state = 'pending'
+    RETURNING id
+)
+SELECT expedited.id FROM expedited, LATERAL (SELECT pg_notify($3, '')) AS announced`
+
+// Expedite makes a target's pending job due and notifies the kind's workers
+// when the caller's transaction commits. It reports true whenever a pending
+// job exists, including one already due, and false if there is none. A running
+// job is untouched. Kind and target are validated before any SQL runs.
+func Expedite(ctx context.Context, q Querier, kind Kind, target string) (bool, error) {
+	if err := kind.Validate(); err != nil {
+		return false, err
+	}
+	if err := validID(kind.Name, "target id", target); err != nil {
+		return false, err
+	}
+	if target == "" {
+		return false, fmt.Errorf("%w: a %s job has no target id", ErrInvalidJob, kind.Name)
+	}
+	var id int64
+	err := q.QueryRow(ctx, expediteSQL, kind.Name, target, kind.Channel()).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("expediting a %s job for %s: %w", kind.Name, target, err)
+	}
+	return true, nil
 }
 
 // traceOf is the carrier as it is stored: never null, so the column's default
@@ -98,9 +157,9 @@ func traceOf(carrier map[string]string) map[string]string {
 // reclaiming expired leases, retention and the counts an operator reads. It is
 // safe for concurrent use, and [Worker] is the loop built on it.
 //
-// Everything it does is scoped to Config.Kind. Nothing outside this package
-// runs SQL against the queue tables — the claim invariants stop being
-// enforceable if it does (see the package README).
+// Except Expedite, its operations are scoped to Config.Kind. Nothing outside
+// this package runs SQL against the queue tables — the claim invariants stop
+// being enforceable if it does (see the package README).
 type Client struct {
 	pool *pgxpool.Pool
 	cfg  Config
@@ -121,6 +180,22 @@ func New(pool *pgxpool.Pool, cfg Config) (*Client, error) {
 
 // Config is the configuration in force, with the defaults filled in.
 func (c *Client) Config() Config { return c.cfg }
+
+// Expedite commits an expedite independently of the caller's transaction.
+// The explicit kind may differ from the client's kind, so a handler can
+// expedite work it is waiting for in another queue.
+func (c *Client) Expedite(ctx context.Context, kind Kind, target string) (bool, error) {
+	var expedited bool
+	err := pgx.BeginFunc(ctx, c.pool, func(tx pgx.Tx) error {
+		var err error
+		expedited, err = Expedite(ctx, tx, kind, target)
+		return err
+	})
+	if err != nil {
+		return false, fmt.Errorf("committing an expedite for %s: %w", target, err)
+	}
+	return expedited, nil
+}
 
 // claimSQL is the unserialized claim: a batch, taken with FOR UPDATE SKIP
 // LOCKED so that two workers scanning the same backlog step over each other's

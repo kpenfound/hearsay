@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
@@ -204,9 +205,14 @@ func instanceName() string {
 // (ADR-0005, ADR-0009).
 func runDistiller(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, cfg, configPath := newFlagSet(distiller.Name, stderr)
+	pumpOptions := distillFlags(fs)
 	listen := fs.String("listen", envOr("HEARSAY_DISTILLER_LISTEN", distiller.DefaultListen), "address the distiller serves /healthz and /readyz on")
 	resolveDatabase := databaseFlag(fs, cfg)
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	pump, err := pumpOptions()
+	if err != nil {
 		return err
 	}
 	resolveDatabase()
@@ -216,7 +222,7 @@ func runDistiller(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	if *listen == "" {
 		return errors.New("--listen is empty: it is the address the health probes are served on")
 	}
-	ctx, err := withLogger(ctx, distiller.Name, cfg, stderr)
+	ctx, err = withLogger(ctx, distiller.Name, cfg, stderr)
 	if err != nil {
 		return err
 	}
@@ -235,7 +241,7 @@ func runDistiller(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	if err != nil {
 		return err
 	}
-	return distiller.Run(ctx, cfg, distiller.Deps{Pool: pool, LLM: registry, Listen: *listen})
+	return distiller.Run(ctx, cfg, distiller.Deps{Pool: pool, LLM: registry, Listen: *listen, Pump: pump})
 }
 
 // runAssertWorker runs the assertion worker. It has the distiller's
@@ -561,6 +567,7 @@ func connectorRegistry(principals []principal.Principal) *connector.Registry {
 // (ADR-0003).
 func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, cfg, configPath := newFlagSet("all", stderr)
+	pumpOptions := distillFlags(fs)
 	resolveDatabase := databaseFlag(fs, cfg)
 	listen := listenFlag(fs)
 	distillerListen := fs.String("distiller-listen", envOr("HEARSAY_DISTILLER_LISTEN", distiller.DefaultListen), "address the distiller serves health probes on")
@@ -568,6 +575,10 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	apiListen := fs.String("api-listen", envOr("HEARSAY_API_LISTEN", api.DefaultListen),
 		"address the API service serves HTTP, MCP and its health on")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	pump, err := pumpOptions()
+	if err != nil {
 		return err
 	}
 	resolveDatabase()
@@ -584,7 +595,7 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 		return errors.New("worker health probe listen address is empty")
 	}
 	// No service name on the process logger: RunAll names each of the four.
-	ctx, err := withLogger(ctx, "", cfg, stderr)
+	ctx, err = withLogger(ctx, "", cfg, stderr)
 	if err != nil {
 		return err
 	}
@@ -631,7 +642,7 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 			return connectors.Run(ctx, cfg, connectors.Deps{Pool: pool, Registry: connectorRegistry(cfg.Repo.Principals), Listen: *listen})
 		},
 		distiller.Name: func(ctx context.Context) error {
-			return distiller.Run(ctx, cfg, distiller.Deps{Pool: pool, LLM: registry, Listen: *distillerListen})
+			return distiller.Run(ctx, cfg, distiller.Deps{Pool: pool, LLM: registry, Listen: *distillerListen, Pump: pump})
 		},
 		assertworker.Name: func(ctx context.Context) error {
 			return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry, Connectors: connectorRegistry(cfg.Repo.Principals), Repos: repos, Replies: replies, Listen: *assertWorkerListen})
@@ -781,4 +792,28 @@ func (s *sourceList) Set(v string) error {
 	}
 	*s = append(*s, v)
 	return nil
+}
+
+// distillFlags shares the distiller settings with all. Parse durations after
+// flags so invalid environment values are returned as startup errors too.
+func distillFlags(fs *flag.FlagSet) func() (distiller.PumpOptions, error) {
+	quiet := fs.String("distill-quiet", envOr("HEARSAY_DISTILL_QUIET", "30s"), "quiet period before distilling a document (Go duration, 0 disables)")
+	maxDelay := fs.String("distill-max-delay", envOr("HEARSAY_DISTILL_MAX_DELAY", "5m"), "maximum debounce delay from a document's first enqueue (Go duration)")
+	return func() (distiller.PumpOptions, error) {
+		q, err := time.ParseDuration(*quiet)
+		if err != nil {
+			return distiller.PumpOptions{}, fmt.Errorf("parsing --distill-quiet: %w", err)
+		}
+		m, err := time.ParseDuration(*maxDelay)
+		if err != nil {
+			return distiller.PumpOptions{}, fmt.Errorf("parsing --distill-max-delay: %w", err)
+		}
+		if q < 0 {
+			return distiller.PumpOptions{}, errors.New("--distill-quiet must be non-negative")
+		}
+		if q > 0 && m < q {
+			return distiller.PumpOptions{}, errors.New("--distill-max-delay must be at least --distill-quiet when debouncing is enabled")
+		}
+		return distiller.PumpOptions{Quiet: q, MaxDelay: m}, nil
+	}
 }

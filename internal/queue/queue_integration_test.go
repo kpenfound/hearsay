@@ -156,13 +156,422 @@ func TestADuplicateEnqueueCollapsesWithoutAbortingTheTransaction(t *testing.T) {
 	}
 }
 
+// Debounce inserts behind the quiet period, or updates just the schedule of
+// the existing pending row. The database's transaction time drives the formula.
+func TestDebouncedEnqueue(t *testing.T) {
+	tests := []struct {
+		name       string
+		firstQuiet time.Duration
+		next       *queue.Debounce
+		running    bool
+	}{
+		{name: "new target"},
+		{name: "running target", running: true},
+		{name: "pushes later", firstQuiet: time.Hour, next: &queue.Debounce{Quiet: time.Hour, Max: 3 * time.Hour}},
+		{name: "keeps a later schedule", firstQuiet: 2 * time.Hour, next: &queue.Debounce{Quiet: time.Hour, Max: 3 * time.Hour}},
+		{name: "caps at first enqueue plus max", firstQuiet: time.Hour, next: &queue.Debounce{Quiet: 2 * time.Hour, Max: 2 * time.Hour}},
+		{name: "non-debounced duplicate does nothing", firstQuiet: time.Hour},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			kind := newKind(t, false)
+			pool := newPool(t)
+			client := newClient(t, queue.Config{Kind: kind})
+			var before queue.Job
+			if tt.firstQuiet != 0 || tt.running {
+				req := queue.Request{Kind: kind, TargetID: "doc-1", Priority: 7, TraceContext: map[string]string{"traceparent": "original"}}
+				if !tt.running {
+					req.Debounce = &queue.Debounce{Quiet: tt.firstQuiet, Max: 3 * time.Hour}
+				}
+				enqueue(t, pool, req)
+				if tt.running {
+					if jobs := claim(t, client); len(jobs) != 1 {
+						t.Fatalf("Claim = %v, want one running job", jobs)
+					}
+				} else {
+					before = listJobs(t, client, queue.StatePending)[0]
+				}
+			}
+
+			tx, err := pool.Begin(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(context.WithoutCancel(t.Context()))
+			var now time.Time
+			if err := tx.QueryRow(t.Context(), "SELECT now()").Scan(&now); err != nil {
+				t.Fatal(err)
+			}
+			db := tt.next
+			if tt.firstQuiet == 0 {
+				db = &queue.Debounce{Quiet: time.Minute, Max: time.Hour}
+			}
+			out := enqueue(t, tx, queue.Request{Kind: kind, TargetID: "doc-1", Debounce: db})
+			if err := tx.Commit(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			jobs := listJobs(t, client, queue.StatePending)
+			if len(jobs) != 1 {
+				t.Fatalf("List(pending) = %v, want one job", jobs)
+			}
+			got := jobs[0]
+			wantEnqueued, wantRun := now, now.Add(time.Minute)
+			if before.ID != 0 {
+				wantEnqueued, wantRun = before.EnqueuedAt, before.RunAfter
+				if db != nil {
+					if candidate := now.Add(db.Quiet); candidate.After(wantRun) {
+						wantRun = candidate
+					}
+					if capAt := before.EnqueuedAt.Add(db.Max); capAt.Before(wantRun) {
+						wantRun = capAt
+					}
+				}
+				if got.ID != before.ID || got.Priority != before.Priority || got.TraceContext["traceparent"] != "original" {
+					t.Errorf("job metadata changed: before %+v, after %+v", before, got)
+				}
+			}
+			if !got.EnqueuedAt.Equal(wantEnqueued) || !got.RunAfter.Equal(wantRun) {
+				t.Errorf("schedule = (%s, %s), want (%s, %s)", got.EnqueuedAt, got.RunAfter, wantEnqueued, wantRun)
+			}
+			if db == nil {
+				if out.Stored || out.ID != 0 {
+					t.Errorf("non-debounced duplicate = %+v, want no write", out)
+				}
+			} else if !out.Stored || out.ID != got.ID {
+				t.Errorf("debounced Enqueue = %+v, want Stored with ID %d", out, got.ID)
+			}
+			if jobs := claim(t, client); len(jobs) != 0 {
+				t.Errorf("Claim = %v, want no jobs before quiet period", jobs)
+			}
+			if tt.running && stats(t, client).Running != 1 {
+				t.Error("debounced enqueue changed the running job")
+			}
+		})
+	}
+}
+
+func TestADebouncedEnqueueKeepsADueJobDue(t *testing.T) {
+	tests := []struct {
+		name     string
+		expedite bool
+		oldTx    bool
+		expired  bool
+		capped   bool
+	}{
+		{name: "non-debounced insert"},
+		{name: "expedited", expedite: true},
+		{name: "transaction began before expedite", expedite: true, oldTx: true},
+		{name: "quiet period elapsed", expired: true},
+		{name: "maximum reached", expired: true, capped: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			kind := newKind(t, false)
+			pool := newPool(t)
+			client := newClient(t, queue.Config{Kind: kind})
+			req := queue.Request{Kind: kind, TargetID: "doc-1"}
+			if tt.expedite {
+				req.Debounce = &queue.Debounce{Quiet: time.Hour, Max: 2 * time.Hour}
+			} else if tt.expired {
+				req.Debounce = &queue.Debounce{Quiet: 500 * time.Millisecond, Max: time.Second}
+			}
+			enqueue(t, pool, req)
+			tx, err := pool.Begin(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(context.WithoutCancel(t.Context()))
+			// Force the transaction timestamp to precede the expedite.
+			if _, err := tx.Exec(t.Context(), "SELECT now()"); err != nil {
+				t.Fatal(err)
+			}
+			if tt.capped {
+				enqueue(t, pool, queue.Request{Kind: kind, TargetID: "doc-1", Debounce: &queue.Debounce{Quiet: time.Second, Max: time.Second}})
+				job := listJobs(t, client, queue.StatePending)[0]
+				if !job.RunAfter.Equal(job.EnqueuedAt.Add(time.Second)) {
+					t.Fatal("test setup did not reach the maximum")
+				}
+			}
+			if tt.expedite {
+				if ok, err := client.Expedite(t.Context(), kind, "doc-1"); err != nil || !ok {
+					t.Fatalf("Expedite = %v, %v, want true, nil", ok, err)
+				}
+			}
+			if tt.expired {
+				time.Sleep(1100 * time.Millisecond)
+			}
+			before := listJobs(t, client, queue.StatePending)[0]
+			if !tt.oldTx {
+				if err := tx.Commit(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				tx, err = pool.Begin(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback(context.WithoutCancel(t.Context()))
+			}
+			req.Debounce = &queue.Debounce{Quiet: time.Hour, Max: 2 * time.Hour}
+			if out := enqueue(t, tx, req); out.Stored || out.ID != 0 {
+				t.Errorf("Enqueue of due target = %+v, want no update", out)
+			}
+			if err := tx.Commit(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			after := listJobs(t, client, queue.StatePending)[0]
+			if !after.RunAfter.Equal(before.RunAfter) || !after.EnqueuedAt.Equal(before.EnqueuedAt) {
+				t.Errorf("due schedule moved: before %+v, after %+v", before, after)
+			}
+			if jobs := claim(t, client); len(jobs) != 1 || jobs[0].ID != before.ID {
+				t.Errorf("Claim = %v, want the due job immediately", jobs)
+			}
+		})
+	}
+}
+
+// An enqueue in an older transaction must respect the due committed row it
+// re-reads after waiting for an in-flight expedite to release its lock.
+func TestADebouncedEnqueueWaitingOnExpediteKeepsTheJobDue(t *testing.T) {
+	kind := newKind(t, false)
+	pool := newPool(t)
+	client := newClient(t, queue.Config{Kind: kind})
+	req := queue.Request{Kind: kind, TargetID: "doc-1", Debounce: &queue.Debounce{Quiet: time.Hour, Max: 2 * time.Hour}}
+	enqueue(t, pool, req)
+	enqueuer, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer enqueuer.Rollback(context.WithoutCancel(t.Context()))
+	if _, err := enqueuer.Exec(t.Context(), "SELECT now()"); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(context.WithoutCancel(t.Context()))
+	var blocker int
+	if err := tx.QueryRow(t.Context(), "SELECT pg_backend_pid()").Scan(&blocker); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := queue.Expedite(t.Context(), tx, kind, "doc-1"); err != nil || !ok {
+		t.Fatalf("Expedite = %v, %v, want true, nil", ok, err)
+	}
+	type result struct {
+		out queue.Enqueued
+		err error
+	}
+	done := make(chan result, 1)
+	finished := make(chan struct{})
+	ctx, cancel := context.WithCancel(t.Context())
+	go func() {
+		defer close(finished)
+		out, err := queue.Enqueue(ctx, enqueuer, req)
+		done <- result{out, err}
+	}()
+	defer func() {
+		cancel()
+		<-finished
+	}()
+	waitFor(t, "debounced enqueue to wait on expedite", func() bool {
+		var blocked bool
+		err := pool.QueryRow(t.Context(), "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid)))", blocker).Scan(&blocked)
+		return err == nil && blocked
+	})
+	if err := tx.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	got := <-done
+	if got.err != nil || got.out.Stored {
+		t.Errorf("waiting Enqueue = %+v, %v, want no update", got.out, got.err)
+	}
+	if err := enqueuer.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if jobs := claim(t, client); len(jobs) != 1 {
+		t.Errorf("Claim = %v, want the expedited job immediately", jobs)
+	}
+}
+
+func TestExpedite(t *testing.T) {
+	for _, form := range []string{"transaction", "client"} {
+		t.Run(form, func(t *testing.T) {
+			for _, state := range []string{"delayed", "due", "missing", "running", "done", "rollback"} {
+				t.Run(state, func(t *testing.T) {
+					kind := newKind(t, false)
+					pool := newPool(t)
+					client := newClient(t, queue.Config{Kind: kind})
+					if state != "missing" {
+						req := queue.Request{Kind: kind, TargetID: "doc-1"}
+						if state == "delayed" || state == "rollback" {
+							req.Delay = time.Hour
+						}
+						enqueue(t, pool, req)
+						if state == "running" || state == "done" {
+							jobs := claim(t, client)
+							if len(jobs) != 1 {
+								t.Fatalf("Claim = %v, want one job", jobs)
+							}
+							if state == "done" {
+								if ok, err := client.Complete(t.Context(), jobs[0]); err != nil || !ok {
+									t.Fatalf("Complete = %v, %v, want true, nil", ok, err)
+								}
+							}
+						}
+					}
+					// Other targets and kinds must remain delayed.
+					enqueue(t, pool, queue.Request{Kind: kind, TargetID: "other-doc", Delay: time.Hour})
+					otherKind := newKind(t, false)
+					enqueue(t, pool, queue.Request{Kind: otherKind, TargetID: "doc-1", Delay: time.Hour})
+					other := newClient(t, queue.Config{Kind: otherKind})
+					beforeOther := listJobs(t, other, queue.StatePending)[0]
+
+					listener, err := pool.Acquire(t.Context())
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer listener.Release()
+					if _, err := listener.Exec(t.Context(), "LISTEN "+kind.Channel()); err != nil {
+						t.Fatal(err)
+					}
+					expectNotification := func(want bool) {
+						t.Helper()
+						timeout := 30 * time.Millisecond
+						if want {
+							timeout = time.Second
+						}
+						ctx, cancel := context.WithTimeout(t.Context(), timeout)
+						defer cancel()
+						n, err := listener.Conn().WaitForNotification(ctx)
+						if want {
+							if err != nil || n.Channel != kind.Channel() {
+								t.Fatalf("notification = %v, %v, want channel %s", n, err, kind.Channel())
+							}
+						} else if !errors.Is(err, context.DeadlineExceeded) {
+							t.Fatalf("notification = %v, %v, want none", n, err)
+						}
+					}
+					want := state == "delayed" || state == "due" || state == "rollback"
+					var ok bool
+					if form == "client" {
+						// The explicit kind may differ from this client's own kind.
+						caller, beginErr := pool.Begin(t.Context())
+						if beginErr != nil {
+							t.Fatal(beginErr)
+						}
+						defer caller.Rollback(context.WithoutCancel(t.Context()))
+						ok, err = other.Expedite(t.Context(), kind, "doc-1")
+						if err := caller.Rollback(t.Context()); err != nil {
+							t.Fatal(err)
+						}
+					} else {
+						tx, beginErr := pool.Begin(t.Context())
+						if beginErr != nil {
+							t.Fatal(beginErr)
+						}
+						defer tx.Rollback(context.WithoutCancel(t.Context()))
+						ok, err = queue.Expedite(t.Context(), tx, kind, "doc-1")
+						expectNotification(false) // not before commit
+						if state == "rollback" {
+							if err := tx.Rollback(t.Context()); err != nil {
+								t.Fatal(err)
+							}
+						} else if err := tx.Commit(t.Context()); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if err != nil || ok != want {
+						t.Fatalf("Expedite = %v, %v, want %v, nil", ok, err, want)
+					}
+					expectNotification(want && (state != "rollback" || form == "client"))
+					// Claim uses a different transaction: the client form must have
+					// committed before returning, while rollback must leave it delayed.
+					wantJobs := 0
+					if want && (state != "rollback" || form == "client") {
+						wantJobs = 1
+					}
+					if jobs := claim(t, client); len(jobs) != wantJobs || (wantJobs == 1 && jobs[0].TargetID != "doc-1") {
+						t.Errorf("Claim = %v, want %d expedited jobs", jobs, wantJobs)
+					}
+					afterOther := listJobs(t, other, queue.StatePending)[0]
+					if !beforeOther.RunAfter.Equal(afterOther.RunAfter) {
+						t.Error("Expedite changed another kind's job")
+					}
+					if state == "running" && stats(t, client).Running != 1 {
+						t.Error("Expedite changed the running job")
+					}
+					if state == "done" && stats(t, client).Done != 1 {
+						t.Error("Expedite changed the completed job")
+					}
+				})
+			}
+		})
+	}
+}
+
+// Debounce notifications, like inserts, are visible only after commit.
+func TestADebouncedUpdateNotifiesOnCommit(t *testing.T) {
+	for _, commit := range []bool{true, false} {
+		t.Run(strconv.FormatBool(commit), func(t *testing.T) {
+			kind := newKind(t, false)
+			pool := newPool(t)
+			client := newClient(t, queue.Config{Kind: kind})
+			req := queue.Request{Kind: kind, TargetID: "doc-1", Debounce: &queue.Debounce{Quiet: time.Hour, Max: 3 * time.Hour}}
+			enqueue(t, pool, req)
+			before := listJobs(t, client, queue.StatePending)[0]
+			listener, err := pool.Acquire(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Release()
+			if _, err := listener.Exec(t.Context(), "LISTEN "+kind.Channel()); err != nil {
+				t.Fatal(err)
+			}
+			tx, err := pool.Begin(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(context.WithoutCancel(t.Context()))
+			req.Debounce = &queue.Debounce{Quiet: 2 * time.Hour, Max: 3 * time.Hour}
+			enqueue(t, tx, req)
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
+			defer cancel()
+			if n, err := listener.Conn().WaitForNotification(ctx); !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("notification before commit = %v, %v, want none", n, err)
+			}
+			if commit {
+				err = tx.Commit(t.Context())
+			} else {
+				err = tx.Rollback(t.Context())
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel = context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			n, err := listener.Conn().WaitForNotification(ctx)
+			if commit {
+				if err != nil || n.Channel != kind.Channel() {
+					t.Fatalf("notification after commit = %v, %v, want channel %s", n, err, kind.Channel())
+				}
+			} else if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("notification after rollback = %v, %v, want none", n, err)
+			}
+			after := listJobs(t, client, queue.StatePending)[0]
+			if commit && !after.RunAfter.After(before.RunAfter) {
+				t.Error("committed debounce update did not postpone the job")
+			} else if !commit && !after.RunAfter.Equal(before.RunAfter) {
+				t.Error("rolled-back debounce update changed the schedule")
+			}
+		})
+	}
+}
+
 // The property ADR-0007 will not trade, stated as behaviour rather than as a
 // comment: an enqueue cannot be the thing that aborts the caller's
-// transaction. Every request here is one Postgres would refuse with a
-// statement error — a NUL byte or invalid UTF-8 in a text column (22021), a
-// NUL escape in the jsonb carrier (22P05) — and each is refused before any SQL
-// runs, so the transaction survives and the write that was the point of it
-// still commits.
+// transaction. Invalid debounce settings and bytes that Postgres would refuse
+// mid-transaction (22021, 22P05) are rejected before SQL. The transaction
+// survives and the write that was the point of it still commits.
 func TestARefusedEnqueueLeavesTheCallersTransactionUsable(t *testing.T) {
 	kind := newKind(t, false)
 	pool := newPool(t)
@@ -171,6 +580,10 @@ func TestARefusedEnqueueLeavesTheCallersTransactionUsable(t *testing.T) {
 		name string
 		req  queue.Request
 	}{
+		{name: "debounce with delay", req: queue.Request{Kind: kind, TargetID: "evt-1", Delay: time.Second, Debounce: &queue.Debounce{Quiet: time.Second, Max: time.Minute}}},
+		{name: "zero quiet", req: queue.Request{Kind: kind, TargetID: "evt-1", Debounce: &queue.Debounce{Max: time.Minute}}},
+		{name: "negative quiet", req: queue.Request{Kind: kind, TargetID: "evt-1", Debounce: &queue.Debounce{Quiet: -time.Second, Max: time.Minute}}},
+		{name: "maximum below quiet", req: queue.Request{Kind: kind, TargetID: "evt-1", Debounce: &queue.Debounce{Quiet: time.Second, Max: time.Millisecond}}},
 		{name: "a NUL in the target id", req: queue.Request{Kind: kind, TargetID: "evt-\x00-1"}},
 		{name: "invalid UTF-8 in the target id", req: queue.Request{Kind: kind, TargetID: "evt-\xff"}},
 		{name: "a target id past the limit", req: queue.Request{Kind: kind, TargetID: strings.Repeat("e", queue.MaxIDLen+1)}},
@@ -185,7 +598,7 @@ func TestARefusedEnqueueLeavesTheCallersTransactionUsable(t *testing.T) {
 			defer tx.Rollback(context.WithoutCancel(t.Context())) //nolint:errcheck // a rollback after commit is a no-op
 
 			if _, err := queue.Enqueue(t.Context(), tx, tt.req); err == nil {
-				t.Fatal("Enqueue accepted a request Postgres would have refused mid-transaction")
+				t.Fatal("Enqueue accepted an invalid request")
 			} else if !errors.Is(err, queue.ErrInvalidJob) {
 				t.Fatalf("Enqueue = %v, want it to wrap ErrInvalidJob rather than come back from the database", err)
 			}

@@ -14,6 +14,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/principal"
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
+	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
 // The fixture: an issue that proposes one thing, and a later pull request that
@@ -293,6 +294,21 @@ func TestRecordFixtures(t *testing.T) {
 			Response: llm.Response{JSON: body, StopReason: llm.StopEnd, Model: "recorded"},
 		})
 	}
+	// The command retry test runs a real distill job for a new issue.
+	root := commandIssue("github-acme")
+	doc := buildDoc(t, root.Source, root, nil, issueBody)
+	budget, _ := llm.Default().Tier(llm.TierDistill)
+	body, err := json.Marshal(map[string]any{
+		"summary": issueBody.Summary, "question": issueBody.Question,
+		"outcome": issueBody.Outcome, "outcome_kind": issueBody.OutcomeKind,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	file.Completions = append(file.Completions, llm.CompletionFixture{
+		Tier: llm.TierDistill, Request: distiller.RequestFor(doc, budget.MaxTokens),
+		Response: llm.Response{JSON: body, StopReason: llm.StopEnd, Model: "recorded"},
+	})
 	recorded, err := json.MarshalIndent(file, "", "  ")
 	if err != nil {
 		t.Fatalf("encoding the fixtures: %v", err)
@@ -323,11 +339,11 @@ func TestRecordFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("building the fake registry: %v", err)
 	}
-	completer, err := registry.Completer(llm.TierAssert)
-	if err != nil {
-		t.Fatalf("resolving the assert tier: %v", err)
-	}
 	for _, c := range file.Completions {
+		completer, err := registry.Completer(c.Tier)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if _, err := completer.Complete(t.Context(), c.Request); err != nil {
 			t.Fatalf("the recorded answers do not cover a request this package sends: %v", err)
 		}
@@ -355,4 +371,11 @@ func TestJudgementResponseShape(t *testing.T) {
 			}
 		})
 	}
+}
+
+// commandIssue has the fixture's proposal on a conversation with no L1 yet.
+func commandIssue(src string) connector.Event {
+	ev := newFixture(src).issue
+	ev.NativeID, ev.Payload.Artifact = repo+"#77", repo+"#77"
+	return ev
 }

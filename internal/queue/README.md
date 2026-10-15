@@ -3,8 +3,8 @@
 The job queue. One Postgres, no broker (ADR-0007).
 
 **Belongs here:** enqueue (transactional, deduplicating on `(kind, target_id)`
-while a job is pending), the two claim paths and the hold, retries with
-backoff, the dead letter path, `LISTEN`/`NOTIFY` plus the polling floor, and
+while a job is pending), per-target debounce and expedite, the two claim paths
+and the hold, retries with backoff, the dead letter path, `LISTEN`/`NOTIFY` plus the polling floor, and
 the worker loop.
 
 **Does not belong here:** job handlers. What a `distill` or `assert` job does
@@ -26,6 +26,37 @@ exist for a write that rolled back:
 kind := queue.Kind{Name: "distill"}                          // declared once
 _, err := queue.Enqueue(ctx, tx, queue.Request{Kind: kind, TargetID: eventID})
 ```
+
+Set `Request.Debounce` to `&queue.Debounce{Quiet: quiet, Max: maxDelay}`
+to coalesce a target's enqueues over time. With no pending job, the queue
+inserts one due at `now() + Quiet`. A duplicate whose pending job is still in
+the future updates only `run_after`, to
+`LEAST(GREATEST(run_after, now() + Quiet), enqueued_at + Max)`. The first
+`enqueued_at` stays fixed. A running job permits a new pending job. Validation
+refuses a non-positive quiet period, a maximum below it, or a request combining
+`Debounce` with a non-zero `Delay`, before any SQL runs.
+
+**A due job stays due.** Once a pending job is due, a debounced enqueue leaves
+it untouched, including after an expedite or when its quiet period or maximum
+has elapsed. The conflict update compares `run_after` against PostgreSQL's
+`clock_timestamp()`: `now()` is the transaction start and could precede a
+concurrent expedite; even the statement start could precede an expedite whose
+row lock the enqueue waited for. Scheduling still uses `now()` in the formula
+above. Non-debounced duplicates retain `ON CONFLICT DO NOTHING` unchanged.
+
+`Enqueued.Stored` is true for inserts and debounced updates, with the inserted
+or existing job ID. It is true even when the formula leaves the timestamp
+unchanged; a duplicate of a due job returns false with ID zero. Thus counts of
+`Stored` include debounce updates, rather than counting distinct jobs.
+
+`queue.Expedite(ctx, tx, kind, target)` makes an existing pending job due in
+the caller's transaction. `client.Expedite(ctx, kind, target)` commits in its
+own transaction, independently of a caller that may roll back. The explicit
+kind may differ from the client's kind. Both return true when a pending job
+exists (even if already due), notify that kind's channel on commit, and return
+false without changing anything when none exists. Neither touches running
+jobs. Enqueue notifications likewise commit with the write. There is no timer
+for jobs becoming due: the existing worker poll picks them up.
 
 A consumer runs a worker for one kind:
 

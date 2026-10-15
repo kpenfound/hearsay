@@ -26,6 +26,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/queue"
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
+	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
 // fakeReplier is GitHub's side of the replies: one comment per command it is
@@ -741,5 +742,222 @@ func TestAReadOnlySourceTakesNoCommands(t *testing.T) {
 	}
 	if len(queued) != 0 {
 		t.Errorf("queued = %q, want nothing for a read-only source", queued)
+	}
+}
+
+// A waiting Handle attempt must commit its expedite independently of the
+// rolled-back command transaction. Retry through the real queue and handler.
+func TestAWaitingCommandExpeditesDistillationAcrossRollbackAndPumpReads(t *testing.T) {
+	for _, tc := range []struct {
+		name, verb string
+		readable   bool
+	}{
+		{name: "no L1", verb: "pin"},
+		{name: "no gesture target", verb: "ratify", readable: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newCommands(t, scratchPool(t))
+			ctx := t.Context()
+			distills, err := queue.New(c.pool, queue.Config{Kind: distiller.JobKind()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Skip the fixture state the test helper has already distilled.
+			immediate := distiller.NewPump(c.pool, distiller.PumpOptions{Quiet: 0})
+			commandPumpRead(t, immediate, 4) // issue, PR, review and secret
+			jobs, err := distills.Claim(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for len(jobs) > 0 {
+				for _, job := range jobs {
+					if _, err := distills.Complete(ctx, job); err != nil {
+						t.Fatal(err)
+					}
+				}
+				jobs, err = distills.Claim(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			fresh := c.append(commandIssue(c.src))
+			doc := l1.DocID(c.src, fresh.Payload.Artifact)
+			if tc.readable {
+				if _, err := l1.New(c.pool).Put(ctx, buildDoc(t, c.src, fresh, nil, issueBody)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ev := c.comment(77, "u1", "/hearsay "+tc.verb)
+			pump := distiller.NewPump(c.pool, distiller.PumpOptions{Quiet: time.Minute, MaxDelay: 5 * time.Minute})
+			commandPumpRead(t, pump, 2)
+			pending := commandPending(t, distills, doc)
+			if jobs, err := distills.Claim(ctx); err != nil || len(jobs) != 0 {
+				t.Fatalf("Claim before command = %v, %v", jobs, err)
+			}
+			commands, err := queue.New(c.pool, queue.Config{Kind: l2.AssertKind(), Backoff: time.Millisecond, MaxBackoff: time.Millisecond})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := queue.Enqueue(ctx, c.pool, queue.Request{Kind: l2.AssertKind(), TargetID: l2.GestureTarget + ev.ID, SerialKey: c.src}); err != nil {
+				t.Fatal(err)
+			}
+			attempts, err := commands.Claim(ctx)
+			if err != nil || len(attempts) != 1 {
+				t.Fatalf("Claim command = %v, %v", attempts, err)
+			}
+			waiting := c.a.Handle(ctx, attempts[0])
+			if waiting == nil || !strings.Contains(waiting.Error(), "waiting for the document") {
+				t.Fatalf("Handle first attempt = %v, want waiting", waiting)
+			}
+			if gs, ops := c.gestures(), c.operations(); len(gs) != 0 || len(ops) != 0 || c.replies.posts != 0 {
+				t.Fatalf("waiting attempt wrote effects: gestures=%v operations=%v replies=%d", gs, ops, c.replies.posts)
+			}
+			var records int
+			if err := c.pool.QueryRow(ctx, `SELECT count(*) FROM github_command_replies WHERE event=$1`, ev.ID).Scan(&records); err != nil || records != 0 {
+				t.Fatalf("waiting reply records=%d, %v, want none", records, err)
+			}
+			// List is a new database transaction after Handle's rollback. It sees
+			// the expedite committed, even before another enqueue or claim.
+			due := commandPending(t, distills, doc)
+			var now time.Time
+			if err := c.pool.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
+				t.Fatal(err)
+			}
+			if due.ID != pending.ID || due.RunAfter.After(now) {
+				t.Fatalf("job after waiting = %+v, want original job due at %s", due, now)
+			}
+			state, _, err := commands.Fail(ctx, attempts[0], waiting)
+			if err != nil || state != queue.StatePending {
+				t.Fatalf("Fail = %s, %v, want retry", state, err)
+			}
+			fresh.NativeID += "@after-wait"
+			fresh.ID = ""
+			fresh.Payload.Revision = &connector.Revision{Token: "after-wait", EditedAt: fresh.Time}
+			c.append(fresh)
+			commandPumpRead(t, pump, 1)
+			jobs, err = distills.Claim(ctx)
+			if err != nil || len(jobs) != 1 || jobs[0].TargetID != doc {
+				t.Fatalf("Claim after pump = %v, %v, want expedited document", jobs, err)
+			}
+			registry, err := llm.NewFake(c.repo.LLM, loadFixtures(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := config.Default()
+			cfg.Repo = c.repo
+			cfg.Repo.Scopes = append([]config.Scope(nil), c.repo.Scopes...)
+			cfg.Repo.Scopes[0].Tracker = config.SourceRef{Source: c.src, Project: repo}
+			d, err := distiller.New(c.pool, registry, &cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := d.Handle(ctx, jobs[0]); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := distills.Complete(ctx, jobs[0]); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := l1.New(c.pool).Get(ctx, doc); err != nil {
+				t.Fatal(err)
+			}
+			if tc.verb == "ratify" {
+				// The assertion stage makes the target available after distillation.
+				graph := l2.New(c.pool)
+				topic := l2.Topic{ID: l2.TopicID(c.src, doc, 0, "new proposal"), Scope: c.src, Name: "new proposal", ACL: fresh.ACL, OpenedBy: doc}
+				if _, err := graph.OpenTopic(ctx, topic); err != nil {
+					t.Fatal(err)
+				}
+				st := l2.Stance{ID: l2.StanceID(topic.ID, doc, issuePosition, at(0), l2.TierInferred), TopicID: topic.ID, Position: issuePosition, StatedAt: at(0), Evidence: []string{doc}, Tier: l2.TierInferred, ACL: fresh.ACL}
+				if _, _, err := graph.AppendStance(ctx, st, at(0)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var retry queue.Job
+			waitFor(t, "the command retry to become claimable", func() bool {
+				jobs, err := commands.Claim(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(jobs) == 0 {
+					return false
+				}
+				if jobs[0].TargetID != l2.GestureTarget+ev.ID {
+					t.Fatalf("claimed %v before command retry", jobs)
+				}
+				retry = jobs[0]
+				return true
+			})
+			if retry.Attempt != 2 || retry.Attempt >= queue.DefaultMaxAttempts {
+				t.Fatalf("retry attempt=%d, want second of existing attempts", retry.Attempt)
+			}
+			if err := c.a.Handle(ctx, retry); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := commands.Complete(ctx, retry); err != nil {
+				t.Fatal(err)
+			}
+			if gs := c.gestures(); len(gs) != 1 || gs[0].Action != l2.GestureAction(tc.verb) || c.replies.posts != 1 {
+				t.Fatalf("retry effects=%v replies=%d, want one %s and reply", gs, c.replies.posts, tc.verb)
+			}
+		})
+	}
+}
+
+func commandPumpRead(t *testing.T, p *distiller.Pump, want int) {
+	t.Helper()
+	read := 0
+	waitFor(t, "the pump to read command test events", func() bool {
+		got, err := p.Once(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		read += got.Events
+		return read >= want
+	})
+}
+
+func commandPending(t *testing.T, c *queue.Client, target string) queue.Job {
+	t.Helper()
+	jobs, err := c.List(t.Context(), queue.StatePending, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, job := range jobs {
+		if job.TargetID == target {
+			return job
+		}
+	}
+	t.Fatalf("pending jobs=%v, want %s", jobs, target)
+	return queue.Job{}
+}
+
+func TestACommandUsesReadableL1WhileADebouncedRebuildIsPending(t *testing.T) {
+	for _, verb := range []string{"pin", "ratify"} {
+		t.Run(verb, func(t *testing.T) {
+			c := newCommands(t, scratchPool(t))
+			doc := l1.DocID(c.src, repo+"#12")
+			if _, err := queue.Enqueue(t.Context(), c.pool, queue.Request{Kind: distiller.JobKind(), TargetID: doc, Debounce: &queue.Debounce{Quiet: time.Minute, Max: 5 * time.Minute}}); err != nil {
+				t.Fatal(err)
+			}
+			distills, err := queue.New(c.pool, queue.Config{Kind: distiller.JobKind()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := commandPending(t, distills, doc)
+			ev := c.comment(12, "u1", "/hearsay "+verb)
+			if err := c.a.Handle(t.Context(), queue.Job{Kind: l2.AssertKind(), TargetID: l2.GestureTarget + ev.ID, SerialKey: c.src, Attempt: 1}); err != nil {
+				t.Fatal(err)
+			}
+			if gs := c.gestures(); len(gs) != 1 || c.replies.posts != 1 {
+				t.Fatalf("readable L1 effects=%v replies=%d", gs, c.replies.posts)
+			}
+			after := commandPending(t, distills, doc)
+			if !after.RunAfter.Equal(before.RunAfter) {
+				t.Fatalf("readable L1 command changed rebuild schedule: %s -> %s", before.RunAfter, after.RunAfter)
+			}
+			if jobs, err := distills.Claim(t.Context()); err != nil || len(jobs) != 0 {
+				t.Fatalf("Claim after readable L1 command=%v, %v, want rebuild still debounced", jobs, err)
+			}
+		})
 	}
 }

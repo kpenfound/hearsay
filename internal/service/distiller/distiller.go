@@ -6,9 +6,10 @@
 // It is two loops over one database. The pump reads the L0 change feed and
 // enqueues a `distill` job for the document each event belongs to; the worker
 // claims those jobs and distils. They are separate because events arrive in
-// bursts and documents do not: the queue collapses a burst of comments on one
-// pull request into one pending job, so the model is called once per document
-// rather than once per event (ADR-0007). An agent's session, turn and tool
+// bursts and documents do not: the queue debounces each document, waiting for
+// --distill-quiet without further events, capped by --distill-max-delay from
+// its first enqueue. A burst then costs one model call. Zero Quiet keeps
+// ordinary pending-job deduplication (ADR-0007). An agent's session, turn and tool
 // call and next action events belong to no document and are never distilled: they are
 // provenance, not team knowledge.
 //
@@ -53,7 +54,7 @@ const DefaultConcurrency = 4
 // JobKind is the kind both ends of a distill job share. It is not serialized:
 // two documents have nothing to do with each other, and the ordering that does
 // matter — a burst of events on one document — is handled by the queue's
-// dedupe on (kind, target) rather than by a serial key (ADR-0007).
+// per-target debounce and deduplication rather than a serial key (ADR-0007).
 func JobKind() queue.Kind { return queue.Kind{Name: JobKindName} }
 
 // Deps are what the process builds and hands to [Run].
