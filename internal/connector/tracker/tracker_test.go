@@ -244,7 +244,16 @@ func TestRequestsAreValidated(t *testing.T) {
 		{"an acl the source does not take", with(t, ticket, map[string]any{"acl": []map[string]string{{"kind": "public"}}}), http.StatusBadRequest, "takes no per-ticket acl"},
 		{"a comment with no ticket", with(t, comment, map[string]any{"ticket": nil}), http.StatusBadRequest, "names its ticket"},
 		{"a comment with no body", with(t, comment, map[string]any{"body": nil}), http.StatusBadRequest, "a comment has a body"},
-		{"a comment with a title", with(t, comment, map[string]any{"title": "Re: retries"}), http.StatusBadRequest, "no title, status, parent or assignees"},
+		{"an unknown state", with(t, ticket, map[string]any{"state": "reviewing"}), http.StatusBadRequest, "state must be a core state"},
+		{"an empty state", with(t, ticket, map[string]any{"state": ""}), http.StatusBadRequest, "state must be a core state"},
+		{"a status over 64 bytes with state", with(t, ticket, map[string]any{"status": strings.Repeat("x", 65)}), http.StatusBadRequest, "status must be at most 64 bytes"},
+		{"a multibyte status over 64 bytes with state", with(t, ticket, map[string]any{"status": strings.Repeat("é", 33)}), http.StatusBadRequest, "status must be at most 64 bytes"},
+		{"a comment with a title", with(t, comment, map[string]any{"title": "Re: retries"}), http.StatusBadRequest, "no title, status, state, parent or assignees"},
+		{"a comment with a status", with(t, comment, map[string]any{"status": "Done"}), http.StatusBadRequest, "no title, status, state, parent or assignees"},
+		{"a comment with a state", with(t, comment, map[string]any{"state": connector.CoreStateStarted}), http.StatusBadRequest, "no title, status, state, parent or assignees"},
+		{"a comment with an empty state", with(t, comment, map[string]any{"state": ""}), http.StatusBadRequest, "no title, status, state, parent or assignees"},
+		{"a comment with a parent", with(t, comment, map[string]any{"parent": map[string]string{"id": "ENG-7"}}), http.StatusBadRequest, "no title, status, state, parent or assignees"},
+		{"a comment with assignees", with(t, comment, map[string]any{"assignees": []any{}}), http.StatusBadRequest, "no title, status, state, parent or assignees"},
 		{"a comment with an acl", with(t, comment, map[string]any{"acl": []map[string]string{{"kind": "public"}}}), http.StatusBadRequest, "no acl of its own"},
 		{"a project the source does not ingest", with(t, ticket, map[string]any{"project": "OPS"}), http.StatusForbidden, `project "OPS" is not one`},
 		{"a deletion in a project the source does not ingest", with(t, fixture(t, "delete.json"), map[string]any{"project": "OPS"}), http.StatusForbidden, `project "OPS" is not one`},
@@ -268,7 +277,8 @@ func TestATicketIsAnIssue(t *testing.T) {
 	srv, rec, _ := server(t, source(nil))
 	out := send(t, srv.URL, fixture(t, "ticket.json"), http.StatusAccepted)
 
-	const nativeID = "ENG#ENG-42@666042d1a079e88b"
+	const nativeID = "ENG#ENG-42@b719e5454003f83a"
+	status := "In Progress"
 	want := connector.Event{
 		ID:       connector.EventID(sourceID, nativeID),
 		Source:   sourceID,
@@ -283,7 +293,8 @@ func TestATicketIsAnIssue(t *testing.T) {
 			Text:      "Failed deliveries are dropped today. Retry them with exponential backoff.",
 			Author:    &connector.Identity{Source: sourceID, Kind: connector.IdentityUser, NativeID: "u-17", Handle: "kyle", DisplayName: "Kyle"},
 			PartOf:    "ENG#ENG-7",
-			Revision:  &connector.Revision{Token: "666042d1a079e88b", EditedAt: time.Date(2026, 9, 23, 15, 30, 0, 0, time.UTC)},
+			State:     &connector.State{Core: connector.CoreStateStarted, Native: &status},
+			Revision:  &connector.Revision{Token: "b719e5454003f83a", EditedAt: time.Date(2026, 9, 23, 15, 30, 0, 0, time.UTC)},
 			Native:    json.RawMessage(`{"project":"ENG","id":"ENG-42","status":"In Progress","assignees":[{"source":"linear","kind":"user","native_id":"u-23","handle":"robin"}]}`),
 		},
 		ACL: connector.ACL{{Kind: connector.ACLPublic}},
@@ -299,6 +310,82 @@ func TestATicketIsAnIssue(t *testing.T) {
 	}
 	if !strings.Contains(out, want.ID) {
 		t.Fatalf("answered %s, want the event id %s", out, want.ID)
+	}
+}
+
+func TestTicketStateIsStatedByTheSender(t *testing.T) {
+	ticket := fixture(t, "ticket.json")
+	tests := []struct {
+		name   string
+		state  connector.CoreState
+		status string
+	}{
+		{"proposed", connector.CoreStateProposed, "Backlog"},
+		{"started", connector.CoreStateStarted, "In Progress"},
+		{"blocked", connector.CoreStateBlocked, "Waiting for review"},
+		{"completed", connector.CoreStateCompleted, "Done"},
+		{"abandoned", connector.CoreStateAbandoned, "Cancelled"},
+		{"no native label", connector.CoreStateStarted, ""},
+		{"native label kept verbatim", connector.CoreStateStarted, " In review "},
+		{"64 byte native label", connector.CoreStateStarted, strings.Repeat("x", 64)},
+		{"64 byte multibyte native label", connector.CoreStateStarted, strings.Repeat("é", 32)},
+		{"no state or status", "", ""},
+		{"status does not imply state", "", "In Progress"},
+		{"a core word in status does not imply state", "", "completed"},
+		{"status without state remains a free string", "", strings.Repeat("x", 65)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, rec, _ := server(t, source(nil))
+			fields := map[string]any{"state": nil, "status": tt.status}
+			if tt.state != "" {
+				fields["state"] = tt.state
+			}
+			send(t, srv.URL, with(t, ticket, fields), http.StatusAccepted)
+			events := rec.Events()
+			if len(events) != 1 {
+				t.Fatalf("emitted %d events, want 1", len(events))
+			}
+			ev := events[0]
+			if err := ev.Validate(); err != nil {
+				t.Fatalf("the emitted event does not pass connector validation: %v", err)
+			}
+			if ev.Kind != connector.KindIssue || ev.Payload.Artifact != "ENG#ENG-42" {
+				t.Fatalf("emitted a %s for %q, want the ticket's issue root", ev.Kind, ev.Payload.Artifact)
+			}
+			var want *connector.State
+			if tt.state != "" {
+				want = &connector.State{Core: tt.state}
+				if tt.status != "" {
+					want.Native = &tt.status
+				}
+			}
+			if !reflect.DeepEqual(ev.Payload.State, want) {
+				t.Fatalf("state = %+v, want %+v", ev.Payload.State, want)
+			}
+			var native tracker.TicketNative
+			if err := json.Unmarshal(ev.Payload.Native, &native); err != nil {
+				t.Fatal(err)
+			}
+			if native.Status != tt.status {
+				t.Fatalf("payload.native.status = %q, want %q", native.Status, tt.status)
+			}
+			raw, err := json.Marshal(ev.Payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if tt.state == "" {
+				if _, ok := payload["state"]; ok {
+					t.Fatalf("payload.state must be omitted: %s", payload["state"])
+				}
+			} else if tt.status == "" && strings.Contains(string(payload["state"]), `"native"`) {
+				t.Fatalf("state.native must be omitted for empty status: %s", payload["state"])
+			}
+		})
 	}
 }
 
@@ -318,6 +405,8 @@ func TestRevisionsAreStable(t *testing.T) {
 		{"the same request laid out differently", with(t, ticket, nil), true},
 		{"a new title", with(t, ticket, map[string]any{"title": "Retry deliveries"}), false},
 		{"a new status", with(t, ticket, map[string]any{"status": "Done"}), false},
+		{"only state changes", with(t, ticket, map[string]any{"state": connector.CoreStateBlocked}), false},
+		{"state is removed", with(t, ticket, map[string]any{"state": nil}), false},
 		{"a new parent", with(t, ticket, map[string]any{"parent": map[string]string{"id": "ENG-8"}}), false},
 		{"no assignee", with(t, ticket, map[string]any{"assignees": nil}), false},
 		{"a later update with nothing else changed", with(t, ticket, map[string]any{"updated_at": "2026-09-24T00:00:00Z"}), false},
@@ -433,6 +522,33 @@ func TestDeletionsAreTombstones(t *testing.T) {
 	want := connector.ACL{{Kind: connector.ACLGroup, Source: sourceID, NativeID: "security"}}
 	if last := rec.Events()[7]; last.Kind != connector.KindTombstone || !reflect.DeepEqual(last.ACL, want) {
 		t.Fatalf("deleting the restricted ticket emitted a %s readable by %v, want a tombstone readable by %v", last.Kind, last.ACL, want)
+	}
+}
+
+func TestDeletionsStillReadOnlyIDs(t *testing.T) {
+	tests := []struct {
+		name     string
+		fixture  string
+		deletion string
+		target   string
+	}{
+		{"ticket", "ticket.json", `{"kind":"ticket","project":"ENG","id":"ENG-42","deleted":true}`, "ENG#ENG-42"},
+		{"comment", "comment.json", `{"kind":"comment","project":"ENG","ticket":"ENG-42","id":"9001","deleted":true}`, "ENG#ENG-42:comment:9001"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, rec, _ := server(t, source(nil))
+			send(t, srv.URL, fixture(t, tt.fixture), http.StatusAccepted)
+			body := with(t, tt.deletion, map[string]any{"state": "unknown", "status": strings.Repeat("x", 65)})
+			send(t, srv.URL, body, http.StatusAccepted)
+			events := rec.Events()
+			if len(events) != 2 {
+				t.Fatalf("emitted %d events, want the original and its tombstone", len(events))
+			}
+			if tomb := events[1]; tomb.Kind != connector.KindTombstone || tomb.Payload.Target != tt.target || tomb.Payload.State != nil {
+				t.Fatalf("deletion = %+v, want a tombstone for %s without state", tomb, tt.target)
+			}
+		})
 	}
 }
 

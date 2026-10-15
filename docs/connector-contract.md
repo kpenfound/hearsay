@@ -208,6 +208,7 @@ about it. Everything else the connector wants to keep goes in `native`.
 | `url` | string | where one exists | The permalink a human would follow. |
 | `title` | string | where one exists | The artifact's own title: an issue title, a document name, a thread name. |
 | `text` | string | where there is any | What a human reads in the source, as plain text or markdown, with the source's markup left alone. This is the distiller's input. |
+| `state` | object | no | `{core, native?}` — the artifact's state as stated by its source. Valid only on root events of kind `issue`, `pull_request` or `document`, or extension kinds with one of those as `base_kind`. See below for values and limits. |
 | `author` | identity | see the kind table | Who produced the artifact, as the source names them. |
 | `participants` | array | where the source lists them | `[{identity, role}]`, role one of `author`, `reviewer`, `attendee`, `agent`. |
 | `mentions` | array of identities | where the source resolves mentions | Identities the text refers to. |
@@ -220,6 +221,32 @@ about it. Everything else the connector wants to keep goes in `native`.
 | `revision` | object | exactly when `native_id` is `artifact@<token>` | `{token, edited_at?}`: `token` is that token, and `edited_at` is when *this revision* came about, which is what orders an artifact's revisions — see idempotency below. |
 | `target` | artifact id | on tombstones only | The artifact the tombstone retracts. |
 | `native` | any JSON | no | The source's own object, verbatim. L1 reads pull-request merge state here for its artifact class; nothing the fields above ask for may be hidden in it. |
+
+`state`, when present, requires a `core` with exactly one of these five values:
+
+- `proposed`: described but not started;
+- `started`: being worked on;
+- `blocked`: started but waiting on something;
+- `completed`: done;
+- `abandoned`: stopped and not done.
+
+The vocabulary is fixed and has no extension mechanism. A source maps its own
+states onto it and may include its original label as `state.native`: 1–64 bytes
+of valid UTF-8, kept verbatim, including whitespace. Omit `native` when there
+is no label; an explicitly empty label is invalid. For example:
+
+```json
+"state": {"core": "started", "native": "In review"}
+```
+
+Omitting `state` means the source states none; Hearsay infers none from text
+or model output. Validation refuses a missing or unknown `core`, an invalid
+`native`, or `state` on any other kind, including messages and comments,
+commits and transcripts (and extensions based on them). Kind determines the
+root rule; a child's state is not its parent's. A state change is a content
+change, so it requires a new revision even when nothing else changes. L1
+copies the root's state into its envelope without involving the model
+([ADR-0026](adr/0026-artifacts-may-carry-one-of-five-core-states-stated-by-their-source.md)).
 
 `parent`, `thread`, `part_of` and `target` reference **artifact ids**, never
 native ids: a comment hangs off an issue, not off one revision of it.
@@ -1243,12 +1270,21 @@ is `user` or `bot`. The project and ticket keys, `status` and the
 revision, and `updated_at` is `payload.revision.edited_at`, which orders
 revisions.
 
+A ticket may also carry `state`: exactly one of `proposed`, `started`,
+`blocked`, `completed` or `abandoned`, mapped explicitly by the sender. When
+given, it becomes `payload.state.core`, and a non-empty `status` also becomes
+`payload.state.native`, kept verbatim. An empty `status` omits that native
+label. `status` remains a free string in `payload.native`; without `state`,
+the ticket emits no `payload.state`, whatever its `status` or text says. An
+unknown or empty `state`, or a `status` over 64 bytes when `state` is given,
+is refused with 400 and writes nothing.
+
 The revision token is the first 16 hex digits of the SHA-256 of everything the
 event says: kind, times, payload and access list. The same revision posted
 again, in any JSON layout, has the same event id and writes nothing. Any
-change is a new revision, whether to the text, the status, the parent, the
-assignees, `updated_at` or the access list. A stale revision that arrives late
-is stored but does not become current, because its older `updated_at` orders
+change is a new revision, whether to the text, the status, the state, the
+parent, the assignees, `updated_at` or the access list. A stale revision that
+arrives late is stored but does not become current, because its older `updated_at` orders
 it below the revision L0 already holds. A ticket that moves to another project
 is a new artifact. The sender deletes the old one.
 
@@ -1288,7 +1324,10 @@ The responses are:
 - 413 for a body over 4 MiB.
 
 Unknown fields are refused, so a misspelt field is not dropped silently. A
-field that does not apply to the request's `kind` is refused too.
+field that does not apply to the request's `kind` is refused too. `state` is
+ticket-only: a non-deletion comment carrying it is refused with 400 and writes
+nothing, alongside `title`, `status`, `parent` and `assignees`. Deletions still
+read only the ids.
 
 A ticket, a comment on it, and the ticket's deletion:
 
@@ -1304,6 +1343,7 @@ curl -sS https://hearsay.example/hooks/linear \
   "title": "Retry webhook deliveries with backoff",
   "body": "Failed deliveries are dropped today. Retry them with exponential backoff.",
   "status": "In Progress",
+  "state": "started",
   "parent": {"id": "ENG-7"},
   "author": {"id": "u-17", "handle": "kyle", "name": "Kyle"},
   "assignees": [{"id": "u-23", "handle": "robin"}],
@@ -1312,7 +1352,7 @@ curl -sS https://hearsay.example/hooks/linear \
   "updated_at": "2026-09-23T15:30:00Z"
 }
 EOF
-# {"id":"evt:linear:ENG#ENG-42@666042d1a079e88b"}
+# {"id":"evt:linear:ENG#ENG-42@b719e5454003f83a"}
 ```
 
 ```json
@@ -1340,9 +1380,9 @@ written as:
 
 ```json
 {
-  "id": "evt:linear:ENG#ENG-42@666042d1a079e88b",
+  "id": "evt:linear:ENG#ENG-42@b719e5454003f83a",
   "source": "linear",
-  "native_id": "ENG#ENG-42@666042d1a079e88b",
+  "native_id": "ENG#ENG-42@b719e5454003f83a",
   "kind": "issue",
   "time": "2026-09-20T09:00:00Z",
   "payload": {
@@ -1353,7 +1393,8 @@ written as:
     "text": "Failed deliveries are dropped today. Retry them with exponential backoff.",
     "author": {"source": "linear", "kind": "user", "native_id": "u-17", "handle": "kyle", "display_name": "Kyle"},
     "part_of": "ENG#ENG-7",
-    "revision": {"token": "666042d1a079e88b", "edited_at": "2026-09-23T15:30:00Z"},
+    "state": {"core": "started", "native": "In Progress"},
+    "revision": {"token": "b719e5454003f83a", "edited_at": "2026-09-23T15:30:00Z"},
     "native": {"project": "ENG", "id": "ENG-42", "status": "In Progress",
                "assignees": [{"source": "linear", "kind": "user", "native_id": "u-23", "handle": "robin"}]}
   },

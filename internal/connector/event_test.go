@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -36,6 +37,128 @@ func validEvent() connector.Event {
 			Thread: "acme/api#12",
 		},
 		ACL: connector.ACL{{Kind: connector.ACLPublic}},
+	}
+}
+
+func TestEventStateKinds(t *testing.T) {
+	// Exercise every core kind, and its extension fallback, so new kinds do
+	// not accidentally become eligible for state.
+	for _, kind := range connector.CoreKinds() {
+		allowed := kind == connector.KindIssue || kind == connector.KindPullRequest || kind == connector.KindDocument
+		for _, extension := range []bool{false, true} {
+			name := string(kind)
+			if extension {
+				name = "extension/" + name
+			}
+			t.Run(name, func(t *testing.T) {
+				e := validEvent()
+				e.Kind = kind
+				e.Payload.Parent, e.Payload.Thread = "", ""
+				e.Payload.State = &connector.State{Core: connector.CoreStateStarted}
+				if kind == connector.KindTombstone {
+					e.Payload.Target = "deleted-artifact"
+				}
+				if extension {
+					e.Kind = "vendor.artifact"
+					e.Payload.BaseKind = kind
+				}
+				err := e.Validate()
+				if allowed {
+					if err != nil {
+						t.Fatalf("Validate() = %v, want state accepted", err)
+					}
+				} else if !errors.Is(err, connector.ErrInvalidEvent) || !strings.Contains(err.Error(), "payload.state") {
+					t.Fatalf("Validate() = %v, want invalid payload.state", err)
+				}
+			})
+		}
+	}
+	// A bare comment is not a core kind (source comments use message).
+	t.Run("comment", func(t *testing.T) {
+		e := validEvent()
+		e.Kind = "comment"
+		e.Payload.State = &connector.State{Core: connector.CoreStateStarted}
+		if err := e.Validate(); !errors.Is(err, connector.ErrInvalidEvent) {
+			t.Fatalf("Validate() = %v, want invalid event", err)
+		}
+	})
+}
+
+func TestEventStateValues(t *testing.T) {
+	label := func(s string) *string { return &s }
+	tests := []struct {
+		name    string
+		state   *connector.State
+		wantErr string
+	}{
+		{name: "absent"},
+		{name: "proposed", state: &connector.State{Core: connector.CoreStateProposed}},
+		{name: "started", state: &connector.State{Core: connector.CoreStateStarted}},
+		{name: "blocked", state: &connector.State{Core: connector.CoreStateBlocked}},
+		{name: "completed", state: &connector.State{Core: connector.CoreStateCompleted}},
+		{name: "abandoned", state: &connector.State{Core: connector.CoreStateAbandoned}},
+		{name: "missing core", state: &connector.State{}, wantErr: "payload.state.core"},
+		{name: "unknown core", state: &connector.State{Core: "in_review"}, wantErr: "payload.state.core"},
+		{name: "extension core", state: &connector.State{Core: "vendor.started"}, wantErr: "payload.state.core"},
+		{name: "case sensitive core", state: &connector.State{Core: "Started"}, wantErr: "payload.state.core"},
+		{name: "native verbatim", state: &connector.State{Core: connector.CoreStateStarted, Native: label(" In review \n")}},
+		{name: "native one byte", state: &connector.State{Core: connector.CoreStateStarted, Native: label("x")}},
+		{name: "native 64 bytes", state: &connector.State{Core: connector.CoreStateStarted, Native: label(strings.Repeat("x", 64))}},
+		{name: "native 64 UTF-8 bytes", state: &connector.State{Core: connector.CoreStateStarted, Native: label(strings.Repeat("é", 32))}},
+		{name: "native empty", state: &connector.State{Core: connector.CoreStateStarted, Native: label("")}, wantErr: "payload.state.native"},
+		{name: "native 65 bytes", state: &connector.State{Core: connector.CoreStateStarted, Native: label(strings.Repeat("x", 65))}, wantErr: "payload.state.native"},
+		{name: "native byte limit not rune limit", state: &connector.State{Core: connector.CoreStateStarted, Native: label(strings.Repeat("é", 33))}, wantErr: "payload.state.native"},
+		{name: "native invalid UTF-8", state: &connector.State{Core: connector.CoreStateStarted, Native: label(string([]byte{0xff}))}, wantErr: "payload.state.native"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := validEvent()
+			e.Kind = connector.KindIssue
+			e.Payload.Parent, e.Payload.Thread = "", ""
+			e.Payload.State = tt.state
+			err := e.Validate()
+			if tt.wantErr != "" {
+				if !errors.Is(err, connector.ErrInvalidEvent) || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("Validate() = %v, want invalid %s", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate() = %v, want no error", err)
+			}
+		})
+	}
+}
+
+func TestPayloadStateJSON(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		json string
+	}{
+		{"absent", `{"artifact":"ticket","container":{"kind":"project","native_id":"eng"}}`},
+		{"core only", `{"artifact":"ticket","container":{"kind":"project","native_id":"eng"},"state":{"core":"started"}}`},
+		{"native verbatim", `{"artifact":"ticket","container":{"kind":"project","native_id":"eng"},"state":{"core":"started","native":" In réview \n"}}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var p connector.Payload
+			if err := json.Unmarshal([]byte(tt.json), &p); err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := json.Marshal(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(encoded) != tt.json {
+				t.Errorf("Marshal() = %s, want %s", encoded, tt.json)
+			}
+			var roundTrip connector.Payload
+			if err := json.Unmarshal(encoded, &roundTrip); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(p, roundTrip) {
+				t.Errorf("payload changed during JSON round trip: got %+v, want %+v", roundTrip, p)
+			}
+		})
 	}
 }
 

@@ -41,6 +41,9 @@ type Request struct {
 	// Status is the tracker's own word for where a ticket is: `open`, `In
 	// Progress`, `Done`.
 	Status string `json:"status,omitempty"`
+	// State is a ticket's core state, explicitly mapped by the sender. Nil
+	// means no state; Status alone never implies one.
+	State *connector.CoreState `json:"state,omitempty"`
 	// Parent is the ticket this one is part of in the tracker's hierarchy.
 	Parent *Ref `json:"parent,omitempty"`
 	// Author is who wrote the ticket or the comment.
@@ -206,6 +209,18 @@ func (c *Connector) event(ctx context.Context, reader connector.ArtifactReader, 
 		if req.Title == "" {
 			return connector.Event{}, badRequest("a ticket has a title")
 		}
+		if req.State != nil {
+			if !req.State.Valid() {
+				return connector.Event{}, badRequest("state must be a core state")
+			}
+			if len(req.Status) > connector.MaxStateNativeLen {
+				return connector.Event{}, badRequest("status must be at most %d bytes when state is given", connector.MaxStateNativeLen)
+			}
+			ev.Payload.State = &connector.State{Core: *req.State}
+			if req.Status != "" {
+				ev.Payload.State.Native = &req.Status
+			}
+		}
 		ev.Kind = connector.KindIssue
 		ev.Payload.Title, ev.Payload.Text = req.Title, req.Body
 		if req.Parent != nil {
@@ -236,8 +251,8 @@ func (c *Connector) event(ctx context.Context, reader connector.ArtifactReader, 
 		switch {
 		case req.Body == "":
 			return connector.Event{}, badRequest("a comment has a body")
-		case req.Title != "" || req.Status != "" || req.Parent != nil || req.Assignees != nil:
-			return connector.Event{}, badRequest("a comment has a body and an author, and no title, status, parent or assignees")
+		case req.Title != "" || req.Status != "" || req.State != nil || req.Parent != nil || req.Assignees != nil:
+			return connector.Event{}, badRequest("a comment has a body and an author, and no title, status, state, parent or assignees")
 		case req.ACL != nil:
 			return connector.Event{}, badRequest("a comment has no acl of its own: it is read by whoever may read its ticket")
 		}

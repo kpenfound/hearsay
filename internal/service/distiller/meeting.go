@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -81,7 +82,7 @@ func (d *Distiller) distillMeeting(ctx context.Context, result Result, root conn
 			return Result{}, err
 		}
 		if err == nil && previous.Kind == l1.KindMeetingSegment && previous.RawText == segments[i].RawText {
-			if previous.Source.URL == segments[i].Source.URL && slices.Equal(previous.ACL, segments[i].ACL) &&
+			if reflect.DeepEqual(previous.State, segments[i].State) && previous.Source.URL == segments[i].Source.URL && slices.Equal(previous.ACL, segments[i].ACL) &&
 				slices.Equal(previous.Participants, segments[i].Participants) && slices.Equal(previous.References, segments[i].References) && slices.Equal(previous.Scope, segments[i].Scope) {
 				segments[i] = previous.Document
 				continue

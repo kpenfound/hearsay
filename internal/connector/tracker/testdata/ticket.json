@@ -5,6 +5,7 @@
   "title": "Retry webhook deliveries with backoff",
   "body": "Failed deliveries are dropped today. Retry them with exponential backoff.",
   "status": "In Progress",
+  "state": "started",
   "parent": {"id": "ENG-7"},
   "author": {"id": "u-17", "handle": "kyle", "name": "Kyle"},
   "assignees": [{"id": "u-23", "handle": "robin"}],

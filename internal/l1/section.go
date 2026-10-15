@@ -117,6 +117,7 @@ func BuildWikiSections(root connector.Event, resolver *principal.Resolver, repo 
 			Time:   timesOf(root, nil), Participants: participantsOf(root, nil, resolver),
 			References: refs, ACL: append(connector.ACL(nil), root.ACL...),
 			RawText: trimLines(raw),
+			State:   stateOf(root),
 		}
 		doc.Scope = scopeOf(root, repo, refs)
 		if doc.RawText != "" {

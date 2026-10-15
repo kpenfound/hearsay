@@ -82,6 +82,7 @@ func BuildMeetingSegments(root connector.Event, spans []MeetingSpan, resolver *p
 			L0Refs: []string{connector.EventID(root.Source, root.NativeID)},
 			Time:   timesOf(root, nil), Participants: participantsOf(root, nil, resolver),
 			References: refs, ACL: append(connector.ACL(nil), root.ACL...), RawText: scrubbed,
+			State: stateOf(root),
 		}
 		doc.Scope = scopeOf(view, repo, refs)
 		docs = append(docs, doc)

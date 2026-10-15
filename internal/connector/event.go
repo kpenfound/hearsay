@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 // The length limits, in bytes. They exist so that an event id can be a key in
@@ -120,6 +121,11 @@ type Payload struct {
 	// the source's own markup left alone. It is the distiller's input, and for
 	// an artifact whose content is attachments it describes them.
 	Text string `json:"text,omitempty"`
+
+	// State is the artifact's state as stated by its source. Only issue,
+	// pull_request and document roots (including extensions based on them)
+	// may carry it. A state change is a content change and needs a new revision.
+	State *State `json:"state,omitempty"`
 
 	// Author is the identity that produced the artifact, as the source names
 	// it. It is a hint: mapping identities to principals is internal/principal.
@@ -540,6 +546,25 @@ func (p Payload) validate(e Event) error {
 	}
 	if err := p.validatePaths(); err != nil {
 		return err
+	}
+	if p.State != nil {
+		kind := e.Kind
+		if !core {
+			kind = p.BaseKind
+		}
+		switch kind {
+		case KindIssue, KindPullRequest, KindDocument:
+		default:
+			return fmt.Errorf("%w: payload.state is set on kind %q, which is not an issue, pull_request or document root", ErrInvalidEvent, e.Kind)
+		}
+		if !p.State.Core.Valid() {
+			return fmt.Errorf("%w: payload.state.core %q is not a core state", ErrInvalidEvent, p.State.Core)
+		}
+		if native := p.State.Native; native != nil {
+			if len(*native) == 0 || len(*native) > MaxStateNativeLen || !utf8.ValidString(*native) {
+				return fmt.Errorf("%w: payload.state.native must be 1–%d bytes of valid UTF-8", ErrInvalidEvent, MaxStateNativeLen)
+			}
+		}
 	}
 	return p.validateRevision(e)
 }

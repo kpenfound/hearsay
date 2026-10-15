@@ -45,6 +45,7 @@ A common envelope plus a per-kind body. Every L1 doc is one row in one table.
 id: l1:discord:thread:123456789012345678
 kind: chat_thread | chat_burst | meeting_segment | pr | issue | commit | wiki_section | agent_turn
 artifact_class: merged_pr | spec | meeting | issue | pull_request | commit | chat_thread | dm | agent
+state: { core: proposed | started | blocked | completed | abandoned, native: ... } # optional, stated by source
 source: { system, native_id, url }
 l0_refs: [event ids]                  # provenance, required
 time: { created, updated, last_activity }
@@ -96,7 +97,7 @@ entity:
 
 Code is an entity namespace, not a document corpus. What the agent cannot get from the repo is the map from how humans talk ("the engine") to where the code is, who owns it, and what constraints apply. Path patterns rather than file lists survive refactors.
 
-Tracker items (issues, epics, change units) are entities of type `tracker_item`. Hearsay knows their id and what references them. It does not know their state machine.
+Tracker items (issues, epics, change units) are entities of type `tracker_item`. Hearsay knows their id, what references them and, where the source states it, one of five core states (`proposed`, `started`, `blocked`, `completed`, `abandoned`). It does not know their state machine.
 
 `part_of` edges come from three sources, ranked: `code/` configuration over tracker hierarchy over repository structure, where a code entity is part of the nearest entity whose path patterns contain its own. For each entity the highest-ranked source that sets any parent replaces the others' parents, and an edge that would close a cycle is dropped from the lower-ranked source. People restructure the hierarchy by editing `code/`, and nothing inferred overrides it ([ADR-0016](adr/0016-entity-hierarchy-sources-are-ranked-and-replace.md)).
 
