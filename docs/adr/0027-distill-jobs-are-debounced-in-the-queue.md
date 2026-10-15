@@ -1,4 +1,4 @@
-# 26. Distill jobs are debounced in the queue
+# 27. Distill jobs are debounced in the queue
 
 - Status: accepted
 - Date: 2026-10-15
