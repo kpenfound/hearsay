@@ -303,6 +303,15 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 			return nil
 		})
 		if errors.Is(err, errWaiting) {
+			// BeginFunc has rolled back the waiting attempt. Commit the
+			// expedite independently, without any command effect or reply.
+			client, expediteErr := queue.New(a.pool, queue.Config{Kind: distiller.JobKind()})
+			if expediteErr != nil {
+				return errors.Join(err, expediteErr)
+			}
+			if _, expediteErr := client.Expedite(ctx, distiller.JobKind(), l1.DocID(ev.Source, ev.Payload.Parent)); expediteErr != nil {
+				return errors.Join(err, expediteErr)
+			}
 			telemetry.Logger(ctx).InfoContext(ctx, "github command waits for its document", "l0_id", ev.ID, "attempt", job.Attempt)
 			return err
 		}

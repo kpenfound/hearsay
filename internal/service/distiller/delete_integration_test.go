@@ -43,7 +43,7 @@ func TestAnOperatorDeletionTakesAPastedSecretOutOfEveryRead(t *testing.T) {
 		done <- distiller.Run(runCtx, testConfig(src), distiller.Deps{
 			Pool: pool,
 			LLM:  registry,
-			Pump: distiller.PumpOptions{Interval: 100 * time.Millisecond, Batch: l0.MaxLimit},
+			Pump: distiller.PumpOptions{Quiet: 200 * time.Millisecond, MaxDelay: time.Second, Interval: 100 * time.Millisecond, Batch: l0.MaxLimit},
 		})
 	}()
 	defer func() {

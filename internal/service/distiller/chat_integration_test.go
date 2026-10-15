@@ -366,7 +366,7 @@ func TestPrivateChatWindowKeepsACLAndUnresolvedMentionOut(t *testing.T) {
 
 func TestChatPumpCollapsesMessagesInOneWindow(t *testing.T) {
 	pool := newPool(t)
-	pump := distiller.NewPump(pool, distiller.PumpOptions{Batch: l0.MaxLimit})
+	pump := distiller.NewPump(pool, distiller.PumpOptions{Quiet: 0, Batch: l0.MaxLimit})
 	client, err := queue.New(pool, queue.Config{Kind: distiller.JobKind()})
 	if err != nil {
 		t.Fatal(err)
@@ -493,7 +493,7 @@ func TestChatRepliesDistilUnderTheMessageTheyAnswer(t *testing.T) {
 // as its channel window.
 func TestChatPumpEnqueuesTheConversationAMessageHeads(t *testing.T) {
 	pool := newPool(t)
-	pump := distiller.NewPump(pool, distiller.PumpOptions{Batch: l0.MaxLimit})
+	pump := distiller.NewPump(pool, distiller.PumpOptions{Quiet: 0, Batch: l0.MaxLimit})
 	client, err := queue.New(pool, queue.Config{Kind: distiller.JobKind()})
 	if err != nil {
 		t.Fatal(err)

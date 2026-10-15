@@ -595,7 +595,7 @@ func TestATombstoneForACommentRedistillsTheDocumentThatQuotedIt(t *testing.T) {
 		done <- distiller.Run(ctx, testConfig(src), distiller.Deps{
 			Pool: pool,
 			LLM:  registry,
-			Pump: distiller.PumpOptions{Interval: 100 * time.Millisecond, Batch: l0.MaxLimit},
+			Pump: distiller.PumpOptions{Quiet: 0, Interval: 100 * time.Millisecond, Batch: l0.MaxLimit},
 		})
 	}()
 	defer func() {
@@ -697,7 +697,7 @@ func TestThePumpEnqueuesOneJobPerDocument(t *testing.T) {
 
 	// A cursor of its own, so that what this test reads is what it wrote and
 	// not what another test left on the shared feed.
-	pump := distiller.NewPump(pool, distiller.PumpOptions{Batch: l0.MaxLimit})
+	pump := distiller.NewPump(pool, distiller.PumpOptions{Quiet: 0, Batch: l0.MaxLimit})
 	if _, err := pump.Once(t.Context()); err != nil {
 		t.Fatalf("Once(catching up) = %v", err)
 	}
@@ -767,7 +767,7 @@ func TestRunDistillsWhatArrivesAndStopsWhenCancelled(t *testing.T) {
 		done <- distiller.Run(ctx, testConfig(src), distiller.Deps{
 			Pool: pool,
 			LLM:  registry,
-			Pump: distiller.PumpOptions{Interval: 100 * time.Millisecond, Batch: l0.MaxLimit},
+			Pump: distiller.PumpOptions{Quiet: 0, Interval: 100 * time.Millisecond, Batch: l0.MaxLimit},
 		})
 	}()
 

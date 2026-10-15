@@ -25,7 +25,7 @@ const (
 	// DefaultPumpInterval is how often the feed is read when it was empty last
 	// time. L0 has no notification of its own — a connector's write is one
 	// statement, and adding one would be a second mechanism to keep in step
-	// with the cursor — so this is what bounds how late a distillation can be.
+	// with the cursor — so this bounds how long a new event waits to be enqueued.
 	DefaultPumpInterval = 2 * time.Second
 	// DefaultPumpBatch is how many events one read takes. A full batch means
 	// there is more, and the pump goes round again without waiting.
@@ -35,6 +35,12 @@ const (
 // PumpOptions are what a deployment or a test turns down. Every field may be
 // left zero.
 type PumpOptions struct {
+	// Quiet delays a document until no new events arrive for this long.
+	// Zero disables debouncing, including for zero-value PumpOptions.
+	Quiet time.Duration
+	// MaxDelay caps the debounce from the first enqueue. With Quiet > 0,
+	// it must be at least Quiet.
+	MaxDelay time.Duration
 	// Interval is how long the pump waits after a read that found nothing.
 	Interval time.Duration
 	// Batch is how many events one read takes. It is held to what one read of
@@ -62,8 +68,10 @@ func (o PumpOptions) withDefaults() PumpOptions {
 //
 // It is deliberately not the half that distils. An event is small and arrives
 // in bursts — a pull request opened, then five reviews in a minute — and the
-// queue collapses a burst into one pending job per document, so the model is
-// called once per document rather than once per event (ADR-0007).
+// queue debounces each document when Quiet > 0: a burst waits for Quiet,
+// capped by MaxDelay from its first enqueue, then costs one model call.
+// The CLI settings are --distill-quiet and --distill-max-delay; zero Quiet
+// keeps the ordinary pending-job deduplication (ADR-0007).
 type Pump struct {
 	pool    *pgxpool.Pool
 	events  *l0.Store
@@ -127,8 +135,7 @@ type Progress struct {
 	// Events is how many events the read returned. A number equal to the batch
 	// size means there is more.
 	Events int
-	// Jobs is how many distill jobs were written. It is lower than Events
-	// whenever a burst collapsed onto one document, which is the point.
+	// Jobs counts distill job inserts and debounce schedule updates.
 	Jobs int
 	// Cursor is where the feed has been read to.
 	Cursor l0.Cursor
@@ -186,7 +193,11 @@ func (p *Pump) Once(ctx context.Context) (Progress, error) {
 			// No trace carrier: internal/telemetry has no propagator yet, and
 			// a carrier this package invented would be one the worker could
 			// not read.
-			enqueued, err := queue.Enqueue(ctx, tx, queue.Request{Kind: JobKind(), TargetID: target.id})
+			req := queue.Request{Kind: JobKind(), TargetID: target.id}
+			if p.opts.Quiet > 0 {
+				req.Debounce = &queue.Debounce{Quiet: p.opts.Quiet, Max: p.opts.MaxDelay}
+			}
+			enqueued, err := queue.Enqueue(ctx, tx, req)
 			if err != nil {
 				return Progress{}, err
 			}

@@ -119,6 +119,9 @@ func Apply(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, sel Select
 		if _, err := queue.Enqueue(ctx, tx, queue.Request{Kind: distiller.JobKind(), TargetID: doc}); err != nil {
 			return Applied{}, fmt.Errorf("enqueueing the re-distillation of %s: %w", doc, err)
 		}
+		if _, err := queue.Expedite(ctx, tx, distiller.JobKind(), doc); err != nil {
+			return Applied{}, fmt.Errorf("expediting the re-distillation of %s: %w", doc, err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Applied{}, fmt.Errorf("committing deletion %s: %w", id, err)

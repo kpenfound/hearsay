@@ -583,3 +583,46 @@ func TestAWaitingWatchEndsWhenTheServerStops(t *testing.T) {
 		t.Errorf("the waiting watch was answered %s, want an empty list", got)
 	}
 }
+
+// A debounced job counts as unfinished for watch even though the queue cannot
+// claim it yet. Exercise the real pump's cursor-and-enqueue transaction.
+func TestWatchWithholdsAnEventWhileItsDebouncedJobIsPending(t *testing.T) {
+	w := newWatchWorld(t)
+	start := w.watch(t, kyle, map[string]any{"scope": w.repo})
+	ev := w.emit(t, w.src, "acme/w#1", connector.KindIssue, openACL)
+	w.settled(t)
+	pump := distiller.NewPump(w.pool, distiller.PumpOptions{Quiet: time.Minute, MaxDelay: 5 * time.Minute})
+	if got, err := pump.Once(t.Context()); err != nil || got.Events != 1 {
+		t.Fatalf("Once = %+v, %v, want one debounced event", got, err)
+	}
+	client, err := queue.New(w.pool, queue.Config{Kind: distiller.JobKind()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := client.List(t.Context(), queue.StatePending, 10)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("pending jobs = %v, %v", pending, err)
+	}
+	if jobs, err := client.Claim(t.Context()); err != nil || len(jobs) != 0 {
+		t.Fatalf("Claim before quiet = %v, %v", jobs, err)
+	}
+	args := map[string]any{"scope": w.repo, "after": start.Cursor}
+	if got := w.watch(t, kyle, args); len(got.Notifications) != 0 || got.Cursor != start.Cursor {
+		t.Fatalf("watch while debounced = %+v, want empty and unchanged cursor", got)
+	}
+	if ok, err := client.Expedite(t.Context(), distiller.JobKind(), pending[0].TargetID); err != nil || !ok {
+		t.Fatalf("Expedite = %v, %v", ok, err)
+	}
+	jobs, err := client.Claim(t.Context())
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("Claim after expedite = %v, %v", jobs, err)
+	}
+	doc := w.distil(t, w.src, "acme/w#1", []string{w.engine}, openACL, ev)
+	if _, err := client.Complete(t.Context(), jobs[0]); err != nil {
+		t.Fatal(err)
+	}
+	got := w.watch(t, kyle, args)
+	if len(got.Notifications) != 1 || got.Notifications[0].Event != ev || got.Notifications[0].Document != doc {
+		t.Fatalf("watch after completion = %+v, want event %s in document %s", got, ev, doc)
+	}
+}
