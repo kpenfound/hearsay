@@ -113,6 +113,7 @@ func build(in Input, kind Kind, artifact string, window bool) (Document, error) 
 		ID:            DocID(root.Source, artifact),
 		Kind:          kind,
 		ArtifactClass: class,
+		State:         stateOf(root),
 		Source: Source{
 			System:   root.Source,
 			NativeID: artifact,
@@ -391,4 +392,18 @@ func trackerItemOf(root connector.Event, scope config.Scope) (string, bool) {
 		item = item[at+1:]
 	}
 	return scope.TrackerItemID(item)
+}
+
+// stateOf copies root metadata for ordinary and derived documents. Keeping a
+// separate value prevents later source mutations from changing an envelope.
+func stateOf(root connector.Event) *State {
+	if root.Payload.State == nil {
+		return nil
+	}
+	state := *root.Payload.State
+	if state.Native != nil {
+		native := *state.Native
+		state.Native = &native
+	}
+	return &state
 }

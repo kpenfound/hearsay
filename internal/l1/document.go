@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
@@ -211,6 +212,9 @@ type Participant struct {
 	Role connector.ParticipantRole `json:"role"`
 }
 
+// State is the source-stated state carried in the deterministic envelope.
+type State = connector.State
+
 // Document is one L1 document: the common envelope from
 // docs/design.md#l1-distilled-documents plus the per-kind body. It is one row
 // of one table, and it is derived — everything in it can be rebuilt from the
@@ -223,6 +227,8 @@ type Document struct {
 	Kind Kind `json:"kind"`
 	// ArtifactClass records the authority class of the source artifact.
 	ArtifactClass config.ArtifactClass `json:"artifact_class"`
+	// State is copied from the current root revision, independently of the body.
+	State *State `json:"state,omitempty"`
 	// Source is the artifact this document distils.
 	Source Source `json:"source"`
 	// L0Refs are the event ids this document was built from, in the order the
@@ -308,6 +314,14 @@ func ParseDocID(id string) (source, artifact string, err error) {
 // Validate reports a document the store refuses. Every rule it enforces is one
 // the table also enforces, so a row written by anything else behaves the same.
 func (d Document) Validate() error {
+	if d.State != nil {
+		if !d.State.Core.Valid() {
+			return fmt.Errorf("%w: state core %q is not valid", ErrInvalidDocument, d.State.Core)
+		}
+		if n := d.State.Native; n != nil && (len(*n) == 0 || len(*n) > connector.MaxStateNativeLen || !utf8.ValidString(*n)) {
+			return fmt.Errorf("%w: state native must be 1–64 bytes of valid UTF-8", ErrInvalidDocument)
+		}
+	}
 	switch {
 	case !d.Kind.Valid():
 		return fmt.Errorf("%w: kind %q is not one this build distils", ErrInvalidDocument, d.Kind)

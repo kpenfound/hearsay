@@ -223,6 +223,11 @@ func (s *Store) ACLs(ctx context.Context, ids []string) (map[string]connector.AC
 // of the places a listing returns. A reader who may read nothing gets nothing
 // and no query runs.
 func (s *Store) ListFor(ctx context.Context, reader Reader, opts ListOptions) ([]Stored, error) {
+	for _, state := range opts.States {
+		if !connector.CoreState(state).Valid() {
+			return nil, fmt.Errorf("%w: state %q is not valid", ErrInvalidDocument, state)
+		}
+	}
 	if opts.OutcomeKind != "" && !opts.OutcomeKind.Valid() {
 		return nil, fmt.Errorf("%w: outcome kind %q", ErrInvalidDocument, opts.OutcomeKind)
 	}
@@ -249,6 +254,9 @@ func (s *Store) ListFor(ctx context.Context, reader Reader, opts ListOptions) ([
 	}
 	if opts.Asserting {
 		q.sql += " AND outcome_kind IN ('decided', 'proposed', 'resolved')"
+	}
+	if len(opts.States) > 0 {
+		q.sql += " AND state = ANY(" + q.placeholder(opts.States) + "::text[])"
 	}
 	if opts.OpenQuestions {
 		q.sql += " AND jsonb_array_length(coalesce(body->'open_questions', '[]'::jsonb)) > 0"

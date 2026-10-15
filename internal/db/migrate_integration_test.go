@@ -124,6 +124,23 @@ func TestMigrateUpAndDown(t *testing.T) {
 		t.Fatalf("counting l0_events: %v", err)
 	}
 
+	var columns int
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM information_schema.columns WHERE table_name = 'l1_docs' AND column_name IN ('state', 'state_native') AND data_type = 'text' AND is_nullable = 'YES'`).Scan(&columns); err != nil || columns != 2 {
+		t.Fatalf("state columns = %d, %v; want two nullable text columns", columns, err)
+	}
+	var index string
+	if err := pool.QueryRow(t.Context(), `SELECT indexdef FROM pg_indexes WHERE indexname = 'l1_docs_state_idx'`).Scan(&index); err != nil || !strings.Contains(index, "USING btree (state)") || !strings.Contains(index, "WHERE (state IS NOT NULL)") {
+		t.Fatalf("state index = %q, %v", index, err)
+	}
+	var check string
+	if err := pool.QueryRow(t.Context(), `SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'l1_docs'::regclass AND conname = 'l1_docs_state_check'`).Scan(&check); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"proposed", "started", "blocked", "completed", "abandoned"} {
+		if !strings.Contains(check, "'"+value+"'::text") {
+			t.Errorf("state check omits %s: %s", value, check)
+		}
+	}
 	status, err := migrator.Status(t.Context())
 	if err != nil {
 		t.Fatalf("Status() = %v, want no error", err)
@@ -139,7 +156,7 @@ func TestMigrateUpAndDown(t *testing.T) {
 	// later is a line added at the top of this list; a migration that creates
 	// no table of its own — an index on an existing one — has no table here and
 	// is only checked for rolling back cleanly.
-	for i, table := range []string{"github_command_replies", "", "l2_gestures", "", "l2_topic_operations", "l0_deletion_rebuilds", "l0_deletions", "", "", "bundle_changes", "l2_alias_candidates", "", "l2_pins", "", "", "", "", "l0_resyncs", "l2_stances", "l0_backfill_cursors", "", "", "", "", "l0_feed_cursors", "l1_docs", "queue_job", "l0_events"} {
+	for i, table := range []string{"", "github_command_replies", "", "l2_gestures", "", "l2_topic_operations", "l0_deletion_rebuilds", "l0_deletions", "", "", "bundle_changes", "l2_alias_candidates", "", "l2_pins", "", "", "", "", "l0_resyncs", "l2_stances", "l0_backfill_cursors", "", "", "", "", "l0_feed_cursors", "l1_docs", "queue_job", "l0_events"} {
 		want := newest - int64(i) - 1
 		if _, err := migrator.Down(t.Context()); err != nil {
 			t.Fatalf("Down() = %v, want no error", err)
@@ -147,22 +164,32 @@ func TestMigrateUpAndDown(t *testing.T) {
 		if version, err := migrator.Version(t.Context()); err != nil || version != want {
 			t.Fatalf("Version(after down) = %d, %v, want %d", version, err, want)
 		}
-		if i == 5 {
+
+		if i == 0 {
+			if _, err := pool.Exec(t.Context(), `SELECT state, state_native FROM l1_docs LIMIT 0`); err == nil {
+				t.Error("state columns remain after down")
+			}
+			var remaining int
+			if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM pg_indexes WHERE indexname = 'l1_docs_state_idx'`).Scan(&remaining); err != nil || remaining != 0 {
+				t.Errorf("state index remains after down: %d, %v", remaining, err)
+			}
+		}
+		if i == 6 {
 			if _, err := pool.Exec(t.Context(), `SELECT redacted_by FROM l2_stances LIMIT 0`); err == nil {
 				t.Error("stance redaction remains after rolling its migration back")
 			}
 		}
-		if i == 11 {
+		if i == 12 {
 			if _, err := pool.Exec(t.Context(), `SELECT assertion FROM l2_stances LIMIT 0`); err == nil {
 				t.Error("stance assertion remains after rolling its migration back")
 			}
 		}
-		if i == 14 {
+		if i == 15 {
 			if _, err := pool.Exec(t.Context(), `SELECT judgement FROM l2_stances LIMIT 0`); err == nil {
 				t.Error("stance judgement remains after rolling its migration back")
 			}
 		}
-		if i == 13 {
+		if i == 14 {
 			if _, err := pool.Exec(t.Context(), `SELECT judgement FROM l2_stances LIMIT 0`); err != nil {
 				t.Errorf("stance judgement missing after rolling reconciliation back: %v", err)
 			}
@@ -170,7 +197,7 @@ func TestMigrateUpAndDown(t *testing.T) {
 				t.Errorf("artifact class missing after rolling reconciliation back: %v", err)
 			}
 		}
-		if i == 15 {
+		if i == 16 {
 			if _, err := pool.Exec(t.Context(), `SELECT artifact_class FROM l1_docs LIMIT 0`); err == nil {
 				t.Error("artifact class remains after rolling its migration back")
 			}

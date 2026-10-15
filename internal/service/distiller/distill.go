@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"time"
 
@@ -514,7 +515,7 @@ func (d *Distiller) distillWikiSections(ctx context.Context, result Result, root
 			return Result{}, err
 		}
 		if err == nil && previous.Kind == l1.KindWikiSection && previous.RawText == sections[i].RawText {
-			if previous.Source.URL == sections[i].Source.URL && slices.Equal(previous.ACL, sections[i].ACL) &&
+			if reflect.DeepEqual(previous.State, sections[i].State) && previous.Source.URL == sections[i].Source.URL && slices.Equal(previous.ACL, sections[i].ACL) &&
 				slices.Equal(previous.Participants, sections[i].Participants) && slices.Equal(previous.References, sections[i].References) && slices.Equal(previous.Scope, sections[i].Scope) {
 				// The prior L0 revision still proves this exact text, so an edit to
 				// another section need not rewrite this row or its outcome.

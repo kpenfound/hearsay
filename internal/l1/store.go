@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/connector"
 )
 
 // Limits on how much one read returns.
@@ -106,7 +107,7 @@ type Stored struct {
 // docColumns is a document as columns, in the order scanDoc reads them.
 const docColumns = `id, kind, artifact_class, source, source_native_id, source_url, l0_refs,
 	created_at, updated_at, last_activity_at, participants, scope, refs, acl,
-	text, raw_text, body, outcome_kind, distilled_at`
+	text, raw_text, body, outcome_kind, state, state_native, distilled_at`
 
 // putSQL writes a document, and does nothing at all when the row already there
 // is the same document.
@@ -125,7 +126,7 @@ const docColumns = `id, kind, artifact_class, source, source_native_id, source_u
 // `text` changes.
 const putSQL = `
 INSERT INTO l1_docs (` + docColumns + `)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, now())
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, now())
 ON CONFLICT (id) DO UPDATE SET
     kind = excluded.kind,
     artifact_class = excluded.artifact_class,
@@ -144,6 +145,8 @@ ON CONFLICT (id) DO UPDATE SET
     raw_text = excluded.raw_text,
     body = excluded.body,
     outcome_kind = excluded.outcome_kind,
+ state = excluded.state,
+ state_native = excluded.state_native,
     -- A vector is a function of the text it was made from, so text that
     -- changes takes its embedding with it rather than leaving a stale one
     -- standing: search's vector half would otherwise rank this document by
@@ -154,12 +157,12 @@ ON CONFLICT (id) DO UPDATE SET
 WHERE (l1_docs.kind, l1_docs.artifact_class, l1_docs.source, l1_docs.source_native_id, l1_docs.source_url,
        l1_docs.l0_refs, l1_docs.created_at, l1_docs.updated_at, l1_docs.last_activity_at,
        l1_docs.participants, l1_docs.scope, l1_docs.refs, l1_docs.acl,
-       l1_docs.text, l1_docs.raw_text, l1_docs.body, l1_docs.outcome_kind)
+       l1_docs.text, l1_docs.raw_text, l1_docs.body, l1_docs.outcome_kind, l1_docs.state, l1_docs.state_native)
    IS DISTINCT FROM
       (excluded.kind, excluded.artifact_class, excluded.source, excluded.source_native_id, excluded.source_url,
        excluded.l0_refs, excluded.created_at, excluded.updated_at, excluded.last_activity_at,
        excluded.participants, excluded.scope, excluded.refs, excluded.acl,
-       excluded.text, excluded.raw_text, excluded.body, excluded.outcome_kind)
+       excluded.text, excluded.raw_text, excluded.body, excluded.outcome_kind, excluded.state, excluded.state_native)
 RETURNING distilled_at`
 
 // Put writes a document, and reports whether that changed anything. False means
@@ -176,12 +179,17 @@ func (s *Store) Put(ctx context.Context, doc Document) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	var state, native *string
+	if doc.State != nil {
+		core := string(doc.State.Core)
+		state, native = &core, doc.State.Native
+	}
 	var distilledAt time.Time
 	err = s.db.QueryRow(ctx, putSQL,
 		doc.ID, string(doc.Kind), string(doc.ArtifactClass), doc.Source.System, doc.Source.NativeID, doc.Source.URL,
 		doc.L0Refs, doc.Time.Created, doc.Time.Updated, doc.Time.LastActivity,
 		row.participants, orEmpty(doc.Scope), row.references, row.acl,
-		doc.Text, doc.RawText, row.body, string(doc.Body.OutcomeKind),
+		doc.Text, doc.RawText, row.body, string(doc.Body.OutcomeKind), state, native,
 	).Scan(&distilledAt)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -246,6 +254,8 @@ type ListOptions struct {
 	// Only [Store.ListFor] honours it; [Store.List] refuses it rather than
 	// ignoring it.
 	OpenQuestions bool
+	// States selects documents with any of these core values. Only ListFor honours it.
+	States []string
 	// Limit is how many documents to return, capped at [MaxLimit].
 	Limit int
 	// Oldest reverses the order, which is what re-deriving everything wants:
@@ -257,6 +267,9 @@ type ListOptions struct {
 func (s *Store) List(ctx context.Context, opts ListOptions) ([]Stored, error) {
 	if opts.OutcomeKind != "" && !opts.OutcomeKind.Valid() {
 		return nil, fmt.Errorf("%w: outcome kind %q", ErrInvalidDocument, opts.OutcomeKind)
+	}
+	if len(opts.States) > 0 {
+		return nil, fmt.Errorf("%w: List does not filter on states; ListFor does", ErrInvalidDocument)
 	}
 	if opts.OpenQuestions {
 		return nil, fmt.Errorf("%w: List does not filter on open questions; ListFor does", ErrInvalidDocument)
@@ -386,6 +399,8 @@ type docScan struct {
 	kind          string
 	artifactClass string
 	outcome       string
+	state         *string
+	native        *string
 	participants  []byte
 	references    []byte
 	acl           []byte
@@ -397,7 +412,7 @@ func (d *docScan) dests() []any {
 	return []any{&d.doc.ID, &d.kind, &d.artifactClass, &d.doc.Source.System, &d.doc.Source.NativeID, &d.doc.Source.URL,
 		&d.doc.L0Refs, &d.doc.Time.Created, &d.doc.Time.Updated, &d.doc.Time.LastActivity,
 		&d.participants, &d.doc.Scope, &d.references, &d.acl,
-		&d.doc.Text, &d.doc.RawText, &d.body, &d.outcome, &d.doc.DistilledAt}
+		&d.doc.Text, &d.doc.RawText, &d.body, &d.outcome, &d.state, &d.native, &d.doc.DistilledAt}
 }
 
 // done turns a scanned row into a document.
@@ -409,6 +424,9 @@ func (d *docScan) dests() []any {
 // read somewhere else.
 func (d *docScan) done() (Stored, error) {
 	doc := d.doc
+	if d.state != nil {
+		doc.State = &State{Core: connector.CoreState(*d.state), Native: d.native}
+	}
 	doc.Kind = Kind(d.kind)
 	doc.ArtifactClass = config.ArtifactClass(d.artifactClass)
 	doc.Time.Created = doc.Time.Created.UTC()
