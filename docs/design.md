@@ -77,7 +77,7 @@ Design points:
 - A markdown document is partitioned at headings, including nested headings. The material before the first heading (or the whole page without headings) is an intro section. Each section is independently distilled as `wiki_section`; unchanged sections may retain provenance to an earlier L0 revision that contains the same text. A changed source ACL refreshes every current section.
 - Long Slack threads also emit bursts (single-author runs that pass rarity and length gates) so tangent facts survive summarization.
 - A secrets and PII scrub runs before `text` is written.
-- The distiller is stateless and idempotent. Any L1 doc can be regenerated from its `l0_refs`.
+- The distiller is stateless and idempotent. Any L1 doc can be regenerated from its `l0_refs`. Distillation is debounced per document across all sources: `HEARSAY_DISTILL_QUIET` (default `30s`, `0` disables) waits for a quiet period, capped by `HEARSAY_DISTILL_MAX_DELAY` (default `5m`) from the first enqueue. A due job stays due; the worker claims it at a following poll.
 
 ## L2: the graph
 
@@ -215,7 +215,7 @@ Exposed over MCP and HTTP. Deliberately small.
 |`stance_history(topic)`|Full record for a topic|
 |`get_l1(id)`, `get_l0(id)`|Follow a pointer|
 |`search(scope, query)`|Hybrid retrieval over L1 (embeddings, full text, rank fusion). Returns documents, not answers|
-|`watch(scope, filter)`|Subscribe to new events on a scope. Notification only; consumers decide what to do|
+|`watch(scope, filter)`|Subscribe to new events on a scope once distilled. Notification only; consumers decide what to do. The per-document debounce can add up to the maximum delay before distillation becomes due, on top of worker poll and distillation time|
 |`assert(topic, position, evidence)`|Write a stance as an L0 event. Agents are principals|
 
 Ratification, pinning, and topic merges are human actions taken in the tools people already use (see Human feedback loop).
@@ -276,7 +276,7 @@ One Postgres with pgvector and full-text search holds all four layers. Vectors a
 Four processes:
 
 - Connectors. One per source. Push where the source supports it (Slack Socket Mode, GitHub webhooks, Drive change notifications), poll otherwise. Write L0 only.
-- Distiller. L0 to L1. Stateless, parallel, retryable. Cheap model.
+- Distiller. L0 to L1. Stateless, parallel, retryable. Cheap model. Distillation is debounced per document in the queue, with `HEARSAY_DISTILL_QUIET` (default `30s`, `0` disables) and `HEARSAY_DISTILL_MAX_DELAY` (default `5m`, measured from the first enqueue). The pump enqueues in the transaction that saves its feed cursor, so `watch` withholds events while a distill job is unfinished. Operator deletion and waiting GitHub commands expedite pending distillation; later events never postpone an already-due job.
 - Assertion worker. L1 to L2. Serialized per scope. Better model, low volume.
 - API. Bundle assembly, MCP and HTTP endpoints, interface adapters, audit.
 

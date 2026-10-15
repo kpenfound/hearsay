@@ -111,6 +111,7 @@ job per document, and turns each one into an L1 document with a model call
 (ADR-0005, ADR-0007), so it needs Postgres — `hearsay distiller` and
 `hearsay all` refuse without a database, and with no `--config` they start and
 distil nothing, because a configuration is what says there is anything to do.
+Distillation is debounced per document by `HEARSAY_DISTILL_QUIET` (default `30s`, `0` disables), capped from the first enqueue by `HEARSAY_DISTILL_MAX_DELAY` (default `5m`) before the job becomes due.
 
 The connectors service is not a stub either. It builds one connector per
 configured source through a registry the binary wires up, polls the pollers on

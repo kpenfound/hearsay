@@ -130,6 +130,8 @@ the `hearsay.env` that `hearsay init` wrote, plus the deployment block of
 | `HEARSAY_SLACK_APP_TOKEN`, `HEARSAY_SLACK_BOT_TOKEN` | `connectors` | **Supply** if the configuration names them: the Slack app's app-level token (`xapp-…`) and bot token (`xoxb-…`). |
 | `HEARSAY_TRACKER_TOKEN` | `connectors` | **Supply** if the configuration names it: the bearer token a generic tracker source's sender posts with (`openssl rand -hex 32`). |
 | `HEARSAY_DRIVE_CREDENTIALS` | `connectors` | **Supply** if the configuration names it: the service account's JSON key, on one line, in single quotes. |
+| `HEARSAY_DISTILL_QUIET` | `distiller` | Optional Go duration, default `30s`. Debounce distillation per document until quiet; `0` disables. |
+| `HEARSAY_DISTILL_MAX_DELAY` | `distiller` | Optional Go duration, default `5m`. Caps the debounce from the first enqueue until the job becomes due; must be at least the quiet period when enabled. Worker poll and distillation time follow. |
 | `HEARSAY_LOG_LEVEL`, `HEARSAY_LOG_FORMAT` | all four services | Optional. `info` and JSON (the format when there is no terminal) by default. |
 | `HEARSAY_INSTANCE` | all four services | Optional. The replica name on every log line; the container's hostname by default. |
 
