@@ -75,8 +75,18 @@ func (s *Store) Unpin(ctx context.Context, scope, doc string) (bool, error) {
 // instant are in document id order. Nothing here filters by reader: a pin names
 // a document, and whether the reader may read it is the caller's to decide.
 func (s *Store) Pins(ctx context.Context, scope string) ([]Pin, error) {
+	return s.pins(ctx, scope, nil)
+}
+
+// PinCandidates returns at most limit pins in the same order as Pins, before
+// document visibility checks, for traversal's raw candidate budget.
+func (s *Store) PinCandidates(ctx context.Context, scope string, limit int) ([]Pin, error) {
+	return s.pins(ctx, scope, &limit)
+}
+
+func (s *Store) pins(ctx context.Context, scope string, limit *int) ([]Pin, error) {
 	rows, err := s.db.Query(ctx, `
-SELECT scope, l1, pinned_by, pinned_at FROM l2_pins WHERE scope = $1 ORDER BY pinned_at, l1`, scope)
+SELECT scope, l1, pinned_by, pinned_at FROM l2_pins WHERE scope = $1 ORDER BY pinned_at, l1 LIMIT $2`, scope, limit)
 	if err != nil {
 		return nil, fmt.Errorf("reading the pins on %s: %w", scope, err)
 	}

@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
@@ -39,11 +38,11 @@ const (
 	// named, and a bundle is identical whichever interface or model is behind it.
 	BytesPerToken = 4
 	// MaxLine is the most bytes one line of distillation takes.
-	MaxLine = 200
+	MaxLine = l3.MaxLine
 )
 
 // Handles are the calls a consumer follows a bundle's ids with.
-var Handles = []string{"get_l1", "get_l0", "search", "stance_history", "resolve"}
+var Handles = []string{"get_l1", "get_l0", "search", "stance_history", "resolve", "traverse"}
 
 // Bundle is the context bundle: pointers plus one line of distillation per
 // pointer, every line carrying an L1 id the consumer can follow with `get_l1`.
@@ -702,22 +701,6 @@ func trim(b Bundle, budget int) (Bundle, Trimmed, int, error) {
 
 // Line is one line of distillation: the first non-empty line of a text, its
 // whitespace collapsed, cut to [MaxLine] bytes on a character boundary.
-func Line(text string) string {
-	for l := range strings.Lines(text) {
-		l = strings.Join(strings.Fields(l), " ")
-		if l == "" {
-			continue
-		}
-		if len(l) <= MaxLine {
-			return l
-		}
-		cut := MaxLine - len("…")
-		for cut > 0 && !utf8.RuneStart(l[cut]) {
-			cut--
-		}
-		return l[:cut] + "…"
-	}
-	return ""
-}
+func Line(text string) string { return l3.Line(text) }
 
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }

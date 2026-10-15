@@ -24,6 +24,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
+	"github.com/kpenfound/hearsay/internal/l3"
 	"github.com/kpenfound/hearsay/internal/principal"
 	"github.com/kpenfound/hearsay/internal/queue"
 	"github.com/kpenfound/hearsay/internal/telemetry"
@@ -190,6 +191,9 @@ var calls = []call{
 		schema(`{"assertion":{"type":"string"}}`, "assertion")}, getSession},
 	{Tool{"search", "Hybrid retrieval over L1: full text and embeddings, fused by rank. Returns documents, not answers.",
 		schema(`{"query":{"type":"string"},"scope":{"type":"string","description":"an entity id to search within"},"limit":{"type":"integer"}}`, "query")}, search},
+	{Tool{"traverse", "Traverse typed graph edges, returning ids plus one line per node. Follows the topic ledger and is access-filtered at every hop. Continue with get_bundle for an entity briefing, stance_history for a topic's positions and provenance, or get_l1 for a document. Principals are terminal; L0 is excluded.",
+		schema(`{"start":{"type":"array","minItems":1,"maxItems":10,"items":{"type":"object","properties":{"type":{"type":"string","enum":["entity","topic","stance","document"]},"id":{"type":"string"}},"required":["type","id"],"additionalProperties":false}},"steps":{"type":"array","minItems":1,"maxItems":4,"items":{"type":"object","properties":{"edge":{"type":"string","enum":["part_of","has_part","topics","about","documents","scope","anchors","owners","stances","topic","evidence","cited_by","supersedes","superseded_by","author","participants"]},"depth":{"type":"string","description":"n or m..n, default 1; at most 6 on part_of, has_part, supersedes, superseded_by"},"where":{"type":"object","description":"Target filters: entity type/state; document kind/class/state/since; topic tier/since; stance current/since. since is RFC3339; current is boolean; other values are strings."}},"required":["edge"],"additionalProperties":false}},"limit":{"type":"integer","minimum":1,"maximum":200,"default":50}}`, "start", "steps")}, traverse},
+
 	{Tool{"watch", "Long-poll for new events on a scope: the L0 events after the cursor whose L1 documents are about the scope or an entity under it, oldest first, once they are distilled. The debounce can add up to the maximum delay before a document's distillation becomes due, on top of worker poll and distillation time. A notification is an event id, kind, source, time and document id, and no content. With none to return it waits up to 25 seconds and returns an empty list. Pass the returned cursor as after next time; omit after to start from now. An agent needs class orchestrator or above.",
 		schema(`{"scope":{"type":"string","description":"the entity id to watch"},"filter":{"type":"object","properties":{"kinds":{"type":"array","items":{"type":"string"}},"sources":{"type":"array","items":{"type":"string"}}},"additionalProperties":false,"description":"only these event kinds and sources; an empty list is every one"},"after":{"type":"string","description":"the cursor the previous watch returned"}}`, "scope")}, watch},
 	{Tool{"assert", "Propose a position on an existing topic, citing the L1 documents it rests on. Only an agent of class worker or above may; the stance is appended by the assertion worker, ranks as class agent and does not ratify on its own under the default authority policy. Returns the id of the L0 assertion event; repeating a request returns the same id and writes nothing more.",
@@ -463,7 +467,7 @@ func bundleSectionIDs(b bundle.Bundle) map[string]AuditIDs {
 
 func isHandleCall(name string) bool {
 	switch name {
-	case "get_l1", "get_l0", "stance_history", "search", "resolve":
+	case "get_l1", "get_l0", "stance_history", "search", "resolve", "traverse":
 		return true
 	default:
 		return false
@@ -512,6 +516,22 @@ func (c *Calls) auditHandle(ctx context.Context, caller Caller, reader l1.Reader
 		}).Documents {
 			record.ReturnedIDs = append(record.ReturnedIDs, hit.ID)
 		}
+	case "traverse":
+		var args struct {
+			Start []l3.NodeRef `json:"start"`
+		}
+		if err := json.Unmarshal(fields["start"], &args.Start); err != nil {
+			return err
+		}
+		for _, n := range args.Start {
+			record.TargetIDs = append(record.TargetIDs, n.ID)
+		}
+		for _, n := range result.(l3.Subgraph).Nodes {
+			if n.Step > 0 {
+				record.ReturnedIDs = append(record.ReturnedIDs, n.ID)
+			}
+		}
+
 	case "resolve":
 		for _, match := range result.(struct {
 			Entities []EntityMatch `json:"entities"`
@@ -1024,4 +1044,23 @@ func (c *Calls) mayAssert(caller Caller) error {
 		return fail(http.StatusForbidden, "agent %q is of class %q, which may not assert", caller.Agent, agent.Class)
 	}
 	return nil
+}
+
+func traverse(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json.RawMessage) (any, error) {
+	var args l3.Query
+	if err := decode(raw, &args); err != nil {
+		return nil, err
+	}
+	result, err := l3.New(c.db).WithAuthority(c.authority).WithPrincipals(c.resolver).Traverse(ctx, reader, args)
+	var validation *l3.ValidationError
+	if errors.As(err, &validation) {
+		return nil, fail(http.StatusBadRequest, "%s", validation.Message)
+	}
+	if errors.Is(err, l3.ErrStartNotFound) {
+		return nil, fail(http.StatusNotFound, "no such traverse start")
+	}
+	if err != nil {
+		return nil, errInternal
+	}
+	return result, nil
 }

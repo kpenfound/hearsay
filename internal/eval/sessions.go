@@ -29,7 +29,7 @@ type DrillDown struct {
 	// Sections is one entry per bundle section, always all six, in a fixed
 	// order.
 	Sections []Section `json:"sections"`
-	// LookedBeyond is the `search` and `resolve` calls that returned no id a
+	// LookedBeyond is the `search`, `resolve` and `traverse` calls that returned no id a
 	// bundle they followed had served.
 	LookedBeyond LookedBeyond `json:"looked_beyond"`
 }
@@ -49,8 +49,9 @@ type Section struct {
 
 // LookedBeyond is the calls that went past what the bundle served, by call.
 type LookedBeyond struct {
-	Search  Beyond `json:"search"`
-	Resolve Beyond `json:"resolve"`
+	Traverse Beyond `json:"traverse"`
+	Search   Beyond `json:"search"`
+	Resolve  Beyond `json:"resolve"`
 }
 
 // Beyond is one call's looking beyond the bundle.
@@ -173,7 +174,7 @@ func SummarizeSessions(events []connector.Event, scope string) (DrillDown, Confl
 		// session: the one a handle call or next action follows.
 		latest = map[session]map[string]*served{}
 	)
-	calls := map[string]*Beyond{"search": &drill.LookedBeyond.Search, "resolve": &drill.LookedBeyond.Resolve}
+	calls := map[string]*Beyond{"search": &drill.LookedBeyond.Search, "resolve": &drill.LookedBeyond.Resolve, "traverse": &drill.LookedBeyond.Traverse}
 	counts := map[string]*Action{"asked": &actions.Asked, "proceeded": &actions.Proceeded, "asserted": &actions.Asserted}
 	for _, ev := range events {
 		switch {

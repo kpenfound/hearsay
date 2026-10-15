@@ -263,8 +263,9 @@ drill-down rate per bundle section
   open_questions          0 of 0  -
   conflicts               1 of 1  100.0%
   looked beyond the bundle
-    search   1 of 4  25.0%
-    resolve  0 of 0  -
+    search    1 of 4  25.0%
+    resolve   0 of 0  -
+    traverse  0 of 0  -
 
 conflict-flag precision
   flagged                       4
@@ -316,8 +317,9 @@ drill-down rate per bundle section
   open_questions          0 of 0  -
   conflicts               0 of 0  -
   looked beyond the bundle
-    search   0 of 0  -
-    resolve  0 of 0  -
+    search    0 of 0  -
+    resolve   0 of 0  -
+    traverse  0 of 0  -
 
 conflict-flag precision
   flagged                       0
@@ -374,7 +376,7 @@ next actions
     ],
     "looked_beyond": {
       "search": {"calls": 4, "beyond": 1, "share": 0.25},
-      "resolve": {"calls": 0, "beyond": 0, "share": null}
+      "resolve": {"calls": 0, "beyond": 0, "share": null}, "traverse": {"calls": 0, "beyond": 0, "share": null}
     }
   },
   "conflict_flags": {
@@ -417,7 +419,7 @@ next actions
       {"section": "open_questions", "served": 0, "followed": 0, "share": null},
       {"section": "conflicts", "served": 0, "followed": 0, "share": null}
     ],
-    "looked_beyond": {"search": {"calls": 0, "beyond": 0, "share": null}, "resolve": {"calls": 0, "beyond": 0, "share": null}}},
+    "looked_beyond": {"search": {"calls": 0, "beyond": 0, "share": null}, "resolve": {"calls": 0, "beyond": 0, "share": null}, "traverse": {"calls": 0, "beyond": 0, "share": null}}},
   "conflict_flags": {"flagged": 0, "verdicts": 0, "real": 0, "spurious": 0, "precision": null, "coverage": null, "unflagged_verdicts": 0},
   "next_actions": {"actions": 0, "asked": {"count": 0, "share": null}, "proceeded": {"count": 0, "share": null},
     "asserted": {"count": 0, "share": null}, "unattributed": 0}}`

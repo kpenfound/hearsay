@@ -250,7 +250,7 @@ func TestBuildLaysOutTheDesignsShape(t *testing.T) {
 	}
 	anchors := `"anchors":[{"l1":"l1:gh:acme/api#1200","kind":"issue","line":"Engine schema v3 design.","pinned_by":"kyle"},` +
 		`{"l1":"l1:wiki:design/locks.md#locking","kind":"wiki_section","line":"How the request path takes its locks."}]`
-	for _, section := range []string{anchors, `"conflicts":[]`, `"handles":["get_l1","get_l0","search","stance_history","resolve"]`} {
+	for _, section := range []string{anchors, `"conflicts":[]`, `"handles":["get_l1","get_l0","search","stance_history","resolve","traverse"]`} {
 		if !strings.Contains(string(body), section) {
 			t.Errorf("the encoded bundle has no %s: %s", section, body)
 		}
@@ -261,7 +261,7 @@ func TestBuildLaysOutTheDesignsShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	body, _ = bundle.Encode(empty)
-	if want := `{"scope":{"id":"tracker:gh:acme/api#99","entities":[]},"anchors":[],"stances":[],"recent":{"items":[]},"open_questions":[],"conflicts":[],"handles":["get_l1","get_l0","search","stance_history","resolve"]}`; string(body) != want {
+	if want := `{"scope":{"id":"tracker:gh:acme/api#99","entities":[]},"anchors":[],"stances":[],"recent":{"items":[]},"open_questions":[],"conflicts":[],"handles":["get_l1","get_l0","search","stance_history","resolve","traverse"]}`; string(body) != want {
 		t.Errorf("an empty bundle = %s, want %s", body, want)
 	}
 }

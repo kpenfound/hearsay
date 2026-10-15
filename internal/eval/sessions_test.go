@@ -284,3 +284,23 @@ func TestSummarizeSessions(t *testing.T) {
 		})
 	}
 }
+
+func TestTraverseLooksBeyondTheBundle(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		returned []string
+		want     int
+	}{{"beyond", []string{"new-topic"}, 1}, {"empty", nil, 1}, {"served", []string{"topic"}, 0}} {
+		t.Run(tt.name, func(t *testing.T) {
+			drill, _, _ := eval.SummarizeSessions([]connector.Event{
+				bundle(t, "s", "e", map[string]ids{"stances": {Topics: []string{"topic"}}}),
+				handle(t, "s", "traverse", map[string]any{"target_ids": []string{"e"}, "returned_ids": tt.returned}),
+				handle(t, "s", "traverse", map[string]any{"status": 404}),
+			}, "")
+			got := drill.LookedBeyond.Traverse
+			if got.Calls != 1 || got.Beyond != tt.want || got.Share == nil || *got.Share != float64(tt.want) {
+				t.Fatalf("traverse=%+v", got)
+			}
+		})
+	}
+}
