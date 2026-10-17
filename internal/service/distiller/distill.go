@@ -379,6 +379,34 @@ func (d *Distiller) referenceRepo(ctx context.Context) (config.Repo, error) {
 			}
 		}
 	}
+	// Repository structure can seed a project even when code/ names only its
+	// modules. Expose existing projects for explicit touches, without adding
+	// prose aliases or path patterns to the reference vocabulary.
+	configured := make(map[string]bool, len(d.repo.Code))
+	for _, e := range d.repo.Code {
+		configured[e.ID] = true
+	}
+	seen := map[config.SourceRef]bool{}
+	for _, e := range d.repo.Code {
+		if e.Repo.Source == "" || e.Repo.Project == "" || seen[e.Repo] {
+			continue
+		}
+		seen[e.Repo] = true
+		id := "code:" + e.Repo.Project
+		if configured[id] {
+			continue
+		}
+		project, err := l2.New(d.pool).Entity(ctx, id)
+		if errors.Is(err, l2.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return config.Repo{}, fmt.Errorf("reading repository project %s for references: %w", id, err)
+		}
+		if project.Type == l2.TypeProject {
+			repo.Code = append(repo.Code, config.CodeEntity{ID: id, Type: config.TypeProject, Repo: e.Repo})
+		}
+	}
 	return repo, nil
 }
 

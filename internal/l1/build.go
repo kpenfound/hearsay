@@ -342,12 +342,19 @@ func roleFor(ev connector.Event) connector.ParticipantRole {
 // scopeOf is the entity ids a document is about: the code entities of every
 // configured scope that covers the artifact's container, the code entities its
 // own text names, and the tracker item the artifact is where a covering scope
-// maps one.
+// maps one. Work documents also belong to their project and workstream.
 //
 // Scopes filter for relevance and never grant permission — that is the ACL, and
 // they are never the same mechanism (docs/design.md#access-control).
 func scopeOf(root connector.Event, repo config.Repo, refs []Reference) []string {
 	entities := map[string]bool{}
+	if source, ok := repo.Source(root.Source); ok && source.Type == "work" {
+		// Updates are messages in their project's or workstream's document,
+		// so the same scope covers their content without an update entity.
+		project := "work:" + root.Source + ":" + root.Payload.Container.NativeID
+		entities[project] = true
+		entities["work:"+root.Source+":"+root.Payload.Artifact] = true
+	}
 	for _, ref := range refs {
 		if ref.Type == RefSystem {
 			entities[ref.ID] = true
