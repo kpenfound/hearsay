@@ -44,14 +44,15 @@ const CallTimeout = 2 * time.Minute
 // happened to writes the document that is already there, which the store
 // notices and does not write at all.
 type Distiller struct {
-	pool     *pgxpool.Pool
-	events   *l0.Store
-	docs     *l1.Store
-	tier     llm.Completer
-	embedder llm.Embedder
-	resolver *principal.Resolver
-	repo     config.Repo
-	timeout  time.Duration
+	pool      *pgxpool.Pool
+	events    *l0.Store
+	docs      *l1.Store
+	tier      llm.Completer
+	embedder  llm.Embedder
+	resolver  *principal.Resolver
+	repo      config.Repo
+	timeout   time.Duration
+	judgments llm.Judgments
 }
 
 // The embed tier is used through internal/l1's own interface, so that storing a
@@ -66,7 +67,7 @@ var _ l1.Embedder = (llm.Embedder)(nil)
 // that cannot make a model call should not be running (ADR-0005): a tier the
 // configuration does not name is a startup failure, not a job that fails five
 // times an hour later.
-func New(pool *pgxpool.Pool, registry llm.Registry, cfg *config.Config) (*Distiller, error) {
+func New(pool *pgxpool.Pool, registry llm.Registry, cfg *config.Config, options ...Option) (*Distiller, error) {
 	if pool == nil {
 		return nil, errors.New("the distiller needs a database")
 	}
@@ -85,7 +86,7 @@ func New(pool *pgxpool.Pool, registry llm.Registry, cfg *config.Config) (*Distil
 	if err != nil {
 		return nil, err
 	}
-	return &Distiller{
+	d := &Distiller{
 		pool:     pool,
 		events:   l0.New(pool),
 		docs:     l1.New(pool),
@@ -94,8 +95,19 @@ func New(pool *pgxpool.Pool, registry llm.Registry, cfg *config.Config) (*Distil
 		resolver: resolver,
 		repo:     cfg.Repo,
 		timeout:  CallTimeout,
-	}, nil
+	}
+	for _, option := range options {
+		option(d)
+	}
+	return d, nil
 }
+
+// Option supplies optional process dependencies without constructing clients.
+type Option func(*Distiller)
+
+// WithJudgments shares the process's optional typed capability. The global
+// configuration switch still controls whether it is consulted.
+func WithJudgments(j llm.Judgments) Option { return func(d *Distiller) { d.judgments = j } }
 
 // embedTier is the `embed` tier, or nil where the configuration names none.
 //
@@ -154,6 +166,9 @@ type Result struct {
 // Handle is the queue handler for the `distill` kind. It is safe to run twice
 // on one job, which is what at-least-once delivery requires (ADR-0007).
 func (d *Distiller) Handle(ctx context.Context, job queue.Job) error {
+	if !job.EnqueuedAt.IsZero() {
+		ctx = context.WithValue(ctx, queueDelayKey{}, max(int64(0), time.Since(job.EnqueuedAt).Nanoseconds()))
+	}
 	result, err := d.Distill(ctx, job.TargetID)
 	if err != nil {
 		return err
@@ -544,6 +559,7 @@ func (d *Distiller) distillWikiSections(ctx context.Context, result Result, root
 	if err != nil {
 		return Result{}, fmt.Errorf("building sections of %s: %w", result.DocID, err)
 	}
+	runs := make(map[int]*outcomeRun)
 	for i := range sections {
 		previous, err := d.docs.Get(ctx, sections[i].ID)
 		if err != nil && !errors.Is(err, l1.ErrNotFound) {
@@ -563,14 +579,11 @@ func (d *Distiller) distillWikiSections(ctx context.Context, result Result, root
 			}
 			continue
 		}
-		body, err := d.distil(ctx, sections[i])
+		run, err := d.modelDocument(ctx, sections[i])
 		if err != nil {
 			return Result{}, err
 		}
-		sections[i], _, err = sections[i].WithBody(body)
-		if err != nil {
-			return Result{}, err
-		}
+		runs[i], sections[i] = run, run.selected
 	}
 	current, err := d.events.Current(ctx, l0.ListOptions{Filter: l0.Filter{Source: root.Source, Artifact: root.Payload.Artifact}, Limit: 1})
 	if err != nil {
@@ -585,6 +598,15 @@ func (d *Distiller) distillWikiSections(ctx context.Context, result Result, root
 		ids[i] = section.ID
 	}
 	err = pgx.BeginFunc(ctx, d.pool, func(tx pgx.Tx) error {
+		batch := make([]*outcomeRun, 0, len(runs))
+		for _, run := range runs {
+			batch = append(batch, run)
+		}
+		commitOutcomes(ctx, tx, batch...)
+		for i, run := range runs {
+			sections[i] = run.selected
+		}
+
 		removed, err := deleteDerived(ctx, tx, `DELETE FROM l1_docs WHERE source = $1 AND kind = $2 AND left(source_native_id, length($3)) = $3 AND NOT (id = ANY($4))`, root.Source, l1.KindWikiSection, l1.WikiSectionPrefix(root.Payload.Artifact), ids)
 		if err != nil {
 			return fmt.Errorf("reconciling sections of %s: %w", result.DocID, err)
@@ -649,28 +671,20 @@ func (d *Distiller) writeThread(ctx context.Context, result Result, source, arti
 func (d *Distiller) writeDocument(ctx context.Context, result Result, source, artifact, container string, doc l1.Document, bursts []l1.Document, touches []connector.Touch) (Result, error) {
 	docID := result.DocID
 
-	body, err := d.distil(ctx, doc)
+	run, err := d.modelDocument(ctx, doc)
 	if err != nil {
 		return Result{}, err
 	}
-	doc, redacted, err := doc.WithBody(body)
-	if err != nil {
-		return Result{}, err
-	}
+	doc = run.selected
+	redacted := run.redacted
+	runs := []*outcomeRun{run}
 	for i := range bursts {
-		burstBody, err := d.distil(ctx, bursts[i])
+		burstRun, err := d.modelDocument(ctx, bursts[i])
 		if err != nil {
 			return Result{}, err
 		}
-		// The whole thread owns the conclusion. A burst preserves its tangent
-		// only, and must not assert the same decision a second time.
-		burstBody.Outcome, burstBody.Question = "", ""
-		burstBody.OutcomeKind = l1.OutcomeNone
-		burstBody.OpenQuestions = nil
-		bursts[i], _, err = bursts[i].WithBody(burstBody)
-		if err != nil {
-			return Result{}, err
-		}
+		runs = append(runs, burstRun)
+		bursts[i] = burstRun.selected
 	}
 
 	// The model call is the slow part, and the queue's dedupe on (kind, target)
@@ -701,6 +715,12 @@ func (d *Distiller) writeDocument(ctx context.Context, result Result, source, ar
 	// changed the row asks for one — a re-distillation that changed nothing has
 	// nothing new for L2 to read.
 	err = pgx.BeginFunc(ctx, d.pool, func(tx pgx.Tx) error {
+		commitOutcomes(ctx, tx, runs...)
+		doc = run.selected
+		for i := range bursts {
+			bursts[i] = runs[i+1].selected
+		}
+
 		written, err := l1.New(tx).Put(ctx, doc)
 		if err != nil {
 			return err
@@ -888,13 +908,13 @@ func (d *Distiller) provenanceNow(ctx context.Context, source, artifact string) 
 	return doc.L0Refs, nil
 }
 
-// distil is the one model call: the document's own words in, the body out.
+// distil makes the baseline model call: the document's own words in, the body out.
 //
 // The error it returns is a log line and a `queue_job.last_error` column, so it
 // names the document, the tier and the shape that was asked for, and never a
 // word of what was sent or what came back (ADR-0008). internal/llm's own errors
 // hold to the same rule.
-func (d *Distiller) distil(ctx context.Context, doc l1.Document) (l1.Body, error) {
+func (d *Distiller) distil(ctx context.Context, doc l1.Document) (l1.Body, llm.JudgmentUsage, error) {
 	call, done := context.WithTimeout(ctx, d.timeout)
 	defer done()
 
@@ -903,7 +923,7 @@ func (d *Distiller) distil(ctx context.Context, doc l1.Document) (l1.Body, error
 	req := RequestFor(doc, 0)
 	resp, err := d.tier.Complete(call, req)
 	if err != nil {
-		return l1.Body{}, fmt.Errorf("distilling %s: %w", doc.ID, err)
+		return l1.Body{}, llm.JudgmentUsage{}, fmt.Errorf("distilling %s: %w", doc.ID, err)
 	}
 
 	// The answer has already been checked against the schema by internal/llm,
@@ -912,11 +932,11 @@ func (d *Distiller) distil(ctx context.Context, doc l1.Document) (l1.Body, error
 	// and the parser are two readings of one list — hence the parse.
 	var a answer
 	if err := json.Unmarshal(resp.JSON, &a); err != nil {
-		return l1.Body{}, fmt.Errorf("distilling %s: the %s answer for %s did not decode: %w", doc.ID, llm.TierDistill, req.Schema.Name, err)
+		return l1.Body{}, llm.JudgmentUsage{}, fmt.Errorf("distilling %s: the %s answer for %s did not decode: %w", doc.ID, llm.TierDistill, req.Schema.Name, err)
 	}
 	body, err := a.body()
 	if err != nil {
-		return l1.Body{}, fmt.Errorf("distilling %s: %w", doc.ID, err)
+		return l1.Body{}, llm.JudgmentUsage{}, fmt.Errorf("distilling %s: %w", doc.ID, err)
 	}
-	return body, nil
+	return body, generativeUsage(resp), nil
 }

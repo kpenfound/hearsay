@@ -191,3 +191,13 @@ before establishing its repeatable-read snapshot, so it also removes journal
 rows committed while deletion was starting. Direct `l0.Delete` callers with
 a repeatable-read transaction must take that guard before their first read
 too. Insert guards prevent recreating a reference after deletion.
+
+Distillers can set `JudgmentInputSpec.SourceBuilt` when the incoming document
+is built from the complete `EventIDs` source revisions and the captured ACL and
+scope. The output document's own L1 row is then excluded from the input state,
+while its identity remains in deletion provenance and current ACL checks. This
+allows writing that derived row and reusing the committed judgment on restart.
+Source hashes/revisions, global source/ledger change markers, ACL/scope identity
+and deletion validation still apply. The default remains a full L1 input
+snapshot for assertion consumers. Do not use source-built identity when the
+question depends on previously generated L1 text.

@@ -76,6 +76,8 @@ type Deps struct {
 	// configuration always has a registry, because the loader merges the
 	// shipped tiers in.
 	LLM llm.Registry
+	// Judgments is the optional shared capability. It never gates readiness.
+	Judgments llm.Judgments
 	// Pump is what the feed reader is turned down to, for a deployment that
 	// wants it quieter and for a test that wants it immediate. The zero value
 	// is the defaults.
@@ -113,7 +115,7 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 		log.InfoContext(ctx, "distiller stopped")
 		return nil
 	}
-	distiller, err := New(deps.Pool, deps.LLM, cfg)
+	distiller, err := New(deps.Pool, deps.LLM, cfg, WithJudgments(deps.Judgments))
 	if err != nil {
 		return err
 	}

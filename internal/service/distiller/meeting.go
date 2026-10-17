@@ -76,6 +76,7 @@ func (d *Distiller) distillMeeting(ctx context.Context, result Result, root conn
 	if err != nil {
 		return Result{}, fmt.Errorf("building segments of %s: %w", result.DocID, err)
 	}
+	runs := make(map[int]*outcomeRun)
 	for i := range segments {
 		previous, err := d.docs.Get(ctx, segments[i].ID)
 		if err != nil && !errors.Is(err, l1.ErrNotFound) {
@@ -93,14 +94,11 @@ func (d *Distiller) distillMeeting(ctx context.Context, result Result, root conn
 			}
 			continue
 		}
-		body, err := d.distil(ctx, segments[i])
+		run, err := d.modelDocument(ctx, segments[i])
 		if err != nil {
 			return Result{}, err
 		}
-		segments[i], _, err = segments[i].WithBody(body)
-		if err != nil {
-			return Result{}, err
-		}
+		runs[i], segments[i] = run, run.selected
 	}
 	current, err := d.events.Current(ctx, l0.ListOptions{Filter: l0.Filter{Source: root.Source, Artifact: root.Payload.Artifact}, Limit: 1})
 	if err != nil {
@@ -115,6 +113,15 @@ func (d *Distiller) distillMeeting(ctx context.Context, result Result, root conn
 		ids[i] = segment.ID
 	}
 	err = pgx.BeginFunc(ctx, d.pool, func(tx pgx.Tx) error {
+		batch := make([]*outcomeRun, 0, len(runs))
+		for _, run := range runs {
+			batch = append(batch, run)
+		}
+		commitOutcomes(ctx, tx, batch...)
+		for i, run := range runs {
+			segments[i] = run.selected
+		}
+
 		removed, err := deleteDerived(ctx, tx, `DELETE FROM l1_docs WHERE source = $1 AND kind = $2 AND left(source_native_id, length($3)) = $3 AND NOT (id = ANY($4))`, root.Source, l1.KindMeetingSegment, l1.MeetingSegmentPrefix(root.Payload.Artifact), ids)
 		if err != nil {
 			return fmt.Errorf("reconciling segments of %s: %w", result.DocID, err)

@@ -23,7 +23,15 @@ import (
 )
 
 func TestChatBurstReconcilesEditAndTombstone(t *testing.T) {
-	pool := newPool(t)
+	for _, mode := range []string{"baseline", "shadow", "qualified"} {
+		t.Run(mode, func(t *testing.T) { testChatBurstReconciliation(t, mode) })
+	}
+}
+
+func testChatBurstReconciliation(t *testing.T, mode string) {
+	// Journal source/ledger markers invalidate across scopes. Keep unrelated
+	// packages' writes from refusing this batch or invalidating restart reuse.
+	pool := newScratchPool(t)
 	src := newSource(t)
 	authors := "AAABCBDE"
 	messages := make([]connector.Event, len(authors))
@@ -86,7 +94,17 @@ func TestChatBurstReconcilesEditAndTombstone(t *testing.T) {
 	}
 	cfg := config.Default()
 	cfg.Repo = repo
-	d, err := distiller.New(pool, registry, &cfg)
+	var capability llm.Judgments
+	var fake *llm.FakeJudgmentProvider
+	if mode != "baseline" {
+		cfg.Repo.Boost.Enabled = true
+		if mode == "qualified" {
+			cfg.Repo.Boost.Policies = map[llm.JudgmentTask]llm.AcceptancePolicy{llm.TaskOutcomeClassification: {Name: "test-only", ModelVersion: "recorded-v1", Threshold: 0.9}}
+		}
+		fake = llm.NewFakeJudgmentProvider(outcomeStep(t, "none"), outcomeStep(t, "decided"), outcomeStep(t, "none"), outcomeStep(t, "decided"), outcomeStep(t, "none"))
+		capability = outcomeCapability(t, llm.JudgmentConfig{MaxRetries: -1}, fake)
+	}
+	d, err := distiller.New(pool, registry, &cfg, distiller.WithJudgments(capability))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,6 +117,26 @@ func TestChatBurstReconcilesEditAndTombstone(t *testing.T) {
 	burst, err := store.Get(t.Context(), firstBurst.ID)
 	if err != nil || burst.Kind != l1.KindChatBurst || !slices.Equal(burst.L0Refs, firstBurst.L0Refs) || len(burst.ACL) != 1 || !burst.ACL[0].Equal(group) || burst.Body.OutcomeKind != l1.OutcomeNone || burst.Source.URL != messages[0].Payload.URL {
 		t.Fatalf("stored burst = %+v, %v", burst, err)
+	}
+	if mode != "baseline" {
+		reader := judgmentReader()
+		reader.Audience = []connector.ACLEntry{group}
+		records, err := store.JudgmentsFor(t.Context(), reader, string(llm.TaskOutcomeClassification))
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, r := range records {
+			if r.Inputs.Spec.DocumentID == firstBurst.ID && r.State == "committed" && r.Label == "decided" {
+				found = true
+				if mode == "qualified" && r.FallbackReason != "thread_owns_outcome" {
+					t.Fatalf("burst classification was not constrained: %+v", r)
+				}
+			}
+		}
+		if !found {
+			t.Fatal("burst judgment was not recorded")
+		}
 	}
 	if result, err := d.Distill(t.Context(), threadID); err != nil || result.Written {
 		t.Fatalf("repeat distill = %+v, %v", result, err)
@@ -121,6 +159,12 @@ func TestChatBurstReconcilesEditAndTombstone(t *testing.T) {
 	}
 	if _, err := store.Get(t.Context(), firstBurst.ID); !errors.Is(err, l1.ErrNotFound) {
 		t.Fatalf("retracted burst remains: %v", err)
+	}
+	if mode != "baseline" {
+		if fake.Calls() != 5 {
+			t.Fatalf("chat judgment calls=%d, want 5 with restart reuse", fake.Calls())
+		}
+
 	}
 }
 

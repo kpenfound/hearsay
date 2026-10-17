@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -24,7 +25,12 @@ import (
 // before reading the state used to construct the question; check the captured
 // document revision against the version read. Never capture after a model call.
 type JudgmentInputSpec struct {
-	DocumentID        string        `json:"document_id"`
+	DocumentID string `json:"document_id"`
+	// SourceBuilt excludes the derived output row from a distiller's inputs.
+	// EventIDs must name the complete source revisions. Document identity is
+	// retained for deletion and ACL checks, but writing L1 does not invalidate
+	// the result that produced it.
+	SourceBuilt       bool          `json:"source_built,omitempty"`
 	EventIDs          []string      `json:"event_ids"`
 	CandidateTopicIDs []string      `json:"candidate_topic_ids"`
 	ComparedStanceIDs []string      `json:"compared_stance_ids"`
@@ -101,7 +107,7 @@ const judgmentInputsSQL = `WITH RECURSIVE
 // it does not hold a database lock while the provider is working.
 func (s *Store) CaptureJudgmentInputs(ctx context.Context, spec JudgmentInputSpec) (JudgmentInputs, error) {
 	out := JudgmentInputs{Spec: spec}
-	err := s.db.QueryRow(ctx, judgmentInputsSQL, spec.DocumentID, orEmpty(spec.EventIDs), orEmpty(spec.CandidateTopicIDs), orEmpty(spec.ComparedStanceIDs)).Scan(&out.State, &out.Documents, &out.Events)
+	err := s.db.QueryRow(ctx, judgmentInputQuery(spec), spec.DocumentID, orEmpty(spec.EventIDs), orEmpty(spec.CandidateTopicIDs), orEmpty(spec.ComparedStanceIDs)).Scan(&out.State, &out.Documents, &out.Events)
 	if err != nil {
 		return out, fmt.Errorf("capturing judgment inputs: %w", err)
 	}
@@ -115,6 +121,13 @@ func (s *Store) CaptureJudgmentInputs(ctx context.Context, spec JudgmentInputSpe
 	hash := sha256.Sum256(raw)
 	out.Hash = hex.EncodeToString(hash[:])
 	return out, nil
+}
+
+func judgmentInputQuery(spec JudgmentInputSpec) string {
+	if spec.SourceBuilt {
+		return strings.Replace(judgmentInputsSQL, "JOIN doc_ids i ON i.id=d.id)", "JOIN doc_ids i ON i.id=d.id WHERE d.id <> $1)", 1)
+	}
+	return judgmentInputsSQL
 }
 
 // JudgmentRecord stores categorical labels, never prompt or completion text.
@@ -344,7 +357,7 @@ func (s *Store) LookupJudgment(ctx context.Context, reader Reader, task, version
 	if !ok {
 		return nil, nil
 	}
-	q.sql = `WITH current_inputs AS (` + judgmentInputsSQL + `) SELECT ` + judgmentColumns + ` FROM judgment_journal WHERE ` + filter + `
+	q.sql = `WITH current_inputs AS (` + judgmentInputQuery(inputs.Spec) + `) SELECT ` + judgmentColumns + ` FROM judgment_journal WHERE ` + filter + `
       AND state='committed' AND inputs->'spec'=$5::jsonb AND input_hash=$6
       AND task=$7 AND question_version=$8 AND question_hash=$9
       AND inputs->'state'=(SELECT state FROM current_inputs)
