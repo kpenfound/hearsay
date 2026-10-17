@@ -16,7 +16,7 @@ func usage(input, output int64, cost float64) llm.JudgmentUsage {
 	return llm.JudgmentUsage{InputTokens: count(input), OutputTokens: count(output), CostUSD: share(cost)}
 }
 func observation(cohort string) l1.PipelineObservation {
-	return l1.PipelineObservation{Cohort: cohort, HandlerNS: count(int64(time.Second)), QueueDelayNS: count(int64(2 * time.Second)), GenerativeCalls: count(2), GenerativeUsage: usage(100, 10, .25), JudgmentRequests: count(1), JudgmentAttempts: count(1), JudgmentFallbacks: count(0), JudgmentUsage: usage(20, 1, .05), CandidateCount: count(5)}
+	return l1.PipelineObservation{Cohort: cohort, HandlerNS: count(int64(time.Second)), QueueDelayNS: count(int64(2 * time.Second)), GenerativeCalls: count(2), GenerativeAttempts: count(3), GenerativeUsage: usage(100, 10, .25), JudgmentRequests: count(1), JudgmentAttempts: count(1), JudgmentFallbacks: count(0), JudgmentUsage: usage(20, 1, .05), CandidateCount: count(5)}
 }
 
 func TestPipelineTotals(t *testing.T) {
@@ -30,7 +30,7 @@ func TestPipelineTotals(t *testing.T) {
 	b.JudgmentAttempts = count(3) // retries do not inflate requests
 	report := eval.SummarizePipelines([]l1.PipelineObservation{a, b, c})
 	for _, m := range []eval.PipelineCohort{report.Baseline, report.Shadow} {
-		if m.Runs != 1 || m.TotalCostUSD == nil || math.Abs(*m.TotalCostUSD-.30) > 1e-12 || *m.GenerativeCalls != 2 || *m.CandidateCount != 5 || *m.HandlerSeconds != 1 || *m.QueueDelaySeconds != 2 {
+		if m.Runs != 1 || m.TotalCostUSD == nil || math.Abs(*m.TotalCostUSD-.30) > 1e-12 || *m.GenerativeCalls != 2 || m.GenerativeAttempts == nil || *m.GenerativeAttempts != 3 || *m.CandidateCount != 5 || *m.HandlerSeconds != 1 || *m.QueueDelaySeconds != 2 {
 			t.Fatalf("cohort=%+v", m)
 		}
 	}
@@ -68,11 +68,12 @@ func TestPipelineUnknownAndOverflow(t *testing.T) {
 		}},
 		{"count duration overflow", func(o *l1.PipelineObservation) {
 			o.GenerativeCalls = count(math.MaxInt64)
+			o.GenerativeAttempts = count(math.MaxInt64)
 			o.HandlerNS = count(math.MaxInt64)
 			o.JudgmentAttempts = count(math.MaxInt64)
 			o.CandidateCount = count(math.MaxInt64)
 		}, func(t *testing.T, c eval.PipelineCohort) {
-			if c.GenerativeCalls != nil || c.HandlerSeconds != nil || c.MeanHandlerSeconds != nil || c.JudgmentAttempts != nil || c.CandidateCount != nil {
+			if c.GenerativeCalls != nil || c.GenerativeAttempts != nil || c.HandlerSeconds != nil || c.MeanHandlerSeconds != nil || c.JudgmentAttempts != nil || c.CandidateCount != nil {
 				t.Fatal(c)
 			}
 		}},

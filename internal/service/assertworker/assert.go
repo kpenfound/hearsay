@@ -88,7 +88,7 @@ func New(pool *pgxpool.Pool, registry llm.Registry, cfg *config.Config, registri
 		pool:            pool,
 		docs:            l1.New(pool),
 		events:          l0.New(pool),
-		tier:            tier,
+		tier:            llm.AccountCompletions(tier),
 		repo:            cfg.Repo,
 		connectors:      connectors,
 		timeout:         CallTimeout,
@@ -212,6 +212,7 @@ func jobQueueDelay(job queue.Job) *int64 {
 }
 
 func (a *Asserter) assert(ctx context.Context, docID, scope string, queueDelay *int64) (Result, error) {
+	ctx, accounting := llm.ObserveCompletions(ctx)
 	started := time.Now()
 	prepared, err := a.prepare(ctx, docID, scope)
 	if err != nil {
@@ -223,7 +224,7 @@ func (a *Asserter) assert(ctx context.Context, docID, scope string, queueDelay *
 	}
 	stored, candidates := prepared.stored, prepared.candidates
 	doc := stored.Document
-	baseline, tokens, err := a.extract(ctx, doc, candidates)
+	baseline, err := a.extract(ctx, doc, candidates)
 	if err != nil {
 		return Result{}, err
 	}
@@ -231,7 +232,7 @@ func (a *Asserter) assert(ctx context.Context, docID, scope string, queueDelay *
 	// shortlisting must use this same context, never create a fresh budget.
 	optional, cancel := NewJobBudget(ctx, a.repo.Boost)
 	defer cancel()
-	batch := newJudgmentBatch(prepared.inputs, started, tokens, len(prepared.topics))
+	batch := newJudgmentBatch(prepared.inputs, started, len(prepared.topics))
 	batch.observation.QueueDelayNS = queueDelay
 	ans := cloneAnswer(baseline)
 	working := prepared
@@ -247,9 +248,7 @@ func (a *Asserter) assert(ctx context.Context, docID, scope string, queueDelay *
 			batch.observation.CandidateCount = l1.AddPipelineCount(batch.observation.CandidateCount, count(int64(len(pool.topics))))
 			selected := a.shortlist(optional, prepared, pool, &batch)
 			if !slices.EqualFunc(selected.topics, prepared.topics, func(a, b l2.Topic) bool { return a.ID == b.ID }) && optional.Err() == nil {
-				batch.observation.GenerativeCalls = l1.AddPipelineCount(batch.observation.GenerativeCalls, count(1))
-				alternate, usage, extractErr := a.extract(optional, doc, selected.candidates)
-				batch.observation.GenerativeUsage = llm.AddJudgmentUsage(batch.observation.GenerativeUsage, llm.JudgmentUsage{InputTokens: positiveCount(usage.Input), OutputTokens: positiveCount(usage.Output)})
+				alternate, extractErr := a.extract(optional, doc, selected.candidates)
 				if extractErr == nil {
 					ans, working = alternate, selected
 					batch.observation.Cohort = "accepted"
@@ -263,6 +262,7 @@ func (a *Asserter) assert(ctx context.Context, docID, scope string, queueDelay *
 		}
 	}
 
+	batch.observation.GenerativeCalls, batch.observation.GenerativeAttempts, batch.observation.GenerativeUsage = accounting.Snapshot()
 	err = pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) error {
 		write := func(tx pgx.Tx, extraction answer, p preparedAssertion) error {
 			return a.writeExtraction(ctx, tx, stored, scope, p.topics, p.candidates, extraction, &result)
@@ -338,30 +338,30 @@ func (a *Asserter) candidatePool(ctx context.Context, graph *l2.Store, scope str
 // The error it returns is a log line and a queue_job.last_error column, so it
 // names the document and the tier and never a word of what was sent or what
 // came back (ADR-0008).
-func (a *Asserter) extract(ctx context.Context, doc l1.Document, candidates []Candidate) (answer, llm.Tokens, error) {
+func (a *Asserter) extract(ctx context.Context, doc l1.Document, candidates []Candidate) (answer, error) {
 	call, done := context.WithTimeout(ctx, a.timeout)
 	defer done()
 	resp, err := a.tier.Complete(call, RequestFor(doc, candidates, 0))
 	if err != nil {
-		return answer{}, llm.Tokens{}, fmt.Errorf("asserting %s: %w", doc.ID, err)
+		return answer{}, fmt.Errorf("asserting %s: %w", doc.ID, err)
 	}
 	var ans answer
 	if err := json.Unmarshal(resp.JSON, &ans); err != nil {
-		return answer{}, llm.Tokens{}, fmt.Errorf("asserting %s: the %s answer did not decode: %w", doc.ID, llm.TierAssert, err)
+		return answer{}, fmt.Errorf("asserting %s: the %s answer did not decode: %w", doc.ID, llm.TierAssert, err)
 	}
 	for i, as := range ans.Assertions {
 		if as.Topic != NewTopic && topicIndex(as.Topic, len(candidates)) < 0 {
-			return answer{}, llm.Tokens{}, fmt.Errorf("asserting %s: the %s answer names an unoffered topic for assertion %d", doc.ID, llm.TierAssert, i+1)
+			return answer{}, fmt.Errorf("asserting %s: the %s answer names an unoffered topic for assertion %d", doc.ID, llm.TierAssert, i+1)
 		}
 		valid := as.Judgement == nil
 		if as.Topic != NewTopic {
 			valid = as.Judgement != nil && (*as.Judgement == l2.JudgementChanges || *as.Judgement == l2.JudgementRestates)
 		}
 		if !valid {
-			return answer{}, llm.Tokens{}, fmt.Errorf("asserting %s: the %s answer has invalid judgement for assertion %d", doc.ID, llm.TierAssert, i+1)
+			return answer{}, fmt.Errorf("asserting %s: the %s answer has invalid judgement for assertion %d", doc.ID, llm.TierAssert, i+1)
 		}
 	}
-	return ans, resp.Tokens, nil
+	return ans, nil
 }
 
 // clean is a model's string made fit to store: trimmed, and scrubbed the way

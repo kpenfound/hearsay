@@ -106,6 +106,11 @@ func TestStanceJournalReusedAcrossConcurrentUnrelatedIngestion(t *testing.T) {
 	restarted := boostedAsserter(t, pool, src, cfg, restartJ, loadFixtures(t))
 	reused := make(map[string]bool)
 	restarted.WithJournalCommit(func(ctx context.Context, tx pgx.Tx, rs []l1.JudgmentRecord, obs []l1.PipelineObservation, opts l1.JournalCommitOptions) error {
+		for _, o := range obs {
+			if o.JudgmentRequests == nil || *o.JudgmentRequests != 0 || o.JudgmentAttempts == nil || *o.JudgmentAttempts != 0 || o.JudgmentFallbacks == nil || *o.JudgmentFallbacks != 0 {
+				t.Fatalf("reused results counted again: %+v", o)
+			}
+		}
 		for _, r := range rs {
 			if r.ID != committed[r.Task] || r.State != "committed" {
 				t.Fatalf("restart did not reuse committed %s judgment: %+v", r.Task, r)

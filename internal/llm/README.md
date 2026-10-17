@@ -144,3 +144,11 @@ valid fields. Invalid-response markers are terminal even inside retryable errors
 Only sanitized fallback constants leave the wrapper; provider error bodies,
 prompts and answers never enter errors or logs. `FakeJudgmentProvider` scripts
 slow, failing, rate-limited and invalid attempts through the same wrapper.
+
+
+Worker stages use `ObserveCompletions` and `AccountCompletions` to collect logical
+calls, all registry provider attempts (including retries) and reported consumption
+through their own contexts. `Response.ReportedUsage` preserves explicit zero;
+legacy zero token fields remain unknown. Failed attempts contribute their reported
+usage, absent accounting and overflow remain unknown, and no cost is derived from
+pricing. `Registry.Usage` continues to serve its process-wide usage view.

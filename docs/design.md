@@ -153,6 +153,51 @@ Durable artifacts that define a scope, as distinct from recent activity. A desig
 
 Serialized per scope to avoid topic-merge races. For each new L1 doc with a qualifying `outcome_kind`, extract candidate assertions, match against existing topics using reference overlap first and embedding similarity second, then append a stance or open a topic. Topic merges and splits are cheap human actions. Wrong merges are the expected failure mode and must be one gesture to undo. Gesture jobs and topic-operation holds use the same scope's serialized `assert` key ([ADR-0020](adr/0020-topic-operations-are-a-ledger-held-on-the-scope-key.md), [ADR-0022](adr/0022-human-gestures-and-command-replies.md)).
 
+## Optional Jev boost
+
+[ADR-0031](adr/0031-typed-judgments-are-an-optional-write-path-capability.md)
+adds a typed judgment capability alongside ADR-0005's three generative tiers.
+`llm.boost.enabled` is the single switch for stance comparison, topic matching
+and outcome classification; absent or false requires no Jev credential and makes
+zero calls. When enabled, `api_key_env` references `HEARSAY_JEV_API_KEY` by default.
+Missing credentials, outages and unusable answers preserve baseline output and
+service readiness. Workers expose disabled, healthy or degraded capability state
+through the `judgments` object in `/readyz`, with the last fallback reason.
+One instance is shared by both workers in `hearsay all`; separate processes do
+not share cooldown.
+
+The boost records shadow judgments until task policies pass deliberate
+[human-reviewed evaluation and qualification](jev-evaluation.md). No qualified
+policy ships. Configure an explicit model id and bind each acceptance threshold
+to the resolved model version; upgrades never rewrite historical consumed results.
+Confidence is not validated correctness and typed output constrains shape only.
+Negation, ambiguity, proposal versus decision, domain language and adversarial
+source text remain known risks to measure on the team's own data.
+
+Generative tiers continue to write all prose, extracted positions and topic names.
+On outcome disagreement, only a supported generative restatement can adopt the
+new label; otherwise the original label/text pair survives. Topic changes require
+a coherent comparison to the replacement's readable current position. None-fit
+never opens a new topic. Withheld previous evidence stays withheld.
+
+Judgments commit atomically with the output they inform, against current effective
+input identities. Any journal refusal (storage failure, timeout or changed inputs)
+restores the complete baseline document or assertion job. ACLs and operator deletion
+cover records and observations; restart reuse requires matching effective inputs.
+The assertion job shares one total optional-work budget (default 5s, configurable
+up to 30s) across every question, broader pool, replacement, optional re-extraction,
+retry and wait. It never resets per assertion. Exhaustion restores baseline output;
+optional work therefore adds at most that budget to scope-key holding, beyond
+baseline processing and queue scheduling. Outcome work has one fixed 5s document
+budget. Neither budget cancels baseline writes. Human gestures use the same key
+and continue to determine standing.
+
+Bundle assembly, search, standing, authorization, command/gesture application and
+deletion make no judgment calls. Output on those paths depends on effective data,
+principal and policy. Pipeline reports include calls, retries, additional candidate
+processing and zero-attempt fallbacks; unknown usage/cost stays unknown, and vendor
+price alone supports no savings claim.
+
 ## L3: derived views
 
 Rebuilt from L2 on demand. Never written directly.

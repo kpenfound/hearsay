@@ -68,4 +68,15 @@ func TestOutcomeJournalReusedAcrossConcurrentUnrelatedIngestion(t *testing.T) {
 		t.Fatalf("restart=%+v %v calls=%d", result, err, restartFake.Calls())
 	}
 	assertBaselineOutcome(t, pool, id)
+	observations, err := l1.New(pool).ObservationsFor(t.Context(), judgmentReader())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(observations) < 2 {
+		t.Fatalf("missing restart observation: %d", len(observations))
+	}
+	latest := observations[len(observations)-1]
+	if latest.JudgmentRequests == nil || *latest.JudgmentRequests != 0 || latest.JudgmentAttempts == nil || *latest.JudgmentAttempts != 0 || latest.JudgmentFallbacks == nil || *latest.JudgmentFallbacks != 0 {
+		t.Fatalf("reused fallback counted again: %+v", latest)
+	}
 }

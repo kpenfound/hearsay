@@ -14,20 +14,21 @@ import (
 // zero. Include every retry and additional candidate-processing call. Inputs
 // supplies the evidence/audience and is validated alongside the judgment batch.
 type PipelineObservation struct {
-	ID                string
-	Stage             string
-	Cohort            string
-	Inputs            JudgmentInputs
-	RecordedAt        time.Time
-	HandlerNS         *int64
-	QueueDelayNS      *int64
-	GenerativeCalls   *int64
-	GenerativeUsage   llm.JudgmentUsage
-	JudgmentRequests  *int64 // logical observations, including zero-attempt fallbacks
-	JudgmentAttempts  *int64
-	JudgmentFallbacks *int64
-	JudgmentUsage     llm.JudgmentUsage
-	CandidateCount    *int64
+	ID                 string
+	Stage              string
+	Cohort             string
+	Inputs             JudgmentInputs
+	RecordedAt         time.Time
+	HandlerNS          *int64
+	QueueDelayNS       *int64
+	GenerativeCalls    *int64
+	GenerativeAttempts *int64
+	GenerativeUsage    llm.JudgmentUsage
+	JudgmentRequests   *int64 // logical observations, including zero-attempt fallbacks
+	JudgmentAttempts   *int64
+	JudgmentFallbacks  *int64
+	JudgmentUsage      llm.JudgmentUsage
+	CandidateCount     *int64
 }
 
 // AddPipelineCount propagates missing, invalid and overflowing counts as
@@ -60,9 +61,9 @@ func (s *Store) writeObservation(ctx context.Context, o PipelineObservation) err
 	}
 	var id string
 	return s.db.QueryRow(ctx, `INSERT INTO pipeline_observations
-     (id,stage,cohort,documents,events,scope,acl,handler_ns,queue_delay_ns,generative_calls,generative_input_tokens,generative_output_tokens,generative_cost_usd,judgment_requests,judgment_attempts,judgment_fallbacks,judgment_input_tokens,judgment_output_tokens,judgment_cost_usd,candidate_count)
-     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING id`,
-		o.ID, o.Stage, o.Cohort, orEmpty(o.Inputs.Documents), orEmpty(o.Inputs.Events), orEmpty(o.Inputs.Spec.Scope), acl, knownCount(o.HandlerNS), knownCount(o.QueueDelayNS), knownCount(o.GenerativeCalls), o.GenerativeUsage.InputTokens, o.GenerativeUsage.OutputTokens, o.GenerativeUsage.CostUSD, knownCount(o.JudgmentRequests), knownCount(o.JudgmentAttempts), knownCount(o.JudgmentFallbacks), o.JudgmentUsage.InputTokens, o.JudgmentUsage.OutputTokens, o.JudgmentUsage.CostUSD, knownCount(o.CandidateCount)).Scan(&id)
+     (id,stage,cohort,documents,events,scope,acl,handler_ns,queue_delay_ns,generative_calls,generative_attempts,generative_input_tokens,generative_output_tokens,generative_cost_usd,judgment_requests,judgment_attempts,judgment_fallbacks,judgment_input_tokens,judgment_output_tokens,judgment_cost_usd,candidate_count)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING id`,
+		o.ID, o.Stage, o.Cohort, orEmpty(o.Inputs.Documents), orEmpty(o.Inputs.Events), orEmpty(o.Inputs.Spec.Scope), acl, knownCount(o.HandlerNS), knownCount(o.QueueDelayNS), knownCount(o.GenerativeCalls), knownCount(o.GenerativeAttempts), o.GenerativeUsage.InputTokens, o.GenerativeUsage.OutputTokens, o.GenerativeUsage.CostUSD, knownCount(o.JudgmentRequests), knownCount(o.JudgmentAttempts), knownCount(o.JudgmentFallbacks), o.JudgmentUsage.InputTokens, o.JudgmentUsage.OutputTokens, o.JudgmentUsage.CostUSD, knownCount(o.CandidateCount)).Scan(&id)
 }
 
 // ObservationsFor returns stage accounting filtered by scope, stored ACL and
@@ -73,7 +74,7 @@ func (s *Store) ObservationsFor(ctx context.Context, reader Reader) ([]PipelineO
 	if !ok {
 		return []PipelineObservation{}, nil
 	}
-	rows, err := s.db.Query(ctx, `SELECT id,stage,cohort,documents,events,scope,acl,recorded_at,handler_ns,queue_delay_ns,generative_calls,generative_input_tokens,generative_output_tokens,generative_cost_usd,judgment_requests,judgment_attempts,judgment_fallbacks,judgment_input_tokens,judgment_output_tokens,judgment_cost_usd,candidate_count FROM pipeline_observations WHERE `+filter+` ORDER BY recorded_at,id`, q.args...)
+	rows, err := s.db.Query(ctx, `SELECT id,stage,cohort,documents,events,scope,acl,recorded_at,handler_ns,queue_delay_ns,generative_calls,generative_attempts,generative_input_tokens,generative_output_tokens,generative_cost_usd,judgment_requests,judgment_attempts,judgment_fallbacks,judgment_input_tokens,judgment_output_tokens,judgment_cost_usd,candidate_count FROM pipeline_observations WHERE `+filter+` ORDER BY recorded_at,id`, q.args...)
 	if err != nil {
 		return nil, JournalStorageFailure
 	}
@@ -81,7 +82,7 @@ func (s *Store) ObservationsFor(ctx context.Context, reader Reader) ([]PipelineO
 	for rows.Next() {
 		var o PipelineObservation
 		var raw []byte
-		if err = rows.Scan(&o.ID, &o.Stage, &o.Cohort, &o.Inputs.Documents, &o.Inputs.Events, &o.Inputs.Spec.Scope, &raw, &o.RecordedAt, &o.HandlerNS, &o.QueueDelayNS, &o.GenerativeCalls, &o.GenerativeUsage.InputTokens, &o.GenerativeUsage.OutputTokens, &o.GenerativeUsage.CostUSD, &o.JudgmentRequests, &o.JudgmentAttempts, &o.JudgmentFallbacks, &o.JudgmentUsage.InputTokens, &o.JudgmentUsage.OutputTokens, &o.JudgmentUsage.CostUSD, &o.CandidateCount); err != nil {
+		if err = rows.Scan(&o.ID, &o.Stage, &o.Cohort, &o.Inputs.Documents, &o.Inputs.Events, &o.Inputs.Spec.Scope, &raw, &o.RecordedAt, &o.HandlerNS, &o.QueueDelayNS, &o.GenerativeCalls, &o.GenerativeAttempts, &o.GenerativeUsage.InputTokens, &o.GenerativeUsage.OutputTokens, &o.GenerativeUsage.CostUSD, &o.JudgmentRequests, &o.JudgmentAttempts, &o.JudgmentFallbacks, &o.JudgmentUsage.InputTokens, &o.JudgmentUsage.OutputTokens, &o.JudgmentUsage.CostUSD, &o.CandidateCount); err != nil {
 			break
 		}
 		if err = json.Unmarshal(raw, &o.Inputs.Spec.ACL); err != nil {
@@ -113,7 +114,7 @@ func (s *Store) ObservationsFor(ctx context.Context, reader Reader) ([]PipelineO
 // aggregate reporting. No source, ACL, document or topic content is returned.
 // Unlike ObservationsFor, this is not an evidence/journal browsing interface.
 func (s *Store) PipelineAccounting(ctx context.Context, since, until time.Time, scope string) ([]PipelineObservation, error) {
-	rows, err := s.db.Query(ctx, `SELECT cohort,handler_ns,queue_delay_ns,generative_calls,generative_input_tokens,generative_output_tokens,generative_cost_usd,judgment_requests,judgment_attempts,judgment_fallbacks,judgment_input_tokens,judgment_output_tokens,judgment_cost_usd,candidate_count FROM pipeline_observations WHERE recorded_at >= $1 AND recorded_at < $2 AND ($3 = '' OR $3 = ANY(scope)) ORDER BY recorded_at,id`, since, until, scope)
+	rows, err := s.db.Query(ctx, `SELECT cohort,handler_ns,queue_delay_ns,generative_calls,generative_attempts,generative_input_tokens,generative_output_tokens,generative_cost_usd,judgment_requests,judgment_attempts,judgment_fallbacks,judgment_input_tokens,judgment_output_tokens,judgment_cost_usd,candidate_count FROM pipeline_observations WHERE recorded_at >= $1 AND recorded_at < $2 AND ($3 = '' OR $3 = ANY(scope)) ORDER BY recorded_at,id`, since, until, scope)
 	if err != nil {
 		return nil, JournalStorageFailure
 	}
@@ -121,7 +122,7 @@ func (s *Store) PipelineAccounting(ctx context.Context, since, until time.Time, 
 	out := []PipelineObservation{}
 	for rows.Next() {
 		var o PipelineObservation
-		if err := rows.Scan(&o.Cohort, &o.HandlerNS, &o.QueueDelayNS, &o.GenerativeCalls, &o.GenerativeUsage.InputTokens, &o.GenerativeUsage.OutputTokens, &o.GenerativeUsage.CostUSD, &o.JudgmentRequests, &o.JudgmentAttempts, &o.JudgmentFallbacks, &o.JudgmentUsage.InputTokens, &o.JudgmentUsage.OutputTokens, &o.JudgmentUsage.CostUSD, &o.CandidateCount); err != nil {
+		if err := rows.Scan(&o.Cohort, &o.HandlerNS, &o.QueueDelayNS, &o.GenerativeCalls, &o.GenerativeAttempts, &o.GenerativeUsage.InputTokens, &o.GenerativeUsage.OutputTokens, &o.GenerativeUsage.CostUSD, &o.JudgmentRequests, &o.JudgmentAttempts, &o.JudgmentFallbacks, &o.JudgmentUsage.InputTokens, &o.JudgmentUsage.OutputTokens, &o.JudgmentUsage.CostUSD, &o.CandidateCount); err != nil {
 			return nil, JournalStorageFailure
 		}
 		out = append(out, o)

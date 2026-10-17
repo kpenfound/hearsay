@@ -201,6 +201,7 @@ func (c *completer) Complete(ctx context.Context, req Request) (Response, error)
 	}
 	resp, err := call(ctx, c.tierClient, func(ctx context.Context) (Response, outcome, error) {
 		resp, err := c.inner.Complete(ctx, req)
+		recordCompletionAttempt(ctx, resp)
 		return resp, outcome{tokens: resp.Tokens, model: resp.Model}, err
 	})
 	if err != nil {

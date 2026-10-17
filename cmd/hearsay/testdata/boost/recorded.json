@@ -1,0 +1,252 @@
+{
+  "first": {
+    "summary": "The team proposes holding the lock in the queue.",
+    "question": "Where should the lock be taken?",
+    "outcome": "Proposed: take the lock inside the queue.",
+    "outcome_kind": "proposed"
+  },
+  "second": {
+    "summary": "The team decided to take the lock before writing.",
+    "outcome": "Take the lock before writing.",
+    "outcome_kind": "decided"
+  },
+  "restatement": {
+    "supported": true,
+    "outcome_kind": "resolved",
+    "outcome": "The lock now precedes the write."
+  },
+  "assert_first": {
+    "assertions": [
+      {
+        "topic": "new",
+        "topic_name": "Where to take the lock",
+        "position": "Take the lock inside the queue."
+      }
+    ]
+  },
+  "assert_second": {
+    "assertions": [
+      {
+        "topic": "T1",
+        "topic_name": "Where to take the lock",
+        "position": "Take the lock before writing.",
+        "judgement": "changes"
+      }
+    ]
+  },
+  "assert_multi": {
+    "assertions": [
+      {
+        "topic": "T1",
+        "topic_name": "Where to take the lock",
+        "position": "Take the lock before writing.",
+        "judgement": "changes"
+      },
+      {
+        "topic": "T1",
+        "topic_name": "Where to take the lock",
+        "position": "Keep the lock before the write.",
+        "judgement": "changes"
+      },
+      {
+        "topic": "T1",
+        "topic_name": "Where to take the lock",
+        "position": "Acquire the lock first.",
+        "judgement": "changes"
+      }
+    ]
+  },
+  "outcome_proposed": {
+    "Answers": [
+      {
+        "ID": "outcome",
+        "Choice": "proposed",
+        "Probabilities": {
+          "resolved": 0.01,
+          "decided": 0.01,
+          "proposed": 0.96,
+          "open": 0.01,
+          "none": 0.01
+        },
+        "Confidence": 0.96
+      }
+    ],
+    "ModelVersion": "recorded-v1",
+    "Usage": {
+      "input_tokens": 12,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  "outcome_resolved": {
+    "Answers": [
+      {
+        "ID": "outcome",
+        "Choice": "resolved",
+        "Probabilities": {
+          "resolved": 0.96,
+          "decided": 0.01,
+          "proposed": 0.01,
+          "open": 0.01,
+          "none": 0.01
+        },
+        "Confidence": 0.96
+      }
+    ],
+    "ModelVersion": "recorded-v1",
+    "Usage": {
+      "input_tokens": 12,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  "stance": {
+    "Answers": [
+      {
+        "ID": "stance",
+        "Choice": "restates",
+        "Probabilities": {
+          "changes": 0.02,
+          "restates": 0.96,
+          "abstain": 0.02
+        },
+        "Confidence": 0.96
+      }
+    ],
+    "ModelVersion": "recorded-v1",
+    "Usage": {
+      "input_tokens": 12,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  "shortlist": {
+    "Answers": [
+      {
+        "ID": "shortlist",
+        "Choice": "none_fit",
+        "Probabilities": {
+          "none_fit": 0.96,
+          "T1": 0.04
+        },
+        "Confidence": 0.96
+      }
+    ],
+    "ModelVersion": "recorded-v1",
+    "Usage": {
+      "input_tokens": 12,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  "topic": {
+    "Answers": [
+      {
+        "ID": "topic",
+        "Choice": "T1",
+        "Probabilities": {
+          "none_fit": 0.04,
+          "T1": 0.96
+        },
+        "Confidence": 0.96
+      }
+    ],
+    "ModelVersion": "recorded-v1",
+    "Usage": {
+      "input_tokens": 12,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  "assert_seed_multi": {
+    "assertions": [
+      {
+        "topic": "new",
+        "topic_name": "Lock question 0",
+        "position": "Take the lock inside the queue."
+      },
+      {
+        "topic": "new",
+        "topic_name": "Lock question 1",
+        "position": "Take the lock inside the queue."
+      },
+      {
+        "topic": "new",
+        "topic_name": "Lock question 2",
+        "position": "Take the lock inside the queue."
+      },
+      {
+        "topic": "new",
+        "topic_name": "Lock question 3",
+        "position": "Take the lock inside the queue."
+      }
+    ]
+  },
+  "shortlist_broad": {
+    "Answers": [
+      {
+        "ID": "shortlist",
+        "Choice": "none_fit",
+        "Probabilities": {
+          "none_fit": 0.96,
+          "T1": 0.006666666666666667,
+          "T2": 0.006666666666666667,
+          "T3": 0.006666666666666667,
+          "T4": 0.006666666666666667,
+          "T5": 0.006666666666666667,
+          "T6": 0.006666666666666667
+        },
+        "Confidence": 0.96
+      }
+    ],
+    "ModelVersion": "recorded-v1",
+    "Usage": {
+      "input_tokens": 12,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  "topic_broad": {
+    "Answers": [
+      {
+        "ID": "topic",
+        "Choice": "T1",
+        "Probabilities": {
+          "none_fit": 0.008,
+          "T1": 0.96,
+          "T2": 0.008,
+          "T3": 0.008,
+          "T4": 0.008,
+          "T5": 0.008
+        },
+        "Confidence": 0.96
+      }
+    ],
+    "ModelVersion": "recorded-v1",
+    "Usage": {
+      "input_tokens": 12,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  "assert_seed_side": {
+    "assertions": [
+      {
+        "topic": "new",
+        "topic_name": "Lock question 4",
+        "position": "Take the lock inside the queue."
+      },
+      {
+        "topic": "new",
+        "topic_name": "Lock question 5",
+        "position": "Take the lock inside the queue."
+      }
+    ]
+  },
+  "side": {
+    "summary": "Additional proposals about where to take the lock.",
+    "question": "Where should the lock be taken?",
+    "outcome": "Proposed: take the lock inside the queue.",
+    "outcome_kind": "proposed"
+  }
+}

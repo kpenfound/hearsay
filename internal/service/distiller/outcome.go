@@ -76,7 +76,11 @@ func observationID() string {
 // modelDocument preserves the full baseline before any optional decision. The
 // journal snapshot precedes all model calls and excludes this derived L1 row.
 func (d *Distiller) modelDocument(ctx context.Context, doc l1.Document) (*outcomeRun, error) {
+	ctx, accounting := llm.ObserveCompletions(ctx)
 	run := &outcomeRun{started: time.Now()}
+	defer func() {
+		run.observation.GenerativeCalls, run.observation.GenerativeAttempts, run.observation.GenerativeUsage = accounting.Snapshot()
+	}()
 	capture, stopCapture := context.WithTimeout(ctx, 100*time.Millisecond)
 	inputs, captureErr := d.docs.CaptureJudgmentInputs(capture, l1.JudgmentInputSpec{
 		DocumentID: doc.ID, SourceBuilt: true, EventIDs: doc.L0Refs, ACL: doc.ACL, Scope: doc.Scope,
@@ -88,9 +92,8 @@ func (d *Distiller) modelDocument(ctx context.Context, doc l1.Document) (*outcom
 		queueDelay = count(ns)
 	}
 	run.observation = l1.PipelineObservation{QueueDelayNS: queueDelay, ID: observationID(), Stage: "distill", Cohort: "baseline", Inputs: inputs,
-		GenerativeCalls: count(1), JudgmentAttempts: count(0), JudgmentFallbacks: count(0), CandidateCount: count(0)}
-	body, usage, err := d.distil(ctx, doc)
-	run.observation.GenerativeUsage = usage
+		GenerativeCalls: count(1), JudgmentRequests: count(0), JudgmentAttempts: count(0), JudgmentFallbacks: count(0), CandidateCount: count(0), JudgmentUsage: llm.JudgmentUsage{InputTokens: count(0), OutputTokens: count(0), CostUSD: new(float64)}}
+	body, err := d.distil(ctx, doc)
 	if err != nil {
 		return nil, err
 	}
@@ -127,9 +130,7 @@ func (d *Distiller) modelDocument(ctx context.Context, doc l1.Document) (*outcom
 	if old != nil {
 		// Never re-evaluate an immutable result against a new policy or model.
 		run.record = old
-		if old.Outcome == "fallback" {
-			run.observation.JudgmentFallbacks = count(1)
-		}
+
 		run.observation.Cohort = "shadow"
 		if old.Mode == "accepted" && old.Outcome == "answer" && doc.Kind != l1.KindChatBurst {
 			previous, err := d.docs.Get(optional, doc.ID)
@@ -151,6 +152,7 @@ func (d *Distiller) modelDocument(ctx context.Context, doc l1.Document) (*outcom
 	}
 	run.record = &record
 	run.observation.Cohort = "shadow"
+	run.observation.JudgmentRequests = count(1)
 	result := llm.JudgmentResult{Fallback: llm.JudgmentUnavailable}
 	if d.judgments != nil {
 		result = d.judgments.Judge(optional, request)
@@ -189,9 +191,7 @@ func (d *Distiller) modelDocument(ctx context.Context, doc l1.Document) (*outcom
 		return run, nil
 	}
 	if label != body.OutcomeKind {
-		run.observation.GenerativeCalls = count(2)
 		response, err := d.tier.Complete(optional, OutcomeRestatementRequest(doc, label, 0))
-		run.observation.GenerativeUsage = llm.AddJudgmentUsage(run.observation.GenerativeUsage, generativeUsage(response))
 		if err != nil {
 			fallback("restatement_failed")
 			return run, nil
@@ -221,19 +221,6 @@ func (d *Distiller) modelDocument(ctx context.Context, doc l1.Document) (*outcom
 	}
 	run.observation.Cohort = "accepted"
 	return run, nil
-}
-
-// generativeUsage preserves positive reported tokens. The legacy generative
-// interface exposes no per-call retry or cost accounting; those remain unknown.
-func generativeUsage(response llm.Response) llm.JudgmentUsage {
-	usage := llm.JudgmentUsage{}
-	if response.Tokens.Input > 0 {
-		usage.InputTokens = count(int64(response.Tokens.Input))
-	}
-	if response.Tokens.Output > 0 {
-		usage.OutputTokens = count(int64(response.Tokens.Output))
-	}
-	return usage
 }
 
 // commitOutcomes runs before any consumer row changes. A refusal restores the

@@ -174,15 +174,18 @@ including on the tuning split. Confidence is never an access-control boundary.
 
 `hearsay eval --json` retains every existing field and adds `pipelines` with
 `baseline`, `shadow` and `accepted` cohorts. These count retained **worker-stage
-records**, not documents or replay invocations. All-fallback accepted runs stay in
-the accepted cohort. `unclassified_runs` makes unexpected cohort labels visible.
+records**, not documents or replay invocations. The cohort records the worker's
+final stage classification, rather than simply whether a policy was configured.
+For example, an assertion run restored after budget exhaustion is baseline; inspect
+each judgment's mode and policy separately. `unclassified_runs` makes unexpected
+cohort labels visible.
 Deletion removes observations referencing deleted evidence, so this is retained
 accounting, not a provider invoice or permanent billing ledger.
 
 Each cohort reports runs; total, mean and p90 handler seconds; total queue delay
-seconds, mean known queue delay and missing-delay run count; generative calls and
-usage; logical judgment requests, attempts, fallbacks and usage; additional candidate
-count; total reported USD cost; and fallback frequency. Handler duration already
+seconds, mean known queue delay and missing-delay run count; logical generative calls,
+provider attempts (including retries) and usage; logical judgment requests,
+attempts, fallbacks and usage; additional candidate count; total reported USD cost; and fallback frequency. Handler duration already
 includes optional work, retries, waits and candidate processing: never add those
 again. Queue delay is separate. The p90 is nearest-rank over complete handler
 measurements; unknown handler runs make its p90 and mean unknown. Queue mean covers
@@ -195,8 +198,15 @@ reused in a later run is not counted again: its original run counted it. Fallbac
 frequency is fallbacks / logical requests, **not** fallbacks / provider attempts.
 One rate-limit attempt followed by two cooldown suppressions is three fallback
 observations and one provider attempt. Suppressions consume known zero tokens and
-cost; an attempted call with unreported usage remains unknown. Until a worker
-populates the nullable logical-request count, its fallback rate remains null.
+cost; an attempted call with unreported usage remains unknown. Both workers populate
+the logical-request count, including explicit zero when nothing was asked.
+
+Generative accounting is scoped to each stage context, including optional
+restatement and shortlist re-extraction. Provider attempts include failed and
+retried attempts; reported tokens and costs from each attempt contribute. An
+uninstrumented custom Completer leaves attempts unknown. Legacy zero token fields
+without presence bits stay unknown; adapters with presence bits retain reported
+zero. Concurrent jobs never difference a shared registry usage counter.
 
 Empty cohorts have null measures. Nullable consumption is summed only when every
 contributor is known, nonnegative and within representable bounds; missing/invalid

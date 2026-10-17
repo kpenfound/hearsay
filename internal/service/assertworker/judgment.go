@@ -107,25 +107,14 @@ type judgmentBatch struct {
 
 func count(n int64) *int64 { return &n }
 
-// The generative response has no presence bits. Preserve an absent/zero token
-// field as unknown rather than manufacture a reported zero. Judgment usage,
-// in contrast, has presence bits and preserves an explicit provider zero.
-func positiveCount(n int) *int64 {
-	if n <= 0 {
-		return nil
-	}
-	return count(int64(n))
-}
-
-func newJudgmentBatch(inputs l1.JudgmentInputs, started time.Time, tokens llm.Tokens, candidates int) judgmentBatch {
+func newJudgmentBatch(inputs l1.JudgmentInputs, started time.Time, candidates int) judgmentBatch {
 	var id [16]byte
 	// Failure to mint an observation identity refuses the optional batch.
 	_, err := rand.Read(id[:])
 	return judgmentBatch{refused: err != nil, observation: l1.PipelineObservation{
 		ID: "assert_" + hex.EncodeToString(id[:]), Stage: "assert", Cohort: "baseline", Inputs: inputs,
-		RecordedAt: started, GenerativeCalls: count(1),
-		GenerativeUsage:  llm.JudgmentUsage{InputTokens: positiveCount(tokens.Input), OutputTokens: positiveCount(tokens.Output)},
-		JudgmentAttempts: count(0), JudgmentFallbacks: count(0),
+		RecordedAt:       started,
+		JudgmentRequests: count(0), JudgmentAttempts: count(0), JudgmentFallbacks: count(0),
 		JudgmentUsage:  llm.JudgmentUsage{InputTokens: count(0), OutputTokens: count(0), CostUSD: new(float64)},
 		CandidateCount: count(int64(candidates)),
 	}}
@@ -226,6 +215,7 @@ func (a *Asserter) evaluateJudgment(optional context.Context, req llm.JudgmentRe
 			}
 			record.ID = "jud_" + hex.EncodeToString(id[:])
 		}
+		batch.observation.JudgmentRequests = l1.AddPipelineCount(batch.observation.JudgmentRequests, count(1))
 		out := a.judgments.Judge(optional, req)
 		if errors.Is(optional.Err(), context.DeadlineExceeded) && out.Attempts == 0 {
 			out.Fallback = llm.JudgmentBudgetExhausted

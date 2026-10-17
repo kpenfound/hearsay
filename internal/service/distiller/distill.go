@@ -90,7 +90,7 @@ func New(pool *pgxpool.Pool, registry llm.Registry, cfg *config.Config, options 
 		pool:     pool,
 		events:   l0.New(pool),
 		docs:     l1.New(pool),
-		tier:     tier,
+		tier:     llm.AccountCompletions(tier),
 		embedder: embedder,
 		resolver: resolver,
 		repo:     cfg.Repo,
@@ -914,7 +914,7 @@ func (d *Distiller) provenanceNow(ctx context.Context, source, artifact string) 
 // names the document, the tier and the shape that was asked for, and never a
 // word of what was sent or what came back (ADR-0008). internal/llm's own errors
 // hold to the same rule.
-func (d *Distiller) distil(ctx context.Context, doc l1.Document) (l1.Body, llm.JudgmentUsage, error) {
+func (d *Distiller) distil(ctx context.Context, doc l1.Document) (l1.Body, error) {
 	call, done := context.WithTimeout(ctx, d.timeout)
 	defer done()
 
@@ -923,7 +923,7 @@ func (d *Distiller) distil(ctx context.Context, doc l1.Document) (l1.Body, llm.J
 	req := RequestFor(doc, 0)
 	resp, err := d.tier.Complete(call, req)
 	if err != nil {
-		return l1.Body{}, llm.JudgmentUsage{}, fmt.Errorf("distilling %s: %w", doc.ID, err)
+		return l1.Body{}, fmt.Errorf("distilling %s: %w", doc.ID, err)
 	}
 
 	// The answer has already been checked against the schema by internal/llm,
@@ -932,11 +932,11 @@ func (d *Distiller) distil(ctx context.Context, doc l1.Document) (l1.Body, llm.J
 	// and the parser are two readings of one list — hence the parse.
 	var a answer
 	if err := json.Unmarshal(resp.JSON, &a); err != nil {
-		return l1.Body{}, llm.JudgmentUsage{}, fmt.Errorf("distilling %s: the %s answer for %s did not decode: %w", doc.ID, llm.TierDistill, req.Schema.Name, err)
+		return l1.Body{}, fmt.Errorf("distilling %s: the %s answer for %s did not decode: %w", doc.ID, llm.TierDistill, req.Schema.Name, err)
 	}
 	body, err := a.body()
 	if err != nil {
-		return l1.Body{}, llm.JudgmentUsage{}, fmt.Errorf("distilling %s: %w", doc.ID, err)
+		return l1.Body{}, fmt.Errorf("distilling %s: %w", doc.ID, err)
 	}
-	return body, generativeUsage(resp), nil
+	return body, nil
 }

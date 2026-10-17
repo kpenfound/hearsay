@@ -20,6 +20,7 @@ type PipelineCohort struct {
 	MeanQueueDelaySeconds *float64          `json:"mean_queue_delay_seconds"`
 	MissingQueueDelayRuns int               `json:"missing_queue_delay_runs"`
 	GenerativeCalls       *int64            `json:"generative_calls"`
+	GenerativeAttempts    *int64            `json:"generative_attempts"`
 	GenerativeUsage       llm.JudgmentUsage `json:"generative_usage"`
 	JudgmentRequests      *int64            `json:"judgment_requests"`
 	JudgmentAttempts      *int64            `json:"judgment_attempts"`
@@ -70,6 +71,7 @@ func pipelineCohort(os []l1.PipelineObservation) PipelineCohort {
 	zero := int64(0)
 	costZero := float64(0)
 	c.GenerativeCalls = &zero
+	c.GenerativeAttempts = &zero
 	c.JudgmentRequests = &zero
 	c.JudgmentAttempts = &zero
 	c.JudgmentFallbacks = &zero
@@ -84,6 +86,7 @@ func pipelineCohort(os []l1.PipelineObservation) PipelineCohort {
 	knownQueues := 0
 	for _, o := range os {
 		c.GenerativeCalls = l1.AddPipelineCount(c.GenerativeCalls, o.GenerativeCalls)
+		c.GenerativeAttempts = l1.AddPipelineCount(c.GenerativeAttempts, o.GenerativeAttempts)
 		c.JudgmentRequests = l1.AddPipelineCount(c.JudgmentRequests, o.JudgmentRequests)
 		c.JudgmentAttempts = l1.AddPipelineCount(c.JudgmentAttempts, o.JudgmentAttempts)
 		c.JudgmentFallbacks = l1.AddPipelineCount(c.JudgmentFallbacks, o.JudgmentFallbacks)

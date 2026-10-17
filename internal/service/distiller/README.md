@@ -85,8 +85,9 @@ accepted output. Generative call counts include the baseline and optional
 restatement; judgment attempts and usage come from the shared capability.
 The process integration supplies shared generative retry accounting; this
 package does not difference process-wide counters across concurrent jobs. Unknown tokens and provider costs stay unknown.
-The legacy generative API cannot distinguish absent accounting from zero
-tokens, so only positive reported token counts are recorded here. This stage measures
+The shared per-context accounting seam includes registry retries without racing
+concurrent jobs. Provider-reported zeros retain presence; legacy zero token fields
+without presence remain unknown. This stage measures
 per-document modeling and optional work through transaction entry; segmentation
 and embedding are separate work, and their time/cost is not imputed here.
 Recorded synthetic fixtures under `testdata/outcome-*` test integration

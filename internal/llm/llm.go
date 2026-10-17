@@ -105,6 +105,9 @@ type Request struct {
 
 // Response is one answer.
 type Response struct {
+	// ReportedUsage preserves presence, including reported zero, per attempt.
+	// Nil retains conservative accounting for legacy providers and fixtures.
+	ReportedUsage *JudgmentUsage `json:"reported_usage,omitempty"`
 	// Text is the answer, empty on a request that carried a schema.
 	Text string `json:"text,omitempty"`
 	// JSON is the answer to a request that carried a schema, validated against

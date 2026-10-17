@@ -133,11 +133,19 @@ connectors:
     port: 8081
     annotations: {}
 
+# Optional Jev boost: one llm.boost.enabled switch, off by default. Set its
+# explicit model and qualify pinned task policies using docs/jev-evaluation.md.
+# Missing credentials/provider/journal refusal retain baseline output; degraded
+# judgments in /readyz never make baseline workers unready. All assertion work
+# shares assertion_job_budget (default 5s, max 30s), bounding extra scope-key time.
+# Confidence is not correctness; typed shape is not truth. See docs/config.md
+# for limitations, fallback and model policy. The chart creates no Secrets.
 distiller:
   replicas: 1
   resources: {}
   env: {}
   secretEnv: {}
+    # HEARSAY_JEV_API_KEY: {secret: hearsay-jev, key: api-key}
   existingSecrets: []
   extraVolumes: []
   extraVolumeMounts: []
@@ -147,6 +155,7 @@ assertWorker:
   resources: {}
   env: {}
   secretEnv: {}
+    # HEARSAY_JEV_API_KEY: {secret: hearsay-jev, key: api-key}
   existingSecrets: []
   extraVolumes: []
   extraVolumeMounts: []

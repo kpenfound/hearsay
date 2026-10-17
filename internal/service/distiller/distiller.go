@@ -102,7 +102,9 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 	if addr == "" {
 		addr = DefaultListen
 	}
-	probes := func(ctx context.Context) error { return service.RunProbes(ctx, Name, addr, deps.Listener, deps.Pool) }
+	probes := func(ctx context.Context) error {
+		return service.RunProbes(ctx, Name, addr, deps.Listener, deps.Pool, deps.Judgments)
+	}
 	if deps.LLM == nil {
 		// No configuration, so there is nothing to distil and no tier to
 		// distil it with. Idling rather than exiting is what makes
