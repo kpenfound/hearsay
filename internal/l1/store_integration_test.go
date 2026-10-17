@@ -393,7 +393,7 @@ func assertSameDocument(t *testing.T, got, want l1.Document) {
 	if !slices.Equal(got.References, want.References) {
 		t.Errorf("References = %v, want %v", got.References, want.References)
 	}
-	if !slices.Equal(got.ACL, want.ACL) {
+	if !got.ACL.Equal(want.ACL) {
 		t.Errorf("ACL = %v, want %v", got.ACL, want.ACL)
 	}
 	if got.Text != want.Text || got.RawText != want.RawText {

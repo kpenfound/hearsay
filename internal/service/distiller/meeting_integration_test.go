@@ -116,7 +116,7 @@ func TestMeetingSegmentsTrackEditsAndDeletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if retry.Body.OutcomeKind != l1.OutcomeDecided || dashboard.Body.OutcomeKind != l1.OutcomeOpen || !slices.Equal(retry.ACL, first.ACL) || !slices.Equal(retry.L0Refs, []string{connector.EventID(src, first.NativeID)}) || len(retry.Participants) != 2 {
+	if retry.Body.OutcomeKind != l1.OutcomeDecided || dashboard.Body.OutcomeKind != l1.OutcomeOpen || !retry.ACL.Equal(first.ACL) || !slices.Equal(retry.L0Refs, []string{connector.EventID(src, first.NativeID)}) || len(retry.Participants) != 2 {
 		t.Errorf("first segments = %+v, %+v", retry, dashboard)
 	}
 	if !slices.Contains(retry.References, l1.Reference{Type: l1.RefTrackerItem, ID: "acme/api#31"}) || slices.Contains(dashboard.References, l1.Reference{Type: l1.RefTrackerItem, ID: "acme/api#31"}) || !slices.Contains(dashboard.References, l1.Reference{Type: l1.RefPR, ID: "acme/api#42"}) {
@@ -155,7 +155,7 @@ func TestMeetingSegmentsTrackEditsAndDeletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(private.ACL, fourth.ACL) || !slices.Equal(private.L0Refs, []string{connector.EventID(src, fourth.NativeID)}) {
+	if !private.ACL.Equal(fourth.ACL) || !slices.Equal(private.L0Refs, []string{connector.EventID(src, fourth.NativeID)}) {
 		t.Errorf("ACL/provenance = %+v", private)
 	}
 	ingest(t, pool, []connector.Event{fifth})

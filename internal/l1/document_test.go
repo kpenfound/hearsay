@@ -127,6 +127,17 @@ func TestValidate(t *testing.T) {
 	if err := good().Validate(); err != nil {
 		t.Fatalf("Validate() on a good document = %v", err)
 	}
+	t.Run("containers access list", func(t *testing.T) {
+		containers, key, err := connector.CanonicalContainers([]connector.ContainerRef{{Source: "github-acme", NativeID: "acme/api"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc := good()
+		doc.ACL = connector.ACL{{Kind: connector.ACLContainers, NativeID: key, Containers: containers}}
+		if err := doc.Validate(); err != nil {
+			t.Fatalf("Validate() with containers ACL = %v", err)
+		}
+	})
 
 	tests := []struct {
 		name string

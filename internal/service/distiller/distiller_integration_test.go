@@ -889,7 +889,7 @@ func assertSameStoredDocument(t *testing.T, got, want l1.Stored) {
 	if !slices.Equal(got.References, want.References) {
 		t.Errorf("%s: references = %v, want %v", want.ID, got.References, want.References)
 	}
-	if !slices.Equal(got.ACL, want.ACL) {
+	if !got.ACL.Equal(want.ACL) {
 		t.Errorf("%s: acl = %v, want %v", want.ID, got.ACL, want.ACL)
 	}
 	if got.Text != want.Text {

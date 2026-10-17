@@ -2,7 +2,6 @@ package l1_test
 
 import (
 	"errors"
-	"slices"
 	"strings"
 	"testing"
 
@@ -67,7 +66,7 @@ func TestReaderForDerivesTheGrantsAPrincipalHolds(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ReaderFor() = %v, want no error", err)
 			}
-			if !slices.Equal(reader.Audience, tc.want) {
+			if !connector.ACL(reader.Audience).Equal(tc.want) {
 				t.Errorf("audience is %v, want %v", reader.Audience, tc.want)
 			}
 			if reader.Effective.Human != eff.Human || reader.Effective.Agent != eff.Agent {
@@ -138,7 +137,7 @@ func TestReaderForTakesEverySpellingNobodyElseAnswersTo(t *testing.T) {
 		{Kind: connector.ACLIdentity, Source: source, NativeID: "kpenfound"},
 		{Kind: connector.ACLIdentity, Source: source, NativeID: "u1"},
 	}
-	if !slices.Equal(reader.Audience, want) {
+	if !connector.ACL(reader.Audience).Equal(want) {
 		t.Errorf("audience is %v, want %v", reader.Audience, want)
 	}
 }
@@ -188,7 +187,7 @@ func TestReaderForRefusesASpellingTwoPrincipalsAnswerTo(t *testing.T) {
 		{Kind: connector.ACLIdentity, Source: source, NativeID: "U1"},
 		{Kind: connector.ACLIdentity, Source: source, NativeID: "u2"},
 	}
-	if !slices.Equal(mallory.Audience, want) {
+	if !connector.ACL(mallory.Audience).Equal(want) {
 		t.Errorf("mallory holds %v, want %v", mallory.Audience, want)
 	}
 
@@ -204,7 +203,7 @@ func TestReaderForRefusesASpellingTwoPrincipalsAnswerTo(t *testing.T) {
 		{Kind: connector.ACLIdentity, Source: source, NativeID: "alice"},
 		{Kind: connector.ACLIdentity, Source: source, NativeID: "u1"},
 	}
-	if !slices.Equal(alice.Audience, wantAlice) {
+	if !connector.ACL(alice.Audience).Equal(wantAlice) {
 		t.Errorf("alice holds %v, want %v", alice.Audience, wantAlice)
 	}
 }

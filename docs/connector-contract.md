@@ -218,6 +218,7 @@ about it. Everything else the connector wants to keep goes in `native`.
 | `part_of` | artifact id | where the source has a hierarchy of items | The item this one is part of in the source's own hierarchy: a sub-issue's parent issue. It is not a conversation — nothing is assembled from it — and it may name an artifact in another container of the same source. An item with no parent leaves it out. |
 | `paths` | array of strings | where the artifact is a change to files | The repository paths the change touches — a pull request's changed files, and the name a renamed file had — relative to the repository root. Sorted, without duplicates, at most 300 (`connector.MaxPaths`). Names only: never a diff, a patch or file content. |
 | `paths_truncated` | boolean | when `paths` was cut | The change touched more paths than `paths` holds. |
+| `touches` | array of objects | no | `[{source, project, paths?}]` — repositories and optional repository-relative paths touched by this artifact, independently of its own source and container. Any connector and event kind may set it. At most 16 entries and 300 paths in total across entries. Each `source` is a valid source id and each `project` is the repository's non-empty stable container id. |
 | `revision` | object | exactly when `native_id` is `artifact@<token>` | `{token, edited_at?}`: `token` is that token, and `edited_at` is when *this revision* came about, which is what orders an artifact's revisions — see idempotency below. |
 | `target` | artifact id | on tombstones only | The artifact the tombstone retracts. |
 | `native` | any JSON | no | The source's own object, verbatim. L1 reads pull-request merge state here for its artifact class; nothing the fields above ask for may be hidden in it. |
@@ -267,6 +268,25 @@ that stops reading the source's list early sets `paths_truncated` too. Like
 `part_of`, the list is part of what an observation says: a push that changes
 what a pull request touches is a new revision with the new list.
 
+`touches` names repositories explicitly, unlike `paths`, which refers to the
+event's own repository. For example, an artifact in a planning source may carry:
+
+```json
+"touches": [
+  {"source": "github-acme", "project": "acme/api", "paths": ["internal/retry.go"]},
+  {"source": "github-acme", "project": "acme/web"}
+]
+```
+
+L1 turns each entry into deterministic `system` references to the repository's
+`code:` project entity, when it exists, and to the code entities whose path
+patterns match the paths, most specific first. The named repository need not
+have been ingested yet; a missing code entity produces no reference. Omitting
+`paths` still references the repository's project entity. The 300-path bound
+is across all `touches` entries, separate from the bound on `payload.paths`;
+`paths_truncated` describes only `payload.paths`. A change to `touches` needs a
+new revision like a change to any other payload field.
+
 Container kinds are `repository`, `channel`, `dm`, `folder` and `workspace`; a source
 with a container of another sort may use another lowercase word. `workspace`
 means the source itself, for a source with no smaller boundary. The container's
@@ -313,6 +333,7 @@ rejects it.
 | `public` | — | Every principal Hearsay knows may read it. |
 | `group` | `source`, `native_id`, `label?` | The members of a source-native group: a channel's members, a repository's collaborators, a Google group. |
 | `identity` | `source`, `native_id`, `label?` | One identity, for an artifact shared with a person rather than a group. |
+| `containers` | `native_id`, `containers` | Defer access to every listed source container's current access lists, resolved when the reader is built. |
 
 `public` is scoped to the organisation running Hearsay, never to the internet: a
 public GitHub repository is `public` because everyone in the organisation may
@@ -324,6 +345,48 @@ that expands a group into a list of identities has frozen a membership list that
 will be wrong by next week.
 
 Entries are additive: a principal matching any entry may read the event.
+
+The `containers` entry carries a non-empty list of at most 16 objects, each
+`{source, native_id}`. Each `source` is a valid source id and each `native_id`
+is the container's non-empty stable id. The entry itself has no `source`.
+Its `native_id` is the lowercase SHA-256 hex digest of the canonical list:
+sort by `(source, native_id)` in byte order, remove duplicates, then encode as
+compact JSON, with each object's fields in `source`, `native_id` order and
+standard Go `encoding/json` string escaping. Use
+`connector.CanonicalContainers` to build the canonical list and key; validation
+recomputes the key and rejects a mismatch. Empty lists, more than 16 input
+entries (including duplicates), and invalid source ids are rejected too.
+`containers` arrays belong only on entries of kind `containers`.
+
+```json
+{
+  "kind": "containers",
+  "native_id": "538b0d065ce23ef471fb6486d61e24e858d8e7ed8b9e251ce4db01ec7deb6b6e",
+  "containers": [
+    {"source": "github-a", "native_id": "acme/api"},
+    {"source": "github-a", "native_id": "acme/web"},
+    {"source": "github-b", "native_id": "acme/api"}
+  ]
+}
+```
+
+This entry has **all-of** semantics inside it: the reader must satisfy every
+distinct access list carried by the current L0 revisions in every listed
+container. Satisfying an individual list uses the usual additive grants for
+`public`, `identity` and `group`, checked against the reader's base audience.
+A container with no current revisions satisfies nobody. If any container or
+any of its current lists cannot establish access, the entry grants nothing.
+During an [ADR-0013](adr/0013-acl-re-syncs-are-durable-and-driven-by-the-runtime.md) re-sync
+after a repository goes private, the private group is already among those
+lists, so the rule fails closed even while public revisions remain.
+
+Resolution runs once when the reader is built. A satisfied entry adds only
+`{kind: "containers", native_id: "<key>"}` to the reader's audience; that
+audience entry never carries the `containers` array. The connector emits the
+reference, and repository access lists are **never copied at ingest**. Access
+therefore follows the listed containers' current access without reposting the
+referring artifact. See the ADR titled **An access list may defer to other
+sources' containers** (recorded with this feature).
 
 ### Validation
 
@@ -355,6 +418,11 @@ in the connector rather than something to retry:
 16. `payload.paths` holds at most 300 paths, each non-empty, not starting with
     `/` and with no control character, sorted in byte order without duplicates;
     `payload.paths_truncated` is set only alongside a non-empty `paths`.
+17. `payload.touches` holds at most 16 entries, with valid source ids and
+    non-empty project ids, and at most 300 paths across all entries.
+18. A `containers` ACL entry has a non-empty list of at most 16 containers,
+    valid source ids, non-empty container ids, no entry-level source, and a
+    `native_id` matching its canonical list's SHA-256 key.
 
 ## Idempotency, edits and deletions
 

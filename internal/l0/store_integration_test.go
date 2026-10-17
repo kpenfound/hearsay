@@ -280,7 +280,7 @@ func TestRetractionAndReentryKeepHistoryAndCurrentState(t *testing.T) {
 		t.Fatalf("replayed reentry = %+v, %v", replay, err)
 	}
 	current, ok, err := store.CurrentArtifact(t.Context(), source, "file")
-	if err != nil || !ok || current.Payload.Text != "new" || !slices.Equal(current.ACL, reentry.ACL) {
+	if err != nil || !ok || current.Payload.Text != "new" || !current.ACL.Equal(reentry.ACL) {
 		t.Fatalf("restored current = %+v, %v, %v", current, ok, err)
 	}
 	if _, err := store.Get(t.Context(), connector.EventID(source, first.NativeID)); !errors.Is(err, l0.ErrRetracted) {

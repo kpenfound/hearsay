@@ -97,7 +97,7 @@ func TestChatBurstReconcilesEditAndTombstone(t *testing.T) {
 		t.Fatalf("initial distill = %+v, %v", result, err)
 	}
 	burst, err := store.Get(t.Context(), firstBurst.ID)
-	if err != nil || burst.Kind != l1.KindChatBurst || !slices.Equal(burst.L0Refs, firstBurst.L0Refs) || len(burst.ACL) != 1 || burst.ACL[0] != group || burst.Body.OutcomeKind != l1.OutcomeNone || burst.Source.URL != messages[0].Payload.URL {
+	if err != nil || burst.Kind != l1.KindChatBurst || !slices.Equal(burst.L0Refs, firstBurst.L0Refs) || len(burst.ACL) != 1 || !burst.ACL[0].Equal(group) || burst.Body.OutcomeKind != l1.OutcomeNone || burst.Source.URL != messages[0].Payload.URL {
 		t.Fatalf("stored burst = %+v, %v", burst, err)
 	}
 	if result, err := d.Distill(t.Context(), threadID); err != nil || result.Written {
