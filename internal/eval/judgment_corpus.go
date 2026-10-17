@@ -28,7 +28,8 @@ type Example struct {
 	Category   string           `json:"category"`
 	Sources    []CorpusSource   `json:"sources"`
 	Review     Review           `json:"review"`
-	Label      string           `json:"label"`
+	Label      string           `json:"label,omitempty"`
+	Shortlist  *Shortlist       `json:"shortlist,omitempty"`
 	Candidates []string         `json:"candidates,omitempty"`
 }
 
@@ -49,15 +50,17 @@ type Review struct {
 }
 
 // Prediction contains supplied worker output, not a request to run a provider.
-// A blank label or abstain is an abstention; qualification uses the baseline.
+// Without a complete shortlist, a blank label or abstain is an abstention;
+// qualification uses the baseline.
 type Prediction struct {
-	ExampleID    string   `json:"example_id"`
-	ModelVersion string   `json:"model_version"`
-	Label        string   `json:"label"`
-	Confidence   *float64 `json:"confidence"`
-	ConflictFlag *bool    `json:"conflict_flag,omitempty"`
-	ConflictReal *bool    `json:"conflict_real,omitempty"`
-	Corrected    *bool    `json:"corrected,omitempty"`
+	ExampleID    string     `json:"example_id"`
+	ModelVersion string     `json:"model_version"`
+	Label        string     `json:"label,omitempty"`
+	Shortlist    *Shortlist `json:"shortlist,omitempty"`
+	Confidence   *float64   `json:"confidence"`
+	ConflictFlag *bool      `json:"conflict_flag,omitempty"`
+	ConflictReal *bool      `json:"conflict_real,omitempty"`
+	Corrected    *bool      `json:"corrected,omitempty"`
 }
 
 // Predictions separates the pinned candidate from the current pipeline.
@@ -93,7 +96,13 @@ func taskClasses(task llm.JudgmentTask) []string {
 }
 
 func exampleClass(e Example) string {
-	if (e.Task == llm.TaskTopicMatching || e.Task == llm.TaskTopicShortlist) && e.Label != "none_fit" {
+	if e.Task == llm.TaskTopicShortlist {
+		if e.Shortlist.End == "none_fit" {
+			return "none_fit"
+		}
+		return "existing"
+	}
+	if e.Task == llm.TaskTopicMatching && e.Label != "none_fit" {
 		return "existing"
 	}
 	return e.Label
@@ -104,7 +113,7 @@ func validLabel(e Example, label string, predicted bool) bool {
 		return true
 	}
 	switch e.Task {
-	case llm.TaskTopicMatching, llm.TaskTopicShortlist:
+	case llm.TaskTopicMatching:
 		return label == "none_fit" || predicted && label == "new" || slices.Contains(e.Candidates, label)
 	default:
 		return slices.Contains(taskClasses(e.Task), label)
@@ -130,7 +139,7 @@ func (c Corpus) Validate() error {
 			return fmt.Errorf("example %d leaks a group across splits", i)
 		}
 		groups[e.Group] = e.Split
-		if len(taskClasses(e.Task)) == 0 || !validLabel(e, e.Label, false) {
+		if len(taskClasses(e.Task)) == 0 || !validExampleLabel(e) {
 			return fmt.Errorf("example %d requires an adjudicated task label", i)
 		}
 		if e.Review.Adjudicator == "" || e.Review.Revision == "" || e.Review.Rationale == "" || len(e.Sources) == 0 {
@@ -170,7 +179,7 @@ func predictionIndex(c Corpus, ps []Prediction) (map[string]Prediction, error) {
 		if _, ok := out[p.ExampleID]; ok {
 			return nil, fmt.Errorf("prediction %d repeats an example", i)
 		}
-		if !validLabel(e, p.Label, true) {
+		if !validPrediction(e, p) {
 			return nil, fmt.Errorf("prediction %d has invalid task label", i)
 		}
 		if p.Confidence != nil && (math.IsNaN(*p.Confidence) || math.IsInf(*p.Confidence, 0) || *p.Confidence < 0 || *p.Confidence > 1) {
@@ -210,6 +219,7 @@ type JudgmentMetrics struct {
 	Confusion            map[string]map[string]int `json:"confusion_matrix"`
 	MissedDecisions      ErrorMeasure              `json:"missed_decisions"`
 	ConflictPrecision    ErrorMeasure              `json:"conflict_precision"`
+	ShortlistOmissions   ErrorMeasure              `json:"shortlist_omissions"`
 	Corrections          ErrorMeasure              `json:"corrections"`
 }
 
@@ -258,6 +268,7 @@ func scoreJudgments(task llm.JudgmentTask, es []Example, ps map[string]Predictio
 			}
 		}
 	}
+	var omitted, relevant int
 	var errorsN, fc, restates, mc, changes, ia, attachments, dup, existing, oc, outcomes, md, decisions, real, verdicts, corrections, reviewed int
 	for _, e := range es {
 		p, ok := ps[e.ID]
@@ -272,7 +283,10 @@ func scoreJudgments(task llm.JudgmentTask, es []Example, ps map[string]Predictio
 		}
 		// A generative new-topic output and none-fit both mean no existing
 		// attachment. Creation is a duplicate only when an existing candidate fits.
-		correct := label == e.Label || (task == llm.TaskTopicMatching || task == llm.TaskTopicShortlist) && label == "new" && e.Label == "none_fit"
+		correct := label == e.Label || task == llm.TaskTopicMatching && label == "new" && e.Label == "none_fit"
+		if task == llm.TaskTopicShortlist {
+			correct = sameShortlist(e.Shortlist, p.Shortlist)
+		}
 		if !correct {
 			errorsN++
 		}
@@ -290,7 +304,22 @@ func scoreJudgments(task llm.JudgmentTask, es []Example, ps map[string]Predictio
 					mc++
 				}
 			}
-		case llm.TaskTopicMatching, llm.TaskTopicShortlist:
+		case llm.TaskTopicShortlist:
+			relevant += len(e.Shortlist.Selected)
+			for _, id := range e.Shortlist.Selected {
+				if p.Shortlist == nil || !slices.Contains(p.Shortlist.Selected, id) {
+					omitted++
+				}
+			}
+			if p.Shortlist != nil {
+				for _, id := range p.Shortlist.Selected {
+					attachments++
+					if !slices.Contains(e.Shortlist.Selected, id) {
+						ia++
+					}
+				}
+			}
+		case llm.TaskTopicMatching:
 			if label != "none_fit" && label != "new" && label != "abstain" {
 				attachments++
 				if label != e.Label {
@@ -329,6 +358,7 @@ func scoreJudgments(task llm.JudgmentTask, es []Example, ps map[string]Predictio
 			}
 		}
 	}
+	m.ShortlistOmissions = measure(omitted, relevant)
 	m.Errors = measure(errorsN, m.Examples)
 	m.FalseChanges = measure(fc, restates)
 	m.MissedChanges = measure(mc, changes)

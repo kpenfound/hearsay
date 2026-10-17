@@ -123,12 +123,126 @@
     "Answers": [
       {
         "ID": "tuning-07",
-        "Choice": "topic-retention",
-        "Confidence": 0.85,
+        "Choice": "topic-1",
+        "Confidence": 0.95,
         "Probabilities": {
-          "topic-retention": 0.85,
-          "topic-access": 0.07500000000000001,
-          "none_fit": 0.07500000000000001
+          "topic-1": 0.95,
+          "topic-2": 0.00833333333333334,
+          "topic-3": 0.00833333333333334,
+          "topic-4": 0.00833333333333334,
+          "topic-5": 0.00833333333333334,
+          "topic-6": 0.00833333333333334,
+          "none_fit": 0.00833333333333334
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "tuning-07",
+        "Choice": "topic-2",
+        "Confidence": 0.95,
+        "Probabilities": {
+          "topic-2": 0.95,
+          "topic-3": 0.010000000000000009,
+          "topic-4": 0.010000000000000009,
+          "topic-5": 0.010000000000000009,
+          "topic-6": 0.010000000000000009,
+          "none_fit": 0.010000000000000009
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "tuning-07",
+        "Choice": "topic-3",
+        "Confidence": 0.95,
+        "Probabilities": {
+          "topic-3": 0.95,
+          "topic-4": 0.012500000000000011,
+          "topic-5": 0.012500000000000011,
+          "topic-6": 0.012500000000000011,
+          "none_fit": 0.012500000000000011
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "tuning-07",
+        "Choice": "topic-4",
+        "Confidence": 0.95,
+        "Probabilities": {
+          "topic-4": 0.95,
+          "topic-5": 0.01666666666666668,
+          "topic-6": 0.01666666666666668,
+          "none_fit": 0.01666666666666668
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "tuning-07",
+        "Choice": "topic-5",
+        "Confidence": 0.95,
+        "Probabilities": {
+          "topic-5": 0.95,
+          "topic-6": 0.025000000000000022,
+          "none_fit": 0.025000000000000022
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "tuning-08",
+        "Choice": "topic-6",
+        "Confidence": 0.95,
+        "Probabilities": {
+          "topic-1": 0.00833333333333334,
+          "topic-2": 0.00833333333333334,
+          "topic-3": 0.00833333333333334,
+          "topic-4": 0.00833333333333334,
+          "topic-5": 0.00833333333333334,
+          "topic-6": 0.95,
+          "none_fit": 0.00833333333333334
         }
       }
     ],
@@ -146,8 +260,11 @@
         "Choice": "none_fit",
         "Confidence": 0.95,
         "Probabilities": {
-          "topic-retention": 0.025000000000000022,
-          "topic-access": 0.025000000000000022,
+          "topic-1": 0.010000000000000009,
+          "topic-2": 0.010000000000000009,
+          "topic-3": 0.010000000000000009,
+          "topic-4": 0.010000000000000009,
+          "topic-5": 0.010000000000000009,
           "none_fit": 0.95
         }
       }
@@ -392,12 +509,126 @@
     "Answers": [
       {
         "ID": "held_out-07",
-        "Choice": "topic-retention",
-        "Confidence": 0.85,
+        "Choice": "topic-1",
+        "Confidence": 0.95,
         "Probabilities": {
-          "topic-retention": 0.85,
-          "topic-access": 0.07500000000000001,
-          "none_fit": 0.07500000000000001
+          "topic-1": 0.95,
+          "topic-2": 0.00833333333333334,
+          "topic-3": 0.00833333333333334,
+          "topic-4": 0.00833333333333334,
+          "topic-5": 0.00833333333333334,
+          "topic-6": 0.00833333333333334,
+          "none_fit": 0.00833333333333334
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "held_out-07",
+        "Choice": "topic-2",
+        "Confidence": 0.95,
+        "Probabilities": {
+          "topic-2": 0.95,
+          "topic-3": 0.010000000000000009,
+          "topic-4": 0.010000000000000009,
+          "topic-5": 0.010000000000000009,
+          "topic-6": 0.010000000000000009,
+          "none_fit": 0.010000000000000009
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "held_out-07",
+        "Choice": "topic-3",
+        "Confidence": 0.95,
+        "Probabilities": {
+          "topic-3": 0.95,
+          "topic-4": 0.012500000000000011,
+          "topic-5": 0.012500000000000011,
+          "topic-6": 0.012500000000000011,
+          "none_fit": 0.012500000000000011
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "held_out-07",
+        "Choice": "topic-4",
+        "Confidence": 0.95,
+        "Probabilities": {
+          "topic-4": 0.95,
+          "topic-5": 0.01666666666666668,
+          "topic-6": 0.01666666666666668,
+          "none_fit": 0.01666666666666668
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "held_out-07",
+        "Choice": "topic-5",
+        "Confidence": 0.95,
+        "Probabilities": {
+          "topic-5": 0.95,
+          "topic-6": 0.025000000000000022,
+          "none_fit": 0.025000000000000022
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "held_out-08",
+        "Choice": "topic-6",
+        "Confidence": 0.95,
+        "Probabilities": {
+          "topic-1": 0.00833333333333334,
+          "topic-2": 0.00833333333333334,
+          "topic-3": 0.00833333333333334,
+          "topic-4": 0.00833333333333334,
+          "topic-5": 0.00833333333333334,
+          "topic-6": 0.95,
+          "none_fit": 0.00833333333333334
         }
       }
     ],
@@ -415,8 +646,11 @@
         "Choice": "none_fit",
         "Confidence": 0.95,
         "Probabilities": {
-          "topic-retention": 0.025000000000000022,
-          "topic-access": 0.025000000000000022,
+          "topic-1": 0.010000000000000009,
+          "topic-2": 0.010000000000000009,
+          "topic-3": 0.010000000000000009,
+          "topic-4": 0.010000000000000009,
+          "topic-5": 0.010000000000000009,
           "none_fit": 0.95
         }
       }
@@ -528,6 +762,100 @@
           "proposed": 0.037500000000000006,
           "open": 0.037500000000000006,
           "none": 0.85
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "held_out-shortlist-premature",
+        "Choice": "topic-1",
+        "Confidence": 0.99,
+        "Probabilities": {
+          "topic-1": 0.99,
+          "topic-2": 0.001666666666666668,
+          "topic-3": 0.001666666666666668,
+          "topic-4": 0.001666666666666668,
+          "topic-5": 0.001666666666666668,
+          "topic-6": 0.001666666666666668,
+          "none_fit": 0.001666666666666668
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "held_out-shortlist-premature",
+        "Choice": "none_fit",
+        "Confidence": 0.99,
+        "Probabilities": {
+          "topic-2": 0.0020000000000000018,
+          "topic-3": 0.0020000000000000018,
+          "topic-4": 0.0020000000000000018,
+          "topic-5": 0.0020000000000000018,
+          "topic-6": 0.0020000000000000018,
+          "none_fit": 0.99
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "held_out-shortlist-correct-stop",
+        "Choice": "topic-6",
+        "Confidence": 0.95,
+        "Probabilities": {
+          "topic-1": 0.00833333333333334,
+          "topic-2": 0.00833333333333334,
+          "topic-3": 0.00833333333333334,
+          "topic-4": 0.00833333333333334,
+          "topic-5": 0.00833333333333334,
+          "topic-6": 0.95,
+          "none_fit": 0.00833333333333334
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "held_out-shortlist-correct-stop",
+        "Choice": "none_fit",
+        "Confidence": 0.95,
+        "Probabilities": {
+          "topic-1": 0.010000000000000009,
+          "topic-2": 0.010000000000000009,
+          "topic-3": 0.010000000000000009,
+          "topic-4": 0.010000000000000009,
+          "topic-5": 0.010000000000000009,
+          "none_fit": 0.95
         }
       }
     ],

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "provenance": "Synthetic author-adjudicated teaching corpus, seed-v1. Reviewable examples only; never evidence for deployment qualification.",
+  "provenance": "Synthetic author-adjudicated teaching corpus, seed-v2 (complete shortlist selections). Reviewable examples only; never evidence for deployment qualification.",
   "examples": [
     {
       "id": "tuning-01",
@@ -167,19 +167,32 @@
           "acl": [
             "team:restricted"
           ],
-          "text": "Permission-filtered pool: topic-retention asks retention; topic-access asks public access. Assertion asks log lifetime."
+          "text": "Permission-filtered pool topic-1 through topic-5 asks retention, access, rotation, region, and backups; topic-6 asks editor colors. This outcome decides the first five questions."
         }
       ],
       "review": {
         "adjudicator": "synthetic-fixture-author; operator review required",
-        "revision": "seed-v1",
-        "rationale": "Literal teaching label from the supplied synthetic source; no live or team measurement."
+        "revision": "seed-v2",
+        "rationale": "Review the complete selected set and its stopping point; five-slot capacity matches topic-shortlist-v1. Synthetic fixture only."
       },
-      "label": "topic-retention",
       "candidates": [
-        "topic-retention",
-        "topic-access"
-      ]
+        "topic-1",
+        "topic-2",
+        "topic-3",
+        "topic-4",
+        "topic-5",
+        "topic-6"
+      ],
+      "shortlist": {
+        "selected": [
+          "topic-1",
+          "topic-2",
+          "topic-3",
+          "topic-4",
+          "topic-5"
+        ],
+        "end": "capacity"
+      }
     },
     {
       "id": "tuning-08",
@@ -195,19 +208,28 @@
           "acl": [
             "public"
           ],
-          "text": "Assertion asks key rotation. Offered topics ask log retention and public access. Neither answers key rotation."
+          "text": "Permission-filtered topic-6 asks retention; topics 1 through 5 ask access, rotation, region, backups and editor colors. The outcome decides retention only. No remaining topic fits after selecting topic-6."
         }
       ],
       "review": {
         "adjudicator": "synthetic-fixture-author; operator review required",
-        "revision": "seed-v1",
-        "rationale": "Literal teaching label from the supplied synthetic source; no live or team measurement."
+        "revision": "seed-v2",
+        "rationale": "Review the complete selected set and its stopping point; five-slot capacity matches topic-shortlist-v1. Synthetic fixture only."
       },
-      "label": "none_fit",
       "candidates": [
-        "topic-retention",
-        "topic-access"
-      ]
+        "topic-1",
+        "topic-2",
+        "topic-3",
+        "topic-4",
+        "topic-5",
+        "topic-6"
+      ],
+      "shortlist": {
+        "selected": [
+          "topic-6"
+        ],
+        "end": "none_fit"
+      }
     },
     {
       "id": "tuning-09",
@@ -494,19 +516,32 @@
           "acl": [
             "team:restricted"
           ],
-          "text": "Assertion asks snapshot lifetime. Permission-filtered candidates: topic-retention asks snapshot expiry; topic-access asks who may restore a snapshot."
+          "text": "Permission-filtered topic-1 through topic-5 ask latency, quotas, retries, timeouts and storage; topic-6 asks logo colors. This outcome decides all of the first five questions."
         }
       ],
       "review": {
         "adjudicator": "synthetic-fixture-author; operator review required",
-        "revision": "seed-v1",
-        "rationale": "Literal teaching label from the supplied synthetic source; no live or team measurement."
+        "revision": "seed-v2",
+        "rationale": "Review the complete selected set and its stopping point; five-slot capacity matches topic-shortlist-v1. Synthetic fixture only."
       },
-      "label": "topic-retention",
       "candidates": [
-        "topic-retention",
-        "topic-access"
-      ]
+        "topic-1",
+        "topic-2",
+        "topic-3",
+        "topic-4",
+        "topic-5",
+        "topic-6"
+      ],
+      "shortlist": {
+        "selected": [
+          "topic-1",
+          "topic-2",
+          "topic-3",
+          "topic-4",
+          "topic-5"
+        ],
+        "end": "capacity"
+      }
     },
     {
       "id": "held_out-08",
@@ -522,19 +557,28 @@
           "acl": [
             "public"
           ],
-          "text": "Assertion asks which region hosts the service. Candidate topic-retention asks snapshot expiry; topic-access asks who may restore snapshots. Neither fits."
+          "text": "Permission-filtered topic-6 asks the deployment region. Topics 1 through 5 ask latency, quotas, retries, storage and logo colors. The outcome decides deployment region only; none of the remaining questions fits after topic-6."
         }
       ],
       "review": {
         "adjudicator": "synthetic-fixture-author; operator review required",
-        "revision": "seed-v1",
-        "rationale": "Literal teaching label from the supplied synthetic source; no live or team measurement."
+        "revision": "seed-v2",
+        "rationale": "Review the complete selected set and its stopping point; five-slot capacity matches topic-shortlist-v1. Synthetic fixture only."
       },
-      "label": "none_fit",
       "candidates": [
-        "topic-retention",
-        "topic-access"
-      ]
+        "topic-1",
+        "topic-2",
+        "topic-3",
+        "topic-4",
+        "topic-5",
+        "topic-6"
+      ],
+      "shortlist": {
+        "selected": [
+          "topic-6"
+        ],
+        "end": "none_fit"
+      }
     },
     {
       "id": "held_out-09",
@@ -655,6 +699,84 @@
         "rationale": "Literal teaching label from the supplied synthetic source; no live or team measurement."
       },
       "label": "none"
+    },
+    {
+      "id": "held_out-shortlist-premature",
+      "group": "held_out-shortlist-premature",
+      "task": "topic_shortlist",
+      "split": "held_out",
+      "category": "premature_none_fit",
+      "sources": [
+        {
+          "id": "source-held_out-shortlist-premature",
+          "revision": "r1",
+          "uri": "fixture://held_out-shortlist-premature",
+          "acl": [
+            "public"
+          ],
+          "text": "Topic-1 through topic-5 ask latency, quotas, retries, timeouts and storage. This outcome decides all five questions. Topic-6 asks unrelated logo colors. Stopping after topic-1 excludes four relevant questions, including quotas, which the baseline extraction answers on topic-2."
+        }
+      ],
+      "review": {
+        "adjudicator": "synthetic-fixture-author; operator review required",
+        "revision": "seed-v2",
+        "rationale": "The full five-candidate baseline is correct. A confident none-fit after topic-1 is premature: four human-labelled relevant candidates are omitted."
+      },
+      "candidates": [
+        "topic-1",
+        "topic-2",
+        "topic-3",
+        "topic-4",
+        "topic-5",
+        "topic-6"
+      ],
+      "shortlist": {
+        "selected": [
+          "topic-1",
+          "topic-2",
+          "topic-3",
+          "topic-4",
+          "topic-5"
+        ],
+        "end": "capacity"
+      }
+    },
+    {
+      "id": "held_out-shortlist-correct-stop",
+      "group": "held_out-shortlist-correct-stop",
+      "task": "topic_shortlist",
+      "split": "held_out",
+      "category": "correct_terminal_none_fit",
+      "sources": [
+        {
+          "id": "source-held_out-shortlist-correct-stop",
+          "revision": "r1",
+          "uri": "fixture://held_out-shortlist-correct-stop",
+          "acl": [
+            "public"
+          ],
+          "text": "Topic-6 asks encryption algorithm; topics 1 through 5 ask staffing, billing, branding, office location and vacations. This outcome decides encryption only. Select topic-6 then stop."
+        }
+      ],
+      "review": {
+        "adjudicator": "synthetic-fixture-author; operator review required",
+        "revision": "seed-v2",
+        "rationale": "Review the complete selected set and its stopping point; five-slot capacity matches topic-shortlist-v1. Synthetic fixture only."
+      },
+      "candidates": [
+        "topic-1",
+        "topic-2",
+        "topic-3",
+        "topic-4",
+        "topic-5",
+        "topic-6"
+      ],
+      "shortlist": {
+        "selected": [
+          "topic-6"
+        ],
+        "end": "none_fit"
+      }
     }
   ]
 }

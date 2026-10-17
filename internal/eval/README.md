@@ -39,6 +39,10 @@ baseline/Jev predictions; it never runs workers or calls providers. Input-only
 source text stays in protected corpus files (synthetic fixtures in `testdata`).
 `judgment_policy.go` selects a threshold from tuning examples and gates it once
 on held-out evidence against operator limits; no limits or policies ship by default.
+Shortlist examples and predictions describe the full selected set and where it
+ends. A nonempty sequence includes its terminal none-fit in adoption, minimum
+confidence and evidence counts; omitted relevant candidates are scored explicitly.
+The policy-to-running-worker integration regression checks this contract.
 `judgment_metrics.go` sums nullable journal accounting through the L1 store,
 including generation and retries, with unknown and overflow preserved.
 See [the operator guide](../../docs/jev-evaluation.md) for schemas, denominators,

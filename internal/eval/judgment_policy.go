@@ -13,7 +13,7 @@ import (
 
 // QualificationOptions contains operator choices; there are no default limits.
 // MinimumPerClass counts adopted held-out judgments by gold class. For topic
-// tasks classes are existing and none_fit (none_fit itself falls back).
+// tasks classes are existing and none_fit. Only topic_matching none_fit falls back.
 type QualificationOptions struct {
 	Task            llm.JudgmentTask   `json:"task"`
 	ModelVersion    string             `json:"model_version"`
@@ -74,14 +74,16 @@ type Qualification struct {
 }
 
 func metricRates(m JudgmentMetrics) map[string]*float64 {
-	return map[string]*float64{"errors": m.Errors.Rate, "false_changes": m.FalseChanges.Rate, "missed_changes": m.MissedChanges.Rate, "incorrect_attachments": m.IncorrectAttachments.Rate, "duplicate_topics": m.DuplicateTopics.Rate, "outcome_confusion": m.OutcomeConfusion.Rate, "missed_decisions": m.MissedDecisions.Rate, "corrections": m.Corrections.Rate}
+	return map[string]*float64{"shortlist_omissions": m.ShortlistOmissions.Rate, "errors": m.Errors.Rate, "false_changes": m.FalseChanges.Rate, "missed_changes": m.MissedChanges.Rate, "incorrect_attachments": m.IncorrectAttachments.Rate, "duplicate_topics": m.DuplicateTopics.Rate, "outcome_confusion": m.OutcomeConfusion.Rate, "missed_decisions": m.MissedDecisions.Rate, "corrections": m.Corrections.Rate}
 }
 
 func allowedLimits(task llm.JudgmentTask) []string {
 	switch task {
 	case llm.TaskStanceComparison:
 		return []string{"errors", "false_changes", "missed_changes", "corrections"}
-	case llm.TaskTopicMatching, llm.TaskTopicShortlist:
+	case llm.TaskTopicShortlist:
+		return []string{"errors", "incorrect_attachments", "shortlist_omissions", "corrections"}
+	case llm.TaskTopicMatching:
 		return []string{"errors", "incorrect_attachments", "duplicate_topics", "corrections"}
 	case llm.TaskOutcomeClassification:
 		return []string{"errors", "outcome_confusion", "missed_decisions", "corrections"}
@@ -118,10 +120,13 @@ func validateQualification(o QualificationOptions) error {
 }
 
 func adopt(e Example, p Prediction, threshold float64) bool {
+	if e.Task == llm.TaskTopicShortlist {
+		return p.Shortlist != nil && len(p.Shortlist.Selected) > 0 && p.Confidence != nil && *p.Confidence >= threshold
+	}
 	if p.Confidence == nil || *p.Confidence < threshold || p.Label == "" || p.Label == "abstain" {
 		return false
 	}
-	if (e.Task == llm.TaskTopicMatching || e.Task == llm.TaskTopicShortlist) && (p.Label == "none_fit" || p.Label == "new") {
+	if e.Task == llm.TaskTopicMatching && (p.Label == "none_fit" || p.Label == "new") {
 		return false
 	}
 	return true
@@ -182,13 +187,13 @@ func Qualify(c Corpus, ps Predictions, o QualificationOptions) (Qualification, e
 		}
 		bp, bok := b[e.ID]
 		jp, jok := j[e.ID]
-		if !bok || !jok || bp.Label == "" || bp.Label == "abstain" {
+		if !bok || !jok || !usablePrediction(e, bp) {
 			return Qualification{}, fmt.Errorf("qualification requires complete baseline and candidate predictions")
 		}
 		if jp.ModelVersion != o.ModelVersion {
 			return Qualification{}, fmt.Errorf("candidate model version mismatch")
 		}
-		if jp.Label != "" && jp.Label != "abstain" && jp.Confidence == nil {
+		if usablePrediction(e, jp) && jp.Confidence == nil {
 			return Qualification{}, fmt.Errorf("candidate confidence is unknown")
 		}
 		if e.Split == "tuning" {
@@ -241,8 +246,9 @@ func Qualify(c Corpus, ps Predictions, o QualificationOptions) (Qualification, e
 		if out.HeldOutPerClass[class] < o.MinimumPerClass[class] {
 			out.InsufficientClasses = append(out.InsufficientClasses, class)
 		}
-		// none_fit is deliberately never adopted; the effective baseline is checked.
-		if class != "none_fit" && adopted[class] < o.MinimumPerClass[class] {
+		// Only topic_matching none_fit is never adopted. Shortlist terminal stops
+		// qualify the whole nonempty selection and need adopted evidence too.
+		if (o.Task != llm.TaskTopicMatching || class != "none_fit") && adopted[class] < o.MinimumPerClass[class] {
 			out.InsufficientClasses = append(out.InsufficientClasses, "adopted:"+class)
 		}
 	}

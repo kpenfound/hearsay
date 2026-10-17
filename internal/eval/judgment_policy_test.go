@@ -161,7 +161,6 @@ func TestQualificationAllTasksAndFallback(t *testing.T) {
 		{llm.TaskOutcomeClassification, []string{"resolved", "decided", "proposed", "open", "none"}, map[string]float64{"outcome_confusion": 0, "missed_decisions": 0}},
 		// none_fit falls back to baseline. Use its correct baseline for this case.
 		{llm.TaskTopicMatching, []string{"existing", "none_fit"}, map[string]float64{"incorrect_attachments": 0, "duplicate_topics": 0}},
-		{llm.TaskTopicShortlist, []string{"existing", "none_fit"}, map[string]float64{"incorrect_attachments": 0}},
 	} {
 		t.Run(string(tt.task), func(t *testing.T) {
 			p := ps

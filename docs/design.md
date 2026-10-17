@@ -180,6 +180,13 @@ new label; otherwise the original label/text pair survives. Topic changes requir
 a coherent comparison to the replacement's readable current position. None-fit
 never opens a new topic. Withheld previous evidence stays withheld.
 
+Broader-pool shortlist qualification scores complete selected sets and their
+stopping points. A qualified terminal none-fit after a nonempty qualified prefix
+can shorten the shortlist shown to fresh generative extraction; it counts as
+adopted evidence. Premature stops that exclude human-labelled relevant candidates
+count as shortlist omissions and selection errors against operator-supplied limits.
+An empty selection or any unqualified slot retains the complete baseline shortlist.
+
 Judgments commit atomically with the output they inform, against current effective
 input identities. Any journal refusal (storage failure, timeout or changed inputs)
 restores the complete baseline document or assertion job. ACLs and operator deletion

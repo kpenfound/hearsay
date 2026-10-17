@@ -39,14 +39,28 @@
     {
       "example_id": "tuning-07",
       "model_version": "fixture-judge-v1",
-      "label": "topic-retention",
-      "confidence": 0.85
+      "confidence": 0.95,
+      "shortlist": {
+        "selected": [
+          "topic-1",
+          "topic-2",
+          "topic-3",
+          "topic-4",
+          "topic-5"
+        ],
+        "end": "capacity"
+      }
     },
     {
       "example_id": "tuning-08",
       "model_version": "fixture-judge-v1",
-      "label": "none_fit",
-      "confidence": 0.95
+      "confidence": 0.95,
+      "shortlist": {
+        "selected": [
+          "topic-6"
+        ],
+        "end": "none_fit"
+      }
     },
     {
       "example_id": "tuning-09",
@@ -117,14 +131,28 @@
     {
       "example_id": "held_out-07",
       "model_version": "fixture-judge-v1",
-      "label": "topic-retention",
-      "confidence": 0.85
+      "confidence": 0.95,
+      "shortlist": {
+        "selected": [
+          "topic-1",
+          "topic-2",
+          "topic-3",
+          "topic-4",
+          "topic-5"
+        ],
+        "end": "capacity"
+      }
     },
     {
       "example_id": "held_out-08",
       "model_version": "fixture-judge-v1",
-      "label": "none_fit",
-      "confidence": 0.95
+      "confidence": 0.95,
+      "shortlist": {
+        "selected": [
+          "topic-6"
+        ],
+        "end": "none_fit"
+      }
     },
     {
       "example_id": "held_out-09",
@@ -155,6 +183,28 @@
       "model_version": "fixture-judge-v1",
       "label": "none",
       "confidence": 0.85
+    },
+    {
+      "example_id": "held_out-shortlist-premature",
+      "model_version": "fixture-judge-v1",
+      "confidence": 0.99,
+      "shortlist": {
+        "selected": [
+          "topic-1"
+        ],
+        "end": "none_fit"
+      }
+    },
+    {
+      "example_id": "held_out-shortlist-correct-stop",
+      "model_version": "fixture-judge-v1",
+      "confidence": 0.95,
+      "shortlist": {
+        "selected": [
+          "topic-6"
+        ],
+        "end": "none_fit"
+      }
     }
   ],
   "baseline": [
@@ -197,14 +247,32 @@
     {
       "example_id": "tuning-07",
       "model_version": "recorded-generator-v1",
-      "label": "topic-access",
-      "confidence": null
+      "confidence": null,
+      "shortlist": {
+        "selected": [
+          "topic-2",
+          "topic-3",
+          "topic-4",
+          "topic-5",
+          "topic-6"
+        ],
+        "end": "capacity"
+      }
     },
     {
       "example_id": "tuning-08",
       "model_version": "recorded-generator-v1",
-      "label": "topic-access",
-      "confidence": null
+      "confidence": null,
+      "shortlist": {
+        "selected": [
+          "topic-1",
+          "topic-2",
+          "topic-3",
+          "topic-4",
+          "topic-5"
+        ],
+        "end": "capacity"
+      }
     },
     {
       "example_id": "tuning-09",
@@ -275,14 +343,32 @@
     {
       "example_id": "held_out-07",
       "model_version": "recorded-generator-v1",
-      "label": "topic-access",
-      "confidence": null
+      "confidence": null,
+      "shortlist": {
+        "selected": [
+          "topic-2",
+          "topic-3",
+          "topic-4",
+          "topic-5",
+          "topic-6"
+        ],
+        "end": "capacity"
+      }
     },
     {
       "example_id": "held_out-08",
       "model_version": "recorded-generator-v1",
-      "label": "topic-access",
-      "confidence": null
+      "confidence": null,
+      "shortlist": {
+        "selected": [
+          "topic-1",
+          "topic-2",
+          "topic-3",
+          "topic-4",
+          "topic-5"
+        ],
+        "end": "capacity"
+      }
     },
     {
       "example_id": "held_out-09",
@@ -313,6 +399,36 @@
       "model_version": "recorded-generator-v1",
       "label": "decided",
       "confidence": null
+    },
+    {
+      "example_id": "held_out-shortlist-premature",
+      "model_version": "recorded-generator-v1",
+      "confidence": null,
+      "shortlist": {
+        "selected": [
+          "topic-1",
+          "topic-2",
+          "topic-3",
+          "topic-4",
+          "topic-5"
+        ],
+        "end": "capacity"
+      }
+    },
+    {
+      "example_id": "held_out-shortlist-correct-stop",
+      "model_version": "recorded-generator-v1",
+      "confidence": null,
+      "shortlist": {
+        "selected": [
+          "topic-1",
+          "topic-2",
+          "topic-3",
+          "topic-4",
+          "topic-5"
+        ],
+        "end": "capacity"
+      }
     }
   ]
 }

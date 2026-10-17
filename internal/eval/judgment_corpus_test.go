@@ -55,10 +55,7 @@ func TestNamedJudgmentErrors(t *testing.T) {
 			assertMeasure(t, m.DuplicateTopics, 0, 0)
 			assertMeasure(t, m.IncorrectAttachments, 0, 0)
 		}},
-		{"shortlist", llm.TaskTopicShortlist, []string{"a", "none_fit"}, []string{"b", "none_fit"}, func(t *testing.T, m eval.JudgmentMetrics) {
-			assertMeasure(t, m.IncorrectAttachments, 1, 1)
-			assertMeasure(t, m.DuplicateTopics, 0, 1)
-		}},
+
 		{"outcome", llm.TaskOutcomeClassification, []string{"resolved", "decided", "proposed", "open", "none"}, []string{"open", "resolved", "decided", "open", "none"}, func(t *testing.T, m eval.JudgmentMetrics) {
 			assertMeasure(t, m.OutcomeConfusion, 3, 5)
 			assertMeasure(t, m.MissedDecisions, 1, 2)
@@ -168,20 +165,51 @@ func TestSeedRecordedFixtures(t *testing.T) {
 		case llm.TaskTopicMatching, llm.TaskTopicShortlist:
 			opts = append(slices.Clone(e.Candidates), "none_fit")
 		}
-		r := judge.Choice(t.Context(), e.Sources[0].Text, llm.JudgmentQuestion{ID: e.ID, Question: "Classify the recorded source under the task rubric", Options: opts})
-		if r.Fallback != "" || len(r.Answers) != 1 {
-			t.Fatalf("%s: %+v", e.ID, r)
+		p := eval.Prediction{ExampleID: e.ID}
+		if e.Task == llm.TaskTopicShortlist {
+			p.Shortlist = &eval.Shortlist{Selected: []string{}}
 		}
-		a := r.Answers[0]
-		replayed = append(replayed, eval.Prediction{ExampleID: e.ID, ModelVersion: r.ModelVersion, Label: a.Choice, Confidence: &a.Confidence})
+		for {
+			r := judge.Choice(t.Context(), e.Sources[0].Text, llm.JudgmentQuestion{ID: e.ID, Question: "Classify the recorded source under the task rubric", Options: opts})
+			if r.Fallback != "" || len(r.Answers) != 1 {
+				t.Fatalf("%s: %+v", e.ID, r)
+			}
+			a := r.Answers[0]
+			p.ModelVersion = r.ModelVersion
+			if p.Confidence == nil || a.Confidence < *p.Confidence {
+				p.Confidence = share(a.Confidence)
+			}
+			if p.Shortlist == nil {
+				p.Label = a.Choice
+				break
+			}
+			if a.Choice == "none_fit" {
+				p.Shortlist.End = "none_fit"
+				break
+			}
+			p.Shortlist.Selected = append(p.Shortlist.Selected, a.Choice)
+			opts = slices.DeleteFunc(opts, func(o string) bool { return o == a.Choice })
+			if len(p.Shortlist.Selected) == eval.ShortlistCapacity {
+				p.Shortlist.End = "capacity"
+				break
+			}
+			if len(opts) == 1 {
+				p.Shortlist.End = "pool_exhausted"
+				break
+			}
+		}
+		replayed = append(replayed, p)
 	}
 	for _, category := range []string{"paraphrase", "negation", "proposal_versus_decision", "source_edits", "private_evidence", "adversarial_source_text"} {
 		if !categories[category] {
 			t.Fatalf("missing category %s", category)
 		}
 	}
-	if fake.Calls() != len(c.Examples) {
+	if fake.Calls() != len(responses) {
 		t.Fatal("fixtures were not all replayed")
+	}
+	if !reflect.DeepEqual(ps.Jev, replayed) {
+		t.Fatal("replayed predictions differ from recorded selections")
 	}
 	ps.Jev = replayed
 	report, err := eval.CompareJudgments(c, ps, "held_out")
@@ -189,7 +217,12 @@ func TestSeedRecordedFixtures(t *testing.T) {
 		t.Fatal(err)
 	}
 	for task, m := range report {
-		if m.Jev.Examples == 0 || m.Jev.Errors.Count != 0 || m.Baseline.Errors.Count == 0 {
+		wantErrors := 0
+		if task == llm.TaskTopicShortlist {
+			wantErrors = 1
+			assertMeasure(t, m.Jev.ShortlistOmissions, 4, 12)
+		}
+		if m.Jev.Examples == 0 || m.Jev.Errors.Count != wantErrors || m.Baseline.Errors.Count == 0 {
 			t.Fatalf("%s: %+v", task, m)
 		}
 	}

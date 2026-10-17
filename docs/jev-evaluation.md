@@ -83,7 +83,8 @@ for tests, not human-adjudicated team evidence or live measurements. The seed co
 all four task variants on both splits and all six required adversarial categories.
 
 A corpus has `version: 1`, a `provenance` description and `examples`. Every example
-has a unique `id`, a related-evidence `group`, `task`, `split`, `category`, `label`,
+has a unique `id`, a related-evidence `group`, `task`, `split`, `category`,
+`label` (or `shortlist`, described below),
 `sources` and `review`. A source requires `id`, immutable `revision`, `uri`, nonempty
 `acl` and the minimized `text` the reviewer saw. The review requires `adjudicator`,
 `revision` and `rationale`. Add exact worker input identities/question versions to
@@ -92,9 +93,36 @@ Corpus text is input-only: reports contain ids, labels, counts and numbers.
 
 Labels are `changes`/`restates` for `stance_comparison`; `resolved`, `decided`,
 `proposed`, `open`, `none` for `outcome_classification`; and an offered candidate id
-or `none_fit` for `topic_matching` and `topic_shortlist`. Topic examples also supply
+or `none_fit` for `topic_matching`. Topic examples also supply
 `candidates` (ids, never topic names). A prediction may use `new` to represent a
 baseline topic creation, or blank/`abstain` for an unusable candidate answer.
+
+For `topic_shortlist`, omit the scalar `label`. Supply a complete `shortlist`
+in both the adjudicated example and each baseline/Jev prediction:
+
+```json
+{"selected": ["topic-retention"], "end": "none_fit"}
+```
+
+`selected` lists unique offered candidate ids in prompt order. Review the entire
+selected set, including every relevant candidate excluded by a stop. Membership
+is scored as a set; selection order is retained for replay. `end` is `none_fit`
+when a slot explicitly ends selection, `capacity` when five candidates fill the
+worker's shortlist, or `pool_exhausted` when all candidates in a smaller pool
+have been selected. These conditions are validated; a single-slot topic label
+cannot qualify this variant. A first-slot `none_fit` has an empty selected array
+and retains the baseline. An accepted stop after a nonempty qualified prefix
+adopts that shortened shortlist for fresh generative extraction.
+
+For a complete Jev shortlist prediction, `confidence` is the **minimum over every
+slot answer, including the terminal none-fit**. `model_version` must identify
+all those answers. Export the whole sequence under its immutable worker-input
+manifest: do not report the last slot's confidence as the sequence's confidence.
+Any invalid, failed, abstaining or model-mismatched slot makes the complete
+candidate prediction abstain (`label: "abstain"`, no `shortlist`). Journal refusal,
+budget exhaustion and failed optional extraction still restore the complete
+baseline. Baseline predictions describe the full original prompt shortlist and
+its stopping point, with no candidate confidence required.
 
 `predictions.json` contains `baseline` and `jev` arrays. Each entry has `example_id`,
 `model_version`, `label`, and nullable `confidence`. Qualification requires complete
@@ -109,10 +137,11 @@ Reports compare baseline and Jev separately per task:
 
 | Measure | Numerator / denominator |
 |---|---|
-| `errors` | wrong labels / supplied predictions |
+| `errors` | wrong labels, or wrong selected set/stopping point for shortlists / supplied predictions |
 | `false_changes` | predicted changes on gold restates / gold restates |
 | `missed_changes` | gold changes predicted otherwise (including abstain) / gold changes |
-| `incorrect_attachments` | wrong existing candidate attachments / predicted existing attachments |
+| `incorrect_attachments` | wrong existing candidate attachments / predicted existing attachments; for shortlists, irrelevant selections / selected candidates |
+| `shortlist_omissions` | omitted human-labelled relevant candidates / human-labelled relevant candidates (shortlist only) |
 | `duplicate_topics` | predicted new on a gold existing candidate / gold existing candidates |
 | `outcome_confusion` | wrong outcome labels / outcome examples |
 | `missed_decisions` | gold decided or resolved predicted neither / gold decided or resolved |
@@ -125,7 +154,11 @@ A decided/resolved substitution is outcome confusion but not a missed decision.
 Choosing none-fit does not itself mean a duplicate topic; only explicit baseline
 creation (`new`) can count as one. A baseline `new` on gold `none_fit` counts as
 correct for matching accuracy: both mean no existing attachment. This says nothing
-about whether the generative topic wording is useful.
+about whether the generative topic wording is useful. Shortlist selections do not
+create topics, so `duplicate_topics` has no shortlist denominator. A premature
+none-fit that excludes a relevant candidate increments both `errors` and
+`shortlist_omissions`, even when the baseline selected that candidate correctly.
+Supply limits on these measures to bound premature stops; there are no defaults.
 
 ## Qualification method and operator options
 
@@ -136,20 +169,28 @@ one or more relevant metric names to maximum empirical rates in `[0,1]`:
 | Task | Permitted limit names | Required evidence classes |
 |---|---|---|
 | stance comparison | `false_changes`, `missed_changes`, `errors`, `corrections` | `changes`, `restates` |
-| topic matching and shortlist (separate policies) | `incorrect_attachments`, `duplicate_topics`, `errors`, `corrections` | `existing`, `none_fit` |
+| topic matching | `incorrect_attachments`, `duplicate_topics`, `errors`, `corrections` | `existing`, `none_fit` |
+| topic shortlist | `incorrect_attachments`, `shortlist_omissions`, `errors`, `corrections` | `existing` (capacity/pool exhausted), `none_fit` (explicit terminal stop) |
 | outcome classification | `outcome_confusion`, `missed_decisions`, `errors`, `corrections` | `resolved`, `decided`, `proposed`, `open`, `none` |
 
 `minimum_per_class` maps **each** required gold class to an operator-selected
 positive integer. It applies both to held-out examples and to adopted candidate
-judgments in that class. The exception is `none_fit`, which is never adopted and
-needs only total held-out examples. This prevents qualification based entirely on
+judgments in that class. Only **topic matching** exempts `none_fit` from adopted
+evidence, because it retains the baseline. For **shortlisting**, a terminal
+`none_fit` after a nonempty qualified prefix counts as adoption of the complete
+selection and needs adopted evidence in its gold class. An empty prefix never
+counts as adopted. This prevents qualification based entirely on
 baseline fallback. Unmeasurable requested limits (for example corrections without
 reviewed correction outcomes) yield insufficient evidence.
 
 The threshold search uses only tuning predictions and labels: candidates are 0, 1,
 each tuning confidence and its next representable higher value (at most 1).
-At each threshold, below-threshold, abstaining and topic none-fit/new predictions
-fall back to their **entire baseline prediction**, including downstream verdicts.
+At each threshold, below-threshold and abstaining predictions, and **topic
+matching** none-fit/new predictions, fall back to their **entire baseline
+prediction**, including downstream verdicts. A shortlist is adopted only when
+its selected prefix is nonempty and every answer, including the stop, meets the
+threshold under the pinned model. Otherwise the entire baseline shortlist is
+scored; no partial prefix or fill-in selection is adopted.
 Among thresholds satisfying tuning limits, minimize total effective-label errors,
 then maximize adoption count, then prefer the higher threshold. If none satisfies
 tuning limits, choose the least-error threshold by those same tie breakers. Tuning
