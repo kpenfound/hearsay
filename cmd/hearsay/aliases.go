@@ -60,15 +60,15 @@ func runAliases(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	if err != nil {
 		return err
 	}
-	reader, err := l1.ReaderFor(resolver, eff)
-	if err != nil {
-		return err
-	}
 	pool, err := db.Connect(ctx, cfg.Database.URL)
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
+	reader, err := l1.ReaderFor(ctx, pool, resolver, eff)
+	if err != nil {
+		return err
+	}
 	store := l2.New(pool)
 	if action == "list" {
 		candidates, err := store.AliasCandidates(ctx, *entity)

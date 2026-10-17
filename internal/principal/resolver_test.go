@@ -682,3 +682,50 @@ func ids(ps []principal.Principal) []string {
 	}
 	return out
 }
+
+func TestWorkIdentitiesUsePrincipalIDs(t *testing.T) {
+	r, err := principal.NewResolver([]principal.Principal{
+		{ID: "kyle", Kind: principal.KindHuman},
+		{ID: "factory", Kind: principal.KindAgent},
+		{ID: "mapped", Kind: principal.KindAgent, Identities: []principal.Identity{{Source: "sessions", NativeID: "mapped"}}},
+	}, connector.SourceConfig{ID: "projects", Type: "work"},
+		connector.SourceConfig{ID: "tasks", Type: "work"},
+		connector.SourceConfig{ID: "sessions", Type: "agent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name, source, native, handle, want string
+	}{
+		{"human without mapping", "projects", "kyle", "", "kyle"},
+		{"agent without mapping", "projects", "factory", "", "factory"},
+		{"another work source", "tasks", "factory", "", "factory"},
+		{"unknown principal", "projects", "stranger", "", ""},
+		{"principal ids are exact", "projects", "Kyle", "", ""},
+		{"a handle is not a principal id", "projects", "", "kyle", ""},
+		{"unconfigured source", "elsewhere", "kyle", "", ""},
+		{"agent sessions still need mapping", "sessions", "factory", "", ""},
+		{"explicit agent session mapping", "sessions", "mapped", "", "mapped"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := r.Resolve(connector.Identity{Source: tt.source, NativeID: tt.native, Handle: tt.handle})
+			if tt.want == "" {
+				if got.Status != principal.Unknown {
+					t.Fatalf("Resolve() = %+v, want unknown", got)
+				}
+			} else if got.Status != principal.Resolved || got.Principal.ID != tt.want {
+				t.Fatalf("Resolve() = %+v, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWorkIdentityCannotBeClaimedByAnotherPrincipal(t *testing.T) {
+	_, err := principal.NewResolver([]principal.Principal{
+		{ID: "kyle", Kind: principal.KindHuman},
+		{ID: "mallory", Kind: principal.KindHuman, Identities: []principal.Identity{{Source: "projects", NativeID: "kyle"}}},
+	}, connector.SourceConfig{ID: "projects", Type: "work"})
+	if !errors.Is(err, principal.ErrIdentityClaimed) {
+		t.Fatalf("NewResolver() = %v, want conflicting identity refused", err)
+	}
+}

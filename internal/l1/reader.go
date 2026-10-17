@@ -1,11 +1,14 @@
 package l1
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
@@ -34,8 +37,10 @@ type Reader struct {
 	Effective principal.Effective
 	// Audience are the access-list entries this reader satisfies: an
 	// `identity` entry for each source-native identity that is them, and a
-	// `group` entry for each identity of every team they belong to. A document
-	// is readable when its acl holds `public` or any entry here.
+	// `group` entry for each identity of every team they belong to, and the
+	// `containers` entries proven against those base grants. Resolved container
+	// entries carry only kind and native_id. A document is readable when its acl
+	// holds `public` or any entry here.
 	//
 	// Entries are compared by (kind, source, native_id) and never by label:
 	// the label is what the source calls a grant for a person to read, and two
@@ -58,7 +63,11 @@ type Reader struct {
 // A principal the mapping does not hold, or one that is not a person, is an
 // error rather than an empty audience: a read nobody is accountable for is not
 // a read Hearsay serves.
-func ReaderFor(res *principal.Resolver, eff principal.Effective) (Reader, error) {
+//
+// Container grants present in L1 are resolved once per call against current
+// L0 revisions. Every list of every named container must allow the base reader;
+// a missing container or a database error never grants access.
+func ReaderFor(ctx context.Context, q Querier, res *principal.Resolver, eff principal.Effective) (Reader, error) {
 	if res == nil {
 		return Reader{}, fmt.Errorf("%w: there is no identity mapping to read %q's grants from", principal.ErrCannotAct, eff.Human)
 	}
@@ -78,7 +87,79 @@ func ReaderFor(res *principal.Resolver, eff principal.Effective) (Reader, error)
 			audience = append(audience, entriesFor(res, connector.ACLGroup, team.ID, id)...)
 		}
 	}
-	return Reader{Effective: eff, Audience: sortEntries(audience)}, nil
+	for _, source := range res.WorkSources() {
+		audience = append(audience, connector.ACLEntry{Kind: connector.ACLIdentity, Source: source, NativeID: who.ID})
+	}
+	base := Reader{Effective: eff, Audience: sortEntries(audience)}
+	entries, err := containerEntries(ctx, q)
+	if err != nil {
+		return Reader{}, err
+	}
+	// Only the base audience proves container access. Resolved entries never
+	// prove other entries, regardless of the order L1 returned them in.
+	resolved := []connector.ACLEntry{}
+	access := make(map[connector.ContainerRef]bool)
+	for _, entry := range entries {
+		containers, key, err := connector.CanonicalContainers(entry.Containers)
+		if err != nil || key != entry.NativeID || entry.Source != "" {
+			continue
+		}
+		allowed := true
+		for _, container := range containers {
+			readable, checked := access[container]
+			if !checked {
+				lists, err := l0.New(q).ContainerAccess(ctx, container.Source, container.NativeID)
+				if err != nil {
+					return Reader{}, err
+				}
+				readable = len(lists) > 0
+				for _, acl := range lists {
+					readable = readable && base.Allows(acl)
+				}
+				access[container] = readable
+			}
+			if !readable {
+				allowed = false
+				break
+			}
+		}
+		if allowed {
+			resolved = append(resolved, connector.ACLEntry{Kind: connector.ACLContainers, NativeID: key})
+		}
+	}
+	base.Audience = sortEntries(append(base.Audience, resolved...))
+	return base, nil
+}
+
+// Close the L1 result before querying L0, so a single-connection pool and a
+// transaction can resolve entries too.
+func containerEntries(ctx context.Context, q Querier) ([]connector.ACLEntry, error) {
+	if q == nil {
+		return nil, fmt.Errorf("reading container grants needs a database")
+	}
+	rows, err := q.Query(ctx, `SELECT DISTINCT entry
+  FROM l1_docs CROSS JOIN LATERAL jsonb_array_elements(acl) entry
+ WHERE acl @> '[{"kind":"containers"}]'::jsonb AND entry->>'kind' = 'containers'`)
+	if err != nil {
+		return nil, fmt.Errorf("reading container grants: %w", err)
+	}
+	defer rows.Close()
+	var entries []connector.ACLEntry
+	for rows.Next() {
+		var encoded []byte
+		if err := rows.Scan(&encoded); err != nil {
+			return nil, fmt.Errorf("reading container grant: %w", err)
+		}
+		var entry connector.ACLEntry
+		if err := json.Unmarshal(encoded, &entry); err != nil {
+			return nil, fmt.Errorf("decoding container grant: %w", err)
+		}
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading container grants: %w", err)
+	}
+	return entries, nil
 }
 
 // entriesFor is every access-list entry one configured identity satisfies, for

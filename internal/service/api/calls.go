@@ -313,9 +313,9 @@ func (c *Calls) readerFor(ctx context.Context, caller Caller) (l1.Reader, error)
 	if eff, err = principal.Reach(ctx, c.reach, eff, human.Grant.Scopes, agentScopes); err != nil {
 		return l1.Reader{}, err
 	}
-	reader, err := l1.ReaderFor(c.resolver, eff)
+	reader, err := l1.ReaderFor(ctx, c.db, c.resolver, eff)
 	if err != nil {
-		return l1.Reader{}, fail(http.StatusForbidden, "%s", err.Error())
+		return l1.Reader{}, err
 	}
 	return reader, nil
 }

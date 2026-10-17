@@ -162,7 +162,7 @@ func TestMigrateUpAndDown(t *testing.T) {
 	// later is a line added at the top of this list; a migration that creates
 	// no table of its own — an index on an existing one — has no table here and
 	// is only checked for rolling back cleanly.
-	for i, table := range []string{"", "", "github_command_replies", "", "l2_gestures", "", "l2_topic_operations", "l0_deletion_rebuilds", "l0_deletions", "", "", "bundle_changes", "l2_alias_candidates", "", "l2_pins", "", "", "", "", "l0_resyncs", "l2_stances", "l0_backfill_cursors", "", "", "", "", "l0_feed_cursors", "l1_docs", "queue_job", "l0_events"} {
+	for i, table := range []string{"", "", "", "github_command_replies", "", "l2_gestures", "", "l2_topic_operations", "l0_deletion_rebuilds", "l0_deletions", "", "", "bundle_changes", "l2_alias_candidates", "", "l2_pins", "", "", "", "", "l0_resyncs", "l2_stances", "l0_backfill_cursors", "", "", "", "", "l0_feed_cursors", "l1_docs", "queue_job", "l0_events"} {
 		want := newest - int64(i) - 1
 		if _, err := migrator.Down(t.Context()); err != nil {
 			t.Fatalf("Down() = %v, want no error", err)
@@ -173,12 +173,18 @@ func TestMigrateUpAndDown(t *testing.T) {
 
 		if i == 0 {
 			var remaining int
+			if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM pg_indexes WHERE indexname = 'l0_events_container_idx'`).Scan(&remaining); err != nil || remaining != 0 {
+				t.Errorf("container index remains after down: %d, %v", remaining, err)
+			}
+		}
+		if i == 1 {
+			var remaining int
 			if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM pg_indexes WHERE indexname IN ('l2_topics_about_idx','l2_entities_part_of_idx')`).Scan(&remaining); err != nil || remaining != 0 {
 				t.Fatalf("traversal indexes after down = %d, %v", remaining, err)
 			}
 		}
 
-		if i == 1 {
+		if i == 2 {
 			if _, err := pool.Exec(t.Context(), `SELECT state, state_native FROM l1_docs LIMIT 0`); err == nil {
 				t.Error("state columns remain after down")
 			}
@@ -187,22 +193,22 @@ func TestMigrateUpAndDown(t *testing.T) {
 				t.Errorf("state index remains after down: %d, %v", remaining, err)
 			}
 		}
-		if i == 7 {
+		if i == 8 {
 			if _, err := pool.Exec(t.Context(), `SELECT redacted_by FROM l2_stances LIMIT 0`); err == nil {
 				t.Error("stance redaction remains after rolling its migration back")
 			}
 		}
-		if i == 13 {
+		if i == 14 {
 			if _, err := pool.Exec(t.Context(), `SELECT assertion FROM l2_stances LIMIT 0`); err == nil {
 				t.Error("stance assertion remains after rolling its migration back")
 			}
 		}
-		if i == 16 {
+		if i == 17 {
 			if _, err := pool.Exec(t.Context(), `SELECT judgement FROM l2_stances LIMIT 0`); err == nil {
 				t.Error("stance judgement remains after rolling its migration back")
 			}
 		}
-		if i == 15 {
+		if i == 16 {
 			if _, err := pool.Exec(t.Context(), `SELECT judgement FROM l2_stances LIMIT 0`); err != nil {
 				t.Errorf("stance judgement missing after rolling reconciliation back: %v", err)
 			}
@@ -210,7 +216,7 @@ func TestMigrateUpAndDown(t *testing.T) {
 				t.Errorf("artifact class missing after rolling reconciliation back: %v", err)
 			}
 		}
-		if i == 17 {
+		if i == 18 {
 			if _, err := pool.Exec(t.Context(), `SELECT artifact_class FROM l1_docs LIMIT 0`); err == nil {
 				t.Error("artifact class remains after rolling its migration back")
 			}

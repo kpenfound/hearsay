@@ -1,9 +1,12 @@
 package l1_test
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/l1"
@@ -62,7 +65,7 @@ func TestReaderForDerivesTheGrantsAPrincipalHolds(t *testing.T) {
 			if err != nil {
 				t.Fatalf("building the effective principal: %v", err)
 			}
-			reader, err := l1.ReaderFor(res, eff)
+			reader, err := l1.ReaderFor(t.Context(), emptyReaderDB{}, res, eff)
 			if err != nil {
 				t.Fatalf("ReaderFor() = %v, want no error", err)
 			}
@@ -94,7 +97,7 @@ func TestReaderForRefusesAPrincipalThatCannotRead(t *testing.T) {
 		{name: "an agent as the human", res: res, eff: principal.Effective{Human: "shed"}, says: `is of kind "agent"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			reader, err := l1.ReaderFor(tc.res, tc.eff)
+			reader, err := l1.ReaderFor(t.Context(), emptyReaderDB{}, tc.res, tc.eff)
 			if !errors.Is(err, principal.ErrCannotAct) {
 				t.Fatalf("ReaderFor() = %v, want principal.ErrCannotAct", err)
 			}
@@ -127,7 +130,7 @@ func TestReaderForTakesEverySpellingNobodyElseAnswersTo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewResolver() = %v", err)
 	}
-	reader, err := l1.ReaderFor(res, principal.Effective{Human: "kyle"})
+	reader, err := l1.ReaderFor(t.Context(), emptyReaderDB{}, res, principal.Effective{Human: "kyle"})
 	if err != nil {
 		t.Fatalf("ReaderFor() = %v, want no error", err)
 	}
@@ -174,7 +177,7 @@ func TestReaderForRefusesASpellingTwoPrincipalsAnswerTo(t *testing.T) {
 		t.Fatalf("NewResolver() = %v", err)
 	}
 
-	mallory, err := l1.ReaderFor(res, principal.Effective{Human: "mallory"})
+	mallory, err := l1.ReaderFor(t.Context(), emptyReaderDB{}, res, principal.Effective{Human: "mallory"})
 	if err != nil {
 		t.Fatalf("ReaderFor(mallory) = %v, want no error", err)
 	}
@@ -194,7 +197,7 @@ func TestReaderForRefusesASpellingTwoPrincipalsAnswerTo(t *testing.T) {
 	// The positive control: the collision costs alice nothing. Her native id is
 	// hers whatever anybody's handle folds to, and her own handle is hers
 	// because nothing else answers to it.
-	alice, err := l1.ReaderFor(res, principal.Effective{Human: "alice"})
+	alice, err := l1.ReaderFor(t.Context(), emptyReaderDB{}, res, principal.Effective{Human: "alice"})
 	if err != nil {
 		t.Fatalf("ReaderFor(alice) = %v, want no error", err)
 	}
@@ -205,5 +208,67 @@ func TestReaderForRefusesASpellingTwoPrincipalsAnswerTo(t *testing.T) {
 	}
 	if !connector.ACL(alice.Audience).Equal(wantAlice) {
 		t.Errorf("alice holds %v, want %v", alice.Audience, wantAlice)
+	}
+}
+
+// No L1 documents carry deferred grants in these identity-mapping tests.
+type emptyReaderDB struct{ l1.Querier }
+
+func (emptyReaderDB) Query(context.Context, string, ...any) (pgx.Rows, error) {
+	return emptyReaderRows{}, nil
+}
+
+type emptyReaderRows struct{ pgx.Rows }
+
+func (emptyReaderRows) Next() bool { return false }
+func (emptyReaderRows) Close()     {}
+func (emptyReaderRows) Err() error { return nil }
+
+func TestReaderForAddsEveryWorkIdentity(t *testing.T) {
+	res, err := principal.NewResolver([]principal.Principal{
+		{ID: "reader", Kind: principal.KindHuman},
+		{ID: "other", Kind: principal.KindHuman, Identities: []principal.Identity{{Source: "sessions", NativeID: "other-session"}}},
+		{ID: "agent", Kind: principal.KindAgent, Class: principal.ClassWorker},
+	}, connector.SourceConfig{ID: "projects", Type: "work"},
+		connector.SourceConfig{ID: "tasks", Type: "work"},
+		connector.SourceConfig{ID: "sessions", Type: "agent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct{ name, human, agent string }{
+		{"direct", "reader", ""},
+		{"delegated", "reader", "agent"},
+		{"another reader with explicit agent session mapping", "other", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r, err := l1.ReaderFor(t.Context(), emptyReaderDB{}, res, principal.Effective{Human: tt.human, Agent: tt.agent})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := connector.ACL{{Kind: connector.ACLIdentity, Source: "projects", NativeID: tt.human}}
+			if tt.human == "other" {
+				want = append(want, connector.ACLEntry{Kind: connector.ACLIdentity, Source: "sessions", NativeID: "other-session"})
+			}
+			want = append(want, connector.ACLEntry{Kind: connector.ACLIdentity, Source: "tasks", NativeID: tt.human})
+			if !want.Equal(r.Audience) {
+				t.Fatalf("audience = %+v, want %+v", r.Audience, want)
+			}
+		})
+	}
+}
+
+func TestReaderForRefusesUnprovenDatabaseAccess(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		q    l1.Querier
+	}{
+		{"no database", nil}, {"query failure", &recorder{}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r, err := l1.ReaderFor(t.Context(), tt.q, testPrincipals(t), principal.Effective{Human: "kyle"})
+			if err == nil || r.Effective.Human != "" || len(r.Audience) != 0 {
+				t.Fatalf("ReaderFor() = %+v, %v, want failure with no usable reader", r, err)
+			}
+		})
 	}
 }

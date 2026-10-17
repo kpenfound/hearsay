@@ -36,6 +36,8 @@ type Resolver struct {
 	byKey map[identityKey]string
 	// byID maps a principal id to the principal. Written only by NewResolver.
 	byID map[string]Principal
+	// workSources use configured principal ids as native identities.
+	workSources []string
 
 	mu         sync.Mutex
 	unresolved map[identityKey]*Unresolved
@@ -72,7 +74,9 @@ func handleKey(source, handle string) identityKey {
 	return identityKey{source: source, kind: keyHandle, value: FoldHandle(handle)}
 }
 
-// NewResolver builds a resolver from the configured principals.
+// NewResolver builds a resolver from the configured principals and sources.
+// Work sources use principal ids as native identities without explicit mapping;
+// every other source, including agent sessions, uses only configured identities.
 //
 // It returns [ErrIdentityClaimed] if two principals claim one identity, rather
 // than letting map iteration order decide authorship.
@@ -82,17 +86,27 @@ func handleKey(source, handle string) identityKey {
 // would make two of them collide — reporting a conflict between two identities
 // that name nobody, on top of the real error, and refusing to build a resolver
 // over it.
-func NewResolver(principals []Principal) (*Resolver, error) {
+func NewResolver(principals []Principal, sources ...connector.SourceConfig) (*Resolver, error) {
 	r := &Resolver{
 		byKey:      make(map[identityKey]string, 2*len(principals)),
 		byID:       make(map[string]Principal, len(principals)),
 		unresolved: make(map[identityKey]*Unresolved),
 	}
+	for _, source := range sources {
+		if source.Type == "work" {
+			r.workSources = append(r.workSources, source.ID)
+		}
+	}
+	slices.Sort(r.workSources)
+	r.workSources = slices.Compact(r.workSources)
 	for _, p := range principals {
 		if _, dup := r.byID[p.ID]; dup {
 			return nil, fmt.Errorf("principal %q is defined twice", p.ID)
 		}
 		r.byID[p.ID] = p
+		for _, source := range r.workSources {
+			r.byKey[nativeKey(source, p.ID)] = p.ID
+		}
 	}
 	// The claims are taken in a second pass so that the error names both
 	// principals whatever order they were configured in.
@@ -112,6 +126,10 @@ func NewResolver(principals []Principal) (*Resolver, error) {
 	}
 	return r, nil
 }
+
+// WorkSources returns the configured sources whose native identities are
+// principal ids. Agent session sources retain their explicit identity mapping.
+func (r *Resolver) WorkSources() []string { return slices.Clone(r.workSources) }
 
 // identityKeys is every key a configured identity is matched by.
 func identityKeys(id Identity) []identityKey {

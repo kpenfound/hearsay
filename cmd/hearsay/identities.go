@@ -66,7 +66,7 @@ func runIdentities(ctx context.Context, args []string, stdout, stderr io.Writer)
 	if err != nil {
 		return err
 	}
-	resolver, err := principal.NewResolver(repo.Principals)
+	resolver, err := repo.Resolver()
 	if err != nil {
 		return err
 	}

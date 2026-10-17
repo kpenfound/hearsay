@@ -6,6 +6,8 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
@@ -30,7 +32,7 @@ func TestReaderForUsesConfiguredGrants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := &Calls{resolver: resolver, reach: flat{}}
+	c := &Calls{resolver: resolver, reach: flat{}, db: emptyReaderDB{}}
 	for _, tt := range []struct {
 		name, agent string
 		class       principal.Class
@@ -54,3 +56,16 @@ func TestReaderForUsesConfiguredGrants(t *testing.T) {
 		})
 	}
 }
+
+// Grant composition does not need any stored deferred grants.
+type emptyReaderDB struct{ DB }
+
+func (emptyReaderDB) Query(context.Context, string, ...any) (pgx.Rows, error) {
+	return emptyReaderRows{}, nil
+}
+
+type emptyReaderRows struct{ pgx.Rows }
+
+func (emptyReaderRows) Next() bool { return false }
+func (emptyReaderRows) Close()     {}
+func (emptyReaderRows) Err() error { return nil }
