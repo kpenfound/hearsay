@@ -5,6 +5,7 @@ import (
 	"slices"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/queue"
 )
@@ -23,8 +24,8 @@ func AssertKind() queue.Kind { return queue.Kind{Name: AssertKindName, Serialize
 
 // ScopeKey is the serial key a document's assert job runs under, and the scope
 // every topic it opens belongs to: the first configured scope, by id, that
-// covers the artifact's container, and `source:<source id>` for an artifact no
-// scope covers.
+// covers the artifact's container, then the first covering its touches,
+// and `source:<source id>` when neither covers.
 //
 // Topics are only matched within one key. That is what makes serializing per
 // key enough: a job can only read and write topics under its own key, so two
@@ -34,11 +35,21 @@ func AssertKind() queue.Kind { return queue.Kind{Name: AssertKindName, Serialize
 //
 // A scope id is lowercase letters, digits, `-` and `_` (docs/config.md), so it
 // cannot collide with the `source:` form.
-func ScopeKey(repo config.Repo, source, container string) string {
+func ScopeKey(repo config.Repo, source, container string, touches []connector.Touch) string {
 	var ids []string
 	for _, s := range repo.Scopes {
 		if s.Covers(source, container) {
 			ids = append(ids, s.ID)
+		}
+	}
+	if len(ids) == 0 {
+		for _, scope := range repo.Scopes {
+			for _, touch := range touches {
+				if scope.Covers(touch.Source, touch.Project) {
+					ids = append(ids, scope.ID)
+					break
+				}
+			}
 		}
 	}
 	if len(ids) == 0 {
@@ -68,16 +79,16 @@ func ScopeKeys(repo config.Repo) []string {
 // does not enter the assertion pipeline (docs/design.md#l1-distilled-documents).
 // It reports whether a job was asked for.
 //
-// The container is the artifact's, from its root event: a document does not
-// carry one, and the scope key needs it.
-func EnqueueAssertion(ctx context.Context, q queue.Querier, repo config.Repo, doc l1.Document, container string) (bool, error) {
+// Container and touches come from the artifact's root event; the document
+// does not carry them, and both are needed to select its scope key.
+func EnqueueAssertion(ctx context.Context, q queue.Querier, repo config.Repo, doc l1.Document, container string, touches []connector.Touch) (bool, error) {
 	if !doc.Body.OutcomeKind.Asserts() {
 		return false, nil
 	}
 	_, err := queue.Enqueue(ctx, q, queue.Request{
 		Kind:      AssertKind(),
 		TargetID:  doc.ID,
-		SerialKey: ScopeKey(repo, doc.Source.System, container),
+		SerialKey: ScopeKey(repo, doc.Source.System, container, touches),
 	})
 	if err != nil {
 		return false, err

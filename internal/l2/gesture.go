@@ -286,6 +286,11 @@ func (s *Store) recorded(ctx context.Context, req GestureRequest) (Gesture, bool
 	return g, true, nil
 }
 
+type pinScope struct {
+	source, container string
+	touches           []connector.Touch
+}
+
 // gesturePlan is what a gesture would record, read before it is authorized.
 type gesturePlan struct {
 	// scope is the serial key of the stances' topics or of the gesture undone;
@@ -295,7 +300,7 @@ type gesturePlan struct {
 	pins    []Pin
 	// keys are the pinned documents' source and container, from which a
 	// pin's serial key is computed ([ScopeKey]).
-	keys   [][2]string
+	keys   []pinScope
 	undoes Gesture
 }
 
@@ -305,9 +310,9 @@ func (p gesturePlan) scopeKey(repo config.Repo) (string, error) {
 	if p.scope != "" {
 		return p.scope, nil
 	}
-	scope := ScopeKey(repo, p.keys[0][0], p.keys[0][1])
+	scope := ScopeKey(repo, p.keys[0].source, p.keys[0].container, p.keys[0].touches)
 	for _, k := range p.keys[1:] {
-		if other := ScopeKey(repo, k[0], k[1]); other != scope {
+		if other := ScopeKey(repo, k.source, k.container, k.touches); other != scope {
 			return "", fmt.Errorf("%w: the documents to pin are in scopes %q and %q, and a gesture stays inside one scope", ErrInvalid, scope, other)
 		}
 	}
@@ -379,7 +384,7 @@ ORDER BY s.id`, docs)
 // artifact, which decide its serial key.
 func (s *Store) planPin(ctx context.Context, docs []string) (gesturePlan, error) {
 	rows, err := s.db.Query(ctx, `
-SELECT d.id, d.scope, d.source, coalesce(e.payload->'container'->>'native_id', '')
+SELECT d.id, d.scope, d.source, coalesce(e.payload->'container'->>'native_id', ''), coalesce(e.payload->'touches', '[]'::jsonb)
 FROM l1_docs d LEFT JOIN l0_events e ON e.id = d.l0_refs[1]
 WHERE d.id = ANY($1) ORDER BY d.id`, docs)
 	if err != nil {
@@ -391,14 +396,15 @@ WHERE d.id = ANY($1) ORDER BY d.id`, docs)
 	for rows.Next() {
 		var id, source, container string
 		var entities []string
-		if err := rows.Scan(&id, &entities, &source, &container); err != nil {
+		var touches []connector.Touch
+		if err := rows.Scan(&id, &entities, &source, &container, &touches); err != nil {
 			return gesturePlan{}, fmt.Errorf("reading the documents to pin: %w", err)
 		}
 		if len(entities) == 0 {
 			return gesturePlan{}, fmt.Errorf("%w: document %s is about no entity, so there is nowhere to pin it", ErrInvalid, id)
 		}
 		found = append(found, id)
-		plan.keys = append(plan.keys, [2]string{source, container})
+		plan.keys = append(plan.keys, pinScope{source, container, touches})
 		for _, entity := range entities {
 			plan.pins = append(plan.pins, Pin{Scope: entity, L1: id})
 		}

@@ -35,7 +35,7 @@ func TestScopeKey(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := l2.ScopeKey(scopedRepo(), tt.source, tt.container); got != tt.want {
+			if got := l2.ScopeKey(scopedRepo(), tt.source, tt.container, nil); got != tt.want {
 				t.Errorf("ScopeKey(%q, %q) = %q, want %q", tt.source, tt.container, got, tt.want)
 			}
 		})
@@ -176,6 +176,25 @@ func TestStanceValidate(t *testing.T) {
 			tt.change(&s)
 			if err := s.Validate(); !errors.Is(err, l2.ErrInvalid) {
 				t.Errorf("Validate() = %v, want l2.ErrInvalid", err)
+			}
+		})
+	}
+}
+
+func TestScopeKeyTouches(t *testing.T) {
+	tests := []struct {
+		name, source, container, want string
+		touches                       []connector.Touch
+	}{
+		{"first covering scope by id across touches", "projects", "p", "api", []connector.Touch{{Source: "github-other", Project: "acme/ops"}, {Source: "github-acme", Project: "acme/api"}}},
+		{"own container wins over an earlier touches scope", "github-other", "acme/ops", "ops", []connector.Touch{{Source: "github-acme", Project: "acme/api"}}},
+		{"unknown touched container", "projects", "p", "source:projects", []connector.Touch{{Source: "unknown", Project: "acme/api"}}},
+		{"no touches", "projects", "p", "source:projects", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := l2.ScopeKey(scopedRepo(), tt.source, tt.container, tt.touches); got != tt.want {
+				t.Fatalf("ScopeKey = %q, want %q", got, tt.want)
 			}
 		})
 	}

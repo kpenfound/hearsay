@@ -130,7 +130,7 @@ func (d *Distiller) distillMeeting(ctx context.Context, result Result, root conn
 			}
 			result.Written = result.Written || written
 			if written {
-				asserting, err := l2.EnqueueAssertion(ctx, tx, d.repo, segment, root.Payload.Container.NativeID)
+				asserting, err := l2.EnqueueAssertion(ctx, tx, d.repo, segment, root.Payload.Container.NativeID, root.Payload.Touches)
 				if err != nil {
 					return err
 				}

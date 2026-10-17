@@ -11,13 +11,14 @@ import (
 
 // HierarchySource is one of the places a `part_of` edge comes from. They are
 // ranked (ADR-0016): configuration outranks tracker hierarchy, which outranks
-// repository structure.
+// work declarations, which outrank repository structure.
 type HierarchySource string
 
 // The hierarchy sources, highest rank first.
 const (
 	HierarchyConfig        HierarchySource = "config"
 	HierarchyTracker       HierarchySource = "tracker"
+	HierarchyWork          HierarchySource = "work"
 	HierarchyRepoStructure HierarchySource = "repo_structure"
 )
 
@@ -31,6 +32,8 @@ type HierarchyInputs struct {
 	Config Parents
 	// Tracker is the tracker's hierarchy: sub-issues under their parents.
 	Tracker Parents
+	// Work is the runtime work projects and workstreams.
+	Work Parents
 	// RepoStructure is where a code entity sits in its repository
 	// ([NestByPattern]).
 	RepoStructure Parents
@@ -56,6 +59,7 @@ func MergeHierarchy(ctx context.Context, in HierarchyInputs) Parents {
 	}{
 		{HierarchyConfig, in.Config},
 		{HierarchyTracker, in.Tracker},
+		{HierarchyWork, in.Work},
 		{HierarchyRepoStructure, in.RepoStructure},
 	}
 	// The source each entity takes its parents from.

@@ -22,7 +22,7 @@ func TestMatchingReusesTheTopicAMergeKept(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
 	f := store(t, pool, src)
-	scope := l2.ScopeKey(testRepo(src), src, repo)
+	scope := l2.ScopeKey(testRepo(src), src, repo, nil)
 	issue, pr := issueDoc(t, src), prDoc(t, src)
 	const keptName, keptPosition = "How the engine serializes its writes", "The engine serializes writes behind one lock."
 	fx := llm.NewFixtures()
@@ -106,7 +106,7 @@ func TestAReadingThatReopensAMergedTopicWritesWhereItWent(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
 	f := store(t, pool, src)
-	scope := l2.ScopeKey(testRepo(src), src, repo)
+	scope := l2.ScopeKey(testRepo(src), src, repo, nil)
 	issue := issueDoc(t, src)
 	const keptName = "How the engine serializes its writes"
 	opens := llm.Response{JSON: []byte(`{"assertions":[{"topic":"new","topic_name":"` + topicName + `","position":"` + issuePosition + `"}]}`), StopReason: llm.StopEnd, Model: "recorded"}

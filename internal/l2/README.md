@@ -158,8 +158,8 @@ text that is no longer current (ADR-0019, below).
 - **Join keys leave out people and code entities.** Everybody's documents name
   the same people and systems, and a key everything shares joins everything.
 - **The hierarchy is merged, not accumulated** ([MergeHierarchy], ADR-0016).
-  `code/`, then tracker hierarchy, then repository structure: the highest
-  source that sets any parent for an entity replaces the others' parents, and
+  `code/`, then tracker hierarchy, then work declarations, then repository
+  structure: the highest source that sets any parent for an entity replaces the others' parents, and
   an edge closing a cycle is dropped from the lower rank and logged. Repository
   structure is [NestByPattern], which compares path patterns and never expands
   them, so it reads no repository. Both are pure; seeding calls them. Tracker
@@ -169,7 +169,8 @@ text that is no longer current (ADR-0019, below).
   rather than under a scope's serial key, because an edge can cross scopes.
 - **Nothing unresolved is invented.** A tracker item is an entity only where a
   scope's tracker maps its repository, and a parent in a repository no tracker
-  maps is no edge; a CODEOWNERS owner is a principal only
+  maps is no edge; work sources declare projects and workstreams without a
+  tracker mapping; a CODEOWNERS owner is a principal only
   where the identity mapping resolves it.
 - **`resolve` hides path-like words from alias matching.** An alias is not
   matched inside `engine/server/write.go` or a link, and an alias shaped like a

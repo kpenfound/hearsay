@@ -287,9 +287,9 @@ func (d *Distiller) Distill(ctx context.Context, docID string) (Result, error) {
 		return Result{}, fmt.Errorf("building %s: %w", docID, err)
 	}
 	if doc.Kind == l1.KindChatThread {
-		return d.writeThread(ctx, result, source, artifact, root.Payload.Container.NativeID, doc, children)
+		return d.writeThread(ctx, result, source, artifact, root.Payload.Container.NativeID, doc, children, root.Payload.Touches)
 	}
-	return d.writeDocument(ctx, result, source, artifact, root.Payload.Container.NativeID, doc, nil)
+	return d.writeDocument(ctx, result, source, artifact, root.Payload.Container.NativeID, doc, nil, root.Payload.Touches)
 }
 
 // distillReplies distils the conversation a channel message heads on a source
@@ -314,7 +314,7 @@ func (d *Distiller) distillReplies(ctx context.Context, result Result, source, a
 	if err != nil {
 		return Result{}, fmt.Errorf("building %s: %w", result.DocID, err)
 	}
-	return d.writeThread(ctx, result, source, artifact, root.Payload.Container.NativeID, doc, append(replies, root))
+	return d.writeThread(ctx, result, source, artifact, root.Payload.Container.NativeID, doc, append(replies, root), root.Payload.Touches)
 }
 
 // replies reads and builds the conversation a [l1.ChatRoot] message heads.
@@ -454,7 +454,14 @@ func (d *Distiller) distillChatWindow(ctx context.Context, result Result, source
 	if err != nil {
 		return Result{}, err
 	}
-	return d.writeThread(ctx, result, source, key, container, doc, messages)
+	// L1 orders equal-time messages by artifact ID; L0 returns them in arrival
+	// order. Use the document's root so recovery selects the same scope key.
+	for _, message := range messages {
+		if message.ID == doc.L0Refs[0] {
+			return d.writeThread(ctx, result, source, key, container, doc, messages, message.Payload.Touches)
+		}
+	}
+	return Result{}, fmt.Errorf("finding chat window %s root %s in its messages", key, doc.L0Refs[0])
 }
 
 func (d *Distiller) deleteConversation(ctx context.Context, source, artifact, docID string) (bool, error) {
@@ -593,7 +600,7 @@ func (d *Distiller) distillWikiSections(ctx context.Context, result Result, root
 			}
 			result.Written = result.Written || written
 			if written {
-				asserting, err := l2.EnqueueAssertion(ctx, tx, d.repo, section, root.Payload.Container.NativeID)
+				asserting, err := l2.EnqueueAssertion(ctx, tx, d.repo, section, root.Payload.Container.NativeID, root.Payload.Touches)
 				if err != nil {
 					return err
 				}
@@ -621,7 +628,7 @@ func (d *Distiller) distillWikiSections(ctx context.Context, result Result, root
 	return result, nil
 }
 
-func (d *Distiller) writeThread(ctx context.Context, result Result, source, artifact, container string, doc l1.Document, messages []connector.Event) (Result, error) {
+func (d *Distiller) writeThread(ctx context.Context, result Result, source, artifact, container string, doc l1.Document, messages []connector.Event, touches []connector.Touch) (Result, error) {
 	var eligible []connector.Event
 	for _, ev := range messages {
 		if ev.Kind == connector.KindMessage || ev.Payload.BaseKind == connector.KindMessage {
@@ -636,10 +643,10 @@ func (d *Distiller) writeThread(ctx context.Context, result Result, source, arti
 	if err != nil {
 		return Result{}, err
 	}
-	return d.writeDocument(ctx, result, source, artifact, container, doc, bursts)
+	return d.writeDocument(ctx, result, source, artifact, container, doc, bursts, touches)
 }
 
-func (d *Distiller) writeDocument(ctx context.Context, result Result, source, artifact, container string, doc l1.Document, bursts []l1.Document) (Result, error) {
+func (d *Distiller) writeDocument(ctx context.Context, result Result, source, artifact, container string, doc l1.Document, bursts []l1.Document, touches []connector.Touch) (Result, error) {
 	docID := result.DocID
 
 	body, err := d.distil(ctx, doc)
@@ -703,7 +710,7 @@ func (d *Distiller) writeDocument(ctx context.Context, result Result, source, ar
 			if err := d.voteAliases(ctx, tx, doc); err != nil {
 				return err
 			}
-			result.Asserting, err = l2.EnqueueAssertion(ctx, tx, d.repo, doc, container)
+			result.Asserting, err = l2.EnqueueAssertion(ctx, tx, d.repo, doc, container, touches)
 			if err != nil {
 				return err
 			}

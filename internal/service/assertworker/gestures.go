@@ -87,8 +87,12 @@ func (f *GestureFollower) Once(ctx context.Context) (int, error) {
 			if ev.Kind == connector.KindTombstone && !strings.Contains(ev.Payload.Target, ":reaction:") {
 				continue
 			}
+			root, err := scopeRoot(ctx, l0.New(tx), ev)
+			if err != nil {
+				return err
+			}
 			_, err = queue.Enqueue(ctx, tx, queue.Request{Kind: l2.AssertKind(), TargetID: l2.GestureTarget + ev.ID,
-				SerialKey: l2.ScopeKey(f.repo, ev.Source, ev.Payload.Container.NativeID)})
+				SerialKey: l2.ScopeKey(f.repo, root.Source, root.Payload.Container.NativeID, root.Payload.Touches)})
 			if err != nil {
 				return err
 			}

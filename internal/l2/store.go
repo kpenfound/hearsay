@@ -91,7 +91,8 @@ ON CONFLICT (id) DO NOTHING`,
 // ReplaceSeeded makes the seeded entities exactly these: it writes every one of
 // them and deletes a `config` or `repo_structure` row that is no longer among
 // them, which is what removing an entry from `code/` means. A `reference` row
-// is never deleted here — a document pointed at it. The only `reference` rows
+// is never deleted here — a document pointed at it. Source-origin rows are
+// left in place, with their hierarchy unchanged. The only `reference` rows
 // seeding produces are the tracker items the tracker places, and a tracker
 // item that is not among them is placed nowhere: its part_of is cleared, which
 // is what a tracker no scope maps any more means. Run it in a transaction.
@@ -112,7 +113,7 @@ func (s *Store) ReplaceSeeded(ctx context.Context, entities []Entity) error {
 	}
 	if _, err := s.db.Exec(ctx, `
 UPDATE l2_entities SET part_of = '{}', updated_at = now()
-WHERE type = $2 AND part_of <> '{}' AND NOT (id = ANY($1))`, ids, string(TypeTrackerItem)); err != nil {
+WHERE type = $2 AND origin = 'reference' AND part_of <> '{}' AND NOT (id = ANY($1))`, ids, string(TypeTrackerItem)); err != nil {
 		return fmt.Errorf("removing tracker hierarchy the tracker no longer places: %w", err)
 	}
 	for _, e := range entities {
