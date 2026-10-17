@@ -120,6 +120,9 @@ func TestJudgmentRateLimitsAndCooldownAcrossCallers(t *testing.T) {
 			}
 			for range 2 {
 				r := <-done
+				if r.Usage.CostUSD == nil || *r.Usage.CostUSD != 0 || r.Usage.InputTokens == nil || *r.Usage.InputTokens != 0 || r.Usage.OutputTokens == nil || *r.Usage.OutputTokens != 0 {
+					t.Fatalf("suppressed usage must be known zero: %+v", r.Usage)
+				}
 				if r.Fallback != llm.JudgmentCooldown || r.Attempts != 0 {
 					t.Fatal(r)
 				}
@@ -301,6 +304,39 @@ func TestJudgmentInflightAnswerCannotShortenCooldown(t *testing.T) {
 			r := j.Judge(t.Context(), judgmentRequest())
 			if r.Fallback != llm.JudgmentCooldown || r.Attempts != 0 || f.Calls() != 2 {
 				t.Fatalf("result=%+v calls=%d", r, f.Calls())
+			}
+		})
+	}
+}
+
+func TestJudgmentZeroAttemptsVersusUnknownAttemptUsage(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		cfg        llm.JudgmentConfig
+		credential string
+		steps      []llm.JudgmentStep
+		attempts   int
+	}{
+		{name: "disabled", cfg: llm.JudgmentConfig{}, attempts: 0},
+		{name: "missing credential", cfg: llm.JudgmentConfig{Enabled: true, Model: "pinned-v1"}, attempts: 0},
+		{name: "attempt without usage", cfg: llm.JudgmentConfig{Enabled: true, Model: "pinned-v1", MaxRetries: -1}, credential: "fixture-only", steps: []llm.JudgmentStep{{Error: &llm.Error{Status: 503}}}, attempts: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := llm.NewFakeJudgmentProvider(tt.steps...)
+			j, err := llm.NewJudgments(tt.cfg, func(llm.JudgmentConfig, string) llm.JudgmentProvider { return fake }, func(string) string { return tt.credential })
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := j.Judge(t.Context(), judgmentRequest())
+			if r.Attempts != tt.attempts {
+				t.Fatal(r)
+			}
+			if tt.attempts == 0 {
+				if r.Usage.InputTokens == nil || *r.Usage.InputTokens != 0 || r.Usage.OutputTokens == nil || *r.Usage.OutputTokens != 0 || r.Usage.CostUSD == nil || *r.Usage.CostUSD != 0 {
+					t.Fatalf("zero-attempt consumption=%+v", r.Usage)
+				}
+			} else if r.Usage.InputTokens != nil || r.Usage.OutputTokens != nil || r.Usage.CostUSD != nil {
+				t.Fatalf("unknown attempt consumption=%+v", r.Usage)
 			}
 		})
 	}

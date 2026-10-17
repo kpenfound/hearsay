@@ -18,6 +18,7 @@ The one binary Hearsay ships. Each process is a subcommand of it (ADR-0003).
 | `hearsay topics list <scope>\|merge <from> <into>\|split <topic> --stance <id>... --name <name>\|undo <op-id>\|ops` | List a scope's topics and the topic ledger; merge, split and undo as a configured human. |
 | `hearsay gestures ratify\|demote\|pin\|unpin <document>\|undo <gesture-id>\|list` | Record and list human stance and pin gestures. |
 | `hearsay eval [--since <RFC3339>] [--until <RFC3339>] [--scope <id>] [--json]` | The evaluation metrics over a window: time to ratification, topic merge and split rate, drill-down rate per bundle section, conflict-flag precision and next actions. Read-only; aggregates and ids only. |
+| `hearsay eval judgments --corpus <json> --predictions <json> [--qualify <operator-options-json>]` | Offline comparison and held-out policy qualification using supplied worker predictions and operator limits. No provider calls. |
 | `hearsay delete --event <l0-id>\|--artifact <source> <artifact-id>\|--author <identity> [--apply]` | Preview deletion provenance; with `--apply`, redact L0 and re-distill what depended on it. |
 | `hearsay delete list\|show <deletion-id>` | The deletions applied and what each rebuilt. Read-only. |
 | `hearsay version` | Version, commit and build date. |
@@ -98,7 +99,8 @@ durations, rates and scope and topic ids, never a stance's position, a topic's
 name, L1 text or an L0 payload. The window is `--since` (default: the
 beginning) up to but not including `--until` (default: now); `--scope` narrows
 it to one topic scope key, and the bundles and next actions to the bundle scope
-of that name. It takes no action word.
+of that name. The separate `eval judgments` action works offline; see
+[the evaluation guide](../../docs/jev-evaluation.md).
 
 - *Time to ratification* replays each topic, as the topic ledger makes it now,
   through `l2.Stand`: every stance, gesture and undo recorded before `--until`,
@@ -144,6 +146,12 @@ with `topics`, `ratified`, `unratified`, `unratified_share`,
 `unflagged_verdicts`; and `next_actions` with `actions`, `asked`,
 `proceeded` and `asserted` (each `count` and `share`) and `unattributed`. A
 ratio with nothing to divide by is null.
+The additive `pipelines` object reports retained baseline, shadow and accepted
+stage-run accounting: reported cost, handler latency, queue delay, generation,
+judgment requests/attempts/fallbacks, and candidate processing. Unknown and
+overflowing accounting stays null. Offline `eval judgments` adds `judgments`
+comparisons; it requires source-backed labels and supplied worker predictions,
+and `--qualify` also requires operator limits and minimum class evidence.
 Fields are added, never renamed.
 
 `hearsay delete` takes exactly one selector and requires `--reason` even for a

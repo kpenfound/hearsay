@@ -188,6 +188,10 @@ func (j *judgments) YesNo(ctx context.Context, state string, q JudgmentQuestion)
 }
 
 func (j *judgments) Judge(parent context.Context, req JudgmentRequest) (out JudgmentResult) {
+	// No provider attempt means known zero consumption. The first attempted
+	// response replaces these values, including unknown fields.
+	zeroTokens, zeroCost := int64(0), float64(0)
+	out.Usage = JudgmentUsage{InputTokens: &zeroTokens, OutputTokens: &zeroTokens, CostUSD: &zeroCost}
 	start := time.Now()
 	defer func() { out.Duration = time.Since(start); j.observe(out) }()
 	if j.permanent != "" {

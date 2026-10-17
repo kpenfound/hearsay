@@ -503,3 +503,40 @@ func TestJournalOutcomeKinds(t *testing.T) {
 		})
 	}
 }
+
+// The aggregate-only export preserves nullable counts and costs through the
+// same persistence path workers use; it does not expose evidence identities.
+func TestPipelineAccountingExport(t *testing.T) {
+	pool := journalDB(t)
+	record := journalRecord(t, pool, "accounting-input")
+	zero, one, three := int64(0), int64(1), int64(3)
+	cost := .5
+	observation := l1.PipelineObservation{ID: "accounting", Stage: "assert", Cohort: "accepted", Inputs: record.Inputs, HandlerNS: &one, QueueDelayNS: nil, GenerativeCalls: &one, GenerativeUsage: llm.JudgmentUsage{InputTokens: &three, OutputTokens: &one, CostUSD: &cost}, JudgmentRequests: &three, JudgmentAttempts: &one, JudgmentFallbacks: &three, JudgmentUsage: llm.JudgmentUsage{InputTokens: &zero, OutputTokens: &zero}, CandidateCount: &three}
+	since := time.Now().Add(-time.Minute)
+	journalCommit(t, pool, nil, []l1.PipelineObservation{observation})
+	store := l1.New(pool)
+	rows, err := store.PipelineAccounting(t.Context(), since, time.Now().Add(time.Minute), "scope")
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("export=%+v err=%v", rows, err)
+	}
+	got := rows[0]
+	if got.JudgmentRequests == nil || *got.JudgmentRequests != 3 || got.JudgmentAttempts == nil || *got.JudgmentAttempts != 1 || got.JudgmentFallbacks == nil || *got.JudgmentFallbacks != 3 || got.JudgmentUsage.CostUSD != nil || got.QueueDelayNS != nil || got.GenerativeUsage.CostUSD == nil || *got.GenerativeUsage.CostUSD != .5 {
+		t.Fatalf("nullable export changed: %+v", got)
+	}
+	if got.ID != "" || len(got.Inputs.Documents) != 0 || len(got.Inputs.Events) != 0 || len(got.Inputs.Spec.ACL) != 0 {
+		t.Fatal("aggregate accounting returned evidence identities")
+	}
+	readable, err := store.ObservationsFor(t.Context(), journalReader())
+	if err != nil || len(readable) != 1 || readable[0].JudgmentRequests == nil || *readable[0].JudgmentRequests != 3 {
+		t.Fatalf("reader export=%+v err=%v", readable, err)
+	}
+	for _, filter := range []struct {
+		since, until time.Time
+		scope        string
+	}{{since, time.Now().Add(time.Minute), "elsewhere"}, {time.Now().Add(time.Minute), time.Now().Add(2 * time.Minute), "scope"}, {since, since.Add(time.Second), "scope"}} {
+		rows, err := store.PipelineAccounting(t.Context(), filter.since, filter.until, filter.scope)
+		if err != nil || len(rows) != 0 {
+			t.Fatalf("window/scope filter returned %+v, %v", rows, err)
+		}
+	}
+}

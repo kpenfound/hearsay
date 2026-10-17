@@ -1,0 +1,540 @@
+[
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "tuning-01",
+        "Choice": "restates",
+        "Confidence": 0.85,
+        "Probabilities": {
+          "changes": 0.07500000000000001,
+          "restates": 0.85,
+          "abstain": 0.07500000000000001
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "tuning-02",
+        "Choice": "changes",
+        "Confidence": 0.95,
+        "Probabilities": {
+          "changes": 0.95,
+          "restates": 0.025000000000000022,
+          "abstain": 0.025000000000000022
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "tuning-03",
+        "Choice": "changes",
+        "Confidence": 0.85,
+        "Probabilities": {
+          "changes": 0.85,
+          "restates": 0.07500000000000001,
+          "abstain": 0.07500000000000001
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "tuning-04",
+        "Choice": "restates",
+        "Confidence": 0.95,
+        "Probabilities": {
+          "changes": 0.025000000000000022,
+          "restates": 0.95,
+          "abstain": 0.025000000000000022
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "tuning-05",
+        "Choice": "topic-retention",
+        "Confidence": 0.85,
+        "Probabilities": {
+          "topic-retention": 0.85,
+          "topic-access": 0.07500000000000001,
+          "none_fit": 0.07500000000000001
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "tuning-06",
+        "Choice": "none_fit",
+        "Confidence": 0.95,
+        "Probabilities": {
+          "topic-retention": 0.050000000000000044,
+          "none_fit": 0.95
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "tuning-07",
+        "Choice": "topic-retention",
+        "Confidence": 0.85,
+        "Probabilities": {
+          "topic-retention": 0.85,
+          "topic-access": 0.07500000000000001,
+          "none_fit": 0.07500000000000001
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "tuning-08",
+        "Choice": "none_fit",
+        "Confidence": 0.95,
+        "Probabilities": {
+          "topic-retention": 0.025000000000000022,
+          "topic-access": 0.025000000000000022,
+          "none_fit": 0.95
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "tuning-09",
+        "Choice": "proposed",
+        "Confidence": 0.85,
+        "Probabilities": {
+          "resolved": 0.037500000000000006,
+          "decided": 0.037500000000000006,
+          "proposed": 0.85,
+          "open": 0.037500000000000006,
+          "none": 0.037500000000000006
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "tuning-10",
+        "Choice": "decided",
+        "Confidence": 0.95,
+        "Probabilities": {
+          "resolved": 0.012500000000000011,
+          "decided": 0.95,
+          "proposed": 0.012500000000000011,
+          "open": 0.012500000000000011,
+          "none": 0.012500000000000011
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "tuning-11",
+        "Choice": "resolved",
+        "Confidence": 0.85,
+        "Probabilities": {
+          "resolved": 0.85,
+          "decided": 0.037500000000000006,
+          "proposed": 0.037500000000000006,
+          "open": 0.037500000000000006,
+          "none": 0.037500000000000006
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "tuning-12",
+        "Choice": "open",
+        "Confidence": 0.95,
+        "Probabilities": {
+          "resolved": 0.012500000000000011,
+          "decided": 0.012500000000000011,
+          "proposed": 0.012500000000000011,
+          "open": 0.95,
+          "none": 0.012500000000000011
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "tuning-13",
+        "Choice": "none",
+        "Confidence": 0.85,
+        "Probabilities": {
+          "resolved": 0.037500000000000006,
+          "decided": 0.037500000000000006,
+          "proposed": 0.037500000000000006,
+          "open": 0.037500000000000006,
+          "none": 0.85
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "held_out-01",
+        "Choice": "restates",
+        "Confidence": 0.85,
+        "Probabilities": {
+          "changes": 0.07500000000000001,
+          "restates": 0.85,
+          "abstain": 0.07500000000000001
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "held_out-02",
+        "Choice": "changes",
+        "Confidence": 0.95,
+        "Probabilities": {
+          "changes": 0.95,
+          "restates": 0.025000000000000022,
+          "abstain": 0.025000000000000022
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "held_out-03",
+        "Choice": "changes",
+        "Confidence": 0.85,
+        "Probabilities": {
+          "changes": 0.85,
+          "restates": 0.07500000000000001,
+          "abstain": 0.07500000000000001
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "held_out-04",
+        "Choice": "restates",
+        "Confidence": 0.95,
+        "Probabilities": {
+          "changes": 0.025000000000000022,
+          "restates": 0.95,
+          "abstain": 0.025000000000000022
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "held_out-05",
+        "Choice": "topic-retention",
+        "Confidence": 0.85,
+        "Probabilities": {
+          "topic-retention": 0.85,
+          "topic-access": 0.07500000000000001,
+          "none_fit": 0.07500000000000001
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "held_out-06",
+        "Choice": "none_fit",
+        "Confidence": 0.95,
+        "Probabilities": {
+          "topic-retention": 0.050000000000000044,
+          "none_fit": 0.95
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "held_out-07",
+        "Choice": "topic-retention",
+        "Confidence": 0.85,
+        "Probabilities": {
+          "topic-retention": 0.85,
+          "topic-access": 0.07500000000000001,
+          "none_fit": 0.07500000000000001
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "held_out-08",
+        "Choice": "none_fit",
+        "Confidence": 0.95,
+        "Probabilities": {
+          "topic-retention": 0.025000000000000022,
+          "topic-access": 0.025000000000000022,
+          "none_fit": 0.95
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "held_out-09",
+        "Choice": "proposed",
+        "Confidence": 0.85,
+        "Probabilities": {
+          "resolved": 0.037500000000000006,
+          "decided": 0.037500000000000006,
+          "proposed": 0.85,
+          "open": 0.037500000000000006,
+          "none": 0.037500000000000006
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "held_out-10",
+        "Choice": "decided",
+        "Confidence": 0.95,
+        "Probabilities": {
+          "resolved": 0.012500000000000011,
+          "decided": 0.95,
+          "proposed": 0.012500000000000011,
+          "open": 0.012500000000000011,
+          "none": 0.012500000000000011
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "held_out-11",
+        "Choice": "resolved",
+        "Confidence": 0.85,
+        "Probabilities": {
+          "resolved": 0.85,
+          "decided": 0.037500000000000006,
+          "proposed": 0.037500000000000006,
+          "open": 0.037500000000000006,
+          "none": 0.037500000000000006
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "held_out-12",
+        "Choice": "open",
+        "Confidence": 0.95,
+        "Probabilities": {
+          "resolved": 0.012500000000000011,
+          "decided": 0.012500000000000011,
+          "proposed": 0.012500000000000011,
+          "open": 0.95,
+          "none": 0.012500000000000011
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  },
+  {
+    "ModelVersion": "fixture-judge-v1",
+    "Answers": [
+      {
+        "ID": "held_out-13",
+        "Choice": "none",
+        "Confidence": 0.85,
+        "Probabilities": {
+          "resolved": 0.037500000000000006,
+          "decided": 0.037500000000000006,
+          "proposed": 0.037500000000000006,
+          "open": 0.037500000000000006,
+          "none": 0.85
+        }
+      }
+    ],
+    "Usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "cost_usd": 0
+    }
+  }
+]

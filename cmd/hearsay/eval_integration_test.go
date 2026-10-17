@@ -252,6 +252,11 @@ func TestEvalCommand(t *testing.T) {
 			"proceeded 1 50.0%",
 			"asserted 0 0.0%",
 			"with no bundle before them 0",
+			"",
+			"pipeline observations",
+			"baseline 0 runs cost USD - mean handler seconds - mean queue seconds - fallback -",
+			"shadow 0 runs cost USD - mean handler seconds - mean queue seconds - fallback -",
+			"accepted 0 runs cost USD - mean handler seconds - mean queue seconds - fallback -",
 		}
 		if lines := table(got); strings.Join(lines, "\n") != strings.Join(want, "\n") {
 			t.Errorf("eval printed\n%s\nwant (spacing aside)\n%s", got, strings.Join(want, "\n"))
@@ -305,7 +310,19 @@ func TestEvalCommand(t *testing.T) {
     "unattributed": 0
   }
 }`
-		if a, b := canonicalJSON(t, got), canonicalJSON(t, want); a != b {
+		var additive map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(got), &additive); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := additive["pipelines"]; !ok {
+			t.Fatal("missing additive accounting section")
+		}
+		delete(additive, "pipelines")
+		stable, err := json.Marshal(additive)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a, b := canonicalJSON(t, string(stable)), canonicalJSON(t, want); a != b {
 			t.Errorf("eval --json =\n%s\nwant\n%s", a, b)
 		}
 	})

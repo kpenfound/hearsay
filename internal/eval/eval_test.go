@@ -281,6 +281,13 @@ next actions
   asserted                    1  25.0%
   with no bundle before them  1
 `
+	pipelineText := `
+pipeline observations
+  baseline  0 runs  cost USD -  mean handler seconds -  mean queue seconds -  fallback -
+  shadow    0 runs  cost USD -  mean handler seconds -  mean queue seconds -  fallback -
+  accepted  0 runs  cost USD -  mean handler seconds -  mean queue seconds -  fallback -
+`
+	wantText += pipelineText
 	if text.String() != wantText {
 		t.Errorf("text =\n%s\nwant\n%s", text.String(), wantText)
 	}
@@ -335,6 +342,7 @@ next actions
   asserted                    0  -
   with no bundle before them  0
 `
+	wantEmpty += pipelineText
 	if text.String() != wantEmpty {
 		t.Errorf("text of an empty report =\n%s\nwant\n%s", text.String(), wantEmpty)
 	}
@@ -394,6 +402,12 @@ next actions
 	if err := json.Unmarshal([]byte(wantJSON), &want); err != nil {
 		t.Fatal(err)
 	}
+	// All pre-existing JSON fields must remain byte-for-byte equivalent once
+	// the additive section is removed. Its contents have dedicated tests.
+	if _, ok := got.(map[string]any)["pipelines"]; !ok {
+		t.Fatal("missing additive pipelines section")
+	}
+	delete(got.(map[string]any), "pipelines")
 	if a, b := canonical(t, got), canonical(t, want); a != b {
 		t.Errorf("JSON =\n%s\nwant\n%s", a, b)
 	}
@@ -426,6 +440,12 @@ next actions
 	if err := json.Unmarshal([]byte(wantEmptyJSON), &want); err != nil {
 		t.Fatal(err)
 	}
+	// All pre-existing JSON fields must remain byte-for-byte equivalent once
+	// the additive section is removed. Its contents have dedicated tests.
+	if _, ok := got.(map[string]any)["pipelines"]; !ok {
+		t.Fatal("missing additive pipelines section")
+	}
+	delete(got.(map[string]any), "pipelines")
 	if a, b := canonical(t, got), canonical(t, want); a != b {
 		t.Errorf("JSON of an empty report =\n%s\nwant\n%s", a, b)
 	}

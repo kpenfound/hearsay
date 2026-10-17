@@ -61,7 +61,7 @@ func commands() []command {
 		{"aliases", "list|confirm <entity> <name>|reject <entity> <name>", "Review learned entity names.", runAliases},
 		{"topics", "list <scope>|merge <from> <into>|split <topic> --stance <id>... --name <name>|undo <op>|ops", "List topics and their operations; merge, split and undo by hand.", runTopics},
 		{"gestures", "ratify|demote|pin|unpin <document>|undo <gesture-id>|list", "Record and list human stance and pin gestures.", runGestures},
-		{"eval", "[--since <time>] [--until <time>] [--scope <id>] [--json]", "Print the evaluation metrics: time to ratification, topic merge and split rate, drill-down rate per bundle section, conflict-flag precision.", runEval},
+		{"eval", "[--since <time>] [--until <time>] [--scope <id>] [--json]", "Print evaluation metrics and pipeline accounting; eval judgments compares supplied predictions and qualifies task policies offline.", runEval},
 		{"delete", "--event <id>|--artifact <source> <id>|--author <identity> [--apply] | list | show <id>", "Preview deletion provenance; --apply redacts L0 and re-distills; list and show read the records.", runDelete},
 		{"version", "", "Print version, commit and build date.", runVersion},
 		{"help", "", "Print this message.", runHelp},
