@@ -101,6 +101,15 @@ func Apply(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, sel Select
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// Take this before the repeatable-read snapshot in walk. Otherwise a
+	// journal commit completing after that snapshot could be invisible to
+	// the deletion trigger, even though it committed before our deletion.
+	// LOCK itself takes no data snapshot. Attempts and journal commits wait
+	// until deletion finishes and then see its deleted-evidence guard.
+	if _, err := tx.Exec(ctx, `LOCK TABLE judgment_input_guard IN ROW EXCLUSIVE MODE`); err != nil {
+		return Applied{}, fmt.Errorf("holding judgment evidence for deletion: %w", err)
+	}
+
 	p, err := walk(ctx, tx, repo, sel, reason)
 	if err != nil {
 		return Applied{}, err
