@@ -398,7 +398,7 @@ func TestJournalGuardPreservesConcurrentSourceWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer second.Rollback(t.Context())
-	journalExec(t, first, `INSERT INTO l0_events(id,source,native_id,kind,artifact,occurred_at,payload,acl) VALUES('evt:test:first','test','first','message','first',now(),'{}','[{"kind":"public"}]')`)
+	journalExec(t, first, `INSERT INTO l0_events(id,source,native_id,kind,artifact,revision_token,occurred_at,payload,acl) VALUES('evt:test:one@late','test','one@late','message','one','late',now(),'{}','[{"kind":"public"}]')`)
 	journalExec(t, second, `SET LOCAL lock_timeout='100ms'`)
 	journalExec(t, second, `INSERT INTO l0_events(id,source,native_id,kind,artifact,occurred_at,payload,acl) VALUES('evt:test:second','test','second','message','second',now(),'{}','[{"kind":"public"}]')`)
 	if err = second.Commit(t.Context()); err != nil {

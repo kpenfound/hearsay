@@ -258,12 +258,23 @@ func TestL0AndMigrateAgainstARealDatabase(t *testing.T) {
 		}
 
 		ctx, cancel := context.WithCancel(t.Context())
-		var stdout, stderr bytes.Buffer
+		defer cancel()
+		var stdout, stderr syncBuffer
 		done := make(chan error, 1)
 		go func() {
 			done <- run(ctx, []string{"l0", "tail", "--source", source, "--interval", "50ms"}, &stdout, &stderr)
 		}()
-		time.Sleep(200 * time.Millisecond)
+		deadline := time.Now().Add(10 * time.Second)
+		for !strings.Contains(stdout.String(), appended.ID) && time.Now().Before(deadline) {
+			time.Sleep(20 * time.Millisecond)
+		}
+		if !strings.Contains(stdout.String(), appended.ID) {
+			t.Errorf("l0 tail did not print the event within 10s:\nstdout: %s\nstderr: %s", stdout.String(), stderr.String())
+		} else {
+			// Allow two more polling intervals after observing the event, so the
+			// source-filter assertion also covers continued following.
+			time.Sleep(100 * time.Millisecond)
+		}
 		cancel()
 		select {
 		case err := <-done:

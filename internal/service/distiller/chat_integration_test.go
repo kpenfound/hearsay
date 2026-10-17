@@ -29,8 +29,8 @@ func TestChatBurstReconcilesEditAndTombstone(t *testing.T) {
 }
 
 func testChatBurstReconciliation(t *testing.T, mode string) {
-	// Journal source/ledger markers invalidate across scopes. Keep unrelated
-	// packages' writes from refusing this batch or invalidating restart reuse.
+	// Keep exact reconciliation and provider-count assertions isolated from
+	// other packages' concurrent input-guard contention.
 	pool := newScratchPool(t)
 	src := newSource(t)
 	authors := "AAABCBDE"

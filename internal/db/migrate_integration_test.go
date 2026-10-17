@@ -69,9 +69,8 @@ func swapDatabaseName(url, name string) string {
 	return swapped
 }
 
-// The whole of ADR-0006's command surface, against a database that starts with
-// no schema at all: up, status, up-to, down, and the migration whose down
-// refuses.
+// Migration application, status and schema checks start with an empty
+// database. Reversible history and refused rollbacks are exercised separately.
 func TestMigrateUpAndDown(t *testing.T) {
 	url := scratchDatabase(t)
 	migrator, err := db.NewMigrator(t.Context(), url, nil)
@@ -156,10 +155,30 @@ func TestMigrateUpAndDown(t *testing.T) {
 			t.Errorf("Status() says %s is pending after up", s.Name)
 		}
 	}
+}
 
+// Scoped marker history is intentionally irreversible. Exercise the earlier
+// reversible schema history independently.
+func TestReversibleMigrationHistory(t *testing.T) {
+	const newest int64 = 35
+	url := scratchDatabase(t)
+	migrator, err := db.NewMigrator(t.Context(), url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = migrator.Close() }()
+	if _, err = migrator.UpTo(t.Context(), newest); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := db.Open(t.Context(), url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	var events int64
 	// Down reverses one migration at a time, and what each one created goes
-	// with it. The migrations are named here newest first, so a migration added
-	// later is a line added at the top of this list; a migration that creates
+	// with it. This list ends before the irreversible scoped-marker migration.
+	// A migration that creates
 	// no table of its own — an index on an existing one — has no table here and
 	// is only checked for rolling back cleanly.
 	for i, table := range []string{"", "judgment_journal", "", "", "", "", "github_command_replies", "", "l2_gestures", "", "l2_topic_operations", "l0_deletion_rebuilds", "l0_deletions", "", "", "bundle_changes", "l2_alias_candidates", "", "l2_pins", "", "", "", "", "l0_resyncs", "l2_stances", "l0_backfill_cursors", "", "", "", "", "l0_feed_cursors", "l1_docs", "queue_job", "l0_events"} {
@@ -248,7 +267,7 @@ func TestMigrateUpAndDown(t *testing.T) {
 
 	// And up again, so that a down migration that leaves the schema in a state
 	// up cannot re-apply fails here rather than in someone's afternoon.
-	if _, err := migrator.Up(t.Context()); err != nil {
+	if _, err := migrator.UpTo(t.Context(), newest); err != nil {
 		t.Fatalf("Up(after down) = %v, want no error", err)
 	}
 	if version, err := migrator.Version(t.Context()); err != nil || version != newest {
@@ -257,7 +276,7 @@ func TestMigrateUpAndDown(t *testing.T) {
 }
 
 // ADR-0006: a down migration that would destroy data says so and fails rather
-// than pretending to reverse. Migration 1 is the one that does.
+// than pretending to reverse. The vector extension may predate this schema.
 func TestTheVectorExtensionRefusesToBeRolledBack(t *testing.T) {
 	url := scratchDatabase(t)
 	migrator, err := db.NewMigrator(t.Context(), url, nil)
@@ -265,20 +284,10 @@ func TestTheVectorExtensionRefusesToBeRolledBack(t *testing.T) {
 		t.Fatalf("NewMigrator() = %v, want no error", err)
 	}
 	defer func() { _ = migrator.Close() }()
-	if _, err := migrator.Up(t.Context()); err != nil {
+	if _, err := migrator.UpTo(t.Context(), 1); err != nil {
 		t.Fatalf("Up() = %v, want no error", err)
 	}
 
-	newest, err := db.EmbeddedVersion()
-	if err != nil {
-		t.Fatalf("EmbeddedVersion() = %v, want no error", err)
-	}
-	// Everything above migration 1 rolls back cleanly.
-	for version := newest; version > 1; version-- {
-		if _, err := migrator.Down(t.Context()); err != nil {
-			t.Fatalf("Down(from %d) = %v, want no error", version, err)
-		}
-	}
 	err = downErr(migrator.Down(t.Context()))
 	if err == nil {
 		t.Fatal("Down(to nothing) = nil, want the vector extension to refuse")
@@ -524,5 +533,25 @@ func TestVersion14BranchSchemasUpgrade(t *testing.T) {
 				t.Error("unknown artifact class accepted")
 			}
 		})
+	}
+}
+
+// Marker counts must never be reset while journal results retain their input
+// identities. Refusing down preserves both instead of pretending to reverse.
+func TestScopedJudgmentHistoryRefusesRollback(t *testing.T) {
+	url := scratchDatabase(t)
+	migrator, err := db.NewMigrator(t.Context(), url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = migrator.Close() }()
+	if _, err = migrator.UpTo(t.Context(), 36); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = migrator.Down(t.Context()); err == nil || !strings.Contains(err.Error(), "scoped judgment input history") {
+		t.Fatalf("Down(scoped history)=%v", err)
+	}
+	if version, err := migrator.Version(t.Context()); err != nil || version != 36 {
+		t.Fatalf("version after refused down=%d %v", version, err)
 	}
 }

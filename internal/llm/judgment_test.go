@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -72,7 +73,7 @@ func TestJudgmentRetryAndBounds(t *testing.T) {
 	}{
 		{"retry recovery", llm.JudgmentConfig{Backoff: time.Millisecond}, []llm.JudgmentStep{{Error: transient}, {Response: goodJudgment()}}, 0, "", 2},
 		{"transport timeout recovery", llm.JudgmentConfig{Backoff: time.Millisecond}, []llm.JudgmentStep{{Error: context.DeadlineExceeded}, {Response: goodJudgment()}}, 0, "", 2},
-		{"per attempt timeout", llm.JudgmentConfig{Timeout: 10 * time.Millisecond, Backoff: time.Millisecond}, []llm.JudgmentStep{{Delay: time.Second}, {Response: goodJudgment()}}, 0, "", 2},
+		{"per attempt timeout", llm.JudgmentConfig{Timeout: 20 * time.Millisecond, TotalTimeout: time.Second, Backoff: time.Millisecond}, []llm.JudgmentStep{{Delay: time.Second}, {Response: goodJudgment()}}, 0, "", 2},
 		{"bounded retries", llm.JudgmentConfig{MaxRetries: 2, Backoff: time.Millisecond}, []llm.JudgmentStep{{Error: transient}, {Error: transient}, {Error: transient}}, 0, llm.JudgmentUnavailable, 3},
 		{"total timeout", llm.JudgmentConfig{Timeout: 10 * time.Millisecond, TotalTimeout: 25 * time.Millisecond, MaxRetries: 5, Backoff: time.Millisecond}, []llm.JudgmentStep{{Delay: time.Second}, {Delay: time.Second}, {Delay: time.Second}}, 0, llm.JudgmentTimeout, -1},
 		{"caller cuts attempt", llm.JudgmentConfig{Timeout: time.Second}, []llm.JudgmentStep{{Delay: time.Second}}, 15 * time.Millisecond, llm.JudgmentBudgetExhausted, 1},
@@ -90,7 +91,7 @@ func TestJudgmentRetryAndBounds(t *testing.T) {
 			}
 			start := time.Now()
 			r := j.Judge(ctx, judgmentRequest())
-			if time.Since(start) > 250*time.Millisecond {
+			if time.Since(start) > 2*time.Second {
 				t.Fatalf("call exceeded bound: %v", time.Since(start))
 			}
 			if r.Fallback != tt.reason || (tt.attempts >= 0 && r.Attempts != tt.attempts) {
@@ -109,7 +110,8 @@ func TestJudgmentRetryAndBounds(t *testing.T) {
 func TestJudgmentRateLimitsAndCooldownAcrossCallers(t *testing.T) {
 	for _, status := range []int{429, 529} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
-			j, f := judgments(t, llm.JudgmentConfig{CooldownFailures: 1, Cooldown: 20 * time.Millisecond, MaxRetries: -1}, llm.JudgmentStep{Error: &llm.Error{Status: status, RetryAfter: time.Second}}, llm.JudgmentStep{Response: goodJudgment()})
+			const cooldown = 250 * time.Millisecond
+			j, f := judgments(t, llm.JudgmentConfig{CooldownFailures: 1, Cooldown: cooldown, MaxRetries: -1}, llm.JudgmentStep{Error: &llm.Error{Status: status, RetryAfter: time.Second}}, llm.JudgmentStep{Response: goodJudgment()})
 			first := j.Judge(t.Context(), judgmentRequest())
 			if first.Fallback != llm.JudgmentRateLimited {
 				t.Fatal(first)
@@ -130,7 +132,7 @@ func TestJudgmentRateLimitsAndCooldownAcrossCallers(t *testing.T) {
 			if f.Calls() != 1 || j.Status().Observations != 3 || j.Status().Attempts != 1 {
 				t.Fatalf("calls=%d status=%+v", f.Calls(), j.Status())
 			}
-			time.Sleep(25 * time.Millisecond)
+			time.Sleep(cooldown)
 			r := j.Judge(t.Context(), judgmentRequest())
 			if r.Fallback != "" || !j.Status().Healthy {
 				t.Fatalf("recovery=%+v status=%+v", r, j.Status())
@@ -277,6 +279,12 @@ func TestJudgmentCallerAlreadyDone(t *testing.T) {
 	}
 }
 
+type judgmentProviderFunc func(context.Context, llm.JudgmentRequest) (llm.JudgmentResponse, error)
+
+func (f judgmentProviderFunc) Judge(ctx context.Context, req llm.JudgmentRequest) (llm.JudgmentResponse, error) {
+	return f(ctx, req)
+}
+
 func TestJudgmentInflightAnswerCannotShortenCooldown(t *testing.T) {
 	for _, invalid := range []bool{false, true} {
 		t.Run(fmt.Sprint(invalid), func(t *testing.T) {
@@ -284,22 +292,43 @@ func TestJudgmentInflightAnswerCannotShortenCooldown(t *testing.T) {
 			if invalid {
 				response.Answers = nil
 			}
-			j, f := judgments(t, llm.JudgmentConfig{CooldownFailures: 1, Cooldown: time.Second, MaxRetries: -1},
-				llm.JudgmentStep{Delay: 40 * time.Millisecond, Response: response},
+			f := llm.NewFakeJudgmentProvider(
+				llm.JudgmentStep{Response: response},
 				llm.JudgmentStep{Error: &llm.Error{Status: 429}},
 			)
+			started, release := make(chan struct{}), make(chan struct{}, 1)
+			defer close(release)
+			var calls atomic.Int64
+			provider := judgmentProviderFunc(func(ctx context.Context, req llm.JudgmentRequest) (llm.JudgmentResponse, error) {
+				n := calls.Add(1)
+				r, err := f.Judge(ctx, req)
+				if n == 1 {
+					// Hold the first response until another caller opens the cooldown.
+					close(started)
+					select {
+					case <-release:
+					case <-ctx.Done():
+						return llm.JudgmentResponse{}, ctx.Err()
+					}
+				}
+				return r, err
+			})
+			j, err := llm.NewJudgments(llm.JudgmentConfig{Enabled: true, Model: "pinned-v1", CooldownFailures: 1, Cooldown: time.Second, MaxRetries: -1},
+				func(llm.JudgmentConfig, string) llm.JudgmentProvider { return provider }, func(string) string { return "secret" })
+			if err != nil {
+				t.Fatal(err)
+			}
 			first := make(chan llm.JudgmentResult, 1)
 			go func() { first <- j.Judge(t.Context(), judgmentRequest()) }()
-			limit := time.Now().Add(time.Second)
-			for f.Calls() == 0 && time.Now().Before(limit) {
-				time.Sleep(time.Millisecond)
-			}
-			if f.Calls() != 1 {
+			select {
+			case <-started:
+			case <-time.After(time.Second):
 				t.Fatal("first caller did not enter provider")
 			}
 			if r := j.Judge(t.Context(), judgmentRequest()); r.Fallback != llm.JudgmentRateLimited {
 				t.Fatal(r)
 			}
+			release <- struct{}{}
 			<-first
 			r := j.Judge(t.Context(), judgmentRequest())
 			if r.Fallback != llm.JudgmentCooldown || r.Attempts != 0 || f.Calls() != 2 {

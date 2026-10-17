@@ -118,7 +118,7 @@ package. `JudgmentInputSpec` names the incoming document, ordered candidate
 ids, exact compared stance ids, source event ids (also needed before the first
 L1 write), scope and computed ACL. `CaptureJudgmentInputs` records their
 identities and revisions, including `distilled_at`, hashes of the rows and
-all candidate/position evidence, and the source and effective-ledger versions.
+all candidate/position evidence, and scoped source and effective-ledger change counts.
 Candidate dependencies include ledger-connected topic rows and their evidence,
 including virtual split topics and merged-away rows. This closure is
 conservative across undone operations; it does not replace L2 candidate
@@ -164,10 +164,27 @@ writes, but never provider work. Server statement and lock timeouts default
 to 100 ms each and are configurable per call. A refused savepoint releases
 its guard immediately so the baseline write can proceed. Source writers
 remain concurrent: source/ledger change markers are appended, not updated
-on a single counter row. Counts of visible markers include late commits
-that a sequence watermark would miss. Source and ledger changes invalidate
-reuse conservatively across scopes, including unrelated changes. This may
-cost a fresh judgment; it cannot authorize stale reuse. Do not prune the
+on a single counter row. Counts of visible committed markers for each scope
+include late commits that a sequence watermark would miss. Source markers
+cover each input event's (source, artifact) pair, including new revisions,
+tombstones targeting it, ACL updates and deletion. Membership markers cover
+(source, thread) for artifact conversations and replies, and (source,
+container, half-open 30 minute UTC window) for channel conversations. L0 row
+triggers write these in the same transaction as the member; both old and new
+memberships are marked on edits, including historical membership when a
+tombstone has no thread/container. A new member under an unseen artifact
+therefore invalidates the conversation under the same guard protocol.
+Membership markers retain each historical member's artifact identity. Capture
+also counts visible artifact markers for all those members, including members
+omitted from the question by ACL folding. This closes the overlapping-writer
+case where a tombstone or revision trigger cannot yet see the member's
+uncommitted history. These additional identities enter the captured state as
+hashes, never as source text or additional question evidence. Writers remain
+concurrent, and unrelated conversations retain scoped reuse.
+Ledger markers cover only the conservative ledger-connected candidate topics,
+including undone operations and virtual split topics. Unrelated artifacts,
+conversations, windows, sources and ledger operations leave these identities
+reusable. TRUNCATE conservatively invalidates everything. Do not prune the
 marker log independently of the journal. **Any new table that changes
 effective inputs must join this trigger/guard protocol.**
 
@@ -197,7 +214,13 @@ is built from the complete `EventIDs` source revisions and the captured ACL and
 scope. The output document's own L1 row is then excluded from the input state,
 while its identity remains in deletion provenance and current ACL checks. This
 allows writing that derived row and reusing the committed judgment on restart.
-Source hashes/revisions, global source/ledger change markers, ACL/scope identity
-and deletion validation still apply. The default remains a full L1 input
+Source hashes/revisions, scoped change markers, ACL/scope identity and deletion
+validation still apply. Capture derives the conversation from `ParseDocID`
+and `ParseChatWindowKey`, with the captured events supplying artifact and
+membership identities. Bursts, wiki sections, meeting segments and other
+SourceBuilt keys that cannot be tied to a captured root or window retain a
+conservative source-wide marker; event-pair markers alone cannot describe
+their membership. Stored candidate evidence uses conversation scopes too,
+with the same source fallback for derived shapes. The default remains a full L1 input
 snapshot for assertion consumers. Do not use source-built identity when the
 question depends on previously generated L1 text.

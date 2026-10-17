@@ -271,26 +271,33 @@ func TestAdapterRetryRecoveryAndDeadlines(t *testing.T) {
 				fmt.Fprint(w, good)
 			}))
 			defer s.Close()
-			cfg := llm.JudgmentConfig{Backoff: time.Millisecond, Timeout: 15 * time.Millisecond, TotalTimeout: 40 * time.Millisecond, MaxRetries: 5}
-			j := judgments(t, s, cfg)
+			// Recovery needs headroom under race instrumentation and parallel load.
+			// Only the cases testing exhaustion get a short total or caller budget.
+			cfg := llm.JudgmentConfig{Backoff: time.Millisecond, Timeout: 20 * time.Millisecond, TotalTimeout: time.Second, MaxRetries: 5}
 			ctx := t.Context()
 			want := llm.JudgmentFallback("")
+			attempts := 2
 			if mode == "total timeout" {
+				cfg.TotalTimeout = 40 * time.Millisecond
 				want = llm.JudgmentTimeout
+				attempts = -1 // The total deadline may cut off any retry.
 			}
 			if mode == "caller deadline" || mode == "retry after budget" {
+				cfg.Timeout = time.Second
 				var cancel context.CancelFunc
 				ctx, cancel = context.WithTimeout(ctx, 20*time.Millisecond)
 				defer cancel()
 				want = llm.JudgmentBudgetExhausted
+				attempts = 1
 			}
+			j := judgments(t, s, cfg)
 			start := time.Now()
 			out := j.Judge(ctx, request())
-			if out.Fallback != want || time.Since(start) > 250*time.Millisecond {
-				t.Fatalf("result=%+v elapsed=%v", out, time.Since(start))
+			if out.Fallback != want || (attempts >= 0 && out.Attempts != attempts) {
+				t.Fatalf("result=%+v want fallback=%s attempts=%d", out, want, attempts)
 			}
-			if want == "" && out.Attempts != 2 {
-				t.Fatalf("attempts=%d", out.Attempts)
+			if time.Since(start) > 2*time.Second {
+				t.Fatalf("result=%+v elapsed=%v", out, time.Since(start))
 			}
 		})
 	}

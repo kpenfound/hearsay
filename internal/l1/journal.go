@@ -29,7 +29,8 @@ type JudgmentInputSpec struct {
 	// SourceBuilt excludes the derived output row from a distiller's inputs.
 	// EventIDs must name the complete source revisions. Document identity is
 	// retained for deletion and ACL checks, but writing L1 does not invalidate
-	// the result that produced it.
+	// the result that produced it. Capture also tracks thread/window membership;
+	// derived keys it cannot express retain conservative source-wide markers.
 	SourceBuilt       bool          `json:"source_built,omitempty"`
 	EventIDs          []string      `json:"event_ids"`
 	CandidateTopicIDs []string      `json:"candidate_topic_ids"`
@@ -71,7 +72,14 @@ func (in JudgmentInputs) DocumentRevision() (time.Time, bool) {
 
 // The query has one MVCC snapshot. No source text is returned: complete row
 // hashes cover revisions even when a caller changed text without a timestamp.
-// Source/ledger counters deliberately over-invalidate on unrelated changes.
+// Markers cover input artifact pairs, conversation membership and operations on
+// the conservative connected-topic closure (including undone operations).
+// Unknown derived membership uses a source-wide fallback. Counts see committed
+// markers, including late commits that a sequence watermark would miss.
+// Membership also follows artifact markers for every historical member, even
+// those omitted by the ACL fold: a concurrent tombstone/revision trigger may
+// not have seen that member's uncommitted history. Only identity hashes for
+// these additional artifacts enter the state; they are not question evidence.
 const judgmentInputsSQL = `WITH RECURSIVE
  topic_ids(id) AS (
    SELECT unnest($3::text[])
@@ -88,14 +96,59 @@ const judgmentInputsSQL = `WITH RECURSIVE
    UNION SELECT unnest(evidence) FROM positions
  ),
  docs AS (SELECT d.* FROM l1_docs d JOIN doc_ids i ON i.id=d.id),
- event_ids AS (SELECT unnest($2::text[]) AS id UNION SELECT unnest(l0_refs) FROM docs)
+ event_ids AS (SELECT unnest($2::text[]) AS id UNION SELECT unnest(l0_refs) FROM docs),
+ sources AS (SELECT e.* FROM l0_events e JOIN event_ids i ON i.id=e.id),
+ own_membership AS (
+   SELECT * FROM jsonb_to_record($5::jsonb) AS m(kind text, source text, key text, bucket bigint)
+ ),
+ memberships(kind,source,key,bucket) AS (
+   SELECT CASE WHEN m.kind='thread' AND NOT EXISTS (
+       SELECT 1 FROM sources e WHERE e.source=m.source AND e.artifact=m.key
+     ) THEN 'source' ELSE m.kind END,
+     m.source, CASE WHEN m.kind='thread' AND NOT EXISTS (
+       SELECT 1 FROM sources e WHERE e.source=m.source AND e.artifact=m.key
+     ) THEN '' ELSE m.key END, m.bucket FROM own_membership m
+   UNION
+   SELECT CASE WHEN d.source_native_id ~ '^(burst:|wiki-section:|meeting-segment:)' THEN 'source' ELSE 'thread' END,
+     d.source, CASE WHEN d.source_native_id ~ '^(burst:|wiki-section:|meeting-segment:)' THEN '' ELSE d.source_native_id END, 0
+     FROM docs d WHERE d.source_native_id NOT LIKE 'chat:%'
+   UNION
+   SELECT 'window', e.source, e.payload->'container'->>'native_id',
+     floor(extract(epoch FROM e.occurred_at)/1800)::bigint
+     FROM docs d JOIN l0_events e ON e.id=ANY(d.l0_refs)
+     WHERE d.source_native_id LIKE 'chat:%'
+ ),
+ member_artifacts AS (
+   SELECT DISTINCT c.source,c.member_artifact AS artifact
+     FROM memberships m JOIN judgment_input_changes c USING(kind,source,key,bucket)
+     WHERE c.member_artifact <> ''
+ ),
+ member_versions AS (
+   SELECT m.source,encode(sha256(convert_to(m.artifact,'UTF8')),'hex') AS identity,
+     count(c.kind)::text AS changes
+     FROM member_artifacts m LEFT JOIN judgment_input_changes c
+       ON c.kind='artifact' AND c.source=m.source AND c.key=m.artifact AND c.bucket=0
+     GROUP BY m.source,m.artifact
+ ),
+ scopes(kind,source,key,bucket) AS (
+   SELECT 'artifact',source,artifact,0 FROM sources
+   UNION SELECT * FROM memberships
+   UNION SELECT 'ledger','',id,0 FROM topic_ids
+   UNION SELECT 'all','','',0
+ ),
+ versions AS (
+   SELECT s.kind,s.source,s.key,s.bucket,count(c.kind)::text AS changes
+     FROM scopes s LEFT JOIN judgment_input_changes c USING(kind,source,key,bucket)
+     WHERE s.kind IS NOT NULL
+     GROUP BY s.kind,s.source,s.key,s.bucket
+ )
  SELECT jsonb_build_object(
-   'source_version', (SELECT count(*)::text FROM judgment_input_changes WHERE kind='source'),
-   'ledger_version', (SELECT count(*)::text FROM judgment_input_changes WHERE kind='ledger'),
+   'input_versions', (SELECT jsonb_agg(to_jsonb(v) ORDER BY kind,source,key,bucket) FROM versions v),
+   'member_versions', (SELECT jsonb_agg(to_jsonb(v) ORDER BY source,identity) FROM member_versions v),
    'documents', COALESCE((SELECT jsonb_agg(jsonb_build_object('id', id, 'revision', distilled_at,
       'hash', encode(sha256(convert_to((to_jsonb(d) - 'embedding')::text,'UTF8')),'hex')) ORDER BY id) FROM docs d), '[]'::jsonb),
    'sources', COALESCE((SELECT jsonb_agg(jsonb_build_object('id', e.id, 'revision', e.revision_token,
-      'hash', encode(sha256(convert_to(to_jsonb(e)::text,'UTF8')),'hex')) ORDER BY e.id) FROM l0_events e JOIN event_ids i ON i.id=e.id), '[]'::jsonb),
+      'hash', encode(sha256(convert_to(to_jsonb(e)::text,'UTF8')),'hex')) ORDER BY e.id) FROM sources e), '[]'::jsonb),
    'candidates', COALESCE((SELECT jsonb_agg(jsonb_build_object('id', id, 'version', encode(sha256(convert_to(to_jsonb(t)::text,'UTF8')),'hex')) ORDER BY id) FROM topics t), '[]'::jsonb),
    'candidate_positions', COALESCE((SELECT jsonb_agg(jsonb_build_object('id', id, 'version', encode(sha256(convert_to(to_jsonb(p)::text,'UTF8')),'hex')) ORDER BY id) FROM l2_stances p WHERE topic_id IN (SELECT id FROM topic_ids)), '[]'::jsonb),
    'positions', COALESCE((SELECT jsonb_agg(jsonb_build_object('id', id, 'version', encode(sha256(convert_to(to_jsonb(p)::text,'UTF8')),'hex')) ORDER BY id) FROM positions p), '[]'::jsonb),
@@ -107,7 +160,7 @@ const judgmentInputsSQL = `WITH RECURSIVE
 // it does not hold a database lock while the provider is working.
 func (s *Store) CaptureJudgmentInputs(ctx context.Context, spec JudgmentInputSpec) (JudgmentInputs, error) {
 	out := JudgmentInputs{Spec: spec}
-	err := s.db.QueryRow(ctx, judgmentInputQuery(spec), spec.DocumentID, orEmpty(spec.EventIDs), orEmpty(spec.CandidateTopicIDs), orEmpty(spec.ComparedStanceIDs)).Scan(&out.State, &out.Documents, &out.Events)
+	err := s.db.QueryRow(ctx, judgmentInputQuery(spec), spec.DocumentID, orEmpty(spec.EventIDs), orEmpty(spec.CandidateTopicIDs), orEmpty(spec.ComparedStanceIDs), judgmentMembership(spec)).Scan(&out.State, &out.Documents, &out.Events)
 	if err != nil {
 		return out, fmt.Errorf("capturing judgment inputs: %w", err)
 	}
@@ -121,6 +174,32 @@ func (s *Store) CaptureJudgmentInputs(ctx context.Context, spec JudgmentInputSpe
 	hash := sha256.Sum256(raw)
 	out.Hash = hex.EncodeToString(hash[:])
 	return out, nil
+}
+
+// SourceBuilt has no output row from which to infer conversation identity.
+// Ordinary artifact documents read replies on their artifact key; channel
+// windows carry a parseable key. Derived bursts/sections/segments have no
+// unambiguous conversation key here, so retain the source-wide fallback.
+func judgmentMembership(spec JudgmentInputSpec) json.RawMessage {
+	if !spec.SourceBuilt {
+		return json.RawMessage(`{}`)
+	}
+	source, key, err := ParseDocID(spec.DocumentID)
+	kind, bucket := "thread", int64(0)
+	if err != nil {
+		kind = "all"
+	} else if container, start, ok := ParseChatWindowKey(key); ok {
+		kind, key, bucket = "window", container, start.Unix()/int64(ChatWindow.Seconds())
+	} else if strings.HasPrefix(key, "burst:") || strings.HasPrefix(key, "wiki-section:") || strings.HasPrefix(key, "meeting-segment:") {
+		kind, key = "source", ""
+	}
+	raw, _ := json.Marshal(struct {
+		Kind   string `json:"kind"`
+		Source string `json:"source"`
+		Key    string `json:"key"`
+		Bucket int64  `json:"bucket"`
+	}{kind, source, key, bucket})
+	return raw
 }
 
 func judgmentInputQuery(spec JudgmentInputSpec) string {
@@ -352,14 +431,14 @@ func (s *Store) LookupJudgment(ctx context.Context, reader Reader, task, version
 	}
 	// State validation and record selection share one SQL snapshot. A source
 	// edit between two round trips must not make an old result reusable.
-	q := &query{args: []any{inputs.Spec.DocumentID, orEmpty(inputs.Spec.EventIDs), orEmpty(inputs.Spec.CandidateTopicIDs), orEmpty(inputs.Spec.ComparedStanceIDs), spec, inputs.Hash, task, version, questionHash}}
+	q := &query{args: []any{inputs.Spec.DocumentID, orEmpty(inputs.Spec.EventIDs), orEmpty(inputs.Spec.CandidateTopicIDs), orEmpty(inputs.Spec.ComparedStanceIDs), judgmentMembership(inputs.Spec), spec, inputs.Hash, task, version, questionHash}}
 	filter, ok := reader.predicate(q, "")
 	if !ok {
 		return nil, nil
 	}
 	q.sql = `WITH current_inputs AS (` + judgmentInputQuery(inputs.Spec) + `) SELECT ` + judgmentColumns + ` FROM judgment_journal WHERE ` + filter + `
-      AND state='committed' AND inputs->'spec'=$5::jsonb AND input_hash=$6
-      AND task=$7 AND question_version=$8 AND question_hash=$9
+      AND state='committed' AND inputs->'spec'=$6::jsonb AND input_hash=$7
+      AND task=$8 AND question_version=$9 AND question_hash=$10
       AND inputs->'state'=(SELECT state FROM current_inputs)
       AND NOT (SELECT (state->>'deleted')::boolean FROM current_inputs)
       ORDER BY started_at DESC,id DESC`
