@@ -81,6 +81,8 @@ Design points:
 
 ## L2: the graph
 
+The graph is readable through `traverse`, a bounded sequence of typed steps over `entity`, `topic`, `stance`, L1 `document` and `principal` nodes. Its edges and inverses are `part_of` / `has_part` (entity → entity), `topics` / `about` (entity → topic), `documents` / `scope` (entity → document), `stances` / `topic` (topic → stance), `evidence` / `cited_by` (stance → document), and `supersedes` / `superseded_by` (stance → stance). The edges without inverses are `anchors` (entity → document), `owners` (entity → principal), `author` (stance → principal) and `participants` (document → principal). Principals are terminal: they cannot be starts and have no outgoing edges. L0 is excluded. The visibility rules and bounds are recorded in [Readers traverse the L2 graph through bounded, typed steps](adr/0028-readers-traverse-the-l2-graph-through-bounded-typed-steps.md).
+
 ### Entities
 
 Anything documents are about. Entities form a hierarchy through `part_of` edges, and a document can reference entities at any level.
@@ -192,7 +194,7 @@ bundle:
   conflicts:                   # computed, not retrieved
     - { topic_id: topic:migration-strategy, current: "hand-run migrations for this release", tier: inferred, stakes: "not yet ratified" }
 
-  handles: { get_l1, get_l0, search, stance_history, resolve }
+  handles: { get_l1, get_l0, search, stance_history, resolve, traverse }
 ```
 
 Rules:
@@ -212,6 +214,7 @@ Exposed over MCP and HTTP. Deliberately small.
 |---|---|
 |`get_bundle(scope, directive?)`|The primary read|
 |`resolve(text)`|Aliases and mentions to entity ids|
+|`traverse(start, steps)`|Follow bounded, typed graph edges, access-filtered at every hop; returns ids and one-line descriptions|
 |`stance_history(topic)`|Full record for a topic|
 |`get_l1(id)`, `get_l0(id)`|Follow a pointer|
 |`search(scope, query)`|Hybrid retrieval over L1 (embeddings, full text, rank fusion). Returns documents, not answers|

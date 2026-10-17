@@ -302,7 +302,7 @@ func (r Report) WriteText(w io.Writer) error {
 	for _, c := range []struct {
 		call string
 		b    Beyond
-	}{{"search", drill.LookedBeyond.Search}, {"resolve", drill.LookedBeyond.Resolve}} {
+	}{{"search", drill.LookedBeyond.Search}, {"resolve", drill.LookedBeyond.Resolve}, {"traverse", drill.LookedBeyond.Traverse}} {
 		fmt.Fprintf(tw, "    %s\t%d of %d\t%s\n", c.call, c.b.Beyond, c.b.Calls, percent(c.b.Share))
 	}
 	fmt.Fprintln(tw)

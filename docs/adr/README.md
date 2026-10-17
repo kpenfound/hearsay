@@ -35,6 +35,7 @@ The format, numbering and supersession rules are in [ADR-0001](0001-record-archi
 | [0025](0025-chat-commands-are-applied-by-the-receiving-process-through-one-applier.md) | Chat commands are applied by the receiving process through one applier | accepted | 2026-09-24 |
 | [0026](0026-artifacts-may-carry-one-of-five-core-states-stated-by-their-source.md) | Artifacts may carry one of five core states, stated by their source | accepted | 2026-10-14 |
 | [0027](0027-distill-jobs-are-debounced-in-the-queue.md) | Distill jobs are debounced in the queue | accepted | 2026-10-15 |
+| [0028](0028-readers-traverse-the-l2-graph-through-bounded-typed-steps.md) | Readers traverse the L2 graph through bounded, typed steps | accepted | 2026-10-15 |
 
 ## Names other work depends on
 

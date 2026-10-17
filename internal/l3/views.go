@@ -15,6 +15,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
+	"github.com/kpenfound/hearsay/internal/principal"
 )
 
 // Querier is what the views run on: a pool, or a transaction on one, so that
@@ -35,10 +36,11 @@ const RecentCandidates = 50
 
 // Views are the derived views over one database. Nothing here writes.
 type Views struct {
-	db        Querier
-	docs      *l1.Store
-	graph     *l2.Store
-	authority config.Authority
+	principals *principal.Resolver
+	db         Querier
+	docs       *l1.Store
+	graph      *l2.Store
+	authority  config.Authority
 }
 
 // New returns the views over a pool or a transaction, under the built-in
@@ -172,15 +174,30 @@ func (v *Views) CurrentStances(ctx context.Context, reader l1.Reader, own string
 }
 
 func (v *Views) topics(ctx context.Context, entities []string) ([]l2.Topic, error) {
+	topics, _, err := v.topicsWithin(ctx, entities, 0)
+	return topics, err
+}
+
+// topicsWithin bounds raw topic candidates before replaying their ledger. Zero
+// preserves the complete read used by bundles. Traversal uses its remaining
+// raw-row budget; the deterministic id cut precedes reader-specific ordering.
+func (v *Views) topicsWithin(ctx context.Context, entities []string, limit int) ([]l2.Topic, int, error) {
+
 	var rows []string
-	if err := v.db.QueryRow(ctx, topicsSQL, entities).Scan(&rows); err != nil {
-		return nil, fmt.Errorf("reading current stances: %w", err)
+	sql := topicsSQL
+	args := []any{entities}
+	if limit > 0 {
+		sql = strings.Replace(sql, "FROM l2_topics t\nWHERE t.about && ARRAY(SELECT id FROM up)", "FROM (SELECT id FROM l2_topics WHERE about && ARRAY(SELECT id FROM up) ORDER BY id LIMIT $2) t", 1)
+		args = append(args, limit)
+	}
+	if err := v.db.QueryRow(ctx, sql, args...).Scan(&rows); err != nil {
+		return nil, 0, fmt.Errorf("reading current stances: %w", err)
 	}
 	topics, err := v.graph.TopicsOver(ctx, rows)
 	if err != nil {
-		return nil, fmt.Errorf("reading current stances: %w", err)
+		return nil, 0, fmt.Errorf("reading current stances: %w", err)
 	}
-	return topics, nil
+	return topics, len(rows), nil
 }
 
 // Activity is the recent activity on a scope.
@@ -269,8 +286,26 @@ type Anchor struct {
 // inference and the defaults only ever see what they may read, so what is
 // hidden from them neither takes a place nor decides which document does.
 func (v *Views) Anchors(ctx context.Context, reader l1.Reader, scope string, n int) ([]Anchor, error) {
+	return v.anchors(ctx, reader, scope, n, nil)
+}
+
+// anchorsWithin shares the bundle's anchor selection, but bounds and counts
+// candidate documents before access filtering. Exhausting the budget must stop
+// selection before inference or defaults can bypass the unreadable pins.
+func (v *Views) anchorsWithin(ctx context.Context, reader l1.Reader, scope string, n, remaining int) ([]Anchor, int, error) {
+	budget := remaining
+	out, err := v.anchors(ctx, reader, scope, n, &budget)
+	return out, remaining - budget, err
+}
+
+// A nil budget preserves the unbounded, reader-filtered bundle view.
+func (v *Views) anchors(ctx context.Context, reader l1.Reader, scope string, n int, budget *int) ([]Anchor, error) {
 	out := []Anchor{}
 	if n <= 0 || scope == "" || reader.Effective.Human == "" || !reader.Effective.Grant.Scopes.Has(scope) {
+		return out, nil
+	}
+	full := func() bool { return len(out) == n || (budget != nil && *budget == 0) }
+	if full() {
 		return out, nil
 	}
 	add := func(doc l1.Stored, pinnedBy string) {
@@ -279,13 +314,22 @@ func (v *Views) Anchors(ctx context.Context, reader l1.Reader, scope string, n i
 		}
 	}
 
-	pins, err := v.graph.Pins(ctx, scope)
+	var pins []l2.Pin
+	var err error
+	if budget == nil {
+		pins, err = v.graph.Pins(ctx, scope)
+	} else {
+		pins, err = v.graph.PinCandidates(ctx, scope, *budget)
+	}
 	if err != nil {
 		return nil, err
 	}
 	for _, pin := range pins {
-		if len(out) == n {
+		if full() {
 			return out, nil
+		}
+		if budget != nil {
+			*budget--
 		}
 		doc, err := v.docs.Get(ctx, pin.L1)
 		if errors.Is(err, l1.ErrNotFound) {
@@ -298,7 +342,7 @@ func (v *Views) Anchors(ctx context.Context, reader l1.Reader, scope string, n i
 			add(doc, pin.PinnedBy)
 		}
 	}
-	if len(out) == n {
+	if full() {
 		return out, nil
 	}
 
@@ -307,18 +351,28 @@ func (v *Views) Anchors(ctx context.Context, reader l1.Reader, scope string, n i
 		return nil, err
 	}
 	if ok {
+		if budget != nil {
+			*budget--
+		}
 		add(inferred, "")
 	}
-	if len(out) == n {
+	if full() {
 		return out, nil
 	}
 
 	// Enough that the ones already taken cannot leave a place unfilled.
-	specs, err := v.docs.ListFor(ctx, reader, l1.ListOptions{Scope: scope, Class: config.ArtifactSpec, Limit: n + len(out)})
+	limit := n + len(out)
+	if budget != nil {
+		limit = min(limit, *budget)
+	}
+	specs, err := v.docs.ListFor(ctx, reader, l1.ListOptions{Scope: scope, Class: config.ArtifactSpec, Limit: limit})
 	if err != nil {
 		return nil, err
 	}
 	for _, doc := range specs {
+		if budget != nil {
+			*budget--
+		}
 		add(doc, "")
 	}
 	return out, nil

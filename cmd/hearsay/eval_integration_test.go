@@ -237,6 +237,7 @@ func TestEvalCommand(t *testing.T) {
 			"looked beyond the bundle",
 			"search 1 of 1 100.0%",
 			"resolve 0 of 0 -",
+			"traverse 0 of 0 -",
 			"",
 			"conflict-flag precision",
 			"flagged 4",
@@ -288,7 +289,8 @@ func TestEvalCommand(t *testing.T) {
     ],
     "looked_beyond": {
       "search": {"calls": 1, "beyond": 1, "share": 1},
-      "resolve": {"calls": 0, "beyond": 0, "share": null}
+      "resolve": {"calls": 0, "beyond": 0, "share": null},
+      "traverse": {"calls": 0, "beyond": 0, "share": null}
     }
   },
   "conflict_flags": {

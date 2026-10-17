@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/l1"
 )
@@ -16,8 +18,9 @@ func TestStateRoundTripsAndMovesWatermark(t *testing.T) {
 	pool := newPool(t)
 	store := l1.New(pool)
 	doc := storedDoc(t, newSource(t), "acme/api#state", nil)
-	// One transaction isolates watermark changes from other integration suites.
-	tx, err := pool.Begin(t.Context())
+	// A repeatable snapshot isolates watermark changes from other integration
+	// suites while keeping this transaction's own trigger inserts visible.
+	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
 		t.Fatal(err)
 	}
