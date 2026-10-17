@@ -2,8 +2,6 @@ package tracker
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/connector/push"
 )
 
 // The request kinds.
@@ -130,12 +129,12 @@ func CommentArtifact(project, ticket, comment string) string {
 // The refusals. Each is answered with its own status, and none emits anything.
 var (
 	// errBadRequest is a request that is not a ticket or a comment: 400.
-	errBadRequest = errors.New("bad request")
+	errBadRequest = push.ErrBadRequest
 	// errForbidden is a project the source does not grant: 403.
-	errForbidden = errors.New("forbidden")
+	errForbidden = push.ErrForbidden
 	// errNoTicket is a comment whose access list is its ticket's, on a ticket
 	// Hearsay does not hold: 409.
-	errNoTicket = errors.New("the ticket is not held")
+	errNoTicket = push.Refuse(push.ErrConflict, "the ticket is not held")
 )
 
 func badRequest(format string, args ...any) error {
@@ -268,7 +267,7 @@ func (c *Connector) event(ctx context.Context, reader connector.ArtifactReader, 
 	if ev.Payload.Native, err = json.Marshal(native); err != nil {
 		return connector.Event{}, fmt.Errorf("encoding the native object: %w", err)
 	}
-	return c.revise(ev, req.UpdatedAt.UTC())
+	return push.Revise(ev, req.UpdatedAt.UTC())
 }
 
 // identity is the identity hint a person stands for, in this source.
@@ -320,55 +319,4 @@ func (c *Connector) commentAccess(ctx context.Context, reader connector.Artifact
 		return nil, fmt.Errorf("%w: post ticket %s before its comments, because a comment is read by whoever may read its ticket", errNoTicket, ticket)
 	}
 	return current.ACL, nil
-}
-
-// revise names the observation: a hash of everything the event says, the
-// time of the change and the access list included, so that the same revision
-// posted again is the same event and anything else is a new one.
-func (c *Connector) revise(ev connector.Event, edited time.Time) (connector.Event, error) {
-	raw, err := json.Marshal(struct {
-		Kind     connector.Kind    `json:"kind"`
-		Time     time.Time         `json:"time"`
-		EditedAt time.Time         `json:"edited_at"`
-		Payload  connector.Payload `json:"payload"`
-		ACL      connector.ACL     `json:"acl"`
-	}{ev.Kind, ev.Time, edited, ev.Payload, ev.ACL})
-	if err != nil {
-		return connector.Event{}, fmt.Errorf("hashing the revision: %w", err)
-	}
-	sum := sha256.Sum256(raw)
-	token := hex.EncodeToString(sum[:8])
-	ev.NativeID = ev.Payload.Artifact + "@" + token
-	ev.Payload.Revision = &connector.Revision{Token: token, EditedAt: edited}
-	ev.ID = connector.EventID(c.source, ev.NativeID)
-	return ev, nil
-}
-
-// tombstone retracts what Hearsay holds of an artifact: its current revision,
-// whose container, time and access list the tombstone carries. It is named
-// after that revision, so a deletion posted again is the same event, and a
-// ticket deleted again after it came back is a new one. It is false when
-// Hearsay holds nothing of the artifact.
-func (c *Connector) tombstone(ctx context.Context, reader connector.ArtifactReader, artifact string) (connector.Event, bool, error) {
-	if reader == nil {
-		return connector.Event{}, false, errors.New("the sink cannot read what a deletion retracts")
-	}
-	current, ok, err := reader.CurrentArtifact(ctx, c.source, artifact)
-	if err != nil {
-		return connector.Event{}, false, fmt.Errorf("reading %s: %w", artifact, err)
-	}
-	if !ok {
-		return connector.Event{}, false, nil
-	}
-	sum := sha256.Sum256([]byte(current.NativeID))
-	name := artifact + ":tombstone:" + hex.EncodeToString(sum[:12])
-	return connector.Event{
-		ID:       connector.EventID(c.source, name),
-		Source:   c.source,
-		NativeID: name,
-		Kind:     connector.KindTombstone,
-		Time:     current.Time,
-		Payload:  connector.Payload{Artifact: name, Target: artifact, Container: current.Payload.Container},
-		ACL:      current.ACL,
-	}, true, nil
 }
