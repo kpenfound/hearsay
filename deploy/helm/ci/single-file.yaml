@@ -11,6 +11,12 @@ secretEnv:
   HEARSAY_OPERATOR_TOKEN: {secret: hearsay-tokens, key: operator}
   HEARSAY_ASSISTANT_TOKEN: {secret: hearsay-tokens, key: assistant}
   ANTHROPIC_API_KEY: {secret: hearsay-llm, key: api-key}
+distiller:
+  secretEnv:
+    HEARSAY_JEV_API_KEY: {secret: hearsay-jev, key: api-key}
+assertWorker:
+  secretEnv:
+    HEARSAY_JEV_API_KEY: {secret: hearsay-jev, key: api-key}
 connectors:
   sources: [agent-sessions]
 ingress:

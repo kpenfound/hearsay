@@ -68,6 +68,8 @@ type Deps struct {
 	// configuration: it starts, says there is nothing to assert, and waits to
 	// be stopped.
 	LLM llm.Registry
+	// Judgments is the optional shared process capability, separate from tiers.
+	Judgments llm.Judgments
 	// Repos reads CODEOWNERS files and the top level of the repositories
 	// `code/` names, for seeding; the binary hands it [Repos] with a reader per
 	// GitHub source those entries name. Nil seeds from `code/` alone, and says
@@ -92,7 +94,9 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 	if addr == "" {
 		addr = DefaultListen
 	}
-	probes := func(ctx context.Context) error { return service.RunProbes(ctx, Name, addr, deps.Listener, deps.Pool) }
+	probes := func(ctx context.Context) error {
+		return service.RunProbes(ctx, Name, addr, deps.Listener, deps.Pool, deps.Judgments)
+	}
 	if deps.LLM == nil {
 		log.WarnContext(ctx, "no model tiers: nothing is asserted, pass --config")
 		if err := probes(ctx); err != nil {
@@ -104,6 +108,9 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 	asserter, err := New(deps.Pool, deps.LLM, cfg, deps.Connectors)
 	if err != nil {
 		return err
+	}
+	if deps.Judgments != nil {
+		asserter.WithJudgments(deps.Judgments)
 	}
 	if _, err := SeedEntities(ctx, deps.Pool, cfg.Repo, deps.Repos); err != nil {
 		return stopping(ctx, err)

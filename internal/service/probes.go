@@ -12,11 +12,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
 // RegisterProbes adds the common liveness and database/schema readiness paths.
-func RegisterProbes(mux *http.ServeMux, pool *pgxpool.Pool) {
+func RegisterProbes(mux *http.ServeMux, pool *pgxpool.Pool, judgments ...llm.Judgments) {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		fmt.Fprintln(w, "ok")
@@ -34,10 +35,19 @@ func RegisterProbes(mux *http.ServeMux, pool *pgxpool.Pool) {
 				status, detail = http.StatusServiceUnavailable, "the database is unreachable"
 			}
 		}
+		var judgment *llm.JudgmentStatus
+		if len(judgments) > 0 {
+			value := llm.JudgmentStatus{Healthy: true}
+			if judgments[0] != nil {
+				value = judgments[0].Status()
+			}
+			judgment = &value
+		}
 		body, _ := json.Marshal(struct {
-			Status string `json:"status"`
-			Detail string `json:"detail,omitempty"`
-		}{map[bool]string{true: "ok", false: "failed"}[status == http.StatusOK], detail})
+			Status    string              `json:"status"`
+			Detail    string              `json:"detail,omitempty"`
+			Judgments *llm.JudgmentStatus `json:"judgments,omitempty"`
+		}{map[bool]string{true: "ok", false: "failed"}[status == http.StatusOK], detail, judgment})
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = w.Write(body)
@@ -45,14 +55,14 @@ func RegisterProbes(mux *http.ServeMux, pool *pgxpool.Pool) {
 }
 
 // Probes is the common HTTP surface of the distiller and assertion worker.
-func Probes(pool *pgxpool.Pool) http.Handler {
+func Probes(pool *pgxpool.Pool, judgments ...llm.Judgments) http.Handler {
 	mux := http.NewServeMux()
-	RegisterProbes(mux, pool)
+	RegisterProbes(mux, pool, judgments...)
 	return mux
 }
 
 // RunProbes serves until cancellation, with a short graceful shutdown.
-func RunProbes(ctx context.Context, name, addr string, listener net.Listener, pool *pgxpool.Pool) error {
+func RunProbes(ctx context.Context, name, addr string, listener net.Listener, pool *pgxpool.Pool, judgments ...llm.Judgments) error {
 	if listener == nil {
 		var lc net.ListenConfig
 		var err error
@@ -65,7 +75,7 @@ func RunProbes(ctx context.Context, name, addr string, listener net.Listener, po
 		}
 	}
 	server := &http.Server{
-		Handler:           Probes(pool),
+		Handler:           Probes(pool, judgments...),
 		ReadHeaderTimeout: 10 * time.Second,
 		BaseContext:       func(net.Listener) context.Context { return context.WithoutCancel(ctx) },
 	}

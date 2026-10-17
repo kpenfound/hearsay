@@ -60,11 +60,11 @@ func TestProbes(t *testing.T) {
 	if code, body := get("/healthz"); code != 200 || body != "ok\n" {
 		t.Errorf("health = %d %q", code, body)
 	}
-	if code, body := get("/readyz"); code != 200 || body != `{"status":"ok"}` {
+	if code, body := get("/readyz"); code != 200 || body != `{"status":"ok","judgments":{"enabled":false,"healthy":true,"observations":0,"attempts":0,"fallbacks":0}}` {
 		t.Errorf("ready = %d %q", code, body)
 	}
 	pool.Close()
-	if code, body := get("/readyz"); code != 503 || body != `{"status":"failed","detail":"the database is unreachable"}` {
+	if code, body := get("/readyz"); code != 503 || body != `{"status":"failed","detail":"the database is unreachable","judgments":{"enabled":false,"healthy":true,"observations":0,"attempts":0,"fallbacks":0}}` {
 		t.Errorf("failed ready = %d %q", code, body)
 	}
 	if code, body := get("/healthz"); code != 200 || body != "ok\n" {

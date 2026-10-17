@@ -98,3 +98,57 @@ config.Repo.LLM  ->  llm.NewRegistry(cfg, providers.All())  ->  Completer / Embe
 
 See
 [ADR-0005](../../docs/adr/0005-llm-provider-abstraction-with-three-model-tiers.md).
+
+## Optional typed judgments
+
+`Judgments` is separate from the three tiers and their provider catalogue.
+`NewJudgments` lazily constructs a `JudgmentProvider` only when the global
+`JudgmentConfig.Enabled` switch is on and its environment credential is present.
+Disabled calls and missing credentials produce counted, zero-attempt fallbacks.
+Use one instance per process so the assertion worker and distiller share the
+cooldown. Missing credentials and optional provider failures never fail startup.
+
+Callers own questions, minimized state and acceptance decisions. `Judge` batches
+independent questions over shared state; `Choice`, `Score` and `YesNo` are
+single-question conveniences. Every usable answer includes a complete normalized
+distribution, confidence and the resolved model version. An abstain/none-fit
+option is an ordinary caller-supplied choice. `AcceptancePolicy.Accepts` checks
+confidence against the exact resolved version; policies never enable a task.
+
+`providers.Judgments` lazily constructs the Jev adapter, separately from
+`providers.All`. Its wire contract follows the recorded agentcore System One
+client: POST `/v1/systemone`, ordered choice criteria, score levels lowest first
+and `noul` probabilities. Score results may be fractional within the requested
+integer level range. Noul exposes `{yes: p, no: 1-p}` and confidence `max(p, 1-p)`;
+that confidence is derived because the vendor supplies only the probability.
+Choice and score confidence is vendor-reported. Rounded distributions within
+the vendor's 0.02 tolerance are normalized; larger deviations are refused.
+
+Defaults bound an attempt to 2s, a call including retries and waits to 5s, and
+retries to one additional attempt. `MaxRetries: -1` disables retries. Three
+consecutive provider failures open a 30s cooldown; invalid answers never count
+toward that outage state. Every suppressed call still increments observations.
+Caller deadlines can shorten every bound and yield `budget_exhausted`.
+
+The assertion job's **entire optional-work budget defaults to 5s and cannot exceed
+30s**. The worker creates one deadline for the job and passes it to all stance,
+topic and broader-pool calls. It must never reset the budget per question or
+assertion. This bounds extra time holding the scope's serial key by that budget.
+The caller owns that context; the capability honors it during attempts, retries
+and Retry-After waits.
+
+Accounting uses independently nullable input tokens, output tokens and reported
+USD cost. A reported zero remains known; missing values and overflowing sums
+remain unknown. Invalid supplied accounting refuses the answer, retaining other
+valid fields. Invalid-response markers are terminal even inside retryable errors.
+Only sanitized fallback constants leave the wrapper; provider error bodies,
+prompts and answers never enter errors or logs. `FakeJudgmentProvider` scripts
+slow, failing, rate-limited and invalid attempts through the same wrapper.
+
+
+Worker stages use `ObserveCompletions` and `AccountCompletions` to collect logical
+calls, all registry provider attempts (including retries) and reported consumption
+through their own contexts. `Response.ReportedUsage` preserves explicit zero;
+legacy zero token fields remain unknown. Failed attempts contribute their reported
+usage, absent accounting and overflow remain unknown, and no cost is derived from
+pricing. `Registry.Usage` continues to serve its process-wide usage view.

@@ -27,7 +27,9 @@ import (
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/l0"
+	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
+	"github.com/kpenfound/hearsay/internal/llm"
 )
 
 // Options are what a report is computed over.
@@ -49,12 +51,14 @@ type Report struct {
 	Since *time.Time `json:"since"`
 	Until time.Time  `json:"until"`
 	// Scope is empty for every scope.
-	Scope        string        `json:"scope"`
-	Ratification Ratification  `json:"time_to_ratification"`
-	Operations   Operations    `json:"topic_operations"`
-	DrillDown    DrillDown     `json:"drill_down"`
-	Conflicts    ConflictFlags `json:"conflict_flags"`
-	NextActions  NextActions   `json:"next_actions"`
+	Scope        string                              `json:"scope"`
+	Ratification Ratification                        `json:"time_to_ratification"`
+	Operations   Operations                          `json:"topic_operations"`
+	DrillDown    DrillDown                           `json:"drill_down"`
+	Conflicts    ConflictFlags                       `json:"conflict_flags"`
+	NextActions  NextActions                         `json:"next_actions"`
+	Pipelines    PipelineReport                      `json:"pipelines"`
+	Judgments    map[llm.JudgmentTask]TaskComparison `json:"judgments,omitempty"`
 }
 
 // Ratification is time to ratification: for each topic whose clock started in
@@ -150,6 +154,11 @@ func Compute(ctx context.Context, q l2.Querier, authority config.Authority, opts
 		return Report{}, err
 	}
 	report.DrillDown, report.Conflicts, report.NextActions = SummarizeSessions(trail, opts.Scope)
+	observations, err := l1.New(q).PipelineAccounting(ctx, opts.Since, opts.Until, opts.Scope)
+	if err != nil {
+		return Report{}, err
+	}
+	report.Pipelines = SummarizePipelines(observations)
 	return report, nil
 }
 
@@ -323,6 +332,14 @@ func (r Report) WriteText(w io.Writer) error {
 	fmt.Fprintf(tw, "  proceeded\t%d\t%s\n", next.Proceeded.Count, percent(next.Proceeded.Share))
 	fmt.Fprintf(tw, "  asserted\t%d\t%s\n", next.Asserted.Count, percent(next.Asserted.Share))
 	fmt.Fprintf(tw, "  with no bundle before them\t%d\n", next.Unattributed)
+	fmt.Fprintln(tw)
+	fmt.Fprintln(tw, "pipeline observations")
+	for _, c := range []struct {
+		name string
+		data PipelineCohort
+	}{{"baseline", r.Pipelines.Baseline}, {"shadow", r.Pipelines.Shadow}, {"accepted", r.Pipelines.Accepted}} {
+		fmt.Fprintf(tw, "  %s\t%d runs\tcost USD %s\tmean handler seconds %s\tmean queue seconds %s\tfallback %s\n", c.name, c.data.Runs, rate(c.data.TotalCostUSD), rate(c.data.MeanHandlerSeconds), rate(c.data.MeanQueueDelaySeconds), percent(c.data.FallbackFrequency))
+	}
 	return tw.Flush()
 }
 

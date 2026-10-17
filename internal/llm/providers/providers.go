@@ -9,11 +9,20 @@
 package providers
 
 import (
+	"os"
 	"slices"
 
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/llm/anthropic"
+	"github.com/kpenfound/hearsay/internal/llm/jev"
 )
+
+// Judgments builds the separate, process-shared typed capability. A disabled
+// boost never constructs Jev or reads its credential; a missing key degrades.
+// It is intentionally absent from All, Names and ByName.
+func Judgments(cfg llm.JudgmentConfig) (llm.Judgments, error) {
+	return llm.NewJudgments(cfg, func(c llm.JudgmentConfig, key string) llm.JudgmentProvider { return jev.New(c, key) }, os.Getenv)
+}
 
 // All is every provider this build has an adapter for. It is what
 // [llm.NewRegistry] is given.

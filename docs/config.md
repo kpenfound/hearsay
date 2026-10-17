@@ -1227,6 +1227,68 @@ never by what it is about.
 **Credentials are never in here.** They come from the environment, per provider,
 because a configuration repository is checked into git (ADR-0005).
 
+### Optional global judgment boost
+
+`llm.boost` is separate from `tiers`. In a directory repository it sits beside
+`tiers` in one `llm/*.yaml` file. `enabled` is the only switch: it governs stance
+comparison, topic matching and outcome classification together. There are no
+per-task enable flags. Absent or false constructs no Jev client, needs no Jev
+credential and makes no judgment calls. The three existing tiers remain unchanged.
+
+```yaml
+llm:
+  boost:
+    enabled: false
+    model: jev-1.13.0            # explicit requested id; no automatic alias choice
+    api_key_env: HEARSAY_JEV_API_KEY
+    timeout: 2s
+    total_timeout: 5s
+    max_retries: 1
+    assertion_job_budget: 5s
+```
+
+| Boost field | Meaning |
+|---|---|
+| `enabled` | Default false. One switch for all integrations. |
+| `model` | Required when enabled. Configure an explicit model id; record the resolved version returned by the provider. |
+| `api_key_env` | Credential variable name, default `HEARSAY_JEV_API_KEY`. Never put its value here. Missing credentials degrade the capability and preserve baseline startup/work. |
+| `base_url` | Optional absolute HTTP(S) endpoint, default `https://api.typesafe.ai`. No URL credentials, query or fragment. |
+| `timeout` | Per attempt; default 2s, maximum 30s. |
+| `total_timeout` | Per capability call including retries and waits; default 5s, maximum 1m, further bounded by the caller's remaining budget. |
+| `max_retries` | Additional attempts; default 1, `-1` disables retries, maximum 5. |
+| `backoff` | Default 100ms, maximum 5s. Retry-After is honored only within the remaining deadline. |
+| `cooldown`, `cooldown_failures` | Default 30s after 3 outage failures; bounds 5m and 100 failures. Invalid responses do not count as outages. One shared instance per process; separate processes do not share cooldown. |
+| `assertion_job_budget` | One total deadline per assertion job, default 5s, maximum 30s. Covers stance, topic, broader-pool shortlisting, replacement comparisons, optional re-extraction, retries and waits together. Never resets per assertion or integration. |
+| `max_total_tokens`, `max_state_question_tokens` | Local conservative UTF-8 byte upper bounds against the model snapshot: default/max 64000 total and 32000 state plus longest question. Oversize requests fall back before network IO. |
+| `policies` | Task-keyed qualified policies with `name`, pinned `model_version` and explicit `threshold` in [0,1]. Valid tasks: `stance_comparison`, `topic_matching`, `topic_shortlist`, `outcome_classification`. Policies govern adoption, never enablement. No policy ships. |
+
+Enablement alone runs shadow and leaves baseline L1/L2 output unchanged. Use
+[the evaluation guide](jev-evaluation.md) to supply adjudicated tuning/held-out
+examples, pinned predictions, minimum evidence and quality limits, then copy only
+a qualified task policy into `policies`. Thresholds are tuned without held-out
+labels; qualification evaluates the fixed threshold on held-out labels. Model
+version mismatch falls back. An upgrade never reinterprets historical consumed
+judgments or rewrites stances by itself.
+
+Timeout, rate limit, cooldown, uncertainty, abstention, malformed output and any
+journal refusal (storage, statement/lock timeout, changed inputs) write the complete
+baseline result. Outcome disagreements require a supported distill-tier restatement
+of coherent outcome text; otherwise keep the baseline pair. None-fit never creates
+a topic. The document optional path, including restatement, has a fixed 5s budget.
+The assertion budget adds at most its duration to baseline scope-key holding;
+baseline model/database time and queue scheduling are separate. The renewed queue
+lease does not bound job duration. Human gestures wait on that same key.
+
+Worker `/readyz` includes `judgments.enabled`, `healthy`, `last_fallback`,
+`observations`, `attempts`, `fallbacks`. Disabled is `enabled: false`; enabled and
+unhealthy means degraded. Degradation does not make a baseline worker unready.
+Reads, search, authorization, standing, human commands/gestures and deletion have
+no judgment dependency. Confidence is not validated correctness; typed output
+constrains shape only. Negation, ambiguous topics, proposal/decision confusion,
+domain-specific wording and adversarial text require local measurement. Usage and
+cost, including retries, preserve unknown separately from reported zero; price
+alone proves no savings. See [ADR-0031](adr/0031-typed-judgments-are-an-optional-write-path-capability.md).
+
 ## Validation
 
 ```sh
@@ -1401,6 +1463,11 @@ authority:
       artifacts: [merged_pr, spec]
 
 llm:
+  boost:
+    enabled: false
+    model: jev-1.13.0
+    api_key_env: HEARSAY_JEV_API_KEY
+    assertion_job_budget: 5s
   tiers:
     # The distill tier keeps the shipped provider and model and gets a bigger
     # budget; assert keeps everything but the model. A tier nobody names here
@@ -1582,6 +1649,11 @@ ratified_by:
 <!-- example: dir/llm/tiers.yaml -->
 ```yaml
 # llm/tiers.yaml — what is under the single file's `llm:` key.
+boost:
+  enabled: false
+  model: jev-1.13.0
+  api_key_env: HEARSAY_JEV_API_KEY
+  assertion_job_budget: 5s
 tiers:
   distill:
     max_tokens: 4096

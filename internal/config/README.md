@@ -47,3 +47,23 @@ complete example in the first is loaded by the tests here, both ways round, so
 the documentation cannot drift from the loader.
 
 See [docs/design.md](../../docs/design.md#configuration).
+
+`llm.boost` configures the separate typed judgment capability and is returned as
+`Repo.Boost`. It has one `enabled` switch, default false, an explicit `model`,
+optional `base_url`, `api_key_env` (default `HEARSAY_JEV_API_KEY`), transport
+bounds (`timeout`, `total_timeout`, `max_retries`, `backoff`, `cooldown`,
+`cooldown_failures`) and `assertion_job_budget` (default 5s, maximum 30s).
+The job budget covers every optional call and wait for the entire assertion job.
+`max_total_tokens` defaults to 64000 and `max_state_question_tokens` to 32000.
+Either limit may be lowered; it cannot exceed the captured vendor limit. The
+adapter conservatively counts serialized UTF-8 bytes as a token upper bound,
+including schema overhead, and refuses oversize requests before network IO.
+No credential is consulted by configuration validation. The optional capability
+handles missing credentials by degrading while baseline services keep working.
+
+`policies` is a map keyed by `stance_comparison`, `topic_matching`,
+`topic_shortlist` or `outcome_classification`. Each entry requires `name`, a
+pinned `model_version` and an explicit `threshold` between zero and one. No
+policies ship by default. Unknown keys, including any per-integration enable
+flags, are refused. A boost-only `llm/boost.yaml` may sit beside tier files;
+configuring the boost in two files is refused rather than merged.

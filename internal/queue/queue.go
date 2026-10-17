@@ -318,11 +318,17 @@ func (c *Client) claimSerialized(ctx context.Context) ([]Job, error) {
 // completeSQL finishes a job, and matches on the run rather than on the job:
 // a worker whose lease expired while it was working has had its job reclaimed
 // and possibly re-run, and must not mark that other run done.
+// Notification commits with completion, including CompleteIn's external holds.
+// A queued job's enqueue notification may have arrived while its key was busy;
+// waking on release avoids an otherwise unnecessary full polling interval.
 const completeSQL = `
-UPDATE queue_job SET state = 'done', finished_at = now(), lease_expires_at = NULL,
-       last_error = NULL
-WHERE id = $1 AND attempt = $2 AND state = 'running'
-RETURNING id`
+WITH completed AS (
+ UPDATE queue_job SET state = 'done', finished_at = now(), lease_expires_at = NULL,
+        last_error = NULL
+ WHERE id = $1 AND attempt = $2 AND state = 'running'
+ RETURNING id, kind
+)
+SELECT id FROM completed, LATERAL (SELECT pg_notify('hearsay_job_' || completed.kind, '')) AS announced`
 
 // Complete marks a job done. It reports false when the job was no longer this
 // run's to finish — the lease expired and something reclaimed it — in which
@@ -376,7 +382,7 @@ WITH decided AS (
                 ELSE 'pending' END AS outcome
     FROM queue_job j
     WHERE j.id = $1 AND j.attempt = $2 AND j.state = 'running'
-)
+), released AS (
 UPDATE queue_job q SET
     state = d.outcome,
     finished_at = CASE WHEN d.outcome = 'pending' THEN NULL ELSE now() END,
@@ -386,7 +392,9 @@ UPDATE queue_job q SET
     last_error = CASE WHEN d.outcome = 'done' THEN '` + supersededPrefix + `' || $5 ELSE $5 END
 FROM decided d
 WHERE q.id = d.id AND q.attempt = $2 AND q.state = 'running'
-RETURNING q.state, q.run_after`
+RETURNING q.state, q.run_after, q.kind
+)
+SELECT state,run_after FROM released, LATERAL (SELECT pg_notify('hearsay_job_' || released.kind, '')) AS announced`
 
 // conflictRetries is how many times a statement that lost a race to a
 // concurrent enqueue on the pending-target index is run again. Each run takes
@@ -509,7 +517,7 @@ WITH decided AS (
                 ELSE 'pending' END AS outcome
     FROM queue_job j
     WHERE j.kind = $1 AND j.state = 'running' AND j.lease_expires_at < now()
-)
+), released AS (
 UPDATE queue_job q SET
     state = d.outcome,
     finished_at = CASE WHEN d.outcome = 'pending' THEN NULL ELSE now() END,
@@ -518,7 +526,9 @@ UPDATE queue_job q SET
     last_error = CASE WHEN d.outcome = 'done' THEN '` + supersededPrefix + `' || $3 ELSE $3 END
 FROM decided d
 WHERE q.id = d.id AND q.state = 'running' AND q.lease_expires_at < now()
-RETURNING q.state`
+RETURNING q.state, q.kind
+)
+SELECT state FROM released, LATERAL (SELECT pg_notify('hearsay_job_' || released.kind, '')) AS announced`
 
 // Reclaimed is what one sweep of the expired leases did.
 type Reclaimed struct {

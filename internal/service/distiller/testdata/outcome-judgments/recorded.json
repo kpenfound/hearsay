@@ -1,0 +1,112 @@
+{
+  "resolved": {
+    "ModelVersion": "recorded-v1",
+    "Answers": [
+      {
+        "ID": "outcome",
+        "Probabilities": {
+          "resolved": 0.96,
+          "decided": 0.01,
+          "proposed": 0.01,
+          "open": 0.01,
+          "none": 0.01
+        },
+        "Confidence": 0.96,
+        "Choice": "resolved"
+      }
+    ],
+    "Usage": {
+      "input_tokens": 15,
+      "output_tokens": 2,
+      "cost_usd": 0
+    }
+  },
+  "decided": {
+    "ModelVersion": "recorded-v1",
+    "Answers": [
+      {
+        "ID": "outcome",
+        "Probabilities": {
+          "resolved": 0.01,
+          "decided": 0.96,
+          "proposed": 0.01,
+          "open": 0.01,
+          "none": 0.01
+        },
+        "Confidence": 0.96,
+        "Choice": "decided"
+      }
+    ],
+    "Usage": {
+      "input_tokens": 15,
+      "output_tokens": 2,
+      "cost_usd": 0
+    }
+  },
+  "proposed": {
+    "ModelVersion": "recorded-v1",
+    "Answers": [
+      {
+        "ID": "outcome",
+        "Probabilities": {
+          "resolved": 0.01,
+          "decided": 0.01,
+          "proposed": 0.96,
+          "open": 0.01,
+          "none": 0.01
+        },
+        "Confidence": 0.96,
+        "Choice": "proposed"
+      }
+    ],
+    "Usage": {
+      "input_tokens": 15,
+      "output_tokens": 2,
+      "cost_usd": 0
+    }
+  },
+  "open": {
+    "ModelVersion": "recorded-v1",
+    "Answers": [
+      {
+        "ID": "outcome",
+        "Probabilities": {
+          "resolved": 0.01,
+          "decided": 0.01,
+          "proposed": 0.01,
+          "open": 0.96,
+          "none": 0.01
+        },
+        "Confidence": 0.96,
+        "Choice": "open"
+      }
+    ],
+    "Usage": {
+      "input_tokens": 15,
+      "output_tokens": 2,
+      "cost_usd": 0
+    }
+  },
+  "none": {
+    "ModelVersion": "recorded-v1",
+    "Answers": [
+      {
+        "ID": "outcome",
+        "Probabilities": {
+          "resolved": 0.01,
+          "decided": 0.01,
+          "proposed": 0.01,
+          "open": 0.01,
+          "none": 0.96
+        },
+        "Confidence": 0.96,
+        "Choice": "none"
+      }
+    ],
+    "Usage": {
+      "input_tokens": 15,
+      "output_tokens": 2,
+      "cost_usd": 0
+    }
+  }
+}

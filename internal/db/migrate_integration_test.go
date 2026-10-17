@@ -69,9 +69,8 @@ func swapDatabaseName(url, name string) string {
 	return swapped
 }
 
-// The whole of ADR-0006's command surface, against a database that starts with
-// no schema at all: up, status, up-to, down, and the migration whose down
-// refuses.
+// Migration application, status and schema checks start with an empty
+// database. Reversible history and refused rollbacks are exercised separately.
 func TestMigrateUpAndDown(t *testing.T) {
 	url := scratchDatabase(t)
 	migrator, err := db.NewMigrator(t.Context(), url, nil)
@@ -156,13 +155,33 @@ func TestMigrateUpAndDown(t *testing.T) {
 			t.Errorf("Status() says %s is pending after up", s.Name)
 		}
 	}
+}
 
+// Scoped marker history is intentionally irreversible. Exercise the earlier
+// reversible schema history independently.
+func TestReversibleMigrationHistory(t *testing.T) {
+	const newest int64 = 35
+	url := scratchDatabase(t)
+	migrator, err := db.NewMigrator(t.Context(), url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = migrator.Close() }()
+	if _, err = migrator.UpTo(t.Context(), newest); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := db.Open(t.Context(), url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	var events int64
 	// Down reverses one migration at a time, and what each one created goes
-	// with it. The migrations are named here newest first, so a migration added
-	// later is a line added at the top of this list; a migration that creates
+	// with it. This list ends before the irreversible scoped-marker migration.
+	// A migration that creates
 	// no table of its own — an index on an existing one — has no table here and
 	// is only checked for rolling back cleanly.
-	for i, table := range []string{"", "", "", "", "github_command_replies", "", "l2_gestures", "", "l2_topic_operations", "l0_deletion_rebuilds", "l0_deletions", "", "", "bundle_changes", "l2_alias_candidates", "", "l2_pins", "", "", "", "", "l0_resyncs", "l2_stances", "l0_backfill_cursors", "", "", "", "", "l0_feed_cursors", "l1_docs", "queue_job", "l0_events"} {
+	for i, table := range []string{"", "judgment_journal", "", "", "", "", "github_command_replies", "", "l2_gestures", "", "l2_topic_operations", "l0_deletion_rebuilds", "l0_deletions", "", "", "bundle_changes", "l2_alias_candidates", "", "l2_pins", "", "", "", "", "l0_resyncs", "l2_stances", "l0_backfill_cursors", "", "", "", "", "l0_feed_cursors", "l1_docs", "queue_job", "l0_events"} {
 		want := newest - int64(i) - 1
 		if _, err := migrator.Down(t.Context()); err != nil {
 			t.Fatalf("Down() = %v, want no error", err)
@@ -171,7 +190,15 @@ func TestMigrateUpAndDown(t *testing.T) {
 			t.Fatalf("Version(after down) = %d, %v, want %d", version, err, want)
 		}
 
-		if i == 0 {
+		if want == 33 {
+			for _, name := range []string{"", "judgment_journal", "pipeline_observations", "judgment_input_guard", "judgment_input_changes"} {
+				var exists bool
+				if err := pool.QueryRow(t.Context(), `SELECT to_regclass($1) IS NOT NULL`, name).Scan(&exists); err != nil || exists {
+					t.Errorf("journal table %s after down = %v, %v", name, exists, err)
+				}
+			}
+		}
+		if want == 32 {
 			var originCheck string
 			if err := pool.QueryRow(t.Context(), `SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'l2_entities'::regclass AND conname = 'l2_entities_origin_is_known'`).Scan(&originCheck); err != nil {
 				t.Fatal(err)
@@ -180,20 +207,20 @@ func TestMigrateUpAndDown(t *testing.T) {
 				t.Errorf("origin check still admits source after down: %s", originCheck)
 			}
 		}
-		if i == 1 {
+		if want == 31 {
 			var remaining int
 			if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM pg_indexes WHERE indexname = 'l0_events_container_idx'`).Scan(&remaining); err != nil || remaining != 0 {
 				t.Errorf("container index remains after down: %d, %v", remaining, err)
 			}
 		}
-		if i == 2 {
+		if want == 30 {
 			var remaining int
 			if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM pg_indexes WHERE indexname IN ('l2_topics_about_idx','l2_entities_part_of_idx')`).Scan(&remaining); err != nil || remaining != 0 {
 				t.Fatalf("traversal indexes after down = %d, %v", remaining, err)
 			}
 		}
 
-		if i == 3 {
+		if want == 29 {
 			if _, err := pool.Exec(t.Context(), `SELECT state, state_native FROM l1_docs LIMIT 0`); err == nil {
 				t.Error("state columns remain after down")
 			}
@@ -202,22 +229,22 @@ func TestMigrateUpAndDown(t *testing.T) {
 				t.Errorf("state index remains after down: %d, %v", remaining, err)
 			}
 		}
-		if i == 9 {
+		if want == 23 {
 			if _, err := pool.Exec(t.Context(), `SELECT redacted_by FROM l2_stances LIMIT 0`); err == nil {
 				t.Error("stance redaction remains after rolling its migration back")
 			}
 		}
-		if i == 15 {
+		if want == 17 {
 			if _, err := pool.Exec(t.Context(), `SELECT assertion FROM l2_stances LIMIT 0`); err == nil {
 				t.Error("stance assertion remains after rolling its migration back")
 			}
 		}
-		if i == 18 {
+		if want == 14 {
 			if _, err := pool.Exec(t.Context(), `SELECT judgement FROM l2_stances LIMIT 0`); err == nil {
 				t.Error("stance judgement remains after rolling its migration back")
 			}
 		}
-		if i == 17 {
+		if want == 15 {
 			if _, err := pool.Exec(t.Context(), `SELECT judgement FROM l2_stances LIMIT 0`); err != nil {
 				t.Errorf("stance judgement missing after rolling reconciliation back: %v", err)
 			}
@@ -225,7 +252,7 @@ func TestMigrateUpAndDown(t *testing.T) {
 				t.Errorf("artifact class missing after rolling reconciliation back: %v", err)
 			}
 		}
-		if i == 19 {
+		if want == 13 {
 			if _, err := pool.Exec(t.Context(), `SELECT artifact_class FROM l1_docs LIMIT 0`); err == nil {
 				t.Error("artifact class remains after rolling its migration back")
 			}
@@ -240,7 +267,7 @@ func TestMigrateUpAndDown(t *testing.T) {
 
 	// And up again, so that a down migration that leaves the schema in a state
 	// up cannot re-apply fails here rather than in someone's afternoon.
-	if _, err := migrator.Up(t.Context()); err != nil {
+	if _, err := migrator.UpTo(t.Context(), newest); err != nil {
 		t.Fatalf("Up(after down) = %v, want no error", err)
 	}
 	if version, err := migrator.Version(t.Context()); err != nil || version != newest {
@@ -249,7 +276,7 @@ func TestMigrateUpAndDown(t *testing.T) {
 }
 
 // ADR-0006: a down migration that would destroy data says so and fails rather
-// than pretending to reverse. Migration 1 is the one that does.
+// than pretending to reverse. The vector extension may predate this schema.
 func TestTheVectorExtensionRefusesToBeRolledBack(t *testing.T) {
 	url := scratchDatabase(t)
 	migrator, err := db.NewMigrator(t.Context(), url, nil)
@@ -257,20 +284,10 @@ func TestTheVectorExtensionRefusesToBeRolledBack(t *testing.T) {
 		t.Fatalf("NewMigrator() = %v, want no error", err)
 	}
 	defer func() { _ = migrator.Close() }()
-	if _, err := migrator.Up(t.Context()); err != nil {
+	if _, err := migrator.UpTo(t.Context(), 1); err != nil {
 		t.Fatalf("Up() = %v, want no error", err)
 	}
 
-	newest, err := db.EmbeddedVersion()
-	if err != nil {
-		t.Fatalf("EmbeddedVersion() = %v, want no error", err)
-	}
-	// Everything above migration 1 rolls back cleanly.
-	for version := newest; version > 1; version-- {
-		if _, err := migrator.Down(t.Context()); err != nil {
-			t.Fatalf("Down(from %d) = %v, want no error", version, err)
-		}
-	}
 	err = downErr(migrator.Down(t.Context()))
 	if err == nil {
 		t.Fatal("Down(to nothing) = nil, want the vector extension to refuse")
@@ -516,5 +533,25 @@ func TestVersion14BranchSchemasUpgrade(t *testing.T) {
 				t.Error("unknown artifact class accepted")
 			}
 		})
+	}
+}
+
+// Marker counts must never be reset while journal results retain their input
+// identities. Refusing down preserves both instead of pretending to reverse.
+func TestScopedJudgmentHistoryRefusesRollback(t *testing.T) {
+	url := scratchDatabase(t)
+	migrator, err := db.NewMigrator(t.Context(), url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = migrator.Close() }()
+	if _, err = migrator.UpTo(t.Context(), 36); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = migrator.Down(t.Context()); err == nil || !strings.Contains(err.Error(), "scoped judgment input history") {
+		t.Fatalf("Down(scoped history)=%v", err)
+	}
+	if version, err := migrator.Version(t.Context()); err != nil || version != 36 {
+		t.Fatalf("version after refused down=%d %v", version, err)
 	}
 }

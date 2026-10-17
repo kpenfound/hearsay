@@ -24,6 +24,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/llm"
+	"github.com/kpenfound/hearsay/internal/llm/jev"
 	"github.com/kpenfound/hearsay/internal/llm/providers"
 	"github.com/kpenfound/hearsay/internal/principal"
 	"github.com/kpenfound/hearsay/internal/service"
@@ -61,7 +62,7 @@ func commands() []command {
 		{"aliases", "list|confirm <entity> <name>|reject <entity> <name>", "Review learned entity names.", runAliases},
 		{"topics", "list <scope>|merge <from> <into>|split <topic> --stance <id>... --name <name>|undo <op>|ops", "List topics and their operations; merge, split and undo by hand.", runTopics},
 		{"gestures", "ratify|demote|pin|unpin <document>|undo <gesture-id>|list", "Record and list human stance and pin gestures.", runGestures},
-		{"eval", "[--since <time>] [--until <time>] [--scope <id>] [--json]", "Print the evaluation metrics: time to ratification, topic merge and split rate, drill-down rate per bundle section, conflict-flag precision.", runEval},
+		{"eval", "[--since <time>] [--until <time>] [--scope <id>] [--json]", "Print evaluation metrics and pipeline accounting; eval judgments compares supplied predictions and qualifies task policies offline.", runEval},
 		{"delete", "--event <id>|--artifact <source> <id>|--author <identity> [--apply] | list | show <id>", "Preview deletion provenance; --apply redacts L0 and re-distills; list and show read the records.", runDelete},
 		{"version", "", "Print version, commit and build date.", runVersion},
 		{"help", "", "Print this message.", runHelp},
@@ -242,7 +243,11 @@ func runDistiller(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	if err != nil {
 		return err
 	}
-	return distiller.Run(ctx, cfg, distiller.Deps{Pool: pool, LLM: registry, Listen: *listen, Pump: pump})
+	judgments, err := judgmentCapability(cfg, nil)
+	if err != nil {
+		return err
+	}
+	return distiller.Run(ctx, cfg, distiller.Deps{Pool: pool, LLM: registry, Judgments: judgments, Listen: *listen, Pump: pump})
 }
 
 // runAssertWorker runs the assertion worker. It has the distiller's
@@ -294,7 +299,11 @@ func runAssertWorker(ctx context.Context, args []string, stdout, stderr io.Write
 	if err != nil {
 		return err
 	}
-	return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry, Connectors: connectorRegistry(cfg.Repo.Principals, cfg.Repo.Sources), Repos: repos, Replies: replies, Listen: *listen})
+	judgments, err := judgmentCapability(cfg, nil)
+	if err != nil {
+		return err
+	}
+	return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry, Judgments: judgments, Connectors: connectorRegistry(cfg.Repo.Principals, cfg.Repo.Sources), Repos: repos, Replies: replies, Listen: *listen})
 }
 
 // repoReaders builds the reader entity seeding reads repositories through: one
@@ -644,15 +653,19 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 		return err
 	}
 
+	judgments, err := judgmentCapability(cfg, nil)
+	if err != nil {
+		return err
+	}
 	return service.RunAll(ctx, map[string]service.RunFunc{
 		connectors.Name: func(ctx context.Context) error {
 			return connectors.Run(ctx, cfg, connectors.Deps{Pool: pool, Registry: connectorRegistry(cfg.Repo.Principals, cfg.Repo.Sources), Listen: *listen})
 		},
 		distiller.Name: func(ctx context.Context) error {
-			return distiller.Run(ctx, cfg, distiller.Deps{Pool: pool, LLM: registry, Listen: *distillerListen, Pump: pump})
+			return distiller.Run(ctx, cfg, distiller.Deps{Pool: pool, LLM: registry, Judgments: judgments, Listen: *distillerListen, Pump: pump})
 		},
 		assertworker.Name: func(ctx context.Context) error {
-			return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry, Connectors: connectorRegistry(cfg.Repo.Principals, cfg.Repo.Sources), Repos: repos, Replies: replies, Listen: *assertWorkerListen})
+			return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry, Judgments: judgments, Connectors: connectorRegistry(cfg.Repo.Principals, cfg.Repo.Sources), Repos: repos, Replies: replies, Listen: *assertWorkerListen})
 		},
 		api.Name: func(ctx context.Context) error {
 			return api.Run(ctx, cfg, api.Deps{Pool: pool, LLM: registry, Listen: *apiListen, Discord: apps})
@@ -823,4 +836,13 @@ func distillFlags(fs *flag.FlagSet) func() (distiller.PumpOptions, error) {
 		}
 		return distiller.PumpOptions{Quiet: q, MaxDelay: m}, nil
 	}
+}
+
+// judgmentCapability builds exactly one capability per process. The factory is
+// injectable for service-wiring tests; disabled operation never constructs it.
+func judgmentCapability(cfg *config.Config, factory llm.JudgmentFactory) (llm.Judgments, error) {
+	if factory == nil {
+		factory = func(c llm.JudgmentConfig, key string) llm.JudgmentProvider { return jev.New(c, key) }
+	}
+	return llm.NewJudgments(cfg.Repo.Boost, factory, os.Getenv)
 }

@@ -19,6 +19,9 @@ import (
 // principal. Standing is computed under the configured authority, which is
 // why it needs --config.
 func runEval(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	if len(args) > 0 && args[0] == "judgments" {
+		return runJudgmentEval(ctx, args[1:], stdout, stderr)
+	}
 	fs, cfg, configPath := newFlagSet("eval", stderr)
 	resolveDatabase := databaseFlag(fs, cfg)
 	since := fs.String("since", "", "start of the window, RFC3339; the default is the beginning")

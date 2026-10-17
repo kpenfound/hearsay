@@ -55,7 +55,12 @@ own transaction, independently of a caller that may roll back. The explicit
 kind may differ from the client's kind. Both return true when a pending job
 exists (even if already due), notify that kind's channel on commit, and return
 false without changing anything when none exists. Neither touches running
-jobs. Enqueue notifications likewise commit with the write. There is no timer
+jobs. Enqueue notifications likewise commit with the write. Job completion, including
+an external hold completed through `CompleteIn`, notifies the kind on commit too:
+failure and lease reclamation announce released keys as well. A
+later job whose enqueue arrived while its key was busy need not wait a full
+polling interval after the key is released. A rolled-back completion announces
+nothing. There is no timer
 for jobs becoming due: the existing worker poll picks them up.
 
 A consumer runs a worker for one kind:

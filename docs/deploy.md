@@ -124,6 +124,7 @@ the `hearsay.env` that `hearsay init` wrote, plus the deployment block of
 | `HEARSAY_DATABASE_URL` | `migrate`, all four services | **Supply**: `postgres://hearsay:<password>@postgres:5432/hearsay?sslmode=disable`, with the password percent-encoded if it needs it. |
 | The `token_env` of every human and agent | `api`, all of them; `connectors`, the agents', when an `agent` source is configured | **Supply** one random, distinct value each (`openssl rand -hex 32`). `hearsay init` generates them. The names are the configuration's; `HEARSAY_OPERATOR_TOKEN` and `HEARSAY_ASSISTANT_TOKEN` are the example's. |
 | `ANTHROPIC_API_KEY`, or a tier's `api_key_env` | `distiller`, `assert-worker`, `api` | **Supply.** Each builds the model tiers at startup and refuses to start without the key. |
+| `HEARSAY_JEV_API_KEY`, or `llm.boost.api_key_env` | `distiller`, `assert-worker` | Optional judgment credential. Read only with `llm.boost.enabled: true`; missing/empty degrades the boost while baseline work and readiness continue. Never needed by API, connectors or migrate. |
 | `HEARSAY_GITHUB_TOKEN` | `connectors`; `assert-worker` for a GitHub source that is not `read_only` or that `code/` names | **Supply** if the configuration names it. |
 | `HEARSAY_GITHUB_WEBHOOK_SECRET` | `connectors` | **Supply** if the configuration names it: the secret the webhooks sign with. |
 | `HEARSAY_DISCORD_TOKEN` | `connectors`; `api` for a Discord source with `application_id` and `public_key` that is not `read_only` | **Supply** if the configuration names it. |
@@ -452,6 +453,53 @@ under the service that does, using the "Read by" column of the env table. For
 example, the GitHub webhook secret goes under `connectors.secretEnv`. The chart
 sets `HEARSAY_CONFIG`, `HEARSAY_DATABASE_URL` and the listen addresses itself,
 and refuses them in any of these.
+
+### Optional Jev boost
+
+The single `llm.boost.enabled` switch defaults to false; it governs stance,
+topic and outcome judgments together. `distill`, `assert`, `embed` keep their
+existing roles. Supply `HEARSAY_JEV_API_KEY` (or the configured `api_key_env`)
+only to the two workers. Missing credentials, provider outage, uncertainty,
+invalid output, cooldown, deadline exhaustion and any journal refusal (storage,
+statement/lock timeout, changed inputs) retain the complete baseline output.
+Worker `/readyz` still returns 200 when database/schema health permits it;
+`judgments` reports `enabled`, `healthy`, `last_fallback`, `observations`,
+`attempts`, `fallbacks`. False enablement means disabled; enabled but unhealthy
+means degraded. Health endpoints remain unauthenticated and report no source text.
+
+Enablement is shadow-only until task policies are qualified using the
+[human-reviewed evaluation procedure](jev-evaluation.md), operator limits and
+a final held-out split. No qualified policy ships. Configure the requested model
+explicitly and pin policies to its resolved version. An upgrade never rewrites
+historical consumed decisions. Confidence is not validated correctness; typed
+output constrains shape only. Negation, ambiguous topics, proposal/decision
+confusion, domain language and adversarial source text still require local
+measurement. Vendor pricing is not evidence of pipeline savings.
+
+The assertion job's `assertion_job_budget` defaults to 5s (maximum 30s), shared
+across all assertions, broader-pool processing, replacement comparisons,
+optional re-extraction, retries and Retry-After waits. It adds at most that budget
+to baseline scope-key holding; baseline model/database time and queue scheduling
+remain separate. On exhaustion the entire baseline extraction is written and
+queued writes and human gestures proceed under the same key. Lease renewal is
+not a duration limit. Outcome work, including any supported generative restatement,
+has one fixed 5s per-document budget. One capability instance in `hearsay all`
+shares cooldown across both workers; independent service processes do not.
+
+Bundle/search, authorization, standing, command/gesture application and deletion
+have no judgment dependency. See [configuration](config.md#optional-global-judgment-boost)
+and [ADR-0031](adr/0031-typed-judgments-are-an-optional-write-path-capability.md).
+
+For Helm, reference an existing Secret in each worker (the chart creates none):
+
+```yaml
+distiller:
+  secretEnv:
+    HEARSAY_JEV_API_KEY: {secret: hearsay-jev, key: api-key}
+assertWorker:
+  secretEnv:
+    HEARSAY_JEV_API_KEY: {secret: hearsay-jev, key: api-key}
+```
 
 ### Configuration
 

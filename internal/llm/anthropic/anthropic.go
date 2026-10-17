@@ -208,8 +208,8 @@ type contentBlock struct {
 }
 
 type usage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens  *int64 `json:"input_tokens"`
+	OutputTokens *int64 `json:"output_tokens"`
 }
 
 // response translates an answer back into terms no provider owns.
@@ -219,9 +219,15 @@ func (c *client) response(req llm.Request, body []byte) (llm.Response, error) {
 		return llm.Response{}, c.err(http.StatusOK, "", "the answer is not the JSON this API returns", false, 0, err)
 	}
 	out := llm.Response{
-		Model:      decoded.Model,
-		StopReason: stopReason(decoded.StopReason),
-		Tokens:     llm.Tokens{Input: decoded.Usage.InputTokens, Output: decoded.Usage.OutputTokens},
+		Model:         decoded.Model,
+		StopReason:    stopReason(decoded.StopReason),
+		ReportedUsage: &llm.JudgmentUsage{InputTokens: decoded.Usage.InputTokens, OutputTokens: decoded.Usage.OutputTokens},
+	}
+	if decoded.Usage.InputTokens != nil {
+		out.Tokens.Input = int(*decoded.Usage.InputTokens)
+	}
+	if decoded.Usage.OutputTokens != nil {
+		out.Tokens.Output = int(*decoded.Usage.OutputTokens)
 	}
 	if out.Model == "" {
 		out.Model = c.model
@@ -236,7 +242,7 @@ func (c *client) response(req llm.Request, body []byte) (llm.Response, error) {
 		}
 		out.Text = text.String()
 		if out.Text == "" && out.StopReason != llm.StopMaxTokens && out.StopReason != llm.StopRefusal {
-			return llm.Response{}, c.err(http.StatusOK, "", "the answer has no text in it", false, 0, nil)
+			return out, c.err(http.StatusOK, "", "the answer has no text in it", false, 0, nil)
 		}
 		return out, nil
 	}
@@ -251,7 +257,7 @@ func (c *client) response(req llm.Request, body []byte) (llm.Response, error) {
 			// than a failure of this adapter's.
 			return out, nil
 		}
-		return llm.Response{}, c.err(http.StatusOK, "", fmt.Sprintf("the answer did not use the %s tool it was told to use", req.Schema.Name), false, 0, nil)
+		return out, c.err(http.StatusOK, "", fmt.Sprintf("the answer did not use the %s tool it was told to use", req.Schema.Name), false, 0, nil)
 	}
 	out.JSON = decoded.Content[i].Input
 	return out, nil

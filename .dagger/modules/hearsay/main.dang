@@ -532,10 +532,11 @@ type Hearsay {
               (if $c.startupProbe.httpGet != {"path": "/healthz", "port": "http"} then $n + ": the startup probe is not /healthz" else empty end),
               (if $c.livenessProbe.httpGet != {"path": "/healthz", "port": "http"} then $n + ": the liveness probe is not /healthz" else empty end),
               (if $c.readinessProbe.httpGet != {"path": "/readyz", "port": "http"} then $n + ": the readiness probe is not /readyz" else empty end),
-              (if ($env | keys) != ["ANTHROPIC_API_KEY", "HEARSAY_ASSISTANT_TOKEN", "HEARSAY_CONFIG", "HEARSAY_DATABASE_URL", "HEARSAY_LOG_LEVEL", "HEARSAY_OPERATOR_TOKEN"]
+              (if ($env | keys) != (["ANTHROPIC_API_KEY", "HEARSAY_ASSISTANT_TOKEN", "HEARSAY_CONFIG", "HEARSAY_DATABASE_URL", "HEARSAY_LOG_LEVEL", "HEARSAY_OPERATOR_TOKEN"] + (if $n == "distiller" or $n == "assert-worker" then ["HEARSAY_JEV_API_KEY"] else [] end) | sort)
                 then $n + ": its environment is " + ($env | keys | join(", ")) else empty end),
               (if $env.HEARSAY_CONFIG != "/etc/hearsay" then $n + ": HEARSAY_CONFIG is not /etc/hearsay" else empty end),
               (if $env.HEARSAY_DATABASE_URL != $db then $n + ": HEARSAY_DATABASE_URL is not database.existingSecret's key" else empty end),
+              (if ($n == "distiller" or $n == "assert-worker") and $env.HEARSAY_JEV_API_KEY != {"name": "hearsay-jev", "key": "api-key"} then $n + ": Jev credential is not an existing Secret reference" else empty end),
               (if $env.HEARSAY_LOG_LEVEL != "info" then $n + ": env is not passed through" else empty end),
               (if [$env.HEARSAY_OPERATOR_TOKEN, $env.HEARSAY_ASSISTANT_TOKEN, $env.ANTHROPIC_API_KEY]
                   != [{"name": "hearsay-tokens", "key": "operator"}, {"name": "hearsay-tokens", "key": "assistant"}, {"name": "hearsay-llm", "key": "api-key"}]

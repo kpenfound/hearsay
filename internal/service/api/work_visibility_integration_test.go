@@ -148,8 +148,9 @@ func (w *workVisibilityWorld) resolves(t *testing.T, caller api.Caller, name, id
 
 func (w *workVisibilityWorld) hiddenScope(t *testing.T, caller api.Caller, entity string) {
 	t.Helper()
-	// Start from the same settled cursor for both requests; no wall-clock field
-	// or feed position may distinguish a hidden entity from a missing one.
+	// Use the same starting cursor for every request. The feed's snapshot xmin
+	// spans the Postgres cluster, so transactions in other test databases can
+	// still hold back setup events and release them between these calls.
 	start, _ := w.both(t, caller, "watch", map[string]any{"scope": "work:projects:absent"})
 	var watched api.Watched
 	if err := json.Unmarshal([]byte(start.body), &watched); err != nil {
@@ -170,12 +171,22 @@ func (w *workVisibilityWorld) hiddenScope(t *testing.T, caller api.Caller, entit
 				}
 				return a
 			}
-			h, m := w.both(t, caller, call, args(entity))
-			mh, mm := w.both(t, caller, call, args("work:projects:absent"))
 			respell := func(a answer) answer { a.body = strings.ReplaceAll(a.body, "work:projects:absent", entity); return a }
-			if h != respell(mh) || m != respell(mm) {
-				t.Fatalf("%s hidden HTTP %+v MCP %+v; missing HTTP %+v MCP %+v", call, h, m, mh, mm)
+			for range 50 {
+				beforeH, beforeM := w.both(t, caller, call, args("work:projects:absent"))
+				h, m := w.both(t, caller, call, args(entity))
+				afterH, afterM := w.both(t, caller, call, args("work:projects:absent"))
+				if beforeH == afterH && beforeM == afterM {
+					// Once the missing replies are stable, every field (including
+					// the opaque cursor) must also match the hidden reply.
+					if h != respell(beforeH) || m != respell(beforeM) {
+						t.Fatalf("%s hidden HTTP %+v MCP %+v; missing HTTP %+v MCP %+v", call, h, m, beforeH, beforeM)
+					}
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
 			}
+			t.Fatal("feed did not settle after 50 missing/hidden/missing comparisons")
 		})
 	}
 }

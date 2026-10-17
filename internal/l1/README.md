@@ -110,3 +110,117 @@ read path asks a model to generate anything.
   writing a `CREATE INDEX`.
 
 See [docs/design.md](../../docs/design.md#l1-distilled-documents).
+
+## Judgment journal and pipeline accounting
+
+The journal is an optional write-path record, with no model calls in this
+package. `JudgmentInputSpec` names the incoming document, ordered candidate
+ids, exact compared stance ids, source event ids (also needed before the first
+L1 write), scope and computed ACL. `CaptureJudgmentInputs` records their
+identities and revisions, including `distilled_at`, hashes of the rows and
+all candidate/position evidence, and scoped source and effective-ledger change counts.
+Candidate dependencies include ledger-connected topic rows and their evidence,
+including virtual split topics and merged-away rows. This closure is
+conservative across undone operations; it does not replace L2 candidate
+retrieval or its permission checks.
+It returns no source, position, prompt or answer text. `DocumentRevision`
+lets a worker compare the captured revision to the document it actually read.
+Capture **before** reading the state used in a question, while holding the
+worker's existing scope key where applicable. If a later read sees another
+revision, discard the optional judgment or capture and judge again.
+
+`BeginJudgment` on an autocommit store records an attempt before the provider
+call. Use its returned id for the final `JudgmentRecord`. An attempt remains
+an attempt through a crash or refused commit; only a `committed` record may
+be reused. `LookupJudgment` checks the current state and exact question/hash
+identity in the same SQL snapshot. A requested model version is deliberately
+absent from the lookup key: reuse returns the original resolved version,
+policy, label and accounting without reinterpreting the result. A committed
+record is immutable, and committing that exact same record again is safe.
+Question/schema versions, task, policy and result labels belong to the worker;
+only categorical labels and hashes belong in these fields, never question or
+completion text.
+
+Call `CommitJudgments` in the worker's **READ COMMITTED** baseline transaction,
+**before** writing documents, topics or stances. It validates every judgment
+and observation before writing any of them, then records the batch under a
+savepoint. `JournalStorageFailure`, `JournalTimeout` and
+`JournalInputsChanged` are distinct sanitized refusal values, compared with
+`errors.Is`. The savepoint rolls back the whole optional batch on a refusal,
+including an earlier successful record or observation in that batch, and
+restores the caller's server timeout settings. The caller then writes its
+complete baseline result. The journal never writes a consumer's result.
+Use the live baseline context here, not the optional model call's exhausted
+deadline; connection loss or cancellation of the baseline transaction itself
+cannot be repaired by a savepoint. Repeatable-read/serializable transactions
+are refused rather than validating against an old snapshot.
+
+Validation takes `SHARE ROW EXCLUSIVE` on `judgment_input_guard` until the
+**outer transaction** commits. Effective-input mutation triggers take
+`ROW EXCLUSIVE` before writing, so another writer cannot change inputs in
+the interval between validation and commit. Successful journal commits
+serialize this short database interval, including the caller's consumer
+writes, but never provider work. Server statement and lock timeouts default
+to 100 ms each and are configurable per call. A refused savepoint releases
+its guard immediately so the baseline write can proceed. Source writers
+remain concurrent: source/ledger change markers are appended, not updated
+on a single counter row. Counts of visible committed markers for each scope
+include late commits that a sequence watermark would miss. Source markers
+cover each input event's (source, artifact) pair, including new revisions,
+tombstones targeting it, ACL updates and deletion. Membership markers cover
+(source, thread) for artifact conversations and replies, and (source,
+container, half-open 30 minute UTC window) for channel conversations. L0 row
+triggers write these in the same transaction as the member; both old and new
+memberships are marked on edits, including historical membership when a
+tombstone has no thread/container. A new member under an unseen artifact
+therefore invalidates the conversation under the same guard protocol.
+Membership markers retain each historical member's artifact identity. Capture
+also counts visible artifact markers for all those members, including members
+omitted from the question by ACL folding. This closes the overlapping-writer
+case where a tombstone or revision trigger cannot yet see the member's
+uncommitted history. These additional identities enter the captured state as
+hashes, never as source text or additional question evidence. Writers remain
+concurrent, and unrelated conversations retain scoped reuse.
+Ledger markers cover only the conservative ledger-connected candidate topics,
+including undone operations and virtual split topics. Unrelated artifacts,
+conversations, windows, sources and ledger operations leave these identities
+reusable. TRUNCATE conservatively invalidates everything. Do not prune the
+marker log independently of the journal. **Any new table that changes
+effective inputs must join this trigger/guard protocol.**
+
+`PipelineObservation` is one stage run for `baseline`, `shadow` or `accepted`.
+It includes handler/queue time in nanoseconds, generative calls/tokens/cost,
+judgment attempts/fallbacks/tokens/cost and candidate processing. Durations,
+counts and usage are pointers: nil means unknown, and a pointer to zero is
+reported zero. `AddPipelineCount` and `llm.AddJudgmentUsage` propagate unknown
+and overflow. Negative/non-finite accounting is cleared to unknown before
+storage. Observations use the same commit operation, including baseline runs
+with no judgment records; their evidence snapshots are validated too.
+Summaries and reports over these tables belong to `internal/eval`.
+
+`JudgmentsFor`, `LookupJudgment` and `ObservationsFor` filter both scope and
+stored ACL, then check current evidence access, including the newest visible
+source revisions while L1 is waiting for its ACL rebuild. An operator deletion removes
+attempts, committed records and observations referencing any covered source
+or document, including candidate/compared-position evidence. The deletion
+trigger lives on `l0_deletions`. The operator service takes its input guard
+before establishing its repeatable-read snapshot, so it also removes journal
+rows committed while deletion was starting. Direct `l0.Delete` callers with
+a repeatable-read transaction must take that guard before their first read
+too. Insert guards prevent recreating a reference after deletion.
+
+Distillers can set `JudgmentInputSpec.SourceBuilt` when the incoming document
+is built from the complete `EventIDs` source revisions and the captured ACL and
+scope. The output document's own L1 row is then excluded from the input state,
+while its identity remains in deletion provenance and current ACL checks. This
+allows writing that derived row and reusing the committed judgment on restart.
+Source hashes/revisions, scoped change markers, ACL/scope identity and deletion
+validation still apply. Capture derives the conversation from `ParseDocID`
+and `ParseChatWindowKey`, with the captured events supplying artifact and
+membership identities. Bursts, wiki sections, meeting segments and other
+SourceBuilt keys that cannot be tied to a captured root or window retain a
+conservative source-wide marker; event-pair markers alone cannot describe
+their membership. Stored candidate evidence uses conversation scopes too,
+with the same source fallback for derived shapes. The default remains a full L1 input
+snapshot for assertion consumers. Do not use source-built identity when the
+question depends on previously generated L1 text.
