@@ -3,6 +3,9 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/connector"
@@ -50,6 +53,10 @@ func TestConnectorRegistry(t *testing.T) {
 			src:  connector.SourceConfig{ID: "sessions", Type: "agent", Containers: []string{"*"}},
 		},
 		{
+			name: "work is registered",
+			src:  connector.SourceConfig{ID: "projects", Type: "work", Containers: []string{"*"}},
+		},
+		{
 			name:        "anything else is not",
 			src:         connector.SourceConfig{ID: "unknown", Type: "unknown", Containers: []string{"1"}},
 			wantUnknown: true,
@@ -64,7 +71,7 @@ func TestConnectorRegistry(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c, err := connectorRegistry(principals).New(t.Context(), tt.src)
+			c, err := connectorRegistry(principals, []connector.SourceConfig{tt.src}).New(t.Context(), tt.src)
 			if got := errors.Is(err, connector.ErrUnknownType); got != tt.wantUnknown {
 				t.Fatalf("New(%q) = %v, want unknown type %v", tt.src.Type, err, tt.wantUnknown)
 			}
@@ -72,6 +79,43 @@ func TestConnectorRegistry(t *testing.T) {
 				if err := c.Close(t.Context()); err != nil {
 					t.Fatal(err)
 				}
+			}
+		})
+	}
+}
+
+func TestWorkRegistryReceivesConfiguredSources(t *testing.T) {
+	t.Setenv("HEARSAY_TEST_FACTORY_TOKEN", "factory-token")
+	principals := []principal.Principal{{ID: "factory", Kind: principal.KindAgent, Class: principal.ClassObserver, TokenEnv: "HEARSAY_TEST_FACTORY_TOKEN"}}
+	src := connector.SourceConfig{ID: "projects", Type: "work", Containers: []string{"*"}}
+	sources := []connector.SourceConfig{src, {ID: "github", Type: "github", Containers: []string{"acme/api"}}}
+	c, err := connectorRegistry(principals, sources).New(t.Context(), src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := c.Close(t.Context()); err != nil {
+			t.Error(err)
+		}
+	})
+	pusher, ok := c.(connector.Pusher)
+	if !ok {
+		t.Fatal("work is not a pusher")
+	}
+	rec := &connector.Recorder{}
+	h := pusher.Handler(connector.NewGate(rec, src.ID, c.Describe(), connector.NewAllowlist(src)))
+	for _, tt := range []struct {
+		source string
+		status int
+	}{{"github", 202}, {"unknown", 400}} {
+		t.Run(tt.source, func(t *testing.T) {
+			body := `{"kind":"project","project":"p","name":"Project","repos":[{"source":"` + tt.source + `","project":"acme/api"}],"created_at":"2026-10-14T17:00:00Z"}`
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/hooks/projects", strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer factory-token")
+			response := httptest.NewRecorder()
+			h.ServeHTTP(response, req)
+			if response.Code != tt.status {
+				t.Fatalf("POST = %d %s", response.Code, response.Body.String())
 			}
 		})
 	}

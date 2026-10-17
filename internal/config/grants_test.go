@@ -17,12 +17,21 @@ func TestPrincipalScopes(t *testing.T) {
 		{"human default", "id: kyle\nidentities: [{source: github, handle: kyle}]\n", "", principal.Grant{Scopes: principal.AllScopes()}},
 		{"human explicit", "id: kyle\nscopes: [code:future/project]\nidentities: [{source: github, handle: kyle}]\n", "", principal.Grant{Scopes: principal.SomeScopes("code:future/project")}},
 		{"agent explicit", "id: shed\nkind: agent\nclass: worker\nscopes: [tracker:github:acme/api#1234]\nidentities: [{source: github, handle: shed}]\n", "", principal.Grant{Scopes: principal.SomeScopes("tracker:github:acme/api#1234")}},
+		{"future work project", "id: shed\nkind: agent\nclass: observer\nscopes: ['work:projects:future/project']\nidentities: [{source: github, handle: shed}]\n", "", principal.Grant{Scopes: principal.SomeScopes("work:projects:future/project")}},
+		{"future workstream", "id: shed\nkind: agent\nclass: observer\nscopes: ['work:projects:future/project#retry-policy']\nidentities: [{source: github, handle: shed}]\n", "", principal.Grant{Scopes: principal.SomeScopes("work:projects:future/project#retry-policy")}},
 		{"agent all", "id: shed\nkind: agent\nclass: worker\nscopes: ['*']\nidentities: [{source: github, handle: shed}]\n", "", principal.Grant{Scopes: principal.AllScopes()}},
 		{"agent missing", "id: shed\nkind: agent\nclass: worker\nidentities: [{source: github, handle: shed}]\n", `principal "shed": scopes: is required`, principal.Grant{}},
 		{"agent empty", "id: shed\nkind: agent\nclass: worker\nscopes: []\nidentities: [{source: github, handle: shed}]\n", `principal "shed": scopes: is required`, principal.Grant{}},
 		{"malformed id", "id: shed\nkind: agent\nclass: worker\nscopes: [api]\nidentities: [{source: github, handle: shed}]\n", `scopes[0]: "api" is not an entity id`, principal.Grant{}},
 		{"team scopes", "id: team\nkind: team\nscopes: []\nidentities: [{source: github, handle: team}]\n", `principal "team": scopes: a team cannot have scopes`, principal.Grant{}},
 	}
+	for _, id := range []string{"work:", "work:projects:", "work:bad source:p", "work:projects:p#", "work:projects:p#w#x", "work:projects:p:update:u", "work:projects:p@v", "work:projects:" + strings.Repeat("p", 129)} {
+		tests = append(tests, struct {
+			name, body, wantErr string
+			wantGrant           principal.Grant
+		}{name: id, body: "id: shed\nkind: agent\nclass: observer\nscopes: ['" + id + "']\n", wantErr: "is not an entity id"})
+	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			repo, err := config.Load(writeFiles(t, with(map[string]string{"principals/p.yaml": tt.body})))

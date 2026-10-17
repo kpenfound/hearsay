@@ -129,8 +129,10 @@ channels over Socket Mode), Drive (`internal/connector/drive`), Obsidian
 (`internal/connector/tracker`, which a team's own sender pushes tickets and
 comments to in a documented shape, authenticated by a bearer token) and the
 agent session source (`internal/connector/agent`, which agents push their own
-session events to, authenticated by their API tokens) ship, and their package comments document
-settings and deployment constraints. An unregistered type is a startup failure.
+session events to, authenticated by their API tokens), and the work updates
+source (`internal/connector/work`, where factories and agents push projects,
+workstreams and updates with their principal tokens) ship. Their package comments
+document settings and deployment constraints. An unregistered type is a startup failure.
 
 The distiller and assertion worker expose `/healthz` and `/readyz` on
 `:8082` and `:8083` by default. Their `--listen` flags and

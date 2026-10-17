@@ -1538,6 +1538,216 @@ def backfill(issues):
 
 Times are RFC 3339. A `null` is read as an absent field.
 
+### Work updates (issue #237)
+
+| Artifact | kind | artifact id | native_id | container |
+|---|---|---|---|---|
+| Project | `issue` | `<project>` | `<artifact>@<revision>` | `{kind: project, native_id: <project>}` |
+| Workstream | `issue` | `<project>#<workstream>` | `<artifact>@<revision>` | project |
+| Update on a workstream | `message` | `<project>#<workstream>:update:<update>` | `<artifact>@<revision>` | project |
+| Update on a project | `message` | `<project>:update:<update>` | `<artifact>@<revision>` | project |
+| Deletion | `tombstone` | `<artifact>:tombstone:<hash of the retracted native id>` | same | current revision's project |
+
+The `work` connector (`internal/connector/work`) accepts factory and agent
+updates at `POST /hooks/<source id>`. Each request is one JSON object, at most
+4 MiB, authenticated with `Authorization: Bearer <poster's API token>`.
+Unknown fields, including inside `repos` and `touches`, are refused. The source
+configures posters and trusted attributors, with no class restriction and no
+source secrets ([configuration](config.md#work-updates-source)).
+
+Project, workstream and update ids are 1–128 bytes of letters, digits, `-`,
+`_`, `.` and `/`. They exclude `#`, `:` and `@`, which separate artifact parts.
+A project and a workstream require `name`; an update requires `text`.
+`description` belongs to projects and workstreams. Their `name` and
+`description` map to `payload.title` and `payload.text`; an update's `text`
+maps to `payload.text`. `url` maps to `payload.url`. A workstream's `part_of`
+is its project. An update's `parent` and `thread` are its workstream, or its
+project if no workstream is given. The ids, native `status`, and authenticated
+poster's principal id are retained in `payload.native`.
+
+Only projects and workstreams may carry `state` and `status`. `state` is one
+of `proposed`, `started`, `blocked`, `completed` or `abandoned`, and becomes
+`payload.state.core`. An optional `status`, at most 64 bytes, becomes
+`payload.state.native` when non-empty. A `status` without `state` is refused.
+An update carrying either field, including `status` alone, is answered 400
+with a reason saying the fields are not allowed on an update. Messages and
+tombstones never carry `payload.state`.
+
+`repos` belongs only on projects; `touches` only on workstreams. Both have at
+most 16 entries, each naming a configured source id and a repository's
+`project` container. The repository need not yet have been ingested. A
+workstream has at most 300 paths across all entries. Projects emit
+`payload.touches` from their repos, with no paths; workstreams emit it from
+their touches. An update supplies neither field.
+
+`created_at` is required RFC 3339 and supplies the event's `time` on every
+revision. `updated_at`, also RFC 3339, defaults to `created_at` and cannot
+precede it; it becomes `payload.revision.edited_at`. Like the tracker, the
+revision is the first 16 hex digits of SHA-256 over kind, times, payload and
+access list. An identical repost returns the same event id and writes
+nothing. A stale revision does not displace a newer current revision.
+
+Without `author`, the author is the authenticated poster, an `agent` identity
+in this source. Only a poster in `attributors` may give `author`, which must
+name a configured human or agent principal. That principal becomes the
+author (`user` for a human, `agent` for an agent), and the poster becomes a
+participant with role `agent`.
+
+A project with repos carries one canonical `containers` ACL entry over those
+repositories. A project without repos carries identity entries for its poster
+and author only. Children copy the project's current ACL through the sink's
+`ArtifactReader`, reading only this source. A child cannot be posted until its
+project is held; an update on a workstream also requires that workstream.
+
+Every non-deletion project post, including an identical repost, reconciles
+all current children to the project's current list before answering 202.
+Only children whose list differs are re-emitted. Their content and original
+`time` stay the same. If an ACL revision would deduplicate to an older event,
+its permission revision advances `edited_at` by one nanosecond above the
+current child revision, so the new access list becomes current. Failure is
+answered with an error, and a retry or the runtime's immediate startup poll
+finishes the walk by comparing current lists. Subsequent polls retry failed
+startup reconciliation. Posts and reconciliation share a project lock. Run
+one connectors process per source; several replicas would require a shared
+lock.
+
+A deletion carries only the artifact's ids and `deleted: true`. The shared
+push tombstone reads the current revision and carries its container, time and
+ACL, with `target` naming the retracted artifact. Deleting a project or
+workstream leaves children in L0; delete each child separately to retract it.
+A deletion of an artifact not held writes nothing and returns 204.
+
+| Status | When |
+|---|---|
+| 202 `{"id":"<event id>"}` | Written or already held; a project's live children all carry its current ACL |
+| 204 | Deletion of something not held |
+| 400 | Invalid request, with the reason in the body |
+| 401 | Missing or unknown bearer token |
+| 403 | Poster excluded by `posters`, untrusted attribution, or author not a configured human or agent |
+| 405 | Any method but POST |
+| 409 | Rewritten revision key, missing project, or an update's missing workstream |
+| 413 | Body over 4 MiB |
+| 500 | Ingestion or propagation could not finish; retry the request |
+
+A project, its workstream, an update on that workstream, and a project deletion:
+
+```json
+{
+  "kind": "project",
+  "project": "payments-rewrite",
+  "name": "Payments rewrite",
+  "description": "Move settlement off the legacy queue.",
+  "state": "started",
+  "status": "Building",
+  "repos": [{"source": "github", "project": "acme/api"}],
+  "url": "https://factory.example/p/payments-rewrite",
+  "author": "kyle",
+  "created_at": "2026-10-14T17:00:00Z",
+  "updated_at": "2026-10-14T18:00:00Z"
+}
+```
+
+```json
+{
+  "kind": "workstream",
+  "project": "payments-rewrite",
+  "workstream": "retry-policy",
+  "name": "Retry policy",
+  "description": "Bounded retries for settlement calls.",
+  "state": "blocked",
+  "status": "Waiting on review",
+  "touches": [{"source": "github", "project": "acme/api", "paths": ["engine/server/retry.go"]}],
+  "author": "shed",
+  "created_at": "2026-10-14T17:05:00Z",
+  "updated_at": "2026-10-14T18:10:00Z"
+}
+```
+
+```json
+{
+  "kind": "update",
+  "project": "payments-rewrite",
+  "workstream": "retry-policy",
+  "update": "u-17",
+  "text": "Decided: cap retries at 5 with jittered backoff; the queue handles the rest.",
+  "author": "kyle",
+  "created_at": "2026-10-14T18:09:00Z"
+}
+```
+
+```json
+{"kind": "project", "project": "payments-rewrite", "deleted": true}
+```
+
+Post each object to `/hooks/projects` with the factory's token. For an update
+on the project, omit `workstream`. The project above is written as:
+
+```json
+{
+  "id": "evt:projects:payments-rewrite@6e0ada71977404da",
+  "source": "projects",
+  "native_id": "payments-rewrite@6e0ada71977404da",
+  "kind": "issue",
+  "time": "2026-10-14T17:00:00Z",
+  "payload": {
+    "artifact": "payments-rewrite",
+    "container": {
+      "kind": "project",
+      "native_id": "payments-rewrite"
+    },
+    "url": "https://factory.example/p/payments-rewrite",
+    "title": "Payments rewrite",
+    "text": "Move settlement off the legacy queue.",
+    "state": {
+      "core": "started",
+      "native": "Building"
+    },
+    "author": {
+      "source": "projects",
+      "kind": "user",
+      "native_id": "kyle"
+    },
+    "participants": [
+      {
+        "identity": {
+          "source": "projects",
+          "kind": "agent",
+          "native_id": "factory"
+        },
+        "role": "agent"
+      }
+    ],
+    "touches": [
+      {
+        "source": "github",
+        "project": "acme/api"
+      }
+    ],
+    "revision": {
+      "token": "6e0ada71977404da",
+      "edited_at": "2026-10-14T18:00:00Z"
+    },
+    "native": {
+      "project": "payments-rewrite",
+      "status": "Building",
+      "poster": "factory"
+    }
+  },
+  "acl": [
+    {
+      "kind": "containers",
+      "native_id": "08482eecc0225e0dfbedf470148f9ed70b93fa7d55e7ef34772ff3849ad8250a",
+      "containers": [
+        {
+          "source": "github",
+          "native_id": "acme/api"
+        }
+      ]
+    }
+  ]
+}
+```
+
 ## Changing this contract
 
 The L0 event shape is a contract other work depends on (CONTRIBUTING.md).

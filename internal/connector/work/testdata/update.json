@@ -1,0 +1,9 @@
+{
+  "kind": "update",
+  "project": "payments-rewrite",
+  "workstream": "retry-policy",
+  "update": "u-17",
+  "text": "Decided: cap retries at 5 with jittered backoff; the queue handles the rest.",
+  "author": "kyle",
+  "created_at": "2026-10-14T18:09:00Z"
+}
