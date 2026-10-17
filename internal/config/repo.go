@@ -55,6 +55,9 @@ type Repo struct {
 	// It is empty on a Repo that was never loaded, which is a process that was
 	// given no configuration and makes no model calls.
 	LLM llm.Config
+
+	// Boost is the optional global typed-judgment capability, separate from tiers.
+	Boost llm.JudgmentConfig
 }
 
 // Source returns the source configured with this id.

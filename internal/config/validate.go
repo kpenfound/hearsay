@@ -49,6 +49,7 @@ func (l *loader) build() Repo {
 	r.Scopes = l.buildScopes(r)
 	r.Authority = l.buildAuthority(r)
 	r.LLM = l.buildLLM()
+	r.Boost = l.buildBoost()
 
 	// These two count what was written rather than what survived validation. A
 	// source whose id is malformed is not in r.Sources, and telling its author
@@ -926,7 +927,7 @@ func (l *loader) buildLLM() llm.Config {
 	defined := map[string]string{}
 	for _, d := range l.llm {
 		a := at{file: d.file, line: d.line, noun: "llm section", label: "llm"}
-		if len(d.v.Tiers) == 0 {
+		if len(d.v.Tiers) == 0 && d.v.Boost == nil {
 			l.bad(a, "tiers", "no model tiers are configured here: remove the section to take the defaults, or name a tier")
 			continue
 		}
