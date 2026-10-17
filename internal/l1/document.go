@@ -359,7 +359,7 @@ func (d Document) Validate() error {
 	}
 	for i, entry := range d.ACL {
 		switch entry.Kind {
-		case connector.ACLPublic, connector.ACLGroup, connector.ACLIdentity:
+		case connector.ACLPublic, connector.ACLGroup, connector.ACLIdentity, connector.ACLContainers:
 		default:
 			return fmt.Errorf("%w: acl[%d].kind %q is not an acl kind", ErrInvalidDocument, i, entry.Kind)
 		}

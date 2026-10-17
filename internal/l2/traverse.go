@@ -7,8 +7,10 @@ import (
 
 // Children returns the direct part_of children, in id order. Traversal walks
 // one level at a time so a node outside reach cannot act as a bridge.
-func (s *Store) Children(ctx context.Context, id string, limit int) ([]string, error) {
-	ids, err := s.ids(ctx, `SELECT id FROM l2_entities WHERE part_of @> ARRAY[$1] ORDER BY id LIMIT $2`, id, limit)
+// Excluded work entities are absent before the raw candidate budget is cut;
+// the caller obtains them through HiddenWorkEntities.
+func (s *Store) Children(ctx context.Context, id string, limit int, excluded ...string) ([]string, error) {
+	ids, err := s.ids(ctx, `SELECT id FROM l2_entities WHERE part_of @> ARRAY[$1] AND NOT (id = ANY(coalesce($3::text[], '{}'))) ORDER BY id LIMIT $2`, id, limit, excluded)
 	if err != nil {
 		return nil, fmt.Errorf("reading entity children: %w", err)
 	}

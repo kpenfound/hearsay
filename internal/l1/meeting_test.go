@@ -23,7 +23,7 @@ func TestBuildMeetingSegmentsKeepsTopicsIndependent(t *testing.T) {
 		t.Fatalf("segments = %+v", docs)
 	}
 	for _, d := range docs {
-		if d.Kind != l1.KindMeetingSegment || !slices.Equal(d.L0Refs, []string{connector.EventID(source, root.NativeID)}) || !slices.Equal(d.ACL, root.ACL) || len(d.Participants) != 2 || d.Participants[0].Role != connector.RoleAttendee {
+		if d.Kind != l1.KindMeetingSegment || !slices.Equal(d.L0Refs, []string{connector.EventID(source, root.NativeID)}) || !d.ACL.Equal(root.ACL) || len(d.Participants) != 2 || d.Participants[0].Role != connector.RoleAttendee {
 			t.Errorf("envelope = %+v", d)
 		}
 	}

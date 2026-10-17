@@ -15,7 +15,7 @@ import (
 )
 
 // HierarchyConsumer is the name the worker reads the L0 change feed under for
-// the tracker hierarchy. One name for every replica, as the distiller's.
+// the tracker and work hierarchy. One name for every replica, as the distiller's.
 const HierarchyConsumer = "assert-worker:hierarchy"
 
 // The follower's defaults: the distiller's pump's, for the same reasons.
@@ -27,7 +27,8 @@ const (
 // Placements is where the trackers configured scopes map put their items now,
 // as L0 holds them: every issue whose current revision is `part_of` another,
 // in every tracker a scope maps ([l2.PlacementOf]). It is what seeding merges
-// as the tracker's hierarchy.
+// as the tracker's hierarchy, alongside every work source's current projects
+// and workstreams.
 func Placements(ctx context.Context, pool *pgxpool.Pool, repo config.Repo) ([]l2.Placement, error) {
 	events := l0.New(pool)
 	var trackers []config.SourceRef
@@ -48,10 +49,24 @@ func Placements(ctx context.Context, pool *pgxpool.Pool, repo config.Repo) ([]l2
 			}
 		}
 	}
+	for _, src := range repo.Sources {
+		if src.Type != "work" {
+			continue
+		}
+		current, err := events.CurrentArtifacts(ctx, src.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, ev := range current {
+			if p, ok := l2.WorkPlacementOf(ev); ok {
+				out = append(out, p)
+			}
+		}
+	}
 	return out, nil
 }
 
-// Follower keeps the tracker hierarchy in L2 in step with L0 between two
+// Follower keeps the tracker and work hierarchy in L2 in step with L0 between two
 // startups: it reads the change feed, and for every tracker item an event
 // changed it places the item where its current revision says ([l2.Store.Place]).
 // Seeding at startup is the whole hierarchy; this is each change after it, and
@@ -115,6 +130,26 @@ func (f *Follower) Once(ctx context.Context) (int, error) {
 		case ev.Kind == connector.KindTombstone || ev.Payload.BaseKind == connector.KindTombstone:
 			artifact = ev.Payload.Target
 		case ev.Kind != connector.KindIssue && ev.Payload.BaseKind != connector.KindIssue:
+			continue
+		}
+		if src, ok := f.repo.Source(ev.Source); ok && src.Type == "work" {
+			if seen[[2]string{ev.Source, artifact}] {
+				continue
+			}
+			seen[[2]string{ev.Source, artifact}] = true
+			current, found, err := events.CurrentArtifact(ctx, ev.Source, artifact)
+			if err != nil {
+				return 0, err
+			}
+			if found {
+				if p, ok := l2.WorkPlacementOf(current); ok {
+					if err := graph.Place(ctx, configured, p); err != nil {
+						return 0, err
+					}
+				}
+			} else if err := graph.RemoveSourceEntity(ctx, "work:"+ev.Source+":"+artifact); err != nil {
+				return 0, err
+			}
 			continue
 		}
 		item, ok := l2.TrackerItem(f.repo, ev.Source, artifact)

@@ -298,8 +298,8 @@ func (l *loader) buildPrincipals(r Repo) []principal.Principal {
 				}
 				teams = append(teams, team{a, p})
 			} else {
-				if len(p.Identities) == 0 {
-					l.bad(a, "identities", "is required: a principal with no source identity is never matched to anything anyone said")
+				if len(p.Identities) == 0 && !slices.ContainsFunc(r.Sources, func(src connector.SourceConfig) bool { return src.Type == "work" }) {
+					l.bad(a, "identities", "is required without a work source: a principal needs a source identity or a work source that matches by principal id")
 				}
 				if len(p.Members) > 0 {
 					l.bad(a, "members", "is a team's membership, and this principal is a %s", kind)
@@ -360,10 +360,32 @@ func validGrantScope(id string) string {
 		project, item, hasItem := strings.Cut(rest, "#")
 		valid = hasSource && hasItem && connector.ValidSourceID(source) && project != "" && item != "" && !strings.Contains(item, "#")
 	}
+	if work, ok := strings.CutPrefix(id, "work:"); ok {
+		source, artifact, hasSource := strings.Cut(work, ":")
+		project, stream, hasStream := strings.Cut(artifact, "#")
+		valid = hasSource && connector.ValidSourceID(source) && validWorkGrantID(project) && (!hasStream || validWorkGrantID(stream))
+	}
 	if !valid || len(id) > maxEntityIDLen || strings.ContainsFunc(id, unicode.IsSpace) {
-		return fmt.Sprintf("%q is not an entity id: want code:<id> or tracker:<source>:<project>#<item>, at most %d bytes and no whitespace", id, maxEntityIDLen)
+		return fmt.Sprintf("%q is not an entity id: want code:<id>, tracker:<source>:<project>#<item> or work:<source>:<project>[#<workstream>], at most %d bytes and no whitespace", id, maxEntityIDLen)
 	}
 	return ""
+}
+
+// validWorkGrantID checks the work connector's artifact component grammar.
+func validWorkGrantID(id string) bool {
+	if len(id) == 0 || len(id) > 128 {
+		return false
+	}
+	for i := range len(id) {
+		b := id[i]
+		switch {
+		case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', b >= '0' && b <= '9':
+		case b == '-', b == '_', b == '.', b == '/':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // buildIdentities validates one principal's identities and records them so that

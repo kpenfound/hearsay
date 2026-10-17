@@ -105,7 +105,7 @@ func TestThreadAliasVotesFromTouchedPR(t *testing.T) {
 		if c.Alias != "engine room" || c.State != "proposed" || c.Votes != i+1 || len(c.Evidence) != i+2 || !slices.Contains(c.Evidence, prDoc.ID) || !slices.Contains(c.Evidence, id) {
 			t.Errorf("candidate after document %d = %+v", i, c)
 		}
-		if i == 1 && !slices.Equal(c.ACL, private) {
+		if i == 1 && !c.ACL.Equal(private) {
 			t.Errorf("private candidate ACL = %+v, want %+v", c.ACL, private)
 		}
 	}

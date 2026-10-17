@@ -41,7 +41,7 @@ func NewView(ctx context.Context, store *Store, repo config.Repo, human principa
 	if err != nil {
 		return nil, err
 	}
-	reader, err := l1.ReaderFor(resolver, eff)
+	reader, err := l1.ReaderFor(ctx, store.db, resolver, eff)
 	if err != nil {
 		return nil, err
 	}

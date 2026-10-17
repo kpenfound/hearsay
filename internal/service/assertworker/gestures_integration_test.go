@@ -83,6 +83,7 @@ func TestRegisteredReactionSourceUsesSharedGestureLedger(t *testing.T) {
 		t.Fatal(err)
 	}
 	reaction.ID = connector.EventID(src, artifact)
+	waitForGestureFeed(t, pool, reaction.ID)
 	if _, err := assertworker.NewGestureFollower(pool, repo, connectors).Once(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -226,6 +227,7 @@ func TestDiscordReactionGestures(t *testing.T) {
 		t.Fatalf("default ratify = %+v, %v", gs, err)
 	}
 	follower := assertworker.NewGestureFollower(pool, repo, gestureRegistry(t))
+	waitForGestureFeed(t, pool, defaultRatify.ID)
 	if _, err := follower.Once(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -373,6 +375,33 @@ func readThrough(t *testing.T, pool *pgxpool.Pool, consumer string, once func(co
 		}
 		return at == last
 	})
+}
+
+// Wait before following so a single read can see the event being asserted.
+// L0's safe feed horizon can be held by transactions in other databases.
+func waitForGestureFeed(t *testing.T, pool *pgxpool.Pool, id string) {
+	t.Helper()
+	from, err := l0.NewCursors(pool).Load(t.Context(), "assert-worker:gestures")
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := l0.New(pool)
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		changes, err := events.Changes(t.Context(), from, l0.Filter{}, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, change := range changes {
+			if change.Event.ID == id {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("gesture feed did not show event %s", id)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func gestureRegistry(t *testing.T) *connector.Registry {

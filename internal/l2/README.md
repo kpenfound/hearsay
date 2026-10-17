@@ -135,6 +135,10 @@ text that is no longer current (ADR-0019, below).
   [Stand] ranks it as class `agent` from the event's source
   ([AssertedEvidence]), whatever it cites — citing a merged pull request does
   not lend an agent a merged pull request's authority.
+- **Source work entities require their current document** ([Store.HiddenWorkEntities]).
+  Reach alone does not expose a runtime project's or workstream's id or name.
+  Discovery, scoped API reads and bundle entity listings use the reader's full
+  audience against L1 as it is now. Missing documents and retractions fail closed.
 - **Who may read a topic or a stance is decided from L1 as it is now**
   ([Access]): a topic by its opening document while it exists, then by a live
   surviving stance; a stance by every piece of its evidence, each still in L1
@@ -158,8 +162,8 @@ text that is no longer current (ADR-0019, below).
 - **Join keys leave out people and code entities.** Everybody's documents name
   the same people and systems, and a key everything shares joins everything.
 - **The hierarchy is merged, not accumulated** ([MergeHierarchy], ADR-0016).
-  `code/`, then tracker hierarchy, then repository structure: the highest
-  source that sets any parent for an entity replaces the others' parents, and
+  `code/`, then tracker hierarchy, then work declarations, then repository
+  structure: the highest source that sets any parent for an entity replaces the others' parents, and
   an edge closing a cycle is dropped from the lower rank and logged. Repository
   structure is [NestByPattern], which compares path patterns and never expands
   them, so it reads no repository. Both are pure; seeding calls them. Tracker
@@ -169,7 +173,8 @@ text that is no longer current (ADR-0019, below).
   rather than under a scope's serial key, because an edge can cross scopes.
 - **Nothing unresolved is invented.** A tracker item is an entity only where a
   scope's tracker maps its repository, and a parent in a repository no tracker
-  maps is no edge; a CODEOWNERS owner is a principal only
+  maps is no edge; work sources declare projects and workstreams without a
+  tracker mapping; a CODEOWNERS owner is a principal only
   where the identity mapping resolves it.
 - **`resolve` hides path-like words from alias matching.** An alias is not
   matched inside `engine/server/write.go` or a link, and an alias shaped like a

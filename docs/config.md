@@ -621,6 +621,82 @@ resolve, list that identity on the principal:
 The distiller does not distil these events. They record what an agent did,
 and they are not team knowledge.
 
+### Work updates source
+
+Factories and agents post projects, workstreams and updates to this source.
+Hearsay distils them as ordinary issues and messages; projects and workstreams
+also declare runtime entities. New projects and repositories need no config
+change. [The connector contract](connector-contract.md#work-updates-issue-237)
+has the request examples and L0 mapping.
+
+<!-- example: work/hearsay.yaml -->
+```yaml
+sources:
+  - id: projects
+    type: work
+    containers: ["*"]
+    settings:
+      posters: ["*"]          # default: all agent principals with token_env
+      attributors: [factory]  # default: []; posters trusted to supply author
+
+principals:
+  - id: factory
+    kind: agent
+    class: observer
+    token_env: HEARSAY_FACTORY_TOKEN
+    scopes: ["*"]            # required on an agent; irrelevant to posting
+
+scopes:
+  - id: work
+    sources: [projects]
+```
+
+`containers` must be exactly `["*"]`, and the source takes no `secrets`.
+Settings refuse unknown fields. `posters` defaults to `["*"]`, all agent
+principals with `token_env`, or lists explicit agent principal ids.
+`attributors` defaults to `[]`. Every explicit poster and every attributor
+must be an agent principal with `token_env`, and each attributor must be
+allowed by `posters`. The connectors service reads every allowed poster's
+token at startup and refuses an unset or empty variable, two posters sharing
+a token, or no poster with a token. An excluded agent's missing token does
+not stop this source. Class is not consulted: an `observer` may post.
+
+The bearer token authenticates the poster. Without `author`, that agent is
+the author. With `author`, only attributors may name a configured human or
+agent principal, and the poster is retained as an `agent` participant. Work
+identities use principal ids without an explicit `identities:` mapping;
+the agent session source still requires its explicit mapping.
+
+Projects with `repos` defer read access to every declared repository's
+current access. Without repos, only the poster and author may read the
+project. Workstreams and updates inherit their project's current ACL.
+Changing that list re-emits live children before the project post succeeds.
+Interrupted propagation is completed by an identical repost or the runtime's
+startup reconciliation poll, with retries on subsequent polls. Run only one
+connectors process per work source, as in the shipped deployments: project
+locks are held in that process. Route `/hooks/<source id>` to its listener
+behind TLS, for example through `tailscale serve`.
+
+Each POST is one JSON object, at most 4 MiB. Unknown fields are refused.
+`state` and `status` belong only on projects and workstreams. `status` requires
+`state` and has at most 64 bytes. **An update carrying `state` or `status`
+(including `status` alone) gets 400**, with a reason saying the fields are not
+allowed on an update. A deletion carries only ids and `deleted: true`.
+`repos` belongs only on projects and `touches` only on workstreams. Their
+source ids must be configured; repositories may arrive later.
+
+| Status | When |
+|---|---|
+| 202 `{"id":"<event id>"}` | Written or already held; a project's access propagation is complete |
+| 204 | A deletion of something not held |
+| 400 | Invalid request; the body says why |
+| 401 | Missing or unknown token |
+| 403 | Poster excluded, attribution from a non-attributor, or author not a configured human or agent |
+| 405 | Anything but POST |
+| 409 | Rewritten revision key, missing project, or an update's missing workstream |
+| 413 | Body over 4 MiB |
+| 500 | Ingestion or propagation failed; retry |
+
 ## `scopes/`
 
 A scope is a named bundle of sources: what is *relevant* to a piece of work.
@@ -674,7 +750,7 @@ part of onboarding worth spending effort on.
   kind: human                # optional; human (the default), agent or team
   token_env: HEARSAY_KYLE_TOKEN # required when this person calls the API
   scopes: ["*"]            # optional on a human; omitted means every scope
-  identities:                # required on a human and an agent; at least one
+  identities:                # required without a work source; at least one
     - source: github
       native_id: "MDQ6VXNlcjE="
       handle: kpenfound
@@ -706,9 +782,12 @@ The command excludes bot identities and Hearsay's own `hearsay` source. It
 shows identity hints and counts, never event text, and never edits configuration.
 
 `scopes` lists entity ids such as `code:acme/api` and
-`tracker:github:acme/api#1234`. `"*"` alone grants every scope. A grant covers
+`tracker:github:acme/api#1234`, `work:projects:payments-rewrite` and
+`work:projects:payments-rewrite#retry-policy`. The `work:` form is
+`work:<source>:<project>[#<workstream>]`, checked for syntax only: a grant may
+name work before it exists. `"*"` alone grants every scope. A grant covers
 the named entity and its `part_of` descendants. The id need not already appear
-in `code/` or the tracker: tracker entities arrive from L0. A human who omits
+in `code/` or a source: tracker and work entities arrive from L0. A human who omits
 `scopes` gets `"*"`; an agent must list its scopes (or `"*"`), including when
 upgrading an existing agent entry. An agent without the field fails config
 validation and service startup. Teams cannot have `scopes`.
@@ -747,6 +826,12 @@ front of the API so these bearer tokens are not exposed in transit (ADR-0014).
 
 Two principals may not claim the same identity in the same source.
 
+A configured `work` source supplies an identity for every human and agent by
+principal id, so `identities` may be omitted when one is configured. Without a
+work source, a human or agent still needs at least one explicit source identity.
+A team still needs source identities or members. The agent session source keeps
+its explicit mapping requirement.
+
 ### The id, and how it is minted
 
 A principal id is written by hand, here, and nothing derives it from a source: a
@@ -759,7 +844,8 @@ It is then used bare wherever a principal is named: a stance's author, an
 `owners` entry, an authority policy, an L1 participant, and an L2 entity of type
 `person` or `team`, which carry the type beside the id rather than in it
 ([design](design.md#l1-distilled-documents)). This is the difference from a code
-entity's `code:` or a tracker item's `tracker:<source>:<project>#<item>` — those
+entity's `code:`, a tracker item's `tracker:<source>:<project>#<item>`, or a
+work artifact's `work:<source>:<project>[#<workstream>]` — those
 name something *inside* a source and need a namespace to stay apart. A principal
 id names nothing inside a source, so it has no prefix and there is nothing to
 derive.
@@ -1217,6 +1303,12 @@ sources:
       token: HEARSAY_GITHUB_TOKEN
       webhook_secret: HEARSAY_GITHUB_WEBHOOK_SECRET
 
+  - id: projects
+    type: work
+    containers: ["*"]
+    settings:
+      attributors: [shed]
+
 scopes:
   - id: api
     name: Acme API
@@ -1258,7 +1350,7 @@ principals:
     kind: agent
     class: worker
     token_env: HEARSAY_SHED_TOKEN
-    scopes: [code:acme/api]
+    scopes: [code:acme/api, "work:projects:payments-rewrite"]
     identities:
       - source: github
         handle: shed-agent[bot]
@@ -1352,6 +1444,15 @@ secrets:
   credentials: HEARSAY_DRIVE_CREDENTIALS
 ```
 
+<!-- example: dir/sources/projects.yaml -->
+```yaml
+id: projects
+type: work
+containers: ["*"]
+settings:
+  attributors: [shed]
+```
+
 <!-- example: dir/sources/github.yaml -->
 ```yaml
 # sources/github.yaml
@@ -1414,7 +1515,7 @@ entities: [code:acme/api, code:acme/api:engine/server]
   kind: agent
   class: worker
   token_env: HEARSAY_SHED_TOKEN
-  scopes: [code:acme/api]
+  scopes: [code:acme/api, "work:projects:payments-rewrite"]
   identities:
     - source: github
       handle: shed-agent[bot]

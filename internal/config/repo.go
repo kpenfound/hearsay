@@ -93,7 +93,7 @@ func (r Repo) Principal(id string) (principal.Principal, bool) {
 // It returns an error only for a mapping [Load] would have rejected, so a Repo
 // that loaded cleanly always yields a resolver.
 func (r Repo) Resolver() (*principal.Resolver, error) {
-	return principal.NewResolver(r.Principals)
+	return principal.NewResolver(r.Principals, r.Sources...)
 }
 
 // CodeEntity returns the code entity configured with this id.

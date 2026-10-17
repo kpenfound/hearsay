@@ -170,6 +170,11 @@ type Payload struct {
 	// holds.
 	PathsTruncated bool `json:"paths_truncated,omitempty"`
 
+	// Touches names repositories and paths independently of the event's own
+	// source and container. Any kind may carry up to [MaxTouches] entries and
+	// [MaxPaths] paths in total. L1 resolves them into system references.
+	Touches []Touch `json:"touches,omitempty"`
+
 	// Revision describes one observation of an artifact that can change. It is
 	// set exactly when NativeID is `Artifact@<token>`, and its Token is that
 	// token: validation holds the two to each other.
@@ -283,19 +288,36 @@ const (
 // reads fail closed, so an event with no entries would be unreadable forever.
 type ACL []ACLEntry
 
+// Equal reports whether two access lists carry the same entries in the same
+// order, including labels and container lists. Nil and empty lists are equal.
+func (a ACL) Equal(other ACL) bool {
+	return slices.EqualFunc(a, other, ACLEntry.Equal)
+}
+
 // ACLEntry is one grant, as the source described it. Membership of a group is
 // not resolved here: the entry names the group, and access control resolves it
 // at read time against the identity mapping.
 type ACLEntry struct {
 	Kind ACLKind `json:"kind"`
-	// Source is the source the group or identity belongs to. Required except
-	// on ACLPublic.
+	// Source is the source the group or identity belongs to. Required on
+	// ACLGroup and ACLIdentity, absent on ACLPublic and ACLContainers.
 	Source string `json:"source,omitempty"`
-	// NativeID is the source's id for the group or identity. Required except
-	// on ACLPublic.
+	// NativeID is the source's id for the group or identity, or the canonical
+	// container-list key on ACLContainers. Required except on ACLPublic.
 	NativeID string `json:"native_id,omitempty"`
 	// Label is a human-readable name for the grant, for config and audit.
 	Label string `json:"label,omitempty"`
+	// Containers is the all-of list ACLContainers defers to. Build it and
+	// NativeID with [CanonicalContainers]. Reader audience entries omit it.
+	Containers []ContainerRef `json:"containers,omitempty"`
+}
+
+// Equal compares all fields of two entries, including their container lists.
+// Reader audience matching instead compares kind, source and native_id only.
+func (e ACLEntry) Equal(other ACLEntry) bool {
+	return e.Kind == other.Kind && e.Source == other.Source &&
+		e.NativeID == other.NativeID && e.Label == other.Label &&
+		slices.Equal(e.Containers, other.Containers)
 }
 
 // ACLKind is the sort of grant an ACL entry makes.
@@ -314,6 +336,9 @@ const (
 	// ACLIdentity names one identity that may read, for an artifact shared with
 	// a person rather than with a group.
 	ACLIdentity ACLKind = "identity"
+	// ACLContainers defers access to every listed container's current access
+	// lists. It is resolved into the reader's audience, never expanded at ingest.
+	ACLContainers ACLKind = "containers"
 )
 
 // Kind is what an event is.
@@ -547,6 +572,9 @@ func (p Payload) validate(e Event) error {
 	if err := p.validatePaths(); err != nil {
 		return err
 	}
+	if err := p.validateTouches(); err != nil {
+		return err
+	}
 	if p.State != nil {
 		kind := e.Kind
 		if !core {
@@ -673,6 +701,9 @@ func (a ACL) validate() error {
 		return fmt.Errorf("%w: acl is empty, and an event nobody may read cannot be read back", ErrInvalidEvent)
 	}
 	for i, entry := range a {
+		if entry.Kind != ACLContainers && len(entry.Containers) != 0 {
+			return fmt.Errorf("%w: acl[%d].containers is set on kind %q", ErrInvalidEvent, i, entry.Kind)
+		}
 		switch entry.Kind {
 		case ACLPublic:
 			if entry.NativeID != "" {
@@ -684,6 +715,17 @@ func (a ACL) validate() error {
 			}
 			if entry.NativeID == "" {
 				return fmt.Errorf("%w: acl[%d] is a %s with no native_id", ErrInvalidEvent, i, entry.Kind)
+			}
+		case ACLContainers:
+			if entry.Source != "" {
+				return fmt.Errorf("%w: acl[%d] is containers and names a source", ErrInvalidEvent, i)
+			}
+			_, key, err := CanonicalContainers(entry.Containers)
+			if err != nil {
+				return fmt.Errorf("acl[%d]: %w", i, err)
+			}
+			if entry.NativeID != key {
+				return fmt.Errorf("%w: acl[%d].native_id does not match its canonical containers key", ErrInvalidEvent, i)
 			}
 		default:
 			return fmt.Errorf("%w: acl[%d].kind %q is not an acl kind", ErrInvalidEvent, i, entry.Kind)

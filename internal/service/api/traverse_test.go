@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,16 +9,34 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/principal"
 	"github.com/kpenfound/hearsay/internal/service/api"
 )
 
-// Invalid paths must be rejected before any store read. All-scopes reach
-// needs no database, so a nil DB makes accidental reads fail this unit test.
+// Reader construction now resolves deferred grants from L1, even for an
+// all-scopes reader. Only that empty grant read is permitted by this fake;
+// invalid paths must still be rejected before any traversal store read.
+type traverseReaderDB struct{ api.DB }
+
+func (traverseReaderDB) Query(_ context.Context, query string, _ ...any) (pgx.Rows, error) {
+	if !strings.Contains(query, "FROM l1_docs CROSS JOIN LATERAL jsonb_array_elements(acl)") {
+		return nil, fmt.Errorf("unexpected traversal query: %s", query)
+	}
+	return traverseReaderRows{}, nil
+}
+
+type traverseReaderRows struct{ pgx.Rows }
+
+func (traverseReaderRows) Next() bool { return false }
+func (traverseReaderRows) Close()     {}
+func (traverseReaderRows) Err() error { return nil }
+
 func TestTraverseInvalidCallsAreBadRequests(t *testing.T) {
 	t.Setenv("HEARSAY_TRAVERSE_READER", "test-reader-credential")
-	calls, err := api.NewCalls(nil, config.Repo{Principals: []principal.Principal{{ID: "reader", Kind: principal.KindHuman, TokenEnv: "HEARSAY_TRAVERSE_READER", Grant: principal.Grant{Scopes: principal.AllScopes()}}}}, nil)
+	calls, err := api.NewCalls(traverseReaderDB{}, config.Repo{Principals: []principal.Principal{{ID: "reader", Kind: principal.KindHuman, TokenEnv: "HEARSAY_TRAVERSE_READER", Grant: principal.Grant{Scopes: principal.AllScopes()}}}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

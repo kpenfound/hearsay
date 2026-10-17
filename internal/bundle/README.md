@@ -21,6 +21,9 @@ subject to the `recent` cap; no code content, ever.
 - **A scope is an entity id** — `tracker:github:acme/api#12`, `code:acme/api`. The
   entities a bundle is about are that one and the ones its own document is
   about; the ancestors of those are where inherited stances come from.
+- **Work entities need readable current documents.** A hidden work scope has
+  the same empty bundle as an absent one. Related work entities are filtered
+  before assembly and budgeting, so their names cannot affect what is trimmed.
 - **Every time is absolute.** The design writes `when: 23d`; a relative age would
   make the same scope and principal produce a different bundle every minute,
   which breaks "cacheable". A consumer computes the age.

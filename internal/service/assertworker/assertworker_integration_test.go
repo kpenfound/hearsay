@@ -138,7 +138,7 @@ func TestAnIssueThenAMergedPullRequestIsOneTopicWithTwoStances(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
 	f := store(t, pool, src)
-	scope := l2.ScopeKey(testRepo(src), src, repo)
+	scope := l2.ScopeKey(testRepo(src), src, repo, nil)
 	if scope != src {
 		t.Fatalf("ScopeKey() = %q, want the fixture's own scope %q", scope, src)
 	}
@@ -275,7 +275,7 @@ func TestTheWorkerOffersOnlyWhatTheDocumentsReadersMayReadNow(t *testing.T) {
 			pool := newPool(t)
 			src := newSource(t)
 			f := store(t, pool, src)
-			scope := l2.ScopeKey(testRepo(src), src, repo)
+			scope := l2.ScopeKey(testRepo(src), src, repo, nil)
 			fx := loadFixtures(t)
 			if err := fx.Add(llm.CompletionFixture{
 				Tier: llm.TierAssert, Request: assertworker.RequestFor(prDoc(t, src), tt.candidates, assertBudget()),
@@ -373,7 +373,7 @@ func TestAProposedPullRequestBecomesRatifiedWithTheSamePosition(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("recording the proposed PR reading: %v", err)
 	}
-	scope := l2.ScopeKey(testRepo(src), src, repo)
+	scope := l2.ScopeKey(testRepo(src), src, repo, nil)
 	a := newAsserter(t, pool, src, fx)
 	if r := assertDoc(t, a, f.prID, scope); r.StancesWritten != 1 || r.TopicsOpened != 1 {
 		t.Fatalf("Assert(proposed PR) = %+v, want one inferred stance", r)
@@ -412,7 +412,7 @@ func TestTheWorkerIsIdempotentAcrossRestarts(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
 	f := store(t, pool, src)
-	scope := l2.ScopeKey(testRepo(src), src, repo)
+	scope := l2.ScopeKey(testRepo(src), src, repo, nil)
 	first := newAsserter(t, pool, src, loadFixtures(t))
 	assertDoc(t, first, f.issueID, scope)
 	assertDoc(t, first, f.prID, scope)
@@ -444,7 +444,7 @@ func TestRetryingTheSameVersionWritesNothingTwice(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
 	f := store(t, pool, src)
-	scope := l2.ScopeKey(testRepo(src), src, repo)
+	scope := l2.ScopeKey(testRepo(src), src, repo, nil)
 	a := newAsserter(t, pool, src, loadFixtures(t))
 	assertDoc(t, a, f.issueID, scope)
 
@@ -494,7 +494,7 @@ func TestARedistilledDocumentReplacesItsOwnStance(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
 	f := store(t, pool, src)
-	scope := l2.ScopeKey(testRepo(src), src, repo)
+	scope := l2.ScopeKey(testRepo(src), src, repo, nil)
 	a := newAsserter(t, pool, src, loadFixtures(t))
 	assertDoc(t, a, f.issueID, scope)
 	assertDoc(t, a, f.prID, scope)
@@ -661,7 +661,7 @@ func TestRunReadsWhatIsEnqueuedAndWhatWasMissed(t *testing.T) {
 
 	// The issue's job, as the distiller enqueues it; the pull request has none,
 	// and is only found by the sweep at startup.
-	if ok, err := l2.EnqueueAssertion(t.Context(), pool, testRepo(src), issue, repo); err != nil || !ok {
+	if ok, err := l2.EnqueueAssertion(t.Context(), pool, testRepo(src), issue, repo, nil); err != nil || !ok {
 		t.Fatalf("EnqueueAssertion() = %v, %v", ok, err)
 	}
 
@@ -703,7 +703,7 @@ func TestEnqueueAssertionOnlyForOutcomesThatAssert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WithBody() = %v", err)
 	}
-	if ok, err := l2.EnqueueAssertion(t.Context(), pool, testRepo(src), open, repo); err != nil || ok {
+	if ok, err := l2.EnqueueAssertion(t.Context(), pool, testRepo(src), open, repo, nil); err != nil || ok {
 		t.Errorf("EnqueueAssertion(open) = %v, %v, want no job", ok, err)
 	}
 }

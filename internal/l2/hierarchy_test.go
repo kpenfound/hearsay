@@ -40,13 +40,14 @@ func TestMergeHierarchy(t *testing.T) {
 		dropped []dropped
 	}{
 		{
-			name: "configuration outranks the tracker, which outranks repository structure",
+			name: "configuration outranks tracker, work and repository structure",
 			in: l2.HierarchyInputs{
 				Config:        l2.Parents{"a": {"config-parent"}},
 				Tracker:       l2.Parents{"a": {"tracker-parent"}, "b": {"tracker-parent"}},
-				RepoStructure: l2.Parents{"a": {"repo-parent"}, "b": {"repo-parent"}, "c": {"repo-parent"}},
+				Work:          l2.Parents{"a": {"work-parent"}, "b": {"work-parent"}, "c": {"work-parent"}},
+				RepoStructure: l2.Parents{"a": {"repo-parent"}, "b": {"repo-parent"}, "c": {"repo-parent"}, "d": {"repo-parent"}},
 			},
-			want: l2.Parents{"a": {"config-parent"}, "b": {"tracker-parent"}, "c": {"repo-parent"}},
+			want: l2.Parents{"a": {"config-parent"}, "b": {"tracker-parent"}, "c": {"work-parent"}, "d": {"repo-parent"}},
 		},
 		{
 			name: "the highest source replaces the lower ones' parents rather than adding to them",

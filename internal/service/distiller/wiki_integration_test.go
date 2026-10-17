@@ -92,7 +92,7 @@ func TestWikiSectionsTrackSourceEdits(t *testing.T) {
 		t.Errorf("outcomes crossed sections: alpha=%s beta=%s", alpha.Body.OutcomeKind, beta.Body.OutcomeKind)
 	}
 	for _, stored := range []l1.Stored{alpha, beta} {
-		if !slices.Equal(stored.L0Refs, []string{connector.EventID(src, first.NativeID)}) || !slices.Equal(stored.ACL, first.ACL) {
+		if !slices.Equal(stored.L0Refs, []string{connector.EventID(src, first.NativeID)}) || !stored.ACL.Equal(first.ACL) {
 			t.Errorf("provenance/ACL = %+v", stored)
 		}
 	}
@@ -163,7 +163,7 @@ func TestWikiSectionsTrackSourceEdits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(privateBeta.ACL, aclRevision.ACL) || !slices.Equal(privateBeta.L0Refs, []string{connector.EventID(src, aclRevision.NativeID)}) {
+	if !privateBeta.ACL.Equal(aclRevision.ACL) || !slices.Equal(privateBeta.L0Refs, []string{connector.EventID(src, aclRevision.NativeID)}) {
 		t.Errorf("ACL revision not inherited: %+v", privateBeta)
 	}
 

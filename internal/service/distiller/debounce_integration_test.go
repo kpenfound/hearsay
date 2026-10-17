@@ -63,6 +63,30 @@ func pumpEvents(t *testing.T, p *distiller.Pump, count int) distiller.Progress {
 	return last
 }
 
+// Wait without pumping so the burst is collapsed in one enqueue transaction.
+func waitForPumpBatch(t *testing.T, pool *pgxpool.Pool, count int) {
+	t.Helper()
+	from, err := l0.NewCursors(pool).Load(t.Context(), distiller.Consumer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := l0.New(pool)
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		changes, err := events.Changes(t.Context(), from, l0.Filter{}, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(changes) == count {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Changes returned %d events, want %d in one batch", len(changes), count)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // Revisions keep the recorded commit's current text: ten L0 changes still
 // make exactly the request in the existing recorded fixture.
 func commitRevision(src string, i int) connector.Event {
@@ -80,7 +104,17 @@ func TestThePumpDebouncesBurstsWithinAndAcrossReads(t *testing.T) {
 			for i := 0; i < 10; i++ {
 				ingest(t, pool, []connector.Event{commitRevision(src, i)})
 			}
-			progress := pumpEvents(t, p, 10)
+			var progress distiller.Progress
+			if batch == 100 {
+				waitForPumpBatch(t, pool, 10)
+				var err error
+				progress, err = p.Once(t.Context())
+				if err != nil || progress.Events != 10 {
+					t.Fatalf("Once = %+v, %v, want 10 events in one read", progress, err)
+				}
+			} else {
+				progress = pumpEvents(t, p, 10)
+			}
 			job := onePending(t, c)
 			if job.TargetID != l1.DocID(src, commit) || job.RunAfter.Sub(job.EnqueuedAt) < opts.Quiet || job.RunAfter.After(job.EnqueuedAt.Add(opts.MaxDelay)) {
 				t.Fatalf("debounced schedule = %+v, want quiet %s capped at %s", job, opts.Quiet, opts.MaxDelay)

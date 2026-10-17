@@ -10,10 +10,11 @@
 // scope; this package claims them. An assertion becomes a stance with no model
 // call. At
 // startup it seeds the entity map from configuration, the repositories it
-// names ([Repos]) and the tracker hierarchy L0 holds ([Placements]), and
+// names ([Repos]) and the tracker and work declarations L0 holds
+// ([Placements]), and
 // enqueues every such document it has not read yet, so documents written
 // before it was deployed, and jobs that ran out of attempts, are picked up by a
-// restart. Between startups the [Follower] keeps the tracker hierarchy in step
+// restart. Between startups the [Follower] keeps the tracker and work hierarchy in step
 // with the L0 change feed, and the [CommandFollower] puts each GitHub
 // `/hearsay` comment command, and each deletion of one, on the queue, where
 // it is run under its scope's key and answered with one reply comment
@@ -30,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 
 	"github.com/jackc/pgx/v5"
@@ -160,7 +162,7 @@ func stopping(ctx context.Context, err error) error {
 }
 
 // SeedEntities writes the entity map configuration describes, with the tracker
-// hierarchy L0 holds now ([l2.Seed], [Placements]), in one transaction, and
+// and work hierarchy L0 holds now ([l2.Seed], [Placements]), in one transaction, and
 // returns how many entities it holds.
 //
 // A `code/` entry that names a CODEOWNERS file with no reader to read it is
@@ -188,7 +190,31 @@ func SeedEntities(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, rea
 		return 0, err
 	}
 	err = pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		return l2.New(tx).ReplaceSeeded(ctx, entities)
+		graph := l2.New(tx)
+		if err := graph.ReplaceSeeded(ctx, entities); err != nil {
+			return err
+		}
+		stored, err := graph.Entities(ctx)
+		if err != nil {
+			return err
+		}
+		live := map[string]bool{}
+		for _, e := range entities {
+			live[e.ID] = true
+		}
+		for _, e := range stored {
+			if e.Origin != l2.OriginSource || live[e.ID] {
+				continue
+			}
+			for _, src := range repo.Sources {
+				if src.Type == "work" && strings.HasPrefix(e.ID, "work:"+src.ID+":") {
+					if err := graph.RemoveSourceEntity(ctx, e.ID); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return 0, fmt.Errorf("seeding entities: %w", err)
@@ -223,7 +249,7 @@ func Sweep(ctx context.Context, pool *pgxpool.Pool, repo config.Repo) (int, erro
 		_, err = queue.Enqueue(ctx, pool, queue.Request{
 			Kind:      l2.AssertKind(),
 			TargetID:  doc.ID,
-			SerialKey: l2.ScopeKey(repo, root.Source, root.Payload.Container.NativeID),
+			SerialKey: l2.ScopeKey(repo, root.Source, root.Payload.Container.NativeID, root.Payload.Touches),
 		})
 		if err != nil {
 			return enqueued, err

@@ -91,7 +91,8 @@ ON CONFLICT (id) DO NOTHING`,
 // ReplaceSeeded makes the seeded entities exactly these: it writes every one of
 // them and deletes a `config` or `repo_structure` row that is no longer among
 // them, which is what removing an entry from `code/` means. A `reference` row
-// is never deleted here — a document pointed at it. The only `reference` rows
+// is never deleted here — a document pointed at it. Source-origin rows are
+// left in place, with their hierarchy unchanged. The only `reference` rows
 // seeding produces are the tracker items the tracker places, and a tracker
 // item that is not among them is placed nowhere: its part_of is cleared, which
 // is what a tracker no scope maps any more means. Run it in a transaction.
@@ -112,7 +113,7 @@ func (s *Store) ReplaceSeeded(ctx context.Context, entities []Entity) error {
 	}
 	if _, err := s.db.Exec(ctx, `
 UPDATE l2_entities SET part_of = '{}', updated_at = now()
-WHERE type = $2 AND part_of <> '{}' AND NOT (id = ANY($1))`, ids, string(TypeTrackerItem)); err != nil {
+WHERE type = $2 AND origin = 'reference' AND part_of <> '{}' AND NOT (id = ANY($1))`, ids, string(TypeTrackerItem)); err != nil {
 		return fmt.Errorf("removing tracker hierarchy the tracker no longer places: %w", err)
 	}
 	for _, e := range entities {
@@ -172,12 +173,24 @@ func (s *Store) Resolve(ctx context.Context, text string) ([]Match, error) {
 }
 
 // ResolveFor limits learned names to candidates whose current evidence the
-// reader may inspect. A hidden candidate does not influence ambiguity either.
+// reader may inspect, and source work entities to readable current documents.
+// A hidden entity or candidate does not influence ambiguity either.
 func (s *Store) ResolveFor(ctx context.Context, reader l1.Reader, text string) ([]Match, error) {
 	entities, err := s.Entities(ctx)
 	if err != nil {
 		return nil, err
 	}
+	hidden, err := s.HiddenWorkEntities(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	visible := entities[:0]
+	for _, e := range entities {
+		if !hidden.Hidden(e.ID) {
+			visible = append(visible, e)
+		}
+	}
+	entities = visible
 	candidates, err := s.AliasCandidates(ctx, "")
 	if err != nil {
 		return nil, err

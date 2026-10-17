@@ -20,6 +20,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector/obsidian"
 	"github.com/kpenfound/hearsay/internal/connector/slack"
 	"github.com/kpenfound/hearsay/internal/connector/tracker"
+	"github.com/kpenfound/hearsay/internal/connector/work"
 	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/llm"
@@ -293,7 +294,7 @@ func runAssertWorker(ctx context.Context, args []string, stdout, stderr io.Write
 	if err != nil {
 		return err
 	}
-	return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry, Connectors: connectorRegistry(cfg.Repo.Principals), Repos: repos, Replies: replies, Listen: *listen})
+	return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry, Connectors: connectorRegistry(cfg.Repo.Principals, cfg.Repo.Sources), Repos: repos, Replies: replies, Listen: *listen})
 }
 
 // repoReaders builds the reader entity seeding reads repositories through: one
@@ -514,7 +515,7 @@ func runConnectors(ctx context.Context, args []string, stdout, stderr io.Writer)
 	return connectors.Run(ctx, cfg, connectors.Deps{
 		Sources:  sources,
 		Pool:     pool,
-		Registry: connectorRegistry(cfg.Repo.Principals),
+		Registry: connectorRegistry(cfg.Repo.Principals, cfg.Repo.Sources),
 		Listen:   *listen,
 	})
 }
@@ -542,11 +543,12 @@ func checkListen(addr string) error {
 // wiring rather than from whatever happened to be linked in
 // (docs/connector-contract.md).
 //
-// It holds the GitHub, Discord, Slack, Drive, Obsidian, generic tracker and
-// agent session connectors. A source of any other type is a startup failure, as is a source
-// whose connector rejects its config. The agent session connector authenticates agents by the
-// tokens their principals name, so it is built from the principals.
-func connectorRegistry(principals []principal.Principal) *connector.Registry {
+// It holds the GitHub, Discord, Slack, Drive, Obsidian, generic tracker,
+// agent session and work updates connectors. Any other type, or a source whose
+// connector rejects its config, is a startup failure. Agent and work factories
+// receive principals for token authentication; work also receives every
+// configured source id for validating repository references.
+func connectorRegistry(principals []principal.Principal, sources []connector.SourceConfig) *connector.Registry {
 	registry := connector.NewRegistry()
 	// Register fails only for an empty type, a nil factory or a type claimed
 	// twice, which a fixed list cannot be; TestConnectorRegistry pins the list.
@@ -559,6 +561,11 @@ func connectorRegistry(principals []principal.Principal) *connector.Registry {
 	_ = registry.Register(obsidian.Type, obsidian.Factory)
 	_ = registry.Register(tracker.Type, tracker.Factory)
 	_ = registry.Register(agent.Type, agent.NewFactory(principals, os.LookupEnv))
+	sourceIDs := make([]string, 0, len(sources))
+	for _, source := range sources {
+		sourceIDs = append(sourceIDs, source.ID)
+	}
+	_ = registry.Register(work.Type, work.NewFactory(principals, sourceIDs, os.LookupEnv))
 	return registry
 }
 
@@ -639,13 +646,13 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 
 	return service.RunAll(ctx, map[string]service.RunFunc{
 		connectors.Name: func(ctx context.Context) error {
-			return connectors.Run(ctx, cfg, connectors.Deps{Pool: pool, Registry: connectorRegistry(cfg.Repo.Principals), Listen: *listen})
+			return connectors.Run(ctx, cfg, connectors.Deps{Pool: pool, Registry: connectorRegistry(cfg.Repo.Principals, cfg.Repo.Sources), Listen: *listen})
 		},
 		distiller.Name: func(ctx context.Context) error {
 			return distiller.Run(ctx, cfg, distiller.Deps{Pool: pool, LLM: registry, Listen: *distillerListen, Pump: pump})
 		},
 		assertworker.Name: func(ctx context.Context) error {
-			return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry, Connectors: connectorRegistry(cfg.Repo.Principals), Repos: repos, Replies: replies, Listen: *assertWorkerListen})
+			return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry, Connectors: connectorRegistry(cfg.Repo.Principals, cfg.Repo.Sources), Repos: repos, Replies: replies, Listen: *assertWorkerListen})
 		},
 		api.Name: func(ctx context.Context) error {
 			return api.Run(ctx, cfg, api.Deps{Pool: pool, LLM: registry, Listen: *apiListen, Discord: apps})

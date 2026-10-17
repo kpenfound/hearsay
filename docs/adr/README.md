@@ -23,7 +23,7 @@ The format, numbering and supersession rules are in [ADR-0001](0001-record-archi
 | [0013](0013-acl-re-syncs-are-durable-and-driven-by-the-runtime.md) | ACL re-syncs are durable and driven by the runtime | accepted | 2026-09-15 |
 | [0014](0014-api-callers-use-per-principal-bearer-tokens.md) | API callers use per-principal bearer tokens | accepted | 2026-09-22 |
 | [0015](0015-runtime-owned-streams-for-client-dialed-sources.md) | Runtime-owned streams for client-dialed sources | accepted | 2026-09-22 |
-| [0016](0016-entity-hierarchy-sources-are-ranked-and-replace.md) | Entity hierarchy sources are ranked, and the highest replaces the rest | accepted | 2026-09-23 |
+| [0016](0016-entity-hierarchy-sources-are-ranked-and-replace.md) | Entity hierarchy sources are ranked, and the highest replaces the rest | accepted; three-source hierarchy clause superseded by [A work-updates source declares entities at runtime](0030-a-work-updates-source-declares-entities-at-runtime.md) | 2026-09-23 |
 | [0017](0017-api-calls-name-an-agent-session.md) | API calls name an agent session | accepted | 2026-09-23 |
 | [0018](0018-operator-deletion-redacts-l0-in-place.md) | Operator deletion redacts L0 in place | accepted | 2026-09-23 |
 | [0019](0019-operator-deletion-redacts-superseded-l2-text.md) | Operator deletion redacts superseded L2 text in place | accepted | 2026-09-24 |
@@ -36,6 +36,8 @@ The format, numbering and supersession rules are in [ADR-0001](0001-record-archi
 | [0026](0026-artifacts-may-carry-one-of-five-core-states-stated-by-their-source.md) | Artifacts may carry one of five core states, stated by their source | accepted | 2026-10-14 |
 | [0027](0027-distill-jobs-are-debounced-in-the-queue.md) | Distill jobs are debounced in the queue | accepted | 2026-10-15 |
 | [0028](0028-readers-traverse-the-l2-graph-through-bounded-typed-steps.md) | Readers traverse the L2 graph through bounded, typed steps | accepted | 2026-10-15 |
+| [0029](0029-an-access-list-may-defer-to-other-sources-containers.md) | An access list may defer to other sources' containers | accepted | 2026-10-16 |
+| [0030](0030-a-work-updates-source-declares-entities-at-runtime.md) | A work-updates source declares entities at runtime | accepted | 2026-10-16 |
 
 ## Names other work depends on
 

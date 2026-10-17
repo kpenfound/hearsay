@@ -202,6 +202,7 @@ func Tokens(encoded []byte) int { return (len(encoded) + BytesPerToken - 1) / By
 // Assembler builds bundles from the views over one database.
 type Assembler struct {
 	views    *l3.Views
+	graph    *l2.Store
 	docs     *l1.Store
 	events   *l0.Store
 	resolver *principal.Resolver
@@ -211,7 +212,7 @@ type Assembler struct {
 
 // New returns an assembler over a pool or a transaction, with the default budget.
 func New(q l3.Querier) *Assembler {
-	return &Assembler{views: l3.New(q), docs: l1.New(q), events: l0.New(q), budget: DefaultBudget}
+	return &Assembler{views: l3.New(q), graph: l2.New(q), docs: l1.New(q), events: l0.New(q), budget: DefaultBudget}
 }
 
 // WithDirectiveSources supplies the identity and scope mappings used by event directives.
@@ -249,6 +250,16 @@ func (a *Assembler) Assemble(ctx context.Context, reader l1.Reader, scope string
 
 // AssembleForEvent adds a directive only from a current, readable event in the scope.
 func (a *Assembler) AssembleForEvent(ctx context.Context, reader l1.Reader, scope, eventID string) (Bundle, Report, error) {
+	hidden, err := a.graph.HiddenWorkEntities(ctx, reader)
+	if err != nil {
+		return Bundle{}, Report{}, err
+	}
+	if hidden.Hidden(scope) {
+		// Missing and unreadable work entities have the same empty bundle,
+		// even when the caller's grants explicitly name the requested id.
+		b, trimmed, tokens, err := Build(Inputs{Scope: scope}, a.budget)
+		return b, Report{Trimmed: trimmed, Tokens: tokens}, err
+	}
 	in := Inputs{Scope: scope}
 	var report Report
 	if reader.Effective.Human != "" && !reader.InReach([]string{scope}) {
@@ -260,7 +271,7 @@ func (a *Assembler) AssembleForEvent(ctx context.Context, reader l1.Reader, scop
 	}
 	if reader.InReach([]string{scope}) {
 		var err error
-		if in, report.Withheld, report.Reach, err = a.gather(ctx, reader, scope); err != nil {
+		if in, report.Withheld, report.Reach, err = a.gather(ctx, reader, scope, hidden); err != nil {
 			return Bundle{}, Report{}, err
 		}
 		if eventID != "" {
@@ -292,7 +303,7 @@ func (a *Assembler) AssembleForEvent(ctx context.Context, reader l1.Reader, scop
 	return b, report, nil
 }
 
-func (a *Assembler) gather(ctx context.Context, reader l1.Reader, scope string) (Inputs, Withheld, Reach, error) {
+func (a *Assembler) gather(ctx context.Context, reader l1.Reader, scope string, hidden l2.WorkEntityVisibility) (Inputs, Withheld, Reach, error) {
 	in := Inputs{Scope: scope}
 	var withheld Withheld
 	var reach Reach
@@ -304,6 +315,9 @@ func (a *Assembler) gather(ctx context.Context, reader l1.Reader, scope string) 
 	if ok {
 		in.Subject = &subject
 		for _, id := range subject.Scope {
+			if hidden.Hidden(id) {
+				continue
+			}
 			if slices.Contains(direct, id) {
 				continue
 			}

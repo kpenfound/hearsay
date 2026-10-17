@@ -60,17 +60,15 @@ package agent
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/connector/push"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
@@ -85,22 +83,17 @@ type Connector struct {
 	source string
 	allow  connector.Allowlist
 	// agents are the agents that may post, with the digest of their token.
-	agents []credential
+	agents push.Tokens
 	// humans are the principal ids an agent may act for.
 	humans map[string]bool
 	last   atomic.Int64
-}
-
-type credential struct {
-	id     string
-	digest [sha256.Size]byte
 }
 
 var _ connector.Pusher = (*Connector)(nil)
 
 // NewFactory returns the factory the binary registers under [Type]. The
 // principals are the configuration's `principals/`, and lookup reads the
-// environment their `token_env` names; nil is [os.LookupEnv].
+// environment their `token_env` names; nil reads the process environment.
 func NewFactory(principals []principal.Principal, lookup func(string) (string, bool)) connector.Factory {
 	return func(_ context.Context, src connector.SourceConfig) (connector.Connector, error) {
 		return New(src, principals, lookup)
@@ -110,9 +103,6 @@ func NewFactory(principals []principal.Principal, lookup func(string) (string, b
 // New validates a source and resolves the tokens of the agents that may post
 // to it.
 func New(src connector.SourceConfig, principals []principal.Principal, lookup func(string) (string, bool)) (*Connector, error) {
-	if lookup == nil {
-		lookup = os.LookupEnv
-	}
 	var settings struct{}
 	if err := src.DecodeSettings(&settings); err != nil {
 		return nil, err
@@ -125,7 +115,6 @@ func New(src connector.SourceConfig, principals []principal.Principal, lookup fu
 	}
 	c := &Connector{source: src.ID, allow: connector.NewAllowlist(src), humans: make(map[string]bool)}
 	kinds := make(map[string]principal.Kind, len(principals))
-	seen := make(map[[sha256.Size]byte]string)
 	for _, p := range principals {
 		kinds[p.ID] = p.Kind
 		switch p.Kind {
@@ -135,16 +124,17 @@ func New(src connector.SourceConfig, principals []principal.Principal, lookup fu
 			if p.TokenEnv == "" {
 				continue
 			}
-			value, ok := lookup(p.TokenEnv)
-			if !ok || value == "" {
-				return nil, fmt.Errorf("agent %q: %s is not set or is empty", p.ID, p.TokenEnv)
+			if err := c.agents.AddEnv(p.ID, p.TokenEnv, lookup); err != nil {
+				var duplicate *push.DuplicateTokenError
+				switch {
+				case errors.Is(err, push.ErrEmptyToken):
+					return nil, fmt.Errorf("agent %q: %s is not set or is empty", p.ID, p.TokenEnv)
+				case errors.As(err, &duplicate):
+					return nil, fmt.Errorf("agents %q and %q share an API token", duplicate.Other, duplicate.ID)
+				default:
+					return nil, err
+				}
 			}
-			digest := sha256.Sum256([]byte(value))
-			if other, dup := seen[digest]; dup {
-				return nil, fmt.Errorf("agents %q and %q share an API token", other, p.ID)
-			}
-			seen[digest] = p.ID
-			c.agents = append(c.agents, credential{id: p.ID, digest: digest})
 		}
 	}
 	for _, id := range src.Containers {
@@ -152,7 +142,7 @@ func New(src connector.SourceConfig, principals []principal.Principal, lookup fu
 			return nil, fmt.Errorf("container %q is not an agent principal: containers are agent ids, or *", id)
 		}
 	}
-	if len(c.agents) == 0 {
+	if c.agents.Len() == 0 {
 		return nil, errors.New("no agent principal has a token_env, so no agent could post to this source")
 	}
 	return c, nil
@@ -175,20 +165,6 @@ func (c *Connector) Health(context.Context) connector.Health {
 
 // Close releases nothing: the connector holds no connection and no goroutine.
 func (c *Connector) Close(context.Context) error { return nil }
-
-// agentFor is the agent a presented token belongs to. Every configured digest
-// is compared, in constant time, so how long this takes says nothing about
-// which agent, if any, came close.
-func (c *Connector) agentFor(token string) (string, bool) {
-	got := sha256.Sum256([]byte(token))
-	found := ""
-	for _, a := range c.agents {
-		if subtle.ConstantTimeCompare(got[:], a.digest[:]) == 1 {
-			found = a.id
-		}
-	}
-	return found, found != ""
-}
 
 // Request is one event, as an agent posts it. Exactly one of Phase, Turn, Call
 // and Next is set, according to Kind.
@@ -390,7 +366,7 @@ func hasNextFields(req Request) bool {
 
 // errBadRequest is a request the connector cannot turn into an event: the
 // agent's fault, answered 400.
-var errBadRequest = errors.New("bad request")
+var errBadRequest = push.ErrBadRequest
 
 func badRequest(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", errBadRequest, fmt.Sprintf(format, args...))

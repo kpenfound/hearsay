@@ -67,8 +67,6 @@ package tracker
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"slices"
@@ -76,6 +74,7 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/connector/push"
 )
 
 // Type is the registry key for the generic tracker connector.
@@ -101,7 +100,7 @@ type Connector struct {
 	allow     connector.Allowlist
 	access    map[string]connector.ACL
 	ticketACL bool
-	digest    [sha256.Size]byte
+	tokens    push.Tokens
 	last      atomic.Int64
 }
 
@@ -136,8 +135,11 @@ func New(src connector.SourceConfig) (*Connector, error) {
 		allow:     connector.NewAllowlist(src),
 		access:    make(map[string]connector.ACL, len(src.Containers)),
 		ticketACL: settings.TicketACL,
-		digest:    sha256.Sum256([]byte(token)),
 	}
+	if err := c.tokens.Add(src.ID, token); err != nil {
+		return nil, err
+	}
+
 	for _, project := range src.Containers {
 		if project == connector.AllowAll {
 			return nil, fmt.Errorf("containers may not be %q: every project needs its own access list in settings.access", connector.AllowAll)
@@ -210,9 +212,3 @@ func (c *Connector) Health(context.Context) connector.Health {
 
 // Close releases nothing: the connector holds no connection and no goroutine.
 func (c *Connector) Close(context.Context) error { return nil }
-
-// authentic reports whether token is the source's, in constant time.
-func (c *Connector) authentic(token string) bool {
-	got := sha256.Sum256([]byte(token))
-	return subtle.ConstantTimeCompare(got[:], c.digest[:]) == 1
-}

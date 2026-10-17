@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/config"
@@ -906,5 +907,55 @@ func TestAliasDecisionAndRejectedVote(t *testing.T) {
 	insider := l1.Reader{Effective: principal.Effective{Human: "insider"}, Audience: private}
 	if got, err := store.ResolveFor(ctx, insider, src+" secret"); err != nil || len(got) != 1 || got[0].Entity.ID != entity {
 		t.Fatalf("insider resolve = %+v, %v", got, err)
+	}
+}
+
+func TestReseedingPreservesSourceEntities(t *testing.T) {
+	pool := scratchPool(t)
+	graph := l2.New(pool)
+	entities := []l2.Entity{
+		{ID: "work:projects:p", Type: l2.TypeProject, Name: "Project", Origin: l2.OriginSource, PartOf: []string{"code:acme/api"}},
+		{ID: "work:projects:p#s", Type: l2.TypeTrackerItem, Name: "Stream", Origin: l2.OriginSource, PartOf: []string{"work:projects:p"}},
+	}
+	for _, e := range entities {
+		if err := graph.PutEntity(t.Context(), e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := graph.ReplaceSeeded(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range entities {
+		got, err := graph.Entity(t.Context(), want.ID)
+		if err != nil || !slices.Equal(got.PartOf, want.PartOf) || got.Name != want.Name || got.Origin != want.Origin {
+			t.Fatalf("after reseed: %+v, %v; want %+v", got, err, want)
+		}
+	}
+}
+
+func TestIncrementalPlacementRanksTrackerAboveWork(t *testing.T) {
+	pool := scratchPool(t)
+	graph := l2.New(pool)
+	work := l2.Entity{ID: "work:projects:p#s", Type: l2.TypeTrackerItem, Name: "Stream", Origin: l2.OriginSource}
+	tracker := l2.Entity{ID: "tracker:github:acme/api#1", Type: l2.TypeTrackerItem, Origin: l2.OriginReference}
+	work.PartOf = []string{tracker.ID}
+	for _, e := range []l2.Entity{work, tracker} {
+		if err := graph.PutEntity(t.Context(), e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := pgx.BeginFunc(t.Context(), pool, func(tx pgx.Tx) error {
+		return l2.New(tx).Place(t.Context(), nil, l2.Placement{Item: tracker, Parents: []l2.Entity{work}})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		id      string
+		parents []string
+	}{{tracker.ID, []string{work.ID}}, {work.ID, nil}} {
+		got, err := graph.Entity(t.Context(), tt.id)
+		if err != nil || !slices.Equal(got.PartOf, tt.parents) {
+			t.Fatalf("entity = %+v, %v, want parents %v", got, err, tt.parents)
+		}
 	}
 }

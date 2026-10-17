@@ -53,7 +53,7 @@ func TestBuildWikiSections(t *testing.T) {
 		if doc.Kind != l1.KindWikiSection || doc.ID != l1.DocID(source, doc.Source.NativeID) || doc.Source.URL != root.Payload.URL {
 			t.Errorf("envelope = %+v", doc)
 		}
-		if !slices.Equal(doc.L0Refs, []string{connector.EventID(source, root.NativeID)}) || !slices.Equal(doc.ACL, root.ACL) {
+		if !slices.Equal(doc.L0Refs, []string{connector.EventID(source, root.NativeID)}) || !doc.ACL.Equal(root.ACL) {
 			t.Errorf("provenance/ACL = %+v", doc)
 		}
 	}

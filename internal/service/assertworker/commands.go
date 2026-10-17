@@ -132,7 +132,7 @@ func (f *CommandFollower) Once(ctx context.Context) (int, error) {
 			if ev.Kind == connector.KindCommand && cmd.Edited {
 				continue
 			}
-			key, err := commandScope(ctx, graph, f.repo, command, cmd)
+			key, err := commandScope(ctx, events, graph, f.repo, command, cmd)
 			if err != nil {
 				return err
 			}
@@ -154,8 +154,12 @@ func (f *CommandFollower) Once(ctx context.Context) (int, error) {
 // scope of the issue or pull request it was written on, which is the scope of
 // every stance drawn from it. A topic never changes scope, so the command and
 // the tombstone that undoes it are keyed alike.
-func commandScope(ctx context.Context, graph *l2.Store, repo config.Repo, ev connector.Event, cmd github.Command) (string, error) {
-	key := l2.ScopeKey(repo, ev.Source, ev.Payload.Container.NativeID)
+func commandScope(ctx context.Context, events *l0.Store, graph *l2.Store, repo config.Repo, ev connector.Event, cmd github.Command) (string, error) {
+	root, err := scopeRoot(ctx, events, ev)
+	if err != nil {
+		return "", err
+	}
+	key := l2.ScopeKey(repo, root.Source, root.Payload.Container.NativeID, root.Payload.Touches)
 	if cmd.Name != CommandMerge || len(cmd.Args) != 2 {
 		return key, nil
 	}

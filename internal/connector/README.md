@@ -13,7 +13,9 @@ connector interface (lifecycle, push, poll and stream, backfill with a cursor, h
 the source config a connector consumes, the registry and the ingest gate, the
 runtime that starts, supervises and shuts connectors down, and a fake connector
 for tests. Individual connectors live in subpackages
-(`internal/connector/github`, and so on).
+(`internal/connector/github`, and so on). The `push` subpackage holds their
+shared bearer authentication, JSON request handling, revision tokens and
+retractions; source-specific validation and authorization stay in each connector.
 
 **Does not belong here:** anything above L0. A connector emits events; it does
 not distill, and it does not decide what an event means. Storing an event is

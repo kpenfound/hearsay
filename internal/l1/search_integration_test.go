@@ -269,7 +269,7 @@ func TestSearchMatchesTheGrantsTheMappingGives(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HumanRead() = %v", err)
 	}
-	who, err := l1.ReaderFor(res, eff)
+	who, err := l1.ReaderFor(t.Context(), pool, res, eff)
 	if err != nil {
 		t.Fatalf("ReaderFor() = %v", err)
 	}

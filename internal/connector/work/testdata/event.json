@@ -1,0 +1,63 @@
+{
+  "id": "evt:projects:payments-rewrite@6e0ada71977404da",
+  "source": "projects",
+  "native_id": "payments-rewrite@6e0ada71977404da",
+  "kind": "issue",
+  "time": "2026-10-14T17:00:00Z",
+  "payload": {
+    "artifact": "payments-rewrite",
+    "container": {
+      "kind": "project",
+      "native_id": "payments-rewrite"
+    },
+    "url": "https://factory.example/p/payments-rewrite",
+    "title": "Payments rewrite",
+    "text": "Move settlement off the legacy queue.",
+    "state": {
+      "core": "started",
+      "native": "Building"
+    },
+    "author": {
+      "source": "projects",
+      "kind": "user",
+      "native_id": "kyle"
+    },
+    "participants": [
+      {
+        "identity": {
+          "source": "projects",
+          "kind": "agent",
+          "native_id": "factory"
+        },
+        "role": "agent"
+      }
+    ],
+    "touches": [
+      {
+        "source": "github",
+        "project": "acme/api"
+      }
+    ],
+    "revision": {
+      "token": "6e0ada71977404da",
+      "edited_at": "2026-10-14T18:00:00Z"
+    },
+    "native": {
+      "project": "payments-rewrite",
+      "status": "Building",
+      "poster": "factory"
+    }
+  },
+  "acl": [
+    {
+      "kind": "containers",
+      "native_id": "08482eecc0225e0dfbedf470148f9ed70b93fa7d55e7ef34772ff3849ad8250a",
+      "containers": [
+        {
+          "source": "github",
+          "native_id": "acme/api"
+        }
+      ]
+    }
+  ]
+}

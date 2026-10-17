@@ -98,7 +98,9 @@ var (
 // built from, with no model in the loop: links, @-mentions resolved through the
 // principal resolver, short cross-references read against the artifact's own
 // container, the code entities `code/` configuration names, and the code
-// entities whose path patterns match a path an event says it touches.
+// entities whose path patterns match a path an event says it touches. Entries
+// in payload.touches also name the repository's project entity and match paths
+// in that repository, independently of the event's own source and container.
 //
 // It is deterministic and total — the same events, resolver and configuration
 // always produce the same list, sorted and deduplicated — which is what lets L2
@@ -122,13 +124,24 @@ func References(events []connector.Event, resolver *principal.Resolver, code []c
 	}
 	aliases := systemAliases(code)
 	touched := map[string]int{}
-
-	for _, ev := range events {
-		container := ev.Payload.Container.NativeID
-		for id, depth := range touchedSystems(ev, code) {
+	addTouched := func(matches map[string]int) {
+		for id, depth := range matches {
 			add(RefSystem, id)
 			if held, ok := touched[id]; !ok || depth > held {
 				touched[id] = depth
+			}
+		}
+	}
+
+	for _, ev := range events {
+		container := ev.Payload.Container.NativeID
+		addTouched(touchedSystems(ev, code))
+		for _, touch := range ev.Payload.Touches {
+			addTouched(pathSystems(touch.Source, touch.Project, touch.Paths, code))
+			for _, e := range code {
+				if e.Repo.Source == touch.Source && strings.EqualFold(e.Repo.Project, touch.Project) && e.ID == "code:"+e.Repo.Project {
+					add(RefSystem, e.ID)
+				}
 			}
 		}
 		for _, link := range ev.Payload.Links {
@@ -187,16 +200,22 @@ func References(events []connector.Event, resolver *principal.Resolver, code []c
 //
 // Patterns are matched, never expanded into files (docs/config.md#code).
 func touchedSystems(ev connector.Event, code []config.CodeEntity) map[string]int {
-	if len(ev.Payload.Paths) == 0 {
+	return pathSystems(ev.Source, ev.Payload.Container.NativeID, ev.Payload.Paths, code)
+}
+
+// pathSystems applies the same repository-relative matching to an event's own
+// paths and to paths whose repository is named explicitly in payload.touches.
+func pathSystems(source, project string, paths []string, code []config.CodeEntity) map[string]int {
+	if len(paths) == 0 {
 		return nil
 	}
 	out := map[string]int{}
 	for _, e := range code {
-		if e.Repo.Source != ev.Source || !strings.EqualFold(e.Repo.Project, ev.Payload.Container.NativeID) {
+		if e.Repo.Source != source || !strings.EqualFold(e.Repo.Project, project) {
 			continue
 		}
 		for _, pattern := range e.PathPatterns {
-			if !slices.ContainsFunc(ev.Payload.Paths, func(path string) bool { return config.MatchPath(pattern, path) }) {
+			if !slices.ContainsFunc(paths, func(path string) bool { return config.MatchPath(pattern, path) }) {
 				continue
 			}
 			depth := 0
