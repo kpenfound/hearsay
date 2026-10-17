@@ -173,12 +173,24 @@ func (s *Store) Resolve(ctx context.Context, text string) ([]Match, error) {
 }
 
 // ResolveFor limits learned names to candidates whose current evidence the
-// reader may inspect. A hidden candidate does not influence ambiguity either.
+// reader may inspect, and source work entities to readable current documents.
+// A hidden entity or candidate does not influence ambiguity either.
 func (s *Store) ResolveFor(ctx context.Context, reader l1.Reader, text string) ([]Match, error) {
 	entities, err := s.Entities(ctx)
 	if err != nil {
 		return nil, err
 	}
+	hidden, err := s.HiddenWorkEntities(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	visible := entities[:0]
+	for _, e := range entities {
+		if !hidden.Hidden(e.ID) {
+			visible = append(visible, e)
+		}
+	}
+	entities = visible
 	candidates, err := s.AliasCandidates(ctx, "")
 	if err != nil {
 		return nil, err

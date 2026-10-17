@@ -135,6 +135,10 @@ text that is no longer current (ADR-0019, below).
   [Stand] ranks it as class `agent` from the event's source
   ([AssertedEvidence]), whatever it cites — citing a merged pull request does
   not lend an agent a merged pull request's authority.
+- **Source work entities require their current document** ([Store.HiddenWorkEntities]).
+  Reach alone does not expose a runtime project's or workstream's id or name.
+  Discovery, scoped API reads and bundle entity listings use the reader's full
+  audience against L1 as it is now. Missing documents and retractions fail closed.
 - **Who may read a topic or a stance is decided from L1 as it is now**
   ([Access]): a topic by its opening document while it exists, then by a live
   surviving stance; a stance by every piece of its evidence, each still in L1

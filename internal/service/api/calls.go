@@ -835,7 +835,19 @@ func getL1(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json.R
 	if err != nil {
 		return nil, err
 	}
-	return doc.Document, nil
+	hidden, err := c.graph.HiddenWorkEntities(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	return visibleDocumentEntities(doc.Document, hidden), nil
+}
+
+// Document scopes and references are entity listings too. A readable document
+// does not grant permission to discover every entity it happens to mention.
+func visibleDocumentEntities(doc l1.Document, hidden l2.WorkEntityVisibility) l1.Document {
+	doc.Scope = slices.DeleteFunc(slices.Clone(doc.Scope), func(id string) bool { return hidden.Hidden(id) })
+	doc.References = slices.DeleteFunc(slices.Clone(doc.References), func(ref l1.Reference) bool { return hidden.Hidden(ref.ID) })
+	return doc
 }
 
 func getL0(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json.RawMessage) (any, error) {
@@ -889,6 +901,14 @@ func search(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json.
 	if err := required("query", args.Query); err != nil {
 		return nil, err
 	}
+	hidden, err := c.graph.HiddenWorkEntities(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
+	if hidden.Hidden(args.Scope) {
+		// Use the ordinary empty search path, including argument validation.
+		reader.Effective.Grant.Scopes = principal.SomeScopes()
+	}
 	hits, err := c.docs.Search(ctx, reader, l1.SearchOptions{Query: args.Query, Scope: args.Scope, Limit: args.Limit, Embedder: c.embedder})
 	if err != nil {
 		return nil, err
@@ -897,7 +917,7 @@ func search(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json.
 		Documents []SearchHit `json:"documents"`
 	}{Documents: make([]SearchHit, len(hits))}
 	for i, h := range hits {
-		out.Documents[i] = SearchHit{Document: h.Document, Score: h.Score}
+		out.Documents[i] = SearchHit{Document: visibleDocumentEntities(h.Document, hidden), Score: h.Score}
 	}
 	return out, nil
 }

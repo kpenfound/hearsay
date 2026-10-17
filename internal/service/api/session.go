@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/l0"
@@ -116,6 +117,10 @@ func getSession(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, 
 		}
 		return nil, err
 	}
+	hidden, err := c.graph.HiddenWorkEntities(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := c.db.Query(ctx, `
 SELECT id FROM l0_events
 WHERE (source = $1 AND payload->>'artifact' = $2)
@@ -145,6 +150,9 @@ ORDER BY coalesce(revision_edited_at, occurred_at), seq`, source, as.Session, Au
 			if err := json.Unmarshal(item.Payload.Native, &audit); err != nil {
 				return nil, fmt.Errorf("decoding session audit: %w", err)
 			}
+			if auditNamesHiddenEntity(audit, hidden) {
+				continue
+			}
 			// A historical audit may concern a scope the caller can no longer
 			// reach. Fail closed on grants even though the session still allows
 			// the caller.
@@ -163,7 +171,7 @@ ORDER BY coalesce(revision_edited_at, occurred_at), seq`, source, as.Session, Au
 				if err := json.Unmarshal(item.Payload.Native, &next); err != nil {
 					return nil, fmt.Errorf("decoding session next action: %w", err)
 				}
-				if !reader.Effective.Grant.Scopes.Has(next.Scope) {
+				if hidden.Hidden(next.Scope) || !reader.Effective.Grant.Scopes.Has(next.Scope) {
 					continue
 				}
 				if bundleID := latestBundle[next.Scope]; bundleID != "" {
@@ -177,4 +185,19 @@ ORDER BY coalesce(revision_edited_at, occurred_at), seq`, source, as.Session, Au
 		return nil, fmt.Errorf("listing session trace: %w", err)
 	}
 	return trace, nil
+}
+
+// A session remains readable when an unrelated work entity becomes private.
+// Its historical discovery and bundle audits must not re-disclose that entity.
+func auditNamesHiddenEntity(audit AuditRecord, hidden l2.WorkEntityVisibility) bool {
+	if hidden.Hidden(audit.Scope) || slices.ContainsFunc(audit.TargetIDs, func(id string) bool { return hidden.Hidden(id) }) ||
+		slices.ContainsFunc(audit.ReturnedIDs, func(id string) bool { return hidden.Hidden(id) }) {
+		return true
+	}
+	for _, section := range audit.Sections {
+		if slices.ContainsFunc(section.Entities, func(id string) bool { return hidden.Hidden(id) }) {
+			return true
+		}
+	}
+	return false
 }

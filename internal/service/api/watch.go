@@ -159,6 +159,10 @@ func watch(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, raw j
 	if err != nil {
 		return nil, err
 	}
+	hidden, err := c.graph.HiddenWorkEntities(ctx, reader)
+	if err != nil {
+		return nil, err
+	}
 	// What the scope covers is read once: a watch is tens of seconds.
 	covered, err := c.reach.Descendants(ctx, []string{args.Scope})
 	if err != nil {
@@ -168,7 +172,7 @@ func watch(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, raw j
 	// exist, as its bundle is.
 	on := map[string]bool{}
 	for _, id := range covered {
-		if reader.InReach([]string{id}) {
+		if !hidden.Hidden(args.Scope) && !hidden.Hidden(id) && reader.InReach([]string{id}) {
 			on[id] = true
 		}
 	}
