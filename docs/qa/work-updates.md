@@ -71,7 +71,7 @@ posted by a separate configured attributor, `courier`, so its strongest L1 role
 is `agent`. L1 keeps one role per principal: a poster that also opened the root
 would retain the stronger `author` role. The fixture requests remain unchanged.
 
-Final verification on 2026-10-17 passed: all 40 configured check results had
+Pre-rebase verification on 2026-10-17 passed: all 40 configured check results had
 `error: null`, including lint and formatting, fresh schema-32 race integration,
 Go tests (2,352 passed), tidy, both image platforms, Compose, Helm and generation.
 The work API integration package passed in 26.876s in the final collection.
@@ -102,3 +102,50 @@ services, posted a project and workstream using an observer poster's token,
 verified 401 without a token, read both distilled documents and resolved the
 workstream over HTTP. Distillation used a local HTTP fixture with no external
 model or source calls. The trial script and its outer command both exited 0.
+
+
+## Drift rebase verification
+
+The reviewed rebase onto upstream `2b57d6156481721245e8569df16d204ad82f4786`
+was verified again on 2026-10-17. Upstream's traversal ADR remains 0028;
+the containers-access ADR is now 0029 and the runtime work-entities ADR is
+0030, including the ADR-0016 supersession and all cross-links. Migration
+numbers 31 (upstream traversal indexes), 32 (container index), and 33 (source
+entity origin), their rollback checks, and the repeatable-read state test
+are preserved.
+
+Traversal now uses `l2.Store.HiddenWorkEntities`, the same policy as the other
+read surfaces. Hidden work starts have the exact nonexistent-start HTTP and
+MCP responses. Hidden work candidates never become nodes, edges or frontiers,
+and are excluded before entity candidate and result limits. Topic `scope` is
+an entity handle too and is omitted when that policy hides it, matching the
+scope filtering in `get_l1` and `search`. The other descriptive node fields do
+not return entity lists; document scopes and topic `about` edges pass through
+the same guarded entity read. Non-work reach, ordering, ledger, standing and
+raw-row limits retain upstream's behavior.
+
+The existing visibility fixtures now exercise traversal with identical reach
+and different private repository membership, a project spanning two repositories
+with only one readable, missing documents, tombstones before catch-up, current
+document ACL changes, and before/during/after GitHub privatization without a
+repost. Additional HTTP/MCP checks cover topic scope, document scope and 5,000
+undistilled work candidates without changed limits or truncation. No live model
+or source calls or new model recordings were needed. The upstream invalid-query
+unit test now permits only reader construction's empty deferred-grant lookup;
+it still rejects any accidental traversal query without a database.
+
+`go build ./...`, `go vet -tags=integration ./...` and `go test ./...` passed.
+The explicit configured Dagger check collection passed all 40 results, with
+2,899 tests reported passed. Its race integration run migrated from empty
+through schema 33 and passed l3, l2 and API, including upstream traversal
+regressions. The focused work race suite also passed. Runner source permissions
+were normalized for the unprivileged Compose image, as in the pre-rebase run.
+The first collection exposed the validation fixture mismatch and encountered
+the previously recorded Discord re-sync timeout; the final collection passed.
+
+The shipped-image QA trial was renewed successfully: authenticated work posts,
+both distilled read-backs and workstream resolution passed. Binary SHA-256:
+`0c6a972b2c99d86b03ae505ab30ad2ee313925195b3cdc6d762e868c6ad7a245`.
+Both the outer command and the trial script exited 0. Commands, exit statuses
+and final check excerpts are appended to
+[work-updates-checks.txt](work-updates-checks.txt) for the pull request.

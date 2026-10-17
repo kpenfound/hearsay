@@ -16,6 +16,9 @@ func (w *traversal) candidates(ctx context.Context, from NodeRef, edge string, r
 	out := []candidate{}
 	rawRows := -1
 	add := func(id string, at time.Time) {
+		if edgeTypes[edge].to == "entity" && w.hiddenWork.Hidden(id) {
+			return
+		}
 		if id != "" {
 			out = append(out, candidate{from: from, ref: NodeRef{Type: edgeTypes[edge].to, ID: id}, at: at})
 		}
@@ -25,7 +28,7 @@ func (w *traversal) candidates(ctx context.Context, from NodeRef, edge string, r
 	case "part_of":
 		ids = value.entity.PartOf
 	case "has_part":
-		ids, err = w.v.graph.Children(ctx, from.ID, remaining)
+		ids, err = w.v.graph.Children(ctx, from.ID, remaining, w.excludedWork...)
 	case "owners":
 		ids = value.entity.Owners
 	case "topics":

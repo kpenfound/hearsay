@@ -1,4 +1,4 @@
-# 28. An access list may defer to other sources' containers
+# 29. An access list may defer to other sources' containers
 
 - Status: accepted
 - Date: 2026-10-16

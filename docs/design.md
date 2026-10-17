@@ -106,7 +106,7 @@ Work sources declare `work:<source>:<project>` entities of type `project` and
 runtime, named by their current artifact titles with origin `source`. Projects
 sit under their declared repositories; workstreams sit under their project.
 Deleting an artifact removes its entity and incoming edges, leaving children.
-See [A work-updates source declares entities at runtime](adr/0029-a-work-updates-source-declares-entities-at-runtime.md).
+See [A work-updates source declares entities at runtime](adr/0030-a-work-updates-source-declares-entities-at-runtime.md).
 
 `part_of` edges come from four sources, ranked: `code/` configuration over tracker hierarchy over work updates over repository structure, where a code entity is part of the nearest entity whose path patterns contain its own. For each entity the highest-ranked source that sets any parent replaces the others' parents, and an edge that would close a cycle is dropped from the lower-ranked source. People restructure the hierarchy by editing `code/`, and nothing inferred overrides it ([ADR-0016](adr/0016-entity-hierarchy-sources-are-ranked-and-replace.md)).
 
@@ -245,7 +245,7 @@ revisions of every listed container. Missing containers grant nobody access;
 mixed public and private lists during a re-sync fail closed. Resolution adds
 the canonical list's key to the reader's audience on each read; repository
 permissions are never copied into work events at ingest. See
-[An access list may defer to other sources' containers](adr/0028-an-access-list-may-defer-to-other-sources-containers.md).
+[An access list may defer to other sources' containers](adr/0029-an-access-list-may-defer-to-other-sources-containers.md).
 
 Work entities are visible only to readers who can read their artifact's current
 document, as well as reach the entity. Before distillation, after deletion, or

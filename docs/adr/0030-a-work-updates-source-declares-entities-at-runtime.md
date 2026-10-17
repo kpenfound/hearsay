@@ -1,4 +1,4 @@
-# 29. A work-updates source declares entities at runtime
+# 30. A work-updates source declares entities at runtime
 
 - Status: accepted
 - Date: 2026-10-16
@@ -43,7 +43,7 @@ answer as for a missing entity, and related listings must not reveal it.
 Repository access changes therefore affect entity discovery without a repost.
 
 Projects defer access to every declared repository through
-[An access list may defer to other sources' containers](0028-an-access-list-may-defer-to-other-sources-containers.md).
+[An access list may defer to other sources' containers](0029-an-access-list-may-defer-to-other-sources-containers.md).
 Without repositories, access is restricted to poster and author identities.
 Children inherit the project's current list. A project post succeeds only
 after propagating its list to all live children; identical reposts and startup

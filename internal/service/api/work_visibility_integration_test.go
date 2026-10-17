@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -26,6 +27,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
+	"github.com/kpenfound/hearsay/internal/l3"
 	"github.com/kpenfound/hearsay/internal/principal"
 	"github.com/kpenfound/hearsay/internal/service/api"
 )
@@ -153,9 +155,12 @@ func (w *workVisibilityWorld) hiddenScope(t *testing.T, caller api.Caller, entit
 	if err := json.Unmarshal([]byte(start.body), &watched); err != nil {
 		t.Fatal(err)
 	}
-	for _, call := range []string{"get_bundle", "search", "watch"} {
+	for _, call := range []string{"get_bundle", "search", "watch", "traverse"} {
 		t.Run(call, func(t *testing.T) {
 			args := func(id string) map[string]any {
+				if call == "traverse" {
+					return traverseArgs("entity", id, map[string]any{"edge": "has_part"})
+				}
 				a := map[string]any{"scope": id}
 				if call == "search" {
 					a["query"] = "visibilityproof"
@@ -172,6 +177,112 @@ func (w *workVisibilityWorld) hiddenScope(t *testing.T, caller api.Caller, entit
 				t.Fatalf("%s hidden HTTP %+v MCP %+v; missing HTTP %+v MCP %+v", call, h, m, mh, mm)
 			}
 		})
+	}
+}
+
+func (w *workVisibilityWorld) traverse(t *testing.T, caller api.Caller, args any) (l3.Subgraph, string) {
+	t.Helper()
+	h, m := w.both(t, caller, "traverse", args)
+	if h.status != http.StatusOK || m.isError || h.body != m.body {
+		t.Fatalf("traverse: HTTP %+v MCP %+v", h, m)
+	}
+	var graph l3.Subgraph
+	if err := json.Unmarshal([]byte(h.body), &graph); err != nil {
+		t.Fatal(err)
+	}
+	return graph, h.body
+}
+
+func (w *workVisibilityWorld) traversalAccess(t *testing.T, caller api.Caller, reads bool) {
+	t.Helper()
+	for _, entity := range []string{w.projectEntity, w.streamEntity} {
+		args := traverseArgs("entity", entity, map[string]any{"edge": "part_of"})
+		if !reads {
+			h, m := w.both(t, caller, "traverse", args)
+			mh, mm := w.both(t, caller, "traverse", traverseArgs("entity", "work:projects:absent", map[string]any{"edge": "part_of"}))
+			if h.status != http.StatusNotFound || !m.isError || h != mh || m != mm {
+				t.Fatalf("hidden start: HTTP %+v MCP %+v; missing HTTP %+v MCP %+v", h, m, mh, mm)
+			}
+		} else {
+			g, body := w.traverse(t, caller, args)
+			if !slices.Contains(nodeIDs(g), entity) || len(g.Edges) != 1 || g.Truncated {
+				t.Fatalf("readable start: %s", body)
+			}
+		}
+	}
+	args := traverseArgs("entity", w.repo, map[string]any{"edge": "has_part", "depth": "1..2"})
+	g, body := w.traverse(t, caller, args)
+	want := []string{w.repo, "code:reference", "code:structure"}
+	if reads {
+		want = append(want, w.projectEntity, w.streamEntity)
+	}
+	if !slices.Equal(nodeIDs(g), want) || len(g.Edges) != len(want)-1 || g.Truncated {
+		t.Fatalf("descendants for %s: %s, want %v", caller.Principal, body, want)
+	}
+	for _, e := range g.Edges {
+		if !slices.Contains(want, e.From.ID) || !slices.Contains(want, e.To.ID) {
+			t.Fatalf("hidden edge: %+v", e)
+		}
+	}
+	if !reads && (strings.Contains(body, "Resilient delivery") || strings.Contains(body, "Retry policy")) {
+		t.Fatalf("hidden name in traversal: %s", body)
+	}
+}
+
+func TestWorkEntityVisibilityTraverseScopesAndBudget(t *testing.T) {
+	w := newWorkVisibilityWorld(t, "acme/api")
+	private := connector.ACL{{Kind: connector.ACLGroup, Source: "github", NativeID: "acme/api"}}
+	w.repositoryRevision(t, "acme/api", "api-issue", "private", 1, private)
+	// A public topic may name a private work entity as its scope. Keep the
+	// readable topic, but filter that handle just as get_l1/search do.
+	tp := l2.Topic{ID: "topic:public", Name: "Public decision", Scope: w.projectEntity, About: []string{w.repo, w.projectEntity, w.streamEntity}, OpenedBy: l1.DocID("github", "public-note"), ACL: openACL}
+	if _, err := w.graph.OpenTopic(t.Context(), tp); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name string
+		args map[string]any
+	}{
+		{"topic scope", traverseArgs("topic", tp.ID, map[string]any{"edge": "about"})},
+		{"topic from entity", traverseArgs("entity", w.repo, map[string]any{"edge": "topics"})},
+		{"document scope", traverseArgs("document", l1.DocID("github", "public-note"), map[string]any{"edge": "scope"})},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, who := range []string{"ann", "kyle"} {
+				g, body := w.traverse(t, api.Caller{Principal: who}, tt.args)
+				for _, id := range []string{w.projectEntity, w.streamEntity} {
+					// The entity->topic query returns only the topic's project scope.
+					want := who == "kyle" && (tt.name != "topic from entity" || id != w.streamEntity)
+					if strings.Contains(body, id) != want {
+						t.Fatalf("%s for %s: %s", tt.name, who, body)
+					}
+				}
+				for _, n := range g.Nodes {
+					if n.Type == "topic" && (n.Scope == w.projectEntity) != (who == "kyle") {
+						t.Fatalf("topic scope for %s: %s", who, body)
+					}
+				}
+			}
+		})
+	}
+	// Missing work documents fail closed before cutting the raw-row budget.
+	// Other node types retain upstream's raw CandidateLimit behavior.
+	args := traverseArgs("entity", w.repo, map[string]any{"edge": "has_part", "depth": "1..2"})
+	_, absent := w.traverse(t, annAlone, args)
+	if _, err := w.pool.Exec(t.Context(), `INSERT INTO l2_entities (id,type,name,origin,part_of)
+SELECT 'work:projects:undistilled-' || i,'project','Undistilled work','source',ARRAY[$1]
+FROM generate_series(1,$2) i`, w.repo, l3.CandidateLimit); err != nil {
+		t.Fatal(err)
+	}
+	_, hidden := w.traverse(t, annAlone, args)
+	if hidden != absent {
+		t.Fatalf("hidden candidates changed budget/truncation: %s; absent: %s", hidden, absent)
+	}
+	// Filtering also precedes the returned-node limit.
+	args["limit"] = 3
+	_, hidden = w.traverse(t, annAlone, args)
+	if hidden != absent {
+		t.Fatalf("hidden candidates consumed limit: %s; absent: %s", hidden, absent)
 	}
 }
 
@@ -228,6 +339,9 @@ func TestWorkEntityVisibilityUsesCurrentDocuments(t *testing.T) {
 				reads bool
 			}{{"kyle", tt.kyleReads}, {"ann", tt.annReads}, {"outside", false}} {
 				caller := api.Caller{Principal: c.who}
+				if c.who != "outside" {
+					w.traversalAccess(t, caller, c.reads)
+				}
 				for _, e := range []struct{ name, id string }{{"Resilient delivery", w.projectEntity}, {"Retry policy", w.streamEntity}} {
 					w.resolves(t, caller, e.name, e.id, c.reads)
 					if !c.reads {
@@ -413,6 +527,7 @@ func TestWorkEntityVisibilityFollowsGitHubPrivatizationWithoutRepost(t *testing.
 				who   string
 				reads bool
 			}{{"kyle", true}, {"ann", tt.annReads}} {
+				w.traversalAccess(t, api.Caller{Principal: c.who}, c.reads)
 				for _, artifact := range []string{"retry", "retry#policy"} {
 					w.documentAccess(t, c.who, artifact, c.reads)
 				}

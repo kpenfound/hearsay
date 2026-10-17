@@ -76,14 +76,16 @@ type candidate struct {
 	at        time.Time
 }
 type traversal struct {
-	v           *Views
-	reader      l1.Reader
-	values      map[NodeRef]*walkValue
-	assessments map[string]*l2.Assessment
-	examined    int
-	out         Subgraph
-	returned    map[NodeRef]bool
-	edges       map[Edge]bool
+	v            *Views
+	reader       l1.Reader
+	values       map[NodeRef]*walkValue
+	assessments  map[string]*l2.Assessment
+	hiddenWork   l2.WorkEntityVisibility
+	excludedWork []string
+	examined     int
+	out          Subgraph
+	returned     map[NodeRef]bool
+	edges        map[Edge]bool
 }
 
 // Traverse follows bounded typed steps, authorizing every node before using
@@ -92,7 +94,17 @@ func (v *Views) Traverse(ctx context.Context, reader l1.Reader, q Query) (Subgra
 	if err := q.Validate(); err != nil {
 		return Subgraph{}, err
 	}
+	hidden, err := v.graph.HiddenWorkEntities(ctx, reader)
+	if err != nil {
+		return Subgraph{}, err
+	}
 	w := traversal{v: v, reader: reader, values: map[NodeRef]*walkValue{}, assessments: map[string]*l2.Assessment{}, returned: map[NodeRef]bool{}, edges: map[Edge]bool{}, out: Subgraph{Nodes: []Node{}, Edges: []Edge{}}}
+	w.hiddenWork = hidden
+	for id, hidden := range hidden {
+		if hidden {
+			w.excludedWork = append(w.excludedWork, id)
+		}
+	}
 	frontier := []NodeRef{}
 	for _, ref := range q.Start {
 		value, err := w.read(ctx, ref)
@@ -261,7 +273,7 @@ func (w *traversal) read(ctx context.Context, ref NodeRef) (*walkValue, error) {
 		if err != nil {
 			break
 		}
-		if !w.reader.InReach([]string{ref.ID}) {
+		if w.hiddenWork.Hidden(ref.ID) || !w.reader.InReach([]string{ref.ID}) {
 			break
 		}
 		value.visible = true
@@ -314,7 +326,11 @@ func (w *traversal) read(ctx context.Context, ref NodeRef) (*walkValue, error) {
 		value.visible = true
 		value.node.ID = a.Topic.ID
 		value.node.Name = Line(a.Topic.Name)
-		value.node.Scope = a.Topic.Scope
+		// Scope is an entity handle too; readable topic evidence does not
+		// authorize disclosure of a hidden work entity it names.
+		if !w.hiddenWork.Hidden(a.Topic.Scope) {
+			value.node.Scope = a.Topic.Scope
+		}
 		for _, st := range a.History {
 			if (a.Access.Stance(w.reader, st) || a.Access.Withdrawal(w.reader, st)) && st.StatedAt.After(value.at) {
 				value.at = st.StatedAt

@@ -1,6 +1,6 @@
 # 16. Entity hierarchy sources are ranked, and the highest replaces the rest
 
-- Status: accepted; superseded in part (the three hierarchy sources and their rank) by [A work-updates source declares entities at runtime](0029-a-work-updates-source-declares-entities-at-runtime.md)
+- Status: accepted; superseded in part (the three hierarchy sources and their rank) by [A work-updates source declares entities at runtime](0030-a-work-updates-source-declares-entities-at-runtime.md)
 - Date: 2026-09-23
 
 ## Context
