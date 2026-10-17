@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -42,14 +41,16 @@ const (
 // Asserter reads one L1 document and writes what it asserts into L2. It is the
 // whole of what an `assert` job does, and a value a test can drive directly.
 type Asserter struct {
-	pool       *pgxpool.Pool
-	docs       *l1.Store
-	events     *l0.Store
-	tier       llm.Completer
-	repo       config.Repo
-	connectors *connector.Registry
-	timeout    time.Duration
-	replies    Replies
+	pool            *pgxpool.Pool
+	docs            *l1.Store
+	events          *l0.Store
+	tier            llm.Completer
+	repo            config.Repo
+	connectors      *connector.Registry
+	timeout         time.Duration
+	replies         Replies
+	judgments       llm.Judgments
+	commitJudgments JournalCommit
 }
 
 // WithReplies sets the repliers GitHub commands are answered through, and
@@ -74,18 +75,24 @@ func New(pool *pgxpool.Pool, registry llm.Registry, cfg *config.Config, registri
 	if err != nil {
 		return nil, err
 	}
+	judgments, err := llm.NewJudgments(cfg.Repo.Boost, nil, nil)
+	if err != nil {
+		return nil, err
+	}
 	var connectors *connector.Registry
 	if len(registries) > 0 {
 		connectors = registries[0]
 	}
 	return &Asserter{
-		pool:       pool,
-		docs:       l1.New(pool),
-		events:     l0.New(pool),
-		tier:       tier,
-		repo:       cfg.Repo,
-		connectors: connectors,
-		timeout:    CallTimeout,
+		pool:            pool,
+		docs:            l1.New(pool),
+		events:          l0.New(pool),
+		tier:            tier,
+		repo:            cfg.Repo,
+		connectors:      connectors,
+		timeout:         CallTimeout,
+		commitJudgments: l1.CommitJudgments,
+		judgments:       judgments,
 	}, nil
 }
 
@@ -167,7 +174,7 @@ func (a *Asserter) Handle(ctx context.Context, job queue.Job) error {
 		log.InfoContext(ctx, "assertion appended", "l0_id", job.TargetID, "scope", job.SerialKey, "written", written)
 		return nil
 	}
-	result, err := a.Assert(ctx, job.TargetID, job.SerialKey)
+	result, err := a.assert(ctx, job.TargetID, job.SerialKey, jobQueueDelay(job))
 	if err != nil {
 		return err
 	}
@@ -193,148 +200,83 @@ func (a *Asserter) Handle(ctx context.Context, job queue.Job) error {
 // the write writes the rows it would have — topics and stances have ids derived
 // from what produced them, and a stance the topic already holds is not added.
 func (a *Asserter) Assert(ctx context.Context, docID, scope string) (Result, error) {
-	result := Result{DocID: docID}
-	stored, err := a.docs.Get(ctx, docID)
-	if errors.Is(err, l1.ErrNotFound) {
-		result.Skipped = true
-		return result, nil
+	return a.assert(ctx, docID, scope, nil)
+}
+
+func jobQueueDelay(job queue.Job) *int64 {
+	if job.EnqueuedAt.IsZero() || job.StartedAt.IsZero() || job.StartedAt.Before(job.EnqueuedAt) {
+		return nil
 	}
+	return count(job.StartedAt.Sub(job.EnqueuedAt).Nanoseconds())
+}
+
+func (a *Asserter) assert(ctx context.Context, docID, scope string, queueDelay *int64) (Result, error) {
+	started := time.Now()
+	prepared, err := a.prepare(ctx, docID, scope)
 	if err != nil {
 		return Result{}, err
 	}
+	result := prepared.result
+	if result.Skipped || result.Unchanged {
+		return result, nil
+	}
+	stored, topics, candidates := prepared.stored, prepared.topics, prepared.candidates
 	doc := stored.Document
-	if !doc.Body.OutcomeKind.Asserts() {
-		result.Skipped = true
-		return result, nil
-	}
-	graph := l2.New(a.pool)
-	if at, ok, err := graph.Asserted(ctx, docID); err != nil {
-		return Result{}, err
-	} else if ok && at.Equal(stored.DistilledAt) {
-		result.Unchanged = true
-		return result, nil
-	}
-
-	keys := l2.JoinKeys(doc)
-	topics, err := a.candidates(ctx, graph, scope, doc, keys)
+	baseline, tokens, err := a.extract(ctx, doc, candidates)
 	if err != nil {
 		return Result{}, err
 	}
-	candidates := make([]Candidate, len(topics))
-	for i, t := range topics {
-		history, err := graph.StanceHistory(ctx, t.ID)
-		if err != nil {
-			return Result{}, err
+	// One deadline for the entire optional stage. Topic matching and broader
+	// shortlisting must use this same context, never create a fresh budget.
+	optional, cancel := NewJobBudget(ctx, a.repo.Boost)
+	defer cancel()
+	batch := newJudgmentBatch(prepared.inputs, started, tokens, len(topics))
+	batch.observation.QueueDelayNS = queueDelay
+	ans := cloneAnswer(baseline)
+	if a.repo.Boost.Enabled && a.judgments != nil && prepared.inputs.Hash != "" {
+		batch.observation.Cohort = "shadow"
+		if a.repo.Boost.Policies[llm.TaskStanceComparison].Name != "" {
+			batch.observation.Cohort = "accepted"
 		}
-		candidates[i] = Candidate{Name: t.Name}
-		// The topic is offered, and its position only where everyone who may
-		// read this document may read all of that position's evidence now.
-		if current, ok := l2.Current(history); ok {
-			readable, err := graph.EvidenceReadableBy(ctx, current.Evidence, doc.ACL)
-			if err != nil {
-				return Result{}, err
-			}
-			if readable {
-				candidates[i].Current = current.Position
-			}
-		}
-	}
-
-	ans, err := a.extract(ctx, doc, candidates)
-	if err != nil {
-		return Result{}, err
+		a.compareStances(optional, &ans, prepared, &batch)
 	}
 
 	err = pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) error {
-		result.TopicsOpened, result.StancesWritten, result.Positions = 0, 0, 0
-		w := l2.New(tx)
-		items := l2.TrackerItems(a.repo, doc)
-		about := slices.Clone(doc.Scope)
-		for _, item := range items {
-			if _, err := w.EnsureEntity(ctx, item); err != nil {
-				return err
-			}
-			about = append(about, item.ID)
+		write := func(tx pgx.Tx, extraction answer) error {
+			return a.writeExtraction(ctx, tx, stored, scope, topics, candidates, extraction, &result)
 		}
-		for i, as := range ans.Assertions {
-			position := clean(as.Position)
-			name := clean(as.TopicName)
-			if position == "" {
-				continue
+		// The savepoint covers BOTH the journal and consumer writes. Validate
+		// judgments before changing inputs; measure the complete stage after
+		// writing, then commit its observation against the post-write snapshot.
+		// Any refusal, including the observation, rolls the whole pass back.
+		var writeErr error
+		optionalErr := pgx.BeginFunc(ctx, tx, func(sub pgx.Tx) error {
+			if prepared.inputs.Hash == "" || batch.refused {
+				return l1.JournalStorageFailure
 			}
-			var topicID string
-			// shown is whether the model was shown a position to judge this
-			// one against; a position withheld from it was not.
-			shown := false
-			if as.Topic == NewTopic {
-				if name == "" {
-					continue
-				}
-				topic := l2.Topic{
-					ID: l2.TopicID(scope, docID, i, name), Scope: scope, Name: name,
-					About: about, JoinKeys: keys, ACL: doc.ACL, OpenedBy: docID,
-				}
-				opened, err := w.OpenTopic(ctx, topic)
-				if err != nil {
-					return err
-				}
-				if opened {
-					result.TopicsOpened++
-				}
-				// A topic this answer opened before, on an earlier run, may
-				// have been merged away since: its stance goes where the
-				// topic went.
-				topicID = topic.ID
-			} else {
-				at := -1
-				for j := range topics {
-					if label(j) == as.Topic {
-						at = j
-					}
-				}
-				if at < 0 {
-					// The schema's enum is the labels offered, so this is an
-					// answer internal/llm would have refused.
-					return fmt.Errorf("asserting %s: the %s answer names topic %q, which was not offered", docID, llm.TierAssert, as.Topic)
-				}
-				topicID = topics[at].ID
-				shown = candidates[at].Current != ""
-			}
-			// The topic as the ledger makes it now, with a row to write on:
-			// never one merged away, and a split's topic gets its row here.
-			target, err := w.Target(ctx, topicID, doc.ACL, docID)
-			if err != nil {
+			if err := a.commitJudgments(ctx, sub, batch.records, nil, l1.JournalCommitOptions{}); err != nil {
 				return err
 			}
-			topicID = target.ID
-			if err := w.ExtendTopic(ctx, topicID, about, keys); err != nil {
-				return err
+			if writeErr = write(sub, ans); writeErr != nil {
+				return writeErr
 			}
-			tier := l2.RecordedTier(a.repo.Authority.ForScope(scope), doc)
-			judgement := l2.JudgementUnknown
-			if as.Judgement != nil && shown {
-				judgement = *as.Judgement
-			}
-			_, written, err := w.AppendStance(ctx, l2.Stance{
-				ID:        l2.StanceID(topicID, docID, position, stored.DistilledAt, tier),
-				TopicID:   topicID,
-				Position:  position,
-				Judgement: judgement,
-				Author:    authorOf(doc),
-				StatedAt:  doc.Time.LastActivity,
-				Evidence:  []string{docID},
-				Tier:      tier,
-				ACL:       doc.ACL,
-			}, stored.DistilledAt)
-			if err != nil {
-				return err
-			}
-			result.Positions++
-			if written {
-				result.StancesWritten++
-			}
+			return a.observeStage(ctx, sub, batch.observation, started)
+		})
+		if optionalErr == nil {
+			return nil
 		}
-		return w.MarkAsserted(ctx, docID, stored.DistilledAt, result.Positions)
+		if writeErr != nil {
+			return writeErr
+		}
+		// The complete original extraction is the only input to this rebuild.
+		if err := write(tx, baseline); err != nil {
+			return err
+		}
+		// Optional recording can fail persistently. Observation refusal must
+		// likewise leave these baseline writes usable.
+		batch.observation.Cohort = "baseline"
+		_ = a.observeStage(ctx, tx, batch.observation, started)
+		return nil
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("writing what %s asserts: %w", docID, err)
@@ -369,16 +311,16 @@ func (a *Asserter) candidates(ctx context.Context, graph *l2.Store, scope string
 // The error it returns is a log line and a queue_job.last_error column, so it
 // names the document and the tier and never a word of what was sent or what
 // came back (ADR-0008).
-func (a *Asserter) extract(ctx context.Context, doc l1.Document, candidates []Candidate) (answer, error) {
+func (a *Asserter) extract(ctx context.Context, doc l1.Document, candidates []Candidate) (answer, llm.Tokens, error) {
 	call, done := context.WithTimeout(ctx, a.timeout)
 	defer done()
 	resp, err := a.tier.Complete(call, RequestFor(doc, candidates, 0))
 	if err != nil {
-		return answer{}, fmt.Errorf("asserting %s: %w", doc.ID, err)
+		return answer{}, llm.Tokens{}, fmt.Errorf("asserting %s: %w", doc.ID, err)
 	}
 	var ans answer
 	if err := json.Unmarshal(resp.JSON, &ans); err != nil {
-		return answer{}, fmt.Errorf("asserting %s: the %s answer did not decode: %w", doc.ID, llm.TierAssert, err)
+		return answer{}, llm.Tokens{}, fmt.Errorf("asserting %s: the %s answer did not decode: %w", doc.ID, llm.TierAssert, err)
 	}
 	for i, as := range ans.Assertions {
 		valid := as.Judgement == nil
@@ -386,10 +328,10 @@ func (a *Asserter) extract(ctx context.Context, doc l1.Document, candidates []Ca
 			valid = as.Judgement != nil && (*as.Judgement == l2.JudgementChanges || *as.Judgement == l2.JudgementRestates)
 		}
 		if !valid {
-			return answer{}, fmt.Errorf("asserting %s: the %s answer has invalid judgement for assertion %d", doc.ID, llm.TierAssert, i+1)
+			return answer{}, llm.Tokens{}, fmt.Errorf("asserting %s: the %s answer has invalid judgement for assertion %d", doc.ID, llm.TierAssert, i+1)
 		}
 	}
-	return ans, nil
+	return ans, resp.Tokens, nil
 }
 
 // clean is a model's string made fit to store: trimmed, and scrubbed the way

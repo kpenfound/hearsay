@@ -1,0 +1,7 @@
+{
+  "changes": {"ModelVersion":"jev-fixture-v1","Answers":[{"ID":"stance","Choice":"changes","Confidence":0.96,"Probabilities":{"changes":0.96,"restates":0.03,"abstain":0.01}}],"Usage":{"input_tokens":40,"output_tokens":0,"cost_usd":0}},
+  "restates": {"ModelVersion":"jev-fixture-v1","Answers":[{"ID":"stance","Choice":"restates","Confidence":0.96,"Probabilities":{"changes":0.03,"restates":0.96,"abstain":0.01}}],"Usage":{"input_tokens":40,"output_tokens":0,"cost_usd":0}},
+  "abstain": {"ModelVersion":"jev-fixture-v1","Answers":[{"ID":"stance","Choice":"abstain","Confidence":0.96,"Probabilities":{"changes":0.02,"restates":0.02,"abstain":0.96}}]},
+  "uncertain": {"ModelVersion":"jev-fixture-v1","Answers":[{"ID":"stance","Choice":"restates","Confidence":0.55,"Probabilities":{"changes":0.4,"restates":0.55,"abstain":0.05}}]},
+  "invalid": {"ModelVersion":"jev-fixture-v1","Answers":[{"ID":"stance","Choice":"restates","Confidence":0.99,"Probabilities":{"changes":0.3,"restates":0.9,"abstain":0.1}}]}
+}
