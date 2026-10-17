@@ -193,7 +193,7 @@ func TestStanceBoostWithheldPositionSendsNothing(t *testing.T) {
 		t.Fatal("withheld position sent to provider")
 	}
 	var n int
-	if err = pool.QueryRow(t.Context(), `SELECT count(*) FROM judgment_journal WHERE inputs->'spec'->>'document_id'=$1`, f.prID).Scan(&n); err != nil || n != 0 {
+	if err = pool.QueryRow(t.Context(), `SELECT count(*) FROM judgment_journal WHERE task='stance_comparison' AND inputs->'spec'->>'document_id'=$1`, f.prID).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("withheld judgments = %d, %v", n, err)
 	}
 }
@@ -210,7 +210,7 @@ func TestStanceJournalRefusalWritesBaselineAndRetryDoesNotAdopt(t *testing.T) {
 			a := boostedAsserter(t, pool, src, cfg, j, loadFixtures(t))
 			var refused error
 			a.WithJournalCommit(func(ctx context.Context, tx pgx.Tx, rs []l1.JudgmentRecord, obs []l1.PipelineObservation, opts l1.JournalCommitOptions) error {
-				if len(rs) > 0 && (len(rs) != 1 || rs[0].Label != "restates" || rs[0].Outcome != "answer") {
+				if len(rs) > 0 && (rs[0].Label != "restates" || rs[0].Outcome != "answer") {
 					t.Fatalf("expected accepted result before refusal: %+v", rs)
 				}
 				if len(rs) > 0 {
@@ -353,7 +353,7 @@ func TestStanceJobBudgetWithSeveralPositions(t *testing.T) {
 	var found bool
 	for _, o := range obs {
 		if o.Inputs.Documents[0] == f.prID || len(o.Inputs.Documents) > 1 && o.Inputs.Documents[1] == f.prID {
-			if o.JudgmentAttempts != nil && *o.JudgmentAttempts == 1 && o.JudgmentFallbacks != nil && *o.JudgmentFallbacks == 4 {
+			if o.JudgmentAttempts != nil && *o.JudgmentAttempts == 1 && o.JudgmentFallbacks != nil && *o.JudgmentFallbacks >= 4 {
 				found = true
 			}
 		}

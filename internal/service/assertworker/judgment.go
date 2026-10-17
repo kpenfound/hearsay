@@ -83,25 +83,9 @@ func (a *Asserter) prepare(ctx context.Context, docID, scope string) (preparedAs
 		if err != nil {
 			return err
 		}
-		p.candidates, p.previous = make([]Candidate, len(p.topics)), make([]l2.Stance, len(p.topics))
-		spec := l1.JudgmentInputSpec{DocumentID: docID, Scope: []string{scope}, ACL: doc.ACL}
-		for i, t := range p.topics {
-			spec.CandidateTopicIDs = append(spec.CandidateTopicIDs, t.ID)
-			history, err := graph.StanceHistory(ctx, t.ID)
-			if err != nil {
-				return err
-			}
-			p.candidates[i] = Candidate{Name: t.Name}
-			if current, ok := l2.Current(history); ok {
-				readable, err := graph.EvidenceReadableBy(ctx, current.Evidence, doc.ACL)
-				if err != nil {
-					return err
-				}
-				if readable && current.Position != "" {
-					p.candidates[i].Current, p.previous[i] = current.Position, current
-					spec.ComparedStanceIDs = append(spec.ComparedStanceIDs, current.ID)
-				}
-			}
+		spec, err := p.readCandidates(ctx, graph, scope)
+		if err != nil {
+			return err
 		}
 		// A savepoint isolates optional snapshot/storage failures from the baseline
 		// read. All reads above and this capture use the same MVCC snapshot.
@@ -187,63 +171,7 @@ func (a *Asserter) compareStances(optional context.Context, ans *answer, p prepa
 				continue
 			}
 			req := StanceComparisonRequest(t.Name, p.candidates[j].Current, as.Position, p.stored.Body.Outcome)
-			raw, _ := json.Marshal(req)
-			hash := sha256.Sum256(raw)
-			record := l1.JudgmentRecord{Task: string(llm.TaskStanceComparison), QuestionVersion: stanceQuestionVersion, QuestionHash: hex.EncodeToString(hash[:]), Inputs: p.inputs, Mode: "shadow"}
-			// All compared versions were captured with the prompt's read snapshot.
-			// The question hash identifies this particular new/previous position pair.
-			reader := l1.Reader{Effective: principal.Effective{Human: "assert-worker", Grant: principal.Grant{Scopes: principal.AllScopes()}}, Audience: p.stored.ACL}
-			var saved *l1.JudgmentRecord
-			var err error
-			if optional.Err() == nil {
-				saved, err = a.docs.LookupJudgment(optional, reader, record.Task, record.QuestionVersion, record.QuestionHash, record.Inputs)
-				if err != nil && optional.Err() == nil {
-					batch.refused = true
-					continue
-				}
-			}
-			if saved != nil {
-				// Never re-evaluate a committed record under today's model or policy.
-				record = *saved
-			} else {
-				policy := a.repo.Boost.Policies[llm.TaskStanceComparison]
-				if policy.Name != "" {
-					record.Mode, record.Policy = "accepted", policy.Name
-				}
-				if optional.Err() == nil {
-					record.ID, err = a.docs.BeginJudgment(optional, record)
-					if err != nil && optional.Err() == nil {
-						batch.refused = true
-						continue
-					}
-				}
-				if record.ID == "" {
-					// No provider attempt starts after exhaustion. Mint a local
-					// identity so the zero-attempt fallback still commits with
-					// the stage; never use the live baseline context to wait
-					// for optional lookup/attempt storage beyond the budget.
-					var id [16]byte
-					if _, err = rand.Read(id[:]); err != nil {
-						batch.refused = true
-						continue
-					}
-					record.ID = "jud_" + hex.EncodeToString(id[:])
-				}
-				out := a.judgments.Judge(optional, req)
-				if errors.Is(optional.Err(), context.DeadlineExceeded) && out.Attempts == 0 {
-					out.Fallback = llm.JudgmentBudgetExhausted
-				}
-				if out.Fallback == "" && !llm.ValidJudgmentResponse(req, out.JudgmentResponse) {
-					out.Fallback = llm.JudgmentInvalidResponse
-				}
-				record = stanceResult(record, out, policy)
-				batch.observation.JudgmentAttempts = l1.AddPipelineCount(batch.observation.JudgmentAttempts, record.Attempts)
-				batch.observation.JudgmentUsage = llm.AddJudgmentUsage(batch.observation.JudgmentUsage, out.Usage)
-				if record.FallbackReason != "" {
-					batch.observation.JudgmentFallbacks = l1.AddPipelineCount(batch.observation.JudgmentFallbacks, count(1))
-				}
-			}
-			batch.records = append(batch.records, record)
+			record := a.evaluateJudgment(optional, req, llm.TaskStanceComparison, stanceQuestionVersion, p, batch)
 			if record.Mode == "accepted" && record.Outcome == "answer" && record.FallbackReason == "" && (record.Label == "changes" || record.Label == "restates") {
 				judgement := l2.Judgement(record.Label)
 				ans.Assertions[i].Judgement = &judgement
@@ -253,7 +181,70 @@ func (a *Asserter) compareStances(optional context.Context, ans *answer, p prepa
 	}
 }
 
-func stanceResult(r l1.JudgmentRecord, out llm.JudgmentResult, policy llm.AcceptancePolicy) l1.JudgmentRecord {
+// evaluateJudgment shares durable reuse, validation and budget accounting across
+// every assertion judgment. A saved result is consumed under its original policy.
+func (a *Asserter) evaluateJudgment(optional context.Context, req llm.JudgmentRequest, task llm.JudgmentTask, version string, p preparedAssertion, batch *judgmentBatch) l1.JudgmentRecord {
+	raw, _ := json.Marshal(req)
+	hash := sha256.Sum256(raw)
+	record := l1.JudgmentRecord{Task: string(task), QuestionVersion: version, QuestionHash: hex.EncodeToString(hash[:]), Inputs: p.inputs, Mode: "shadow"}
+	// All compared versions were captured with the prompt's read snapshot.
+	// The question hash identifies this particular question and minimized state.
+	reader := l1.Reader{Effective: principal.Effective{Human: "assert-worker", Grant: principal.Grant{Scopes: principal.AllScopes()}}, Audience: p.stored.ACL}
+	var saved *l1.JudgmentRecord
+	var err error
+	if optional.Err() == nil {
+		saved, err = a.docs.LookupJudgment(optional, reader, record.Task, record.QuestionVersion, record.QuestionHash, record.Inputs)
+		if err != nil && optional.Err() == nil {
+			batch.refused = true
+			return l1.JudgmentRecord{}
+		}
+	}
+	if saved != nil {
+		// Never re-evaluate a committed record under today's model or policy.
+		record = *saved
+	} else {
+		policy := a.repo.Boost.Policies[task]
+		if policy.Name != "" {
+			record.Mode, record.Policy = "accepted", policy.Name
+		}
+		if optional.Err() == nil {
+			record.ID, err = a.docs.BeginJudgment(optional, record)
+			if err != nil && optional.Err() == nil {
+				batch.refused = true
+				return l1.JudgmentRecord{}
+			}
+		}
+		if record.ID == "" {
+			// No provider attempt starts after exhaustion. Mint a local
+			// identity so the zero-attempt fallback still commits with
+			// the stage; never use the live baseline context to wait
+			// for optional lookup/attempt storage beyond the budget.
+			var id [16]byte
+			if _, err = rand.Read(id[:]); err != nil {
+				batch.refused = true
+				return l1.JudgmentRecord{}
+			}
+			record.ID = "jud_" + hex.EncodeToString(id[:])
+		}
+		out := a.judgments.Judge(optional, req)
+		if errors.Is(optional.Err(), context.DeadlineExceeded) && out.Attempts == 0 {
+			out.Fallback = llm.JudgmentBudgetExhausted
+		}
+		if out.Fallback == "" && !llm.ValidJudgmentResponse(req, out.JudgmentResponse) {
+			out.Fallback = llm.JudgmentInvalidResponse
+		}
+		record = judgmentResult(record, out, policy)
+		batch.observation.JudgmentAttempts = l1.AddPipelineCount(batch.observation.JudgmentAttempts, record.Attempts)
+		batch.observation.JudgmentUsage = llm.AddJudgmentUsage(batch.observation.JudgmentUsage, out.Usage)
+		if record.FallbackReason != "" {
+			batch.observation.JudgmentFallbacks = l1.AddPipelineCount(batch.observation.JudgmentFallbacks, count(1))
+		}
+	}
+	batch.records = append(batch.records, record)
+	return record
+}
+
+func judgmentResult(r l1.JudgmentRecord, out llm.JudgmentResult, policy llm.AcceptancePolicy) l1.JudgmentRecord {
 	r.ModelVersion, r.Usage, r.Attempts = out.ModelVersion, out.Usage, count(int64(out.Attempts))
 	r.Outcome = "fallback"
 	if out.Fallback != "" {
@@ -262,9 +253,11 @@ func stanceResult(r l1.JudgmentRecord, out llm.JudgmentResult, policy llm.Accept
 	}
 	a := out.Answers[0]
 	r.Label, r.Probabilities, r.Confidence = a.Choice, a.Probabilities, &a.Confidence
+	// For shortlisting, none_fit decides which candidates generation sees.
+	// It must qualify under the same policy as a candidate selection.
 	switch {
-	case a.Choice == "abstain":
-		r.Outcome, r.FallbackReason = "abstain", "abstain"
+	case a.Choice == "abstain" || (a.Choice == "none_fit" && r.Task != string(llm.TaskTopicShortlist)):
+		r.Outcome, r.FallbackReason = "abstain", a.Choice
 	case policy.Name == "":
 		r.Outcome = "answer"
 	case policy.ModelVersion != out.ModelVersion:

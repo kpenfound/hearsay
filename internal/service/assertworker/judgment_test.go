@@ -1,7 +1,9 @@
 package assertworker_test
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -32,7 +34,7 @@ func judgmentFixture(t *testing.T, name string) llm.JudgmentResponse {
 func judgmentCapability(t *testing.T, cfg llm.JudgmentConfig, steps ...llm.JudgmentStep) (llm.Judgments, *llm.FakeJudgmentProvider) {
 	t.Helper()
 	fake := llm.NewFakeJudgmentProvider(steps...)
-	j, err := llm.NewJudgments(cfg, func(llm.JudgmentConfig, string) llm.JudgmentProvider { return fake }, func(string) string { return "fixture-key" })
+	j, err := llm.NewJudgments(cfg, func(llm.JudgmentConfig, string) llm.JudgmentProvider { return stanceOnlyProvider{t, fake} }, func(string) string { return "fixture-key" })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,4 +118,35 @@ func TestJobBudgetAlsoBoundsRetriesAndRetryAfter(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Existing stance regressions isolate their scripted stance attempts; both new
+// integration points still execute with recorded neutral shadow fixtures.
+type stanceOnlyProvider struct {
+	t    *testing.T
+	fake *llm.FakeJudgmentProvider
+}
+
+func (p stanceOnlyProvider) Judge(ctx context.Context, req llm.JudgmentRequest) (llm.JudgmentResponse, error) {
+	if req.Questions[0].ID == "stance" {
+		return p.fake.Judge(ctx, req)
+	}
+	return topicFixture(p.t, fmt.Sprintf("%s-none-%d", req.Questions[0].ID, len(req.Questions[0].Options)-1)), nil
+}
+
+func topicFixture(t *testing.T, name string) llm.JudgmentResponse {
+	t.Helper()
+	data, err := os.ReadFile("testdata/topic-judgments.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixtures map[string]llm.JudgmentResponse
+	if err = json.Unmarshal(data, &fixtures); err != nil {
+		t.Fatal(err)
+	}
+	r, ok := fixtures[name]
+	if !ok {
+		t.Fatalf("missing topic fixture %s", name)
+	}
+	return r
 }

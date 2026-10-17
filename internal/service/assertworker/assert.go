@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -220,7 +221,7 @@ func (a *Asserter) assert(ctx context.Context, docID, scope string, queueDelay *
 	if result.Skipped || result.Unchanged {
 		return result, nil
 	}
-	stored, topics, candidates := prepared.stored, prepared.topics, prepared.candidates
+	stored, candidates := prepared.stored, prepared.candidates
 	doc := stored.Document
 	baseline, tokens, err := a.extract(ctx, doc, candidates)
 	if err != nil {
@@ -230,20 +231,41 @@ func (a *Asserter) assert(ctx context.Context, docID, scope string, queueDelay *
 	// shortlisting must use this same context, never create a fresh budget.
 	optional, cancel := NewJobBudget(ctx, a.repo.Boost)
 	defer cancel()
-	batch := newJudgmentBatch(prepared.inputs, started, tokens, len(topics))
+	batch := newJudgmentBatch(prepared.inputs, started, tokens, len(prepared.topics))
 	batch.observation.QueueDelayNS = queueDelay
 	ans := cloneAnswer(baseline)
+	working := prepared
 	if a.repo.Boost.Enabled && a.judgments != nil && prepared.inputs.Hash != "" {
 		batch.observation.Cohort = "shadow"
 		if a.repo.Boost.Policies[llm.TaskStanceComparison].Name != "" {
 			batch.observation.Cohort = "accepted"
 		}
 		a.compareStances(optional, &ans, prepared, &batch)
+		pool, poolErr := a.preparePool(optional, prepared, scope)
+		if poolErr == nil {
+			batch.observation.Inputs = pool.inputs
+			batch.observation.CandidateCount = l1.AddPipelineCount(batch.observation.CandidateCount, count(int64(len(pool.topics))))
+			selected := a.shortlist(optional, prepared, pool, &batch)
+			if !slices.EqualFunc(selected.topics, prepared.topics, func(a, b l2.Topic) bool { return a.ID == b.ID }) && optional.Err() == nil {
+				batch.observation.GenerativeCalls = l1.AddPipelineCount(batch.observation.GenerativeCalls, count(1))
+				alternate, usage, extractErr := a.extract(optional, doc, selected.candidates)
+				batch.observation.GenerativeUsage = llm.AddJudgmentUsage(batch.observation.GenerativeUsage, llm.JudgmentUsage{InputTokens: positiveCount(usage.Input), OutputTokens: positiveCount(usage.Output)})
+				if extractErr == nil {
+					ans, working = alternate, selected
+					batch.observation.Cohort = "accepted"
+					a.compareStances(optional, &ans, working, &batch)
+				}
+			}
+		}
+		if !a.matchTopics(optional, &ans, working, &batch) || optional.Err() != nil || batch.refused {
+			ans, working = cloneAnswer(baseline), prepared
+			batch.observation.Cohort = "baseline"
+		}
 	}
 
 	err = pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) error {
-		write := func(tx pgx.Tx, extraction answer) error {
-			return a.writeExtraction(ctx, tx, stored, scope, topics, candidates, extraction, &result)
+		write := func(tx pgx.Tx, extraction answer, p preparedAssertion) error {
+			return a.writeExtraction(ctx, tx, stored, scope, p.topics, p.candidates, extraction, &result)
 		}
 		// The savepoint covers BOTH the journal and consumer writes. Validate
 		// judgments before changing inputs; measure the complete stage after
@@ -257,7 +279,7 @@ func (a *Asserter) assert(ctx context.Context, docID, scope string, queueDelay *
 			if err := a.commitJudgments(ctx, sub, batch.records, nil, l1.JournalCommitOptions{}); err != nil {
 				return err
 			}
-			if writeErr = write(sub, ans); writeErr != nil {
+			if writeErr = write(sub, ans, working); writeErr != nil {
 				return writeErr
 			}
 			return a.observeStage(ctx, sub, batch.observation, started)
@@ -269,7 +291,7 @@ func (a *Asserter) assert(ctx context.Context, docID, scope string, queueDelay *
 			return writeErr
 		}
 		// The complete original extraction is the only input to this rebuild.
-		if err := write(tx, baseline); err != nil {
+		if err := write(tx, baseline, prepared); err != nil {
 			return err
 		}
 		// Optional recording can fail persistently. Observation refusal must
@@ -291,7 +313,11 @@ func (a *Asserter) assert(ctx context.Context, docID, scope string, queueDelay *
 // the ledger makes them now: a topic merged away is offered as the topic it
 // went into, and only once.
 func (a *Asserter) candidates(ctx context.Context, graph *l2.Store, scope string, doc l1.Document, keys []string) ([]l2.Topic, error) {
-	byKeys, err := graph.TopicsByJoinKeys(ctx, scope, keys, doc.ACL, MaxCandidates)
+	return a.candidatePool(ctx, graph, scope, doc, keys, MaxCandidates)
+}
+
+func (a *Asserter) candidatePool(ctx context.Context, graph *l2.Store, scope string, doc l1.Document, keys []string, limit int) ([]l2.Topic, error) {
+	byKeys, err := graph.TopicsByJoinKeys(ctx, scope, keys, doc.ACL, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -299,14 +325,15 @@ func (a *Asserter) candidates(ctx context.Context, graph *l2.Store, scope string
 	for i, t := range byKeys {
 		ids[i] = t.ID
 	}
-	near, err := graph.TopicsBySimilarity(ctx, scope, doc.ID, doc.ACL, MaxSimilarityDistance, MaxCandidates-len(byKeys), ids)
+	near, err := graph.TopicsBySimilarity(ctx, scope, doc.ID, doc.ACL, MaxSimilarityDistance, limit-len(byKeys), ids)
 	if err != nil {
 		return nil, err
 	}
 	return append(byKeys, near...), nil
 }
 
-// extract is the one model call.
+// extract calls the generative assert tier. A qualified shortlist may call it
+// again; the original extraction always remains available for baseline recovery.
 //
 // The error it returns is a log line and a queue_job.last_error column, so it
 // names the document and the tier and never a word of what was sent or what
@@ -323,6 +350,9 @@ func (a *Asserter) extract(ctx context.Context, doc l1.Document, candidates []Ca
 		return answer{}, llm.Tokens{}, fmt.Errorf("asserting %s: the %s answer did not decode: %w", doc.ID, llm.TierAssert, err)
 	}
 	for i, as := range ans.Assertions {
+		if as.Topic != NewTopic && topicIndex(as.Topic, len(candidates)) < 0 {
+			return answer{}, llm.Tokens{}, fmt.Errorf("asserting %s: the %s answer names an unoffered topic for assertion %d", doc.ID, llm.TierAssert, i+1)
+		}
 		valid := as.Judgement == nil
 		if as.Topic != NewTopic {
 			valid = as.Judgement != nil && (*as.Judgement == l2.JudgementChanges || *as.Judgement == l2.JudgementRestates)
