@@ -1,0 +1,140 @@
+Work updates verification, 2026-10-17 UTC, final rerun after question 8
+
+Candidate: working-tree image built by hearsay.qa; hearsay devel
+Binary SHA-256: 06a060e34ad6a6d7d4c48ae264f746e0df17436cdba274fa4b380cd07014d27c
+No authority production code or recorded model exchanges changed.
+
+Earlier outcomes (retained for accurate reporting):
+- Attributed L1 assertion failed when factory posted both root and update.
+  L1 correctly retained factory's strongest role, author. The test now uses
+  courier as the separate configured attributor, checking its L1 agent role,
+  kyle's event/document authorship, inferred standing, then hand ratification.
+- Compose could not read the runner's private source files. Normalized file
+  and directory readability; example configuration content did not change.
+- Discord TestGatewayChannelUpdateRequestsResync timed out once in an earlier
+  loaded race run (5s wait). Chief retained this as an optional suggestion.
+  No Discord code/test changes, retries or sleeps. Final race run passed it.
+
+Command: dagger check
+Outer exit: 1
+== TRACE ==  ✘ FAILED
+dagger check  0.3s
+! no checks selected; use 'dagger check -l' to list available checks
+
+✔ Artifacts.filterTypes(types: ["Check"]): Artifacts! 0.0s
+✔ .values(failFast: false): [ArtifactResult!]! 0.0s
+Error: no checks selected; use 'dagger check -l' to list available checks
+
+This runner does not discover the workspace. Explicit configured equivalent:
+Command: dagger --progress plain api with-session python3 docs/qa/dagger-workspace.py --check
+Outer exit: 0
+The wrapper uploads this workspace with withConfigPaths, serves the existing
+module, and evaluates artifacts.filterTypes(types:["Check"]).values(maxConcurrency:4).
+All 40 results were nonempty and each had error: null. Includes generation.
+Relevant log (all integration packages and Hearsay checks):
+79  : ┆ [1.2s] | ok  	github.com/kpenfound/hearsay/internal/config	0.055s
+80  : ┆ [1.5s] | ok  	github.com/kpenfound/hearsay/internal/connector	0.340s
+78  : ┆ [2.1s] | ok  	github.com/kpenfound/hearsay/internal/bundle	0.392s
+77  : ┆ [2.6s] | ok  	github.com/kpenfound/hearsay/cmd/hearsay	0.505s
+628 : ┆ [0.4s] | ok  	github.com/kpenfound/hearsay/internal/connector/agent	0.016s
+1006: ┆ [0.7s] | ok  	github.com/kpenfound/hearsay/internal/connector/github	0.202s
+945 : ┆ [1.4s] | ok  	github.com/kpenfound/hearsay/internal/connector/discord	1.081s
+991 : ┆ [1.0s] | ok  	github.com/kpenfound/hearsay/internal/connector/drive	0.663s
+1212: ┆ [0.3s] | ok  	github.com/kpenfound/hearsay/internal/connector/obsidian	0.043s
+1230: ┆ [0.3s] | ok  	github.com/kpenfound/hearsay/internal/connector/push	0.021s
+1321: ┆ [0.5s] | ok  	github.com/kpenfound/hearsay/internal/connector/slack	0.101s
+1322: ┆ [0.4s] | ok  	github.com/kpenfound/hearsay/internal/connector/tracker	0.053s
+1323: ┆ [0.7s] | ok  	github.com/kpenfound/hearsay/internal/connector/work	0.177s
+1683: ┆ [0.4s] | ok  	github.com/kpenfound/hearsay/internal/db	0.003s
+1728: ┆ [0.1s] | ?   	github.com/kpenfound/hearsay/internal/deletion	[no test files]
+1729: ┆ [0.3s] | ok  	github.com/kpenfound/hearsay/internal/eval	0.003s
+1731: ┆ [0.3s] | ok  	github.com/kpenfound/hearsay/internal/l0	0.004s
+1765: ┆ [0.4s] | ok  	github.com/kpenfound/hearsay/internal/l1	0.016s
+2044: ┆ [0.1s] | ?   	github.com/kpenfound/hearsay/internal/l3	[no test files]
+1805: ┆ [0.4s] | ok  	github.com/kpenfound/hearsay/internal/l2	0.006s
+2294: ┆ [0.4s] | ok  	github.com/kpenfound/hearsay/internal/llm	0.172s
+2428: ┆ [0.3s] | ok  	github.com/kpenfound/hearsay/internal/llm/anthropic	0.007s
+2433: ┆ [0.2s] | ok  	github.com/kpenfound/hearsay/internal/onboard	0.004s
+2462: ┆ [0.3s] | ok  	github.com/kpenfound/hearsay/internal/principal	0.011s
+2595: ┆ [0.3s] | ok  	github.com/kpenfound/hearsay/internal/queue	0.007s
+2672: ┆ [0.7s] | ok  	github.com/kpenfound/hearsay/internal/service	0.004s
+2678: ┆ [0.4s] | ok  	github.com/kpenfound/hearsay/internal/service/assertworker	0.006s
+2677: ┆ [0.6s] | ok  	github.com/kpenfound/hearsay/internal/service/api	0.003s
+2679: ┆ [0.5s] | ok  	github.com/kpenfound/hearsay/internal/service/connectors	0.104s
+2761: ┆ [0.2s] | ok  	github.com/kpenfound/hearsay/internal/telemetry	0.001s
+2760: ┆ [0.3s] | ok  	github.com/kpenfound/hearsay/internal/service/distiller	0.008s
+2775: ┆ [0.1s] | ok  	github.com/kpenfound/hearsay/internal/version	0.001s
+2881: ┆ [0.2s] | schema version 32
+2837: ┆ dag://?check=hearsay/compose-check DONE [1.6s]
+2846: ┆ dag://?check=hearsay/helm-check DONE [1.3s]
+2908: ┆ dag://?check=hearsay/tidy-check DONE [0.3s]
+2936: ┆ [0.5s] | 0 issues.
+2857: ┆ dag://?check=hearsay/image-check DONE [3.9s]
+2901: ┆ dag://?check=hearsay/lint DONE [3.6s]
+2881: ┆ [6.5s] | ok  	github.com/kpenfound/hearsay/cmd/hearsay	5.607s
+2881: ┆ [6.5s] | ok  	github.com/kpenfound/hearsay/internal/bundle	(cached)
+2881: ┆ [6.5s] | ok  	github.com/kpenfound/hearsay/internal/config	1.253s
+2881: ┆ [6.5s] | ok  	github.com/kpenfound/hearsay/internal/connector	(cached)
+2881: ┆ [6.5s] | ok  	github.com/kpenfound/hearsay/internal/connector/agent	(cached)
+2881: ┆ [6.5s] | ok  	github.com/kpenfound/hearsay/internal/connector/discord	2.305s
+2881: ┆ [6.5s] | ok  	github.com/kpenfound/hearsay/internal/connector/drive	(cached)
+2881: ┆ [6.5s] | ok  	github.com/kpenfound/hearsay/internal/connector/github	1.951s
+2881: ┆ [6.5s] | ok  	github.com/kpenfound/hearsay/internal/connector/obsidian	(cached)
+2881: ┆ [6.5s] | ok  	github.com/kpenfound/hearsay/internal/connector/push	(cached)
+2881: ┆ [6.5s] | ok  	github.com/kpenfound/hearsay/internal/connector/slack	1.158s
+2881: ┆ [6.5s] | ok  	github.com/kpenfound/hearsay/internal/connector/tracker	1.177s
+2881: ┆ [6.5s] | ok  	github.com/kpenfound/hearsay/internal/connector/work	1.476s
+2881: ┆ [6.5s] | ok  	github.com/kpenfound/hearsay/internal/db	(cached)
+2881: ┆ [6.5s] | ok  	github.com/kpenfound/hearsay/internal/deletion	(cached)
+2881: ┆ [6.5s] | ok  	github.com/kpenfound/hearsay/internal/eval	(cached)
+2881: ┆ [6.5s] | ok  	github.com/kpenfound/hearsay/internal/l0	(cached)
+2881: ┆ [6.5s] | ok  	github.com/kpenfound/hearsay/internal/l1	(cached)
+2881: ┆ [6.5s] | ok  	github.com/kpenfound/hearsay/internal/l2	(cached)
+2881: ┆ [6.5s] | ok  	github.com/kpenfound/hearsay/internal/l3	(cached)
+2881: ┆ [6.5s] | ok  	github.com/kpenfound/hearsay/internal/llm	1.218s
+2881: ┆ [6.5s] | ok  	github.com/kpenfound/hearsay/internal/llm/anthropic	1.034s
+2881: ┆ [6.5s] | ?   	github.com/kpenfound/hearsay/internal/llm/providers	[no test files]
+2881: ┆ [6.5s] | ok  	github.com/kpenfound/hearsay/internal/onboard	(cached)
+2881: ┆ [6.5s] | ok  	github.com/kpenfound/hearsay/internal/principal	(cached)
+2881: ┆ [6.5s] | ok  	github.com/kpenfound/hearsay/internal/queue	(cached)
+2881: ┆ [6.5s] | ok  	github.com/kpenfound/hearsay/internal/service	(cached)
+PASS: all 40 configured check results have error: null
+2874: ┆ dag://?check=hearsay/integration-test DONE [37.9s]
+2881: ┆ [27.8s] | ok  	github.com/kpenfound/hearsay/internal/service/api	26.876s
+2881: ┆ [27.8s] | ok  	github.com/kpenfound/hearsay/internal/service/assertworker	7.411s
+2881: ┆ [27.8s] | ok  	github.com/kpenfound/hearsay/internal/service/connectors	(cached)
+2881: ┆ [27.8s] | ok  	github.com/kpenfound/hearsay/internal/service/distiller	12.612s
+2881: ┆ [27.8s] | ok  	github.com/kpenfound/hearsay/internal/telemetry	(cached)
+2881: ┆ [27.8s] | ok  	github.com/kpenfound/hearsay/internal/version	(cached)
+  ✔ 2352 passed
+
+Command: dagger --progress plain api with-session python3 docs/qa/dagger-workspace.py --work-tests
+Outer exit: 0
+Fresh migrations 00001..00032 (schema 32), then:
+apk add --no-cache build-base && go run ./cmd/hearsay migrate up && go test -race -count=1 -v -tags=integration ./internal/service/api -run '^(TestPostedWork|TestWorkEntityVisibility)'
+Relevant log:
+--- PASS: TestPostedWorkProjectInheritancePropagationAndDeletion (0.76s)
+--- PASS: TestPostedWorkAttributedUpdateStandingAndScopeRecovery (0.41s)
+    --- PASS: TestPostedWorkAttributedUpdateStandingAndScopeRecovery/attributed (0.21s)
+    --- PASS: TestPostedWorkAttributedUpdateStandingAndScopeRecovery/unattributed (0.20s)
+--- PASS: TestWorkEntityVisibilityUsesCurrentDocuments (4.83s)
+--- PASS: TestWorkEntityVisibilityFiltersRelatedListings (0.18s)
+--- PASS: TestWorkEntityVisibilityFollowsGitHubPrivatizationWithoutRepost (0.78s)
+--- PASS: TestWorkEntityVisibilityAlsoFiltersHistoricalSessionListings (0.05s)
+--- PASS: TestWorkEntityVisibilityGuardsWatchWithReadableEvidence (0.33s)
+ok  	github.com/kpenfound/hearsay/internal/service/api	8.360s
+
+Command: dagger --progress plain api with-session python3 docs/qa/dagger-workspace.py
+Outer exit: 0
+Calls the existing hearsay.qa(ws, script) with docs/qa/work-updates.sh on the
+uploaded candidate. The wrapper independently checks the trial's exit status.
+Relevant log:
+hearsay devel (commit unknown, built unknown)
+06a060e34ad6a6d7d4c48ae264f746e0df17436cdba274fa4b380cd07014d27c  /usr/local/bin/hearsay
+PASS: work source, poster and four shipped services started
+PASS: unauthenticated post refused with 401
+PASS: authenticated project and workstream posts accepted with 202
+PASS: API read-back of l1:projects:retry
+PASS: API read-back of l1:projects:retry#policy
+PASS: API resolves the posted workstream entity
+exit code: 0

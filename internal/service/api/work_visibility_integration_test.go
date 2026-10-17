@@ -413,6 +413,9 @@ func TestWorkEntityVisibilityFollowsGitHubPrivatizationWithoutRepost(t *testing.
 				who   string
 				reads bool
 			}{{"kyle", true}, {"ann", tt.annReads}} {
+				for _, artifact := range []string{"retry", "retry#policy"} {
+					w.documentAccess(t, c.who, artifact, c.reads)
+				}
 				for _, e := range []struct{ name, id string }{{"Resilient delivery", w.projectEntity}, {"Retry policy", w.streamEntity}} {
 					w.resolves(t, api.Caller{Principal: c.who}, e.name, e.id, c.reads)
 					if !c.reads {

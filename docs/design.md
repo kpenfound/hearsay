@@ -31,7 +31,7 @@ L0 and L1 are flat. L2 is the graph. LLM work happens at write time (L0 to L1, L
 
 ## L0: events
 
-Every source connector writes L0 only. An event is `{id, source, native_id, kind, time, payload (JSONB), acl}`. Sources include Slack threads and messages, GitHub issues, PRs, reviews and commits, meeting transcripts from Drive, wiki pages, tracker tickets, and agent session events (start, end, tool calls, assertions). Source gestures are also L0 events; CLI gestures go directly through the shared L2 gesture ledger with a generated event id as the idempotency key. The narrow source-reply exception belongs to runtime components, not connectors ([ADR-0022](adr/0022-human-gestures-and-command-replies.md)).
+Every source connector writes L0 only. An event is `{id, source, native_id, kind, time, payload (JSONB), acl}`. Sources include Slack threads and messages, GitHub issues, PRs, reviews and commits, meeting transcripts from Drive, wiki pages, tracker tickets, factory and agent work updates (projects, workstreams and their updates), and agent session events (start, end, tool calls, assertions). Source gestures are also L0 events; CLI gestures go directly through the shared L2 gesture ledger with a generated event id as the idempotency key. The narrow source-reply exception belongs to runtime components, not connectors ([ADR-0022](adr/0022-human-gestures-and-command-replies.md)).
 
 Agent activity is a first-class source. An agent's tool calls and proposals enter L0 so that later assertions can trace back to what the agent retrieved and chose.
 
@@ -101,7 +101,14 @@ Code is an entity namespace, not a document corpus. What the agent cannot get fr
 
 Tracker items (issues, epics, change units) are entities of type `tracker_item`. Hearsay knows their id, what references them and, where the source states it, one of five core states (`proposed`, `started`, `blocked`, `completed`, `abandoned`). It does not know their state machine.
 
-`part_of` edges come from three sources, ranked: `code/` configuration over tracker hierarchy over repository structure, where a code entity is part of the nearest entity whose path patterns contain its own. For each entity the highest-ranked source that sets any parent replaces the others' parents, and an edge that would close a cycle is dropped from the lower-ranked source. People restructure the hierarchy by editing `code/`, and nothing inferred overrides it ([ADR-0016](adr/0016-entity-hierarchy-sources-are-ranked-and-replace.md)).
+Work sources declare `work:<source>:<project>` entities of type `project` and
+`work:<source>:<project>#<workstream>` entities of type `tracker_item` at
+runtime, named by their current artifact titles with origin `source`. Projects
+sit under their declared repositories; workstreams sit under their project.
+Deleting an artifact removes its entity and incoming edges, leaving children.
+See [A work-updates source declares entities at runtime](adr/0029-a-work-updates-source-declares-entities-at-runtime.md).
+
+`part_of` edges come from four sources, ranked: `code/` configuration over tracker hierarchy over work updates over repository structure, where a code entity is part of the nearest entity whose path patterns contain its own. For each entity the highest-ranked source that sets any parent replaces the others' parents, and an edge that would close a cycle is dropped from the lower-ranked source. People restructure the hierarchy by editing `code/`, and nothing inferred overrides it ([ADR-0016](adr/0016-entity-hierarchy-sources-are-ranked-and-replace.md)).
 
 Aliases are learned by co-occurrence (a PR touching `engine/server/` linked from a thread that says "the engine" is one vote) and confirmed or rejected by humans. CODEOWNERS and repo structure seed the initial map.
 
@@ -231,6 +238,20 @@ Four control points, from cheapest to most involved.
 2. ACL inheritance at L1. Every doc carries the source's access list at ingest and re-syncs on change.
 3. Derived-object classification at L2. A stance inherits the most restrictive ACL of any of its evidence. Per-viewer recomputation is a later option if this proves too lossy.
 4. Principal-based reads. An API caller authenticates as the invoking human; an agent acting for them also authenticates as that agent. Every read is filtered by the effective principal, the intersection of the agent's grants and the invoking human's. Handles fail closed.
+
+An access list may defer to other sources' containers through a `containers`
+entry. A reader must satisfy every distinct access list on the current L0
+revisions of every listed container. Missing containers grant nobody access;
+mixed public and private lists during a re-sync fail closed. Resolution adds
+the canonical list's key to the reader's audience on each read; repository
+permissions are never copied into work events at ingest. See
+[An access list may defer to other sources' containers](adr/0028-an-access-list-may-defer-to-other-sources-containers.md).
+
+Work entities are visible only to readers who can read their artifact's current
+document, as well as reach the entity. Before distillation, after deletion, or
+when access is lost, resolution omits them and scoped reads answer as for a
+nonexistent entity. Repository privatization changes that visibility without a
+work-source repost.
 
 Scopes filter for relevance. ACLs grant permission. They are never the same mechanism.
 

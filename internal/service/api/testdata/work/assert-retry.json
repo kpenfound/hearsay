@@ -1,0 +1,86 @@
+{
+  "completions": [
+    {
+      "tier": "assert",
+      "request": {
+        "system": "You are Hearsay's assertion worker. You read one distilled document from a team's tools and write down the positions it takes: what the team proposed, decided or did, each as an answer to one question.\n\nA topic is a question the team takes positions on, phrased so that a later document about the same question would recognise it — \"where the engine takes its lock relative to the write\", not \"pull request 31\". A position is one answer to that question, in one sentence, as this document states it.\n\nYou are shown the existing topics this document may be continuing, each with a label and the position currently recorded on it. Where the document takes a position on one of them, answer with that label and judge whether this position changes or restates the current position shown, even if the words differ. Judge against the position shown, including when this document was read before. Answer \"new\" only for a question none of them asks, and omit the judgement for a new topic. Never put two positions from this document on one topic.\n\nTake at most 4 positions, and none where the document takes none: an empty list is a correct answer. Keep every position to what the document says. Never quote a credential, a token, a key or a personal email address.",
+        "messages": [
+          {
+            "role": "user",
+            "text": "This is a issue document. What it concluded is classified as decided.\n\nThe retry policy limits attempts.\n\nOutcome (decided): Retry twice, then stop.\n\nThere are no existing topics this document could be continuing."
+          }
+        ],
+        "max_tokens": 4096,
+        "schema": {
+          "name": "l2_assertions",
+          "description": "The topics and positions one document asserts.",
+          "definition": {
+            "type": "object",
+            "description": "The positions one document takes.",
+            "properties": {
+              "assertions": {
+                "type": "array",
+                "description": "One entry per position, at most one per topic. Empty when the document takes none.",
+                "maxItems": 4,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "judgement": {
+                      "type": "string",
+                      "description": "For an existing topic only: changes or restates the current position shown. Omit for new topics.",
+                      "enum": [
+                        "changes",
+                        "restates"
+                      ]
+                    },
+                    "position": {
+                      "type": "string",
+                      "description": "The position, in one sentence, as the document states it.",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "topic": {
+                      "type": "string",
+                      "description": "The label of the existing topic this position is on, or \"new\".",
+                      "enum": [
+                        "new"
+                      ]
+                    },
+                    "topic_name": {
+                      "type": "string",
+                      "description": "The question this position answers, in a line. For an existing topic, its name.",
+                      "minLength": 1,
+                      "maxLength": 300
+                    }
+                  },
+                  "required": [
+                    "topic",
+                    "topic_name",
+                    "position"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "assertions"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "response": {
+        "json": {
+          "assertions": [
+            {
+              "topic": "new",
+              "topic_name": "How many times delivery retries",
+              "position": "Retry twice, then stop."
+            }
+          ]
+        },
+        "stop_reason": "end"
+      }
+    }
+  ]
+}

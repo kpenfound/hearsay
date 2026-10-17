@@ -243,7 +243,20 @@ through the proxy:
 | GitHub (`type: github`) | `https://<host>/hooks/<source id>` on the connectors | A repository or organization webhook, content type `application/json`, the secret in the configuration's `webhook_secret` variable, for the events [docs/config.md](config.md#github-source) lists. |
 | Google Drive (`type: drive`) | `https://<host>/hooks/<source id>` on the connectors | `settings.notification_url`, set to that URL. Without it the connector polls on `refresh`. |
 | Agent sessions (`type: agent`) | `https://<host>/hooks/<source id>` on the connectors | Agents post their session events there with their own bearer token. An agent inside the compose network can post to `http://connectors:8081/hooks/<source id>` instead. |
+| Work updates (`type: work`) | `https://<host>/hooks/<source id>` on the connectors | Factories and agents post with their principal bearer tokens. Restrict ingress to the posting clients; a tailnet URL is sufficient when all posters can reach it. |
 | Discord commands | `https://<host>/discord/<source id>/interactions` on the **API** | The application's Interactions Endpoint URL in the Discord developer portal, for a Discord source whose settings name `application_id` and `public_key` and that is not `read_only`. Discord's messages and reactions arrive over the Gateway, which is outbound. |
+
+For a tailnet deployment, expose the API and the work source on the same
+host, routing just the work hook to the connectors listener (source id
+`projects`):
+
+```sh
+tailscale serve --bg http://127.0.0.1:8080
+tailscale serve --bg --set-path /hooks/projects http://127.0.0.1:8081/hooks/projects
+```
+
+Tailnet access does not replace the poster's bearer token. Public providers
+such as GitHub still need a publicly reachable webhook endpoint.
 
 Obsidian (`type: obsidian`) reads a vault from disk. Mount it read-only into
 the connectors container at the configuration's `settings.root` with a
