@@ -51,29 +51,36 @@ dagger check --failfast        # stop at the first failure instead of seeing all
 Two modules share the work. The reusable Go module,
 [`github.com/dagger/go`](https://github.com/dagger/go), finds every `go.mod`
 in the workspace and owns the tests and the `go generate` drift check; it knows
-nothing about Hearsay. `hearsay`, in `.dagger/modules/hearsay/main.dang`, is
+nothing about Hearsay. The remote module is pinned at v0.3.1 through
+`dagger.lock`; its source in `dagger.toml` has no version or branch. Refresh
+the lockfile with `dagger lock update`. `hearsay`, in
+`.dagger/modules/hearsay/main.dang`, is
 ours and holds everything that module could not know: lint, the integration
 tests, the tidy, image, compose and Helm checks, the binary, the image, migrations
 and the dev stack.
 
 | Check | From | Does |
 |---|---|---|
-| `go:test-all` | Go module | `go test ./...` in every Go module, each test its own span |
-| `go:generate-all` | Go module | fails if `go generate` would change a committed file |
-| `go:lint-all` | Go module | switched off (`lint = ["!**"]` in `dagger.toml`); passes without doing anything |
+| `go:test` | Go module | tests selected by `go-package` and `go-test`, run once per package |
+| `go:stale` | Go module | fails if a selected package's `go generate` would change a committed file |
 | `hearsay:lint` | hearsay | `go vet`, `golangci-lint run`, `golangci-lint fmt --diff` |
 | `hearsay:integration-test` | hearsay | `hearsay migrate up`, then `go test -race -tags=integration ./...`, against a pgvector Postgres |
 | `hearsay:tidy-check` | hearsay | fails if `go mod tidy` would change `go.mod` or `go.sum` |
 | `hearsay:image-check` | hearsay | builds the default and two release platforms; checks the version stamp and publish address without pushing |
 | `hearsay:compose-check` | hearsay | `docker compose config` on `deploy/compose` with `env.example` filled in, held to the shape in `docs/deploy.md`; `hearsay config validate` on its example configuration. No Docker daemon |
 | `hearsay:helm-check` | hearsay | `helm lint --strict` and `helm template` on `deploy/helm/hearsay` with the values in `deploy/helm/ci`, held to the shape in `docs/deploy.md`; the refusals it must make; `hearsay config validate` on each config form as the kubelet mounts it. No cluster |
-| `dagger-dang-sdk:generate` | Dang SDK | fails if the SDK would regenerate anything under `.dagger` |
+| `dagger-dang-sdk:stale` | Dang SDK | fails if the SDK would regenerate anything under `.dagger` |
 
-`go:lint-all` is off because the Go module pins a `golangci-lint` built with
-Go 1.26, which refuses a `go.mod` that asks for 1.27. `hearsay:lint` runs the
-same linter at a release built with the current Go, and adds `go vet` and the
-formatter check. Turn the module's own check back on when its pin catches up,
-if there is a reason to prefer it.
+`dagger check -l` shows collection dimensions as `*`. Use
+`dagger check -l --all --go` to expand the Go packages and tests, and
+`dagger check --go` to execute their test and generate staleness checks.
+For example, `dagger check --go --test --go-package=internal/config` runs
+that package's tests. There are currently no Go generator directives; the staleness checks still
+verify the selected packages without running generator commands.
+
+The Go module keeps linting in separate modules. Hearsay uses `hearsay:lint`,
+which runs a golangci-lint release built with the current Go, plus `go vet`
+and the formatter check.
 
 `hearsay:go-test-base` is a Go image with Postgres bound as a service and
 `HEARSAY_DATABASE_URL` pointing at it, and the Go module's `base` setting in
@@ -81,8 +88,9 @@ if there is a reason to prefer it.
 asks for and a database beside
 every test it runs. Today no test it runs uses the database: the ones that need
 Postgres carry the `integration` build tag and run in `hearsay:integration-test`
-instead, after the migrations. The other setting, `includeExtraFiles`, mounts
-`docs/config.md` and `cmd/hearsay/README.md`, which tests read and which live
+instead, after the migrations. The default test and generate selections cover
+the whole workspace. The other setting, `includeExtraFiles`, mounts
+`docs/config.md`, `docs/connector-contract.md` and `cmd/hearsay/README.md`, which tests read and which live
 outside `testdata/`; a test that opens another such file needs it added there.
 
 Everything else is an ordinary function, addressed as `<module> <function>`:
@@ -206,16 +214,20 @@ surface when a function is first called, not when the module is listed.
 The Go test base lives in `hearsay`, so the Go release and Postgres are written
 down once.
 
-`dagger.toml` pins the Dang SDK to a commit rather than tracking its `main`:
+`dagger.toml` pins the Dang SDK to v1.0.1, with its commit in `dagger.lock`:
 the SDK's `main` moves ahead of the released engine, and an SDK newer than
 `v1.0.0-beta.11` loads as a module that can author nothing, so
-`dagger module init` and `dagger-dang-sdk:generate` stop working. The commit
+`dagger module init` and `dagger-dang-sdk:stale` stop working. The commit
 is the one Dagger's own workspace locks at that release. Move it with the
 engine version, not on its own.
 
-The Go module tracks its `main`. `dagger.lock` records the commit that
-resolved to, and the container images every module pulls; `dagger update`
-refreshes what is recorded there.
+The Go module's bare remote source is `github.com/dagger/go`. `dagger.lock`
+pins it to `refs/tags/v0.3.1` at
+`c25c457c7567a426133d536523913988c09ffb1e` and records the container image
+digests. Run `dagger lock update` to refresh the recorded pins, then inspect
+the lockfile and run the checks. Call the Go module's test and generate
+functions as well as listing them: listing alone does not type-check the
+`hearsay:go-test-base` function they receive.
 
 ### Raising the Go floor
 
@@ -228,7 +240,7 @@ lint lands somewhere it can be read:
    the version: `hearsay` reads it for every Go container.
 2. Re-pin `dagger.lock`. It records the resolved digests of
    `golang:<the go directive>` and `golang:<the go directive>-alpine`, and it
-   is never pruned: `dagger update` only "refreshes entries already recorded",
+   is never pruned: `dagger lock update` only "refreshes entries already recorded",
    so it will neither add the new pins nor drop the old ones. Delete the
    superseded `golang:` lines and let a run that actually resolves the new
    images record them. `golang:1.25-alpine` is the Dang SDK's own runtime, not
