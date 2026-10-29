@@ -19,11 +19,27 @@ implements, are specified in
 
 Dagger runs everything. The workspace is `dagger.toml`. The tests and the
 `go generate` drift check come from the reusable Go module
-(`github.com/dagger/go`) it installs; lint, the integration tests, the tidy,
+(`github.com/dagger/go`) it installs from the remote source, pinned at v0.3.1
+through `dagger.lock`. Keep its version out of `dagger.toml`; refresh the pins
+with `dagger lock update`. Lint, the integration tests, the tidy,
 image, compose and Helm checks, the binary, the image, migrations and the dev stack are `hearsay`, our own module
 in `.dagger/modules/hearsay/main.dang`, written in Dang. Its `go-test-base`
 function hands the Go module a container with Postgres attached.
 There is no CI workflow: Dagger Cloud runs `dagger check` on every commit.
+
+`dagger check -l` lists these checks; `*` marks a collection dimension:
+
+| Module | Go package | Go test | Check |
+|---|---|---|---|
+| `go` | `*` | `*` | `test` |
+| `go` | `*` | | `stale` |
+| `dagger-dang-sdk` | | | `stale` |
+| `hearsay` | | | `compose-check`, `helm-check`, `image-check`, `integration-test`, `lint`, `tidy-check` |
+
+Use `dagger check -l --all --go` to expand the collections and
+`dagger check --go` to run the Go checks. Tests execute once per package;
+`stale` checks generator output. No Go generator directives exist yet;
+the staleness checks verify the packages without running generator commands.
 
 ```sh
 dagger check              # every check, in parallel; -l lists them
@@ -32,6 +48,7 @@ dagger api functions      # the modules; `dagger api call hearsay <fn>` runs one
 dagger api call hearsay qa --script '...'     # run a test plan in the shipped image, Postgres beside it
 dagger api call hearsay compose-smoke         # run deploy/compose in a Docker daemon of its own
 dagger settings go        # the Go module's settings
+dagger lock update        # refresh the lockfile's module and image pins
 ```
 
 To try a change end to end, use `qa`. It builds the image from the working
@@ -53,9 +70,12 @@ lints it and holds `helm template` to that shape without a cluster. A new
 listen address the probes or Services would depend on belongs in the chart's
 reserved list in `templates/_helpers.tpl`.
 
-The Go module's own lint check is switched off in `dagger.toml` (its
-golangci-lint is built with an older Go than go.mod asks for); `hearsay:lint`
-is the lint gate.
+The Go module keeps linting in separate modules; `hearsay:lint` is the lint
+gate. Its tests and generate checks use `hearsay:go-test-base`, with the extra
+files configured in `dagger.toml` and the default selections covering the whole
+workspace. When changing that wiring,
+execute the checks as well as listing them: Dang type errors surface only
+when a function is first called.
 
 Dagger needs a container runtime. Where there is none — a sandbox that denies
 the Docker socket, for instance — everything but the tests that need Postgres runs
