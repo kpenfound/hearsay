@@ -1,0 +1,52 @@
+name: Publish release image
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      # Install only: use the workspace CLI's `api call` in the next step.
+      - uses: dagger/dagger-for-github@496f1b3d8b0d823834c13e67cf8a8e08ca3b9602 # v8.4.0
+        with:
+          version: v1.0.0-beta.25
+
+      - name: Publish and smoke-check both platforms
+        shell: bash
+        env:
+          VERSION: ${{ github.ref_name }}
+          GITHUB_USER: ${{ github.actor }}
+          HEARSAY_REGISTRY_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Dagger reads Docker credentials when pulling the new, possibly private package.
+          printf '%s' "$HEARSAY_REGISTRY_TOKEN" | docker login ghcr.io --username "$GITHUB_USER" --password-stdin
+          image=$(dagger api call hearsay publish \
+            --version="$VERSION" \
+            --image-address=ghcr.io/kpenfound/hearsay \
+            --username="$GITHUB_USER" \
+            --password=env://HEARSAY_REGISTRY_TOKEN)
+          printf 'Published: %s\n' "$image"
+          printf '### Release image\n\n`%s`\n' "$image" >> "$GITHUB_STEP_SUMMARY"
+
+          for platform in linux/amd64 linux/arm64; do
+            actual_platform=$(dagger -c "container --platform=$platform | from $image | platform")
+            test "$actual_platform" = "$platform"
+            output=$(dagger -c "container --platform=$platform | from $image | with-exec -- hearsay version | stdout")
+            printf '%s: %s\n' "$platform" "$output"
+            read -r program reported_version _ <<< "$output"
+            test "$program" = hearsay
+            test "$reported_version" = "$VERSION"
+          done
+          printf '\nSmoke check passed on linux/amd64 and linux/arm64.\n' >> "$GITHUB_STEP_SUMMARY"

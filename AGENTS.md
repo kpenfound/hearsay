@@ -25,7 +25,18 @@ with `dagger lock update`. Lint, the integration tests, the tidy,
 image, compose and Helm checks, the binary, the image, migrations and the dev stack are `hearsay`, our own module
 in `.dagger/modules/hearsay/main.dang`, written in Dang. Its `go-test-base`
 function hands the Go module a container with Postgres attached.
-There is no CI workflow: Dagger Cloud runs `dagger check` on every commit.
+Dagger Cloud runs `dagger check` on every commit. The
+[release workflow](.github/workflows/publish.yml) runs only on pushes of `v*`
+tags and calls `hearsay publish` to publish one `linux/amd64` and `linux/arm64`
+manifest at `ghcr.io/kpenfound/hearsay:<tag>`, with no `latest` tag. It uses the
+run's `GITHUB_TOKEN`, smoke-checks both platforms and the exact stamped version
+from the digest, and leaves the digest-qualified address in the run log and
+Summary. It must not duplicate `dagger check`. The manual `publish` function
+remains for forks and other registries; see
+[Publishing a release image](CONTRIBUTING.md#publishing-a-release-image).
+After the first publish, the owner must set the GHCR package's visibility to
+Public in Package settings for pulls without credentials. The workflow can
+pull the private package for its smoke check before that one-time step.
 
 `dagger check -l` lists these checks; `*` marks a collection dimension:
 

@@ -37,9 +37,9 @@ without the reasons.
 ## Dagger
 
 One tool for everything that runs code, so that CI and a laptop cannot disagree.
-There is **no GitHub Actions workflow** in this repository: Dagger Cloud runs the
-same checks on every commit, so a workflow would only be a second, slower copy of
-`dagger check`.
+Dagger Cloud runs `dagger check` on every commit. The GitHub Actions
+[release workflow](.github/workflows/publish.yml) only publishes on version tags;
+it must not duplicate that commit gate with another copy of `dagger check`.
 
 ```sh
 dagger check                   # every check below, in parallel; this is the gate
@@ -113,47 +113,86 @@ dagger api functions                        # the modules; add a name for its fu
 
 ### Publishing a release image
 
-Publishing is a manual Dagger function, separate from `dagger check`. Start
-from the release commit, run the checks, and choose the version to use for both
-the image tag and `hearsay version`. The version must be a valid OCI tag (for
-example `v0.10.0`); `publish` does not add or remove a `v`.
-
-For GHCR, use a GitHub personal access token with `write:packages` permission
-for the target package, and a user who can publish to its owner. Put the token
-in `HEARSAY_REGISTRY_TOKEN` in your environment, not in the command line or the
-repository. Dagger reads it as a secret:
+Pushing a tag matching `v*` to this repository runs the
+[Publish release image workflow](.github/workflows/publish.yml). It calls
+`dagger api call hearsay publish` with the tag name as `--version`, publishing
+one `linux/amd64` and `linux/arm64` manifest at
+`ghcr.io/kpenfound/hearsay:<tag>`. It pushes no `latest` or additional tag.
+Dagger Cloud still runs the checks on every commit; publishing does not repeat
+that gate. Choose a release commit whose checks passed, then tag and push it.
+For example, with a **new** version (the value below is only an example):
 
 ```sh
-dagger check
-git tag v0.10.0
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+The workflow uses its own `GITHUB_TOKEN`, with contents read and packages write
+permissions; no repository secret is needed. It authenticates registry pulls
+as well as publishing, so its smoke check works while the package is private.
+The digest-qualified image address appears in the workflow run's log and
+**Summary**, even if the subsequent smoke check fails. Use a successful run and
+the [GHCR package versions](https://github.com/kpenfound/hearsay/pkgs/container/hearsay)
+to find an image that actually exists and its digest to pin. Tags predating
+this workflow do not publish retroactively; in particular, the old `v0.10.0`
+tag has no published image from this flow. The first live publish belongs to
+the owner's first tag push after this workflow merges.
+
+After the first publish, the owner must make the GHCR package public once for
+operators to pull without credentials: open the `hearsay` package on GitHub,
+then **Package settings → Danger Zone → Change visibility → Public** and
+confirm the package name. Public repository visibility alone does not make a
+new package public. GitHub documents
+[package visibility](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility#configuring-visibility-of-packages-for-your-personal-account)
+and [anonymous container pulls](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
+
+The workflow pins Dagger to `v1.0.0-beta.25`; use that CLI version for the
+manual commands below. The manual `publish` function remains available for
+forks and other registries, separate from `dagger check`. Choose a valid OCI
+tag for both the image tag and
+`hearsay version`; `publish` does not add or remove a `v`. For GHCR, use a GitHub
+personal access token (classic) with `write:packages` permission for the target
+package, and a user who can publish to its owner. Put it in
+`HEARSAY_REGISTRY_TOKEN` in your environment, never in the command line or
+repository. For example, after checks pass:
+
+```sh
 dagger api call hearsay publish \
-  --version=v0.10.0 \
+  --version=v1.2.3 \
+  --image-address=ghcr.io/my-org/hearsay \
   --username="$GITHUB_USER" \
-  --password=env:HEARSAY_REGISTRY_TOKEN
-git push origin v0.10.0
+  --password=env://HEARSAY_REGISTRY_TOKEN
 ```
 
-The default destination is `ghcr.io/kpenfound/hearsay:v0.10.0`. For a fork or
-another registry, pass an **untagged** `--image-address`, such as
-`--image-address=ghcr.io/my-org/hearsay`; use credentials for that registry.
-`publish` returns the manifest's digest-qualified address. It builds both
-`linux/amd64` and `linux/arm64` from `image` and publishes one manifest without
-needing a separate container runtime.
+Omit `--image-address` to use `ghcr.io/kpenfound/hearsay`. For a fork or another
+registry, pass an **untagged** address and credentials for that registry.
+`publish` builds both platforms from `image` and returns one manifest's
+digest-qualified address.
 
-After publishing, smoke-check the registry image on both platforms with
-Dagger, using the digest-qualified address returned by `publish` as `IMAGE`:
+After a manual publish, smoke-check the registry image on both platforms with
+Dagger, as the workflow does. If the package is private, log in to its registry
+first (`docker login ghcr.io --username "$GITHUB_USER" --password-stdin`, with
+the token supplied on standard input). Set `IMAGE` to the digest-qualified
+address returned by `publish` and `VERSION` to the exact tag you published:
 
 ```sh
-dagger -c "container --platform=linux/amd64 | from $IMAGE | platform"
-dagger -c "container --platform=linux/arm64 | from $IMAGE | platform"
-dagger -c "container --platform=linux/amd64 | from $IMAGE | with-exec -- hearsay version | stdout"
-dagger -c "container --platform=linux/arm64 | from $IMAGE | with-exec -- hearsay version | stdout"
+for platform in linux/amd64 linux/arm64; do
+  actual_platform=$(dagger -c "container --platform=$platform | from $IMAGE | platform") || exit 1
+  test "$actual_platform" = "$platform" || exit 1
+  output=$(dagger -c "container --platform=$platform | from $IMAGE | with-exec -- hearsay version | stdout") || exit 1
+  printf '%s: %s\n' "$platform" "$output"
+  program=$(printf '%s\n' "$output" | awk '{print $1}')
+  reported_version=$(printf '%s\n' "$output" | awk '{print $2}')
+  test "$program" = hearsay && test "$reported_version" = "$VERSION" || exit 1
+done
 ```
 
-The platform calls must report `linux/amd64` and `linux/arm64`, and both
-version calls must begin `hearsay v0.10.0`. A missing platform fails while
-pulling from the manifest. `hearsay:image-check` runs the same two platform
-builds and version calls locally during routine checks, with no registry push.
+The platform calls must report `linux/amd64` and `linux/arm64`. Both version
+calls must report exactly the chosen version in the binary's existing format,
+`hearsay <tag> (commit ..., built ...)`; `v1.2.30` fails for tag `v1.2.3`.
+A missing platform or a failed version check fails the workflow.
+`hearsay:image-check` exercises the two platform builds and stamped versions
+locally during routine checks, with no registry push.
 
 ### Trying a change
 
