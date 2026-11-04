@@ -23,7 +23,7 @@ things about it are worth knowing before you use it:
   calling it a rewrite. `RecordRebuilt` is how the distiller tells a deletion
   what became of each document it queued (`l0_deletion_rebuilds`,
   [ADR-0019](../../docs/adr/0019-operator-deletion-redacts-superseded-l2-text.md)).
-- **A deletion is a tombstone.** A tombstone event names the artifact it
+- **A deletion at the source is a tombstone.** A tombstone event names the artifact it
   retracts. Revisions ingested before it are hidden — `Get` says
   `ErrRetracted`, `List` and `Changes` leave them out, and `Counts` shows
   the rows still there. A later revision restores the artifact; replaying an
@@ -84,7 +84,7 @@ ingest. It implements `connector.CursorStore` the way `Store` implements
 `connector.Sink`.
 
 **Does not belong here:** anything that interprets an event. Distillation is
-`internal/l1`, and no code in this package calls a model. Connectors — the code
+`internal/service/distiller` over `internal/l1`, and no code in this package calls a model. Connectors — the code
 that produces events — live in `internal/connector`, and so does the event type
 itself: the event shape is the connector contract, and this package stores it.
 

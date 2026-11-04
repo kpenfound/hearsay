@@ -53,9 +53,9 @@ clears the cache along with the loaded configuration and grants.
 The four subcommand names are a contract with the Dagger module and the
 deployment manifests. `hearsay all` is a development convenience and is never a
 deployment target. It is built on `RunAll`, which is a `sync.WaitGroup` and
-`errors.Join` rather than the errgroup ADR-0003 names — the module has no
-dependencies, and stopping on the first *return* rather than the first *error*
-is what `all` actually wants. The reasoning is on `RunAll`'s doc comment.
+`errors.Join` rather than the errgroup ADR-0003 names — it needs no
+extra concurrency dependency, and stopping on the first *return* rather than
+the first *error* is what `all` actually wants. The reasoning is on `RunAll`'s doc comment.
 
-The four subpackages have no README of their own: what each is for is in its
-package comment, next to the code.
+Each subpackage describes its responsibility in its package comment. The
+distiller also has a README for segmentation and optional outcome rules.

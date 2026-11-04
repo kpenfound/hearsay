@@ -19,7 +19,8 @@ them need.
 **Migrations:** plain SQL, `NNNNN_short_description.sql`, `-- +goose Up` and
 `-- +goose Down` in every file, embedded with `go:embed`. Applied by
 `hearsay migrate up` as a deploy job before the new services roll — never
-automatically at startup. A service whose binary is newer than the database
+automatically at production service startup. Development-only `hearsay all`
+migrates its own database before starting the services. A service whose binary is newer than the database
 refuses to start. See
 [ADR-0006](../../docs/adr/0006-schema-migrations-with-goose.md).
 

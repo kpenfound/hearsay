@@ -22,6 +22,7 @@ The one binary Hearsay ships. Each process is a subcommand of it (ADR-0003).
 | `hearsay delete --event <l0-id>\|--artifact <source> <artifact-id>\|--author <identity> [--apply]` | Preview deletion provenance; with `--apply`, redact L0 and re-distill what depended on it. |
 | `hearsay delete list\|show <deletion-id>` | The deletions applied and what each rebuilt. Read-only. |
 | `hearsay version` | Version, commit and build date. |
+| `hearsay help` | List the subcommands. |
 
 `hearsay init` writes a new team's single-file configuration (`--out`, default
 `hearsay.yaml`) and a mode-0600 env file (`--env-file`, default `hearsay.env`)
@@ -185,13 +186,18 @@ database's. The status is `complete` once every queued document is rebuilt and
 no `distill` or `assert` job on what the rebuild touched is still to run, and
 `rebuilding` until then.
 
-`migrate`, `config`, `l0`, `aliases`, `topics`, `gestures` and `delete list|show` take an action word, and flags go on either side of
+`migrate`, `config`, `l0`, `identities`, `aliases`, `topics`, `gestures`
+and `delete list|show` take an action word, and flags go on either side of
 it and after its argument: `hearsay l0 get <id> --database-url x` and
 `hearsay l0 --database-url x get <id>` are the same command. Each action reads
 its own flags — `l0 list` and `l0 tail` take `--source`, `--kind` and
 `--artifact`, `migrate down` takes `--i-know`, `topics split` takes `--stance` and `--name` — and a flag an action does not
 read is an error rather than a no-op, the same way a stray argument is: a filter
 silently dropped is a wrong answer nobody has a reason to doubt.
+
+For offline evaluation, `judgments` must immediately follow `eval`, with all
+flags after `judgments`:
+`hearsay eval judgments --corpus corpus.json --predictions predictions.json`.
 
 Every subcommand that runs something — the services, `all`, `config` and
 `migrate` — takes `--log-level` and `--log-format`, which also read
@@ -201,9 +207,9 @@ and no arguments, and say so rather than ignoring what they were given. The
 
 `--database-url` points at Postgres, and also reads `HEARSAY_DATABASE_URL`,
 which is the one to prefer: a URL on a command line puts its password in the
-process list. It is on every subcommand that uses a database — `migrate`, `l0`, `aliases`, `topics`, `gestures`, `delete`, `eval`,
-`all` and the four services — and every one of them refuses to start without
-it.
+process list. It is on every subcommand that uses a database — `migrate`, `l0`, `identities`, `aliases`, `topics`, `gestures`, `delete`,
+the windowed `eval`, `all` and the four services — and every one of them refuses
+to start without it. Offline `eval judgments` needs none.
 
 `--listen` is on `connectors` and on `all`, which runs it, and also reads
 `HEARSAY_LISTEN`. It is where the push connectors' handlers are mounted, under

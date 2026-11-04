@@ -2,7 +2,10 @@
 
 An open-source context platform for teams using coding agents. Hearsay ingests team communication and artifacts, distills them into layered knowledge with provenance, and serves scoped, permission-filtered context bundles to agents and humans through a small read/assert API.
 
-Status: design draft. First consumer: `shed`. Generalized for any team.
+Status: implemented end to end: eight source types, four services, MCP/HTTP
+reads and assertions, human corrections, evaluation, Compose and Helm. Optional
+typed judgments ship without a qualified policy. Ownership views and a shipped
+embedding provider remain open. First consumer: `shed`. Generalized for any team.
 
 ## Problem
 
@@ -27,7 +30,11 @@ Hearsay is the thing the agent asks instead. Chat apps, CLIs, and trackers becom
 |L2|Entities, topics, stances, and the edges between them|What it means|Incremental, human-correctable|
 |L3|Derived views: current decisions, scope state, ownership|What is true right now|Rebuilt from L2 at any time, never written directly|
 
-L0 and L1 are flat. L2 is the graph. LLM work happens at write time (L0 to L1, L1 to L2). Reads are structured lookups with no model in the loop.
+L0 and L1 are flat. L2 is the graph. Generative model work happens at write
+time (L0 to L1, L1 to L2). Reads are structured lookups; with an `embed` tier,
+search makes one model call to turn its query into a vector, never to synthesize
+an answer. The shipped provider catalogue has no embedding adapter, so search
+currently runs on full text alone.
 
 ## L0: events
 
@@ -75,7 +82,7 @@ Design points:
 - `outcome_kind` is the L2 trigger. Only docs marked `decided`, `proposed`, or `resolved` enter the assertion pipeline.
 - Meetings are segmented per topic. One meeting produces several `meeting_segment` L1 docs, each with one `outcome`. The segmentation call selects numbered transcript line ranges; repeated ranges for one topic combine into one document. Stable topic labels anchor IDs across edits. Each segment carries its transcript event provenance, inherited ACL and attendee roles, while typed references are extracted from that topic’s source lines without model output. Removed topics are retracted when the transcript changes or disappears.
 - A markdown document is partitioned at headings, including nested headings. The material before the first heading (or the whole page without headings) is an intro section. Each section is independently distilled as `wiki_section`; unchanged sections may retain provenance to an earlier L0 revision that contains the same text. A changed source ACL refreshes every current section.
-- Long Slack threads also emit bursts (single-author runs that pass rarity and length gates) so tangent facts survive summarization.
+- Chat conversations also emit bursts (single-author runs that pass rarity and length gates) so tangent facts survive summarization.
 - A secrets and PII scrub runs before `text` is written.
 - The distiller is stateless and idempotent. Any L1 doc can be regenerated from its `l0_refs`. Distillation is debounced per document across all sources: `HEARSAY_DISTILL_QUIET` (default `30s`, `0` disables) waits for a quiet period, capped by `HEARSAY_DISTILL_MAX_DELAY` (default `5m`) from the first enqueue. A due job stays due; the worker claims it at a following poll.
 
@@ -156,7 +163,7 @@ Serialized per scope to avoid topic-merge races. For each new L1 doc with a qual
 ## Optional Jev boost
 
 [ADR-0031](adr/0031-typed-judgments-are-an-optional-write-path-capability.md)
-adds a typed judgment capability alongside ADR-0005's three generative tiers.
+adds a typed judgment capability alongside ADR-0005's three model tiers.
 `llm.boost.enabled` is the single switch for stance comparison, topic matching
 and outcome classification; absent or false requires no Jev credential and makes
 zero calls. When enabled, `api_key_env` references `HEARSAY_JEV_API_KEY` by default.
@@ -207,7 +214,9 @@ price alone supports no savings claim.
 
 ## L3: derived views
 
-Rebuilt from L2 on demand. Never written directly.
+Rebuilt from L1/L2 on demand. Never written directly. Current stances, recent
+activity, open questions and anchors ship; ownership discovery and "who knows X"
+remain planned views.
 
 - Current stances for an entity, including stances inherited from ancestor entities, tagged as inherited.
 - Recent L1 activity on a scope.
@@ -263,7 +272,9 @@ Rules:
 - `anchors` are not subject to the `recent` cap. The design doc is what the activity is about, not activity.
 - No code content. Entity ids and path patterns only.
 - Identical output regardless of which interface asked. That is the test of centralization.
-- Cacheable. Same scope, same principal, no new events yields the same bundle.
+- Cacheable. The API keys encoded bundles by caller, scope, directive and a
+  committed revision of non-audit L0 events and L1/L2 writes. Every served
+  response still appends its own audit event.
 
 ## Read and assert API
 
@@ -276,6 +287,7 @@ Exposed over MCP and HTTP. Deliberately small.
 |`traverse(start, steps)`|Follow bounded, typed graph edges, access-filtered at every hop; returns ids and one-line descriptions|
 |`stance_history(topic)`|Full record for a topic|
 |`get_l1(id)`, `get_l0(id)`|Follow a pointer|
+|`get_session(assertion)`|Follow an assertion event to its ordered agent-session trace and audits|
 |`search(scope, query)`|Hybrid retrieval over L1 (embeddings, full text, rank fusion). Returns documents, not answers|
 |`watch(scope, filter)`|Subscribe to new events on a scope once distilled. Notification only; consumers decide what to do. The per-document debounce can add up to the maximum delay before distillation becomes due, on top of worker poll and distillation time|
 |`assert(topic, position, evidence)`|Write a stance as an L0 event. Agents are principals|
@@ -351,7 +363,8 @@ One Postgres with pgvector and full-text search holds all four layers. Vectors a
 
 Four processes:
 
-- Connectors. One per source. Push where the source supports it (Slack Socket Mode, GitHub webhooks, Drive change notifications), poll otherwise. Write L0 only.
+- Connectors. One process can host multiple source instances; `--source`
+  selects which configured ones it hosts. Push where the source supports it (Slack Socket Mode, GitHub webhooks, Drive change notifications), poll otherwise. Write L0 only.
 - Distiller. L0 to L1. Stateless, parallel, retryable. Cheap model. Distillation is debounced per document in the queue, with `HEARSAY_DISTILL_QUIET` (default `30s`, `0` disables) and `HEARSAY_DISTILL_MAX_DELAY` (default `5m`, measured from the first enqueue). The pump enqueues in the transaction that saves its feed cursor, so `watch` withholds events while a distill job is unfinished. Operator deletion and waiting GitHub commands expedite pending distillation; later events never postpone an already-due job.
 - Assertion worker. L1 to L2. Serialized per scope. Better model, low volume.
 - API. Bundle assembly, MCP and HTTP endpoints, interface adapters, audit.

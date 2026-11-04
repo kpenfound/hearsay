@@ -535,8 +535,10 @@ choice:
   (issue #21), not to a connector.
 
 **A deletion at the source is a tombstone event**: a new event of kind
-`tombstone` whose `payload.target` is the artifact id it retracts, timed when the
-deletion happened. The connector does not re-emit the artifact and does not
+`tombstone` whose `payload.target` is the artifact id it retracts. It uses the
+source's deletion time when available; Discord and Slack use the target message's
+creation time when deletion notifications carry no timestamp, while Drive,
+tracker and work retractions retain the current artifact's time. The connector does not re-emit the artifact and does not
 delete anything. The tombstone is a fact about the source, and the forward
 provenance walk that re-distills what depended on the artifact is Hearsay's
 (issue #23).
@@ -860,8 +862,9 @@ production, and assert on what the recorder received.
 Written before the connectors, and checked on paper against the GitHub (v0.2.0),
 Discord (v0.3.0), Drive (v0.4.0) and Obsidian (v0.4.0) work. Slack and the
 generic tracker (v0.10.0) were written with their connectors, which is the check
-that a new source needs nothing outside its own package, its registration and
-these documents.
+of source-to-L0 mapping. Agent sessions and work updates also ship. A new source
+needs its factory registered in the binary, with any optional gesture capability;
+third-party event shapes must follow the shared contract above.
 
 ### GitHub (issue #8)
 
@@ -965,8 +968,17 @@ Discord registers `ReactionGestureConfig`; it reads `ratify_emoji` and
 
 Discord gives `edited_timestamp` as `null` until a message is edited. The
 permission component is always present, including for a public channel with
-no overwrites, so a later public→private→public transition does not try to
-re-use the original public event id. It is the first 16 hex digits of SHA-256
+no overwrites. It identifies the overwrite set, not a unique transition: returning
+to exactly the same overwrites with unchanged message content reuses an earlier
+native id. In a public→private→public cycle the restricted revision can remain
+current; in a private→public→private cycle the public revision can remain current
+even though the channel is private again. Re-sync re-emits the same deduplicated
+id and cannot repair either cycle. Visibility also depends on the guild's
+`@everyone` role permissions, which this token omits: changing those alone can
+produce the same id with a different ACL, refused by L0 as `ErrRewrite`.
+These implementation defects are reported separately; the example does not
+guarantee that permission cycles restore the current ACL. The token is
+the first 16 hex digits of SHA-256
 of the parent channel's permission overwrites sorted by id and type, with an
 empty list encoded as `[]`. Discord provides no permission-change timestamp,
 so those revisions have no `edited_at`; an edited message keeps its source edit

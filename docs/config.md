@@ -186,7 +186,7 @@ renamed afterwards ([connector contract](connector-contract.md#source-ids)).
 | Field | Meaning |
 |---|---|
 | `id` | The source id. It appears in every event id, so it is chosen once. |
-| `type` | The connector type: `github`, `discord`, `slack`, `drive`, `obsidian`, `tracker`, `agent`, or a third party's. |
+| `type` | The connector type: `github`, `discord`, `slack`, `drive`, `obsidian`, `tracker`, `agent`, `work`, or a third party's registered type. |
 | `containers` | The repositories, channels or folders this source may ingest, **by native id** — a repository full name, a channel id, a folder id, never a display name. This is control point 1 of [access control](design.md#access-control): default deny, so a container that is not listed is not ingested. `*` widens it to everything the credentials can see, and must then be the only entry. |
 | `refresh` | A duration (`30s`, `5m`, `1h`). The poll interval and base retry interval for a stream. Ignored by a connector that only receives pushes; the runtime applies its own floor and jitter — never more often than every 30 seconds, and each tick up to a tenth of the interval later than it is due. Without it, polls run every five minutes and failed streams retry from a 30-second base. |
 | `read_only` | `true` or `false`, default `false`; nothing else is a boolean here, so `yes` is an error. `true` means Hearsay never writes to the source and its credentials need no write access: it is ingested in full, but its reactions are not gestures, its `/hearsay` comments are ordinary content that is distilled, and Hearsay registers no command, answers none and sends no reply. People on it give feedback through `hearsay gestures` and `hearsay topics`. Switching a source to read-only leaves gestures and merges it already made in force; undo them with the CLI. |
@@ -401,9 +401,11 @@ Run `hearsay connectors --config ./hearsay.yaml`. `/readyz` reports the socket:
 reason. The connector opens a new connection itself when Slack asks it to
 refresh one, and the runtime reconnects one that breaks, with backoff. Slack
 delivers again an event whose acknowledgement it did not get, and an event is
-acknowledged only once it is in L0. History before the connector started, and
-what was said while it was down beyond Slack's redeliveries, are not read in
-this version.
+acknowledged only once it is in L0. History backfill reads `conversations.history` and `conversations.replies`
+one cursor-paginated page at a time, including thread roots and replies. The
+runtime persists its cursor in Postgres so an interrupted walk resumes. Channel
+archive and visibility changes also request durable ACL re-syncs of prior L0
+content; a Slack 429 honors `Retry-After` before retrying.
 
 ### Google Drive source
 
@@ -975,7 +977,8 @@ neither.
 
 `part_of` here outranks every other source of the hierarchy
 ([ADR-0016](adr/0016-entity-hierarchy-sources-are-ranked-and-replace.md)):
-configuration, then tracker hierarchy, then repository structure. An entity
+configuration, then tracker hierarchy, then work declarations, then repository
+structure. An entity
 with `part_of` set has exactly those parents; they replace, and are never added
 to, what a lower source says. An entity without it takes its tracker's parent
 where it has one, and otherwise the nearest entity in its repository whose path
