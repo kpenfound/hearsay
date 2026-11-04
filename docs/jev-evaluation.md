@@ -63,7 +63,8 @@ reimplement their extraction, candidate retrieval or outcome reconciliation.
    ```
 
    Comparison defaults to `--split held_out`; `--split all` is also available.
-   Qualification always uses both splits independently, regardless of comparison.
+   Qualification always uses both splits independently; omit `--split` or use
+   its default `held_out` when passing `--qualify`. Other split flags are refused.
    Failed qualification and insufficient evidence emit the measured JSON and return
    a nonzero exit status; malformed/missing inputs are refused before output.
 7. Only `status: qualified` includes a `policies` object. Copy that object below

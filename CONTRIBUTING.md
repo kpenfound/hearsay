@@ -6,9 +6,8 @@ it. The implementation decisions behind it — language, process model, storage,
 model tiers, migrations, queue, observability — are in
 [docs/adr/](docs/adr/).
 
-[CLAUDE.md](CLAUDE.md) is the same material compressed to one page, for an agent
-or for a returning contributor who wants the commands and the conventions
-without the reasons.
+[AGENTS.md](AGENTS.md) has shorter working notes for an agent or a returning
+contributor who wants the commands and conventions without the reasons.
 
 ## Prerequisites
 
@@ -37,21 +36,21 @@ without the reasons.
 ## Dagger
 
 One tool for everything that runs code, so that CI and a laptop cannot disagree.
-There is **no GitHub Actions workflow** in this repository: Dagger Cloud runs the
-same checks on every commit, so a workflow would only be a second, slower copy of
-`dagger check`.
+Dagger Cloud runs `dagger check` on every commit. The GitHub Actions
+[release workflow](.github/workflows/publish.yml) only publishes on version tags;
+it must not duplicate that commit gate with another copy of `dagger check`.
 
 ```sh
 dagger check                   # every check below, in parallel; this is the gate
 dagger check -l                # list them
 dagger check hearsay:lint      # run one
-dagger check --failfast        # stop at the first failure instead of seeing all of them
+dagger check --fail-fast        # stop at the first failure instead of seeing all of them
 ```
 
 Two modules share the work. The reusable Go module,
 [`github.com/dagger/go`](https://github.com/dagger/go), finds every `go.mod`
 in the workspace and owns the tests and the `go generate` drift check; it knows
-nothing about Hearsay. The remote module is pinned at v0.3.1 through
+nothing about Hearsay. The remote module is pinned at v0.4.0 through
 `dagger.lock`; its source in `dagger.toml` has no version or branch. Refresh
 the lockfile with `dagger lock update`. `hearsay`, in
 `.dagger/modules/hearsay/main.dang`, is
@@ -61,7 +60,7 @@ and the dev stack.
 
 | Check | From | Does |
 |---|---|---|
-| `go:test` | Go module | tests selected by `go-package` and `go-test`, run once per package |
+| `go:test` | Go module | tests selected by `go-module`, `go-package` and `go-test`, run once per package |
 | `go:stale` | Go module | fails if a selected package's `go generate` would change a committed file |
 | `hearsay:lint` | hearsay | `go vet`, `golangci-lint run`, `golangci-lint fmt --diff` |
 | `hearsay:integration-test` | hearsay | `hearsay migrate up`, then `go test -race -tags=integration ./...`, against a pgvector Postgres |
@@ -99,7 +98,7 @@ Everything else is an ordinary function, addressed as `<module> <function>`:
 dagger up                                   # Postgres plus all four services (hearsay:dev)
 dagger api call hearsay build -o ./hearsay  # the Linux binary
 dagger api call hearsay image               # the container image hearsay ships in
-dagger api call hearsay migrate --database-url=env:HEARSAY_DATABASE_URL
+dagger api call hearsay migrate --database-url=env://HEARSAY_DATABASE_URL
 dagger api call hearsay playground          # a shell in the runtime, binary on PATH, Postgres beside it
 dagger api call hearsay qa --script '...'   # the same, running a script; returns its output
 dagger api call hearsay compose-smoke       # deploy/compose for real, in a Docker daemon of its own
@@ -113,47 +112,86 @@ dagger api functions                        # the modules; add a name for its fu
 
 ### Publishing a release image
 
-Publishing is a manual Dagger function, separate from `dagger check`. Start
-from the release commit, run the checks, and choose the version to use for both
-the image tag and `hearsay version`. The version must be a valid OCI tag (for
-example `v0.10.0`); `publish` does not add or remove a `v`.
-
-For GHCR, use a GitHub personal access token with `write:packages` permission
-for the target package, and a user who can publish to its owner. Put the token
-in `HEARSAY_REGISTRY_TOKEN` in your environment, not in the command line or the
-repository. Dagger reads it as a secret:
+Pushing a tag matching `v*` to this repository runs the
+[Publish release image workflow](.github/workflows/publish.yml). It calls
+`dagger api call hearsay publish` with the tag name as `--version`, publishing
+one `linux/amd64` and `linux/arm64` manifest at
+`ghcr.io/kpenfound/hearsay:<tag>`. It pushes no `latest` or additional tag.
+Dagger Cloud still runs the checks on every commit; publishing does not repeat
+that gate. Choose a release commit whose checks passed, then tag and push it.
+For example, with a **new** version (the value below is only an example):
 
 ```sh
-dagger check
-git tag v0.10.0
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+The workflow uses its own `GITHUB_TOKEN`, with contents read and packages write
+permissions; no repository secret is needed. It authenticates registry pulls
+as well as publishing, so its smoke check works while the package is private.
+The digest-qualified image address appears in the workflow run's log and
+**Summary**, even if the subsequent smoke check fails. Use a successful run and
+the [GHCR package versions](https://github.com/kpenfound/hearsay/pkgs/container/hearsay)
+to find an image that actually exists and its digest to pin. Tags predating
+this workflow do not publish retroactively; in particular, the old `v0.10.0`
+tag has no published image from this flow. The first live publish belongs to
+the owner's first tag push after this workflow merges.
+
+After the first publish, the owner must make the GHCR package public once for
+operators to pull without credentials: open the `hearsay` package on GitHub,
+then **Package settings → Danger Zone → Change visibility → Public** and
+confirm the package name. Public repository visibility alone does not make a
+new package public. GitHub documents
+[package visibility](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility#configuring-visibility-of-packages-for-your-personal-account)
+and [anonymous container pulls](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
+
+The workflow pins Dagger to `v1.0.0-beta.25`; use that CLI version for the
+manual commands below. The manual `publish` function remains available for
+forks and other registries, separate from `dagger check`. Choose a valid OCI
+tag for both the image tag and
+`hearsay version`; `publish` does not add or remove a `v`. For GHCR, use a GitHub
+personal access token (classic) with `write:packages` permission for the target
+package, and a user who can publish to its owner. Put it in
+`HEARSAY_REGISTRY_TOKEN` in your environment, never in the command line or
+repository. For example, after checks pass:
+
+```sh
 dagger api call hearsay publish \
-  --version=v0.10.0 \
+  --version=v1.2.3 \
+  --image-address=ghcr.io/my-org/hearsay \
   --username="$GITHUB_USER" \
-  --password=env:HEARSAY_REGISTRY_TOKEN
-git push origin v0.10.0
+  --password=env://HEARSAY_REGISTRY_TOKEN
 ```
 
-The default destination is `ghcr.io/kpenfound/hearsay:v0.10.0`. For a fork or
-another registry, pass an **untagged** `--image-address`, such as
-`--image-address=ghcr.io/my-org/hearsay`; use credentials for that registry.
-`publish` returns the manifest's digest-qualified address. It builds both
-`linux/amd64` and `linux/arm64` from `image` and publishes one manifest without
-needing a separate container runtime.
+Omit `--image-address` to use `ghcr.io/kpenfound/hearsay`. For a fork or another
+registry, pass an **untagged** address and credentials for that registry.
+`publish` builds both platforms from `image` and returns one manifest's
+digest-qualified address.
 
-After publishing, smoke-check the registry image on both platforms with
-Dagger, using the digest-qualified address returned by `publish` as `IMAGE`:
+After a manual publish, smoke-check the registry image on both platforms with
+Dagger, as the workflow does. If the package is private, log in to its registry
+first (`docker login ghcr.io --username "$GITHUB_USER" --password-stdin`, with
+the token supplied on standard input). Set `IMAGE` to the digest-qualified
+address returned by `publish` and `VERSION` to the exact tag you published:
 
 ```sh
-dagger -c "container --platform=linux/amd64 | from $IMAGE | platform"
-dagger -c "container --platform=linux/arm64 | from $IMAGE | platform"
-dagger -c "container --platform=linux/amd64 | from $IMAGE | with-exec -- hearsay version | stdout"
-dagger -c "container --platform=linux/arm64 | from $IMAGE | with-exec -- hearsay version | stdout"
+for platform in linux/amd64 linux/arm64; do
+  actual_platform=$(dagger -c "container --platform=$platform | from $IMAGE | platform") || exit 1
+  test "$actual_platform" = "$platform" || exit 1
+  output=$(dagger -c "container --platform=$platform | from $IMAGE | with-exec -- hearsay version | stdout") || exit 1
+  printf '%s: %s\n' "$platform" "$output"
+  program=$(printf '%s\n' "$output" | awk '{print $1}')
+  reported_version=$(printf '%s\n' "$output" | awk '{print $2}')
+  test "$program" = hearsay && test "$reported_version" = "$VERSION" || exit 1
+done
 ```
 
-The platform calls must report `linux/amd64` and `linux/arm64`, and both
-version calls must begin `hearsay v0.10.0`. A missing platform fails while
-pulling from the manifest. `hearsay:image-check` runs the same two platform
-builds and version calls locally during routine checks, with no registry push.
+The platform calls must report `linux/amd64` and `linux/arm64`. Both version
+calls must report exactly the chosen version in the binary's existing format,
+`hearsay <tag> (commit ..., built ...)`; `v1.2.30` fails for tag `v1.2.3`.
+A missing platform or a failed version check fails the workflow.
+`hearsay:image-check` exercises the two platform builds and stamped versions
+locally during routine checks, with no registry push.
 
 ### Trying a change
 
@@ -214,20 +252,25 @@ surface when a function is first called, not when the module is listed.
 The Go test base lives in `hearsay`, so the Go release and Postgres are written
 down once.
 
-`dagger.toml` pins the Dang SDK to v1.0.1, with its commit in `dagger.lock`:
-the SDK's `main` moves ahead of the released engine, and an SDK newer than
-`v1.0.0-beta.11` loads as a module that can author nothing, so
-`dagger module init` and `dagger-dang-sdk:stale` stop working. The commit
-is the one Dagger's own workspace locks at that release. Move it with the
-engine version, not on its own.
+`dagger.toml` pins the Dang SDK to v1.0.1; `dagger.lock` resolves it to
+`6dde4a9ca2cb598bf281ba36778d2428ad53aa48`. The module scope still declares
+`engineVersion = "v1.0.0-beta.11"`; the release workflow uses CLI
+`v1.0.0-beta.25`. These are separate pins, not comparable SDK and engine
+release numbers. When updating either, check module loading, function execution
+and `dagger-dang-sdk:stale`, rather than assuming a newer SDK is compatible.
 
 The Go module's bare remote source is `github.com/dagger/go`. `dagger.lock`
-pins it to `refs/tags/v0.3.1` at
-`c25c457c7567a426133d536523913988c09ffb1e` and records the container image
-digests. Run `dagger lock update` to refresh the recorded pins, then inspect
-the lockfile and run the checks. Call the Go module's test and generate
-functions as well as listing them: listing alone does not type-check the
-`hearsay:go-test-base` function they receive.
+pins it to `refs/tags/v0.4.0` at
+`e327bee9103fe60cb66c9d11bf2e1604686021df` and records the container image
+digests. It also retains v0.3.1 `gobuild`/`gomod` helper resolutions and older
+image entries; those do not select the bare Go module's release. This differs
+from the previous v0.3.1 guidance and has been reported for reconciliation;
+this documentation refresh leaves the generated lock unchanged. Its retained
+`main` and `refs/heads/main` entries also point at `e327bee9`, differing from
+the earlier accepted `5ec2ba85` exception. Run `dagger lock update` to refresh
+the recorded pins, then inspect the lockfile and run the checks. Call the Go
+module's test and generate functions as well as listing them: listing alone
+does not type-check the `hearsay:go-test-base` function they receive.
 
 ### Raising the Go floor
 
@@ -238,19 +281,19 @@ lint lands somewhere it can be read:
 
 1. Edit the `go` directive in `go.mod`. That is the only place a person writes
    the version: `hearsay` reads it for every Go container.
-2. Re-pin `dagger.lock`. It records the resolved digests of
-   `golang:<the go directive>` and `golang:<the go directive>-alpine`, and it
-   is never pruned: `dagger lock update` only "refreshes entries already recorded",
-   so it will neither add the new pins nor drop the old ones. Delete the
-   superseded `golang:` lines and let a run that actually resolves the new
-   images record them. `golang:1.25-alpine` is the Dang SDK's own runtime, not
-   ours — leave it.
-3. Confirm it took — `grep golang: dagger.lock` should name the release you just
-   moved to, plus the SDK's, and nothing else.
+2. Resolve the new `golang:<the go directive>` and
+   `golang:<the go directive>-alpine` images by executing the build and Go
+   checks, then inspect the generated entries in `dagger.lock`. Updating
+   existing pins alone does not prove the new images were resolved. Do not
+   hand-prune or delete/regenerate the lockfile to remove retained entries.
+3. Confirm it took — `rg 'golang:' dagger.lock` must include the new release's
+   images. Inspect other entries against the modules that use them and report
+   unexpected ones. The current lock retains `golang:1.26-alpine` alongside
+   the 1.27.1 images and the SDK's `golang:1.25-alpine`; that discrepancy with
+   the previous cleanup guidance has been reported, not pruned here.
 
-Step 3 is not optional and no check does it for you. A lock left pinning the
-release you moved off passes every check, because the pin only decides which
-image a *cold* resolution gets.
+Step 3 is not optional and no check does it for you. Passing checks alone does
+not establish that the generated lock records every new image resolution.
 
 ### Without Dagger
 
@@ -268,10 +311,12 @@ golangci-lint fmt --diff   # fails if anything is unformatted
 golangci-lint fmt          # fixes it
 ```
 
-The module has three third-party dependencies, each named by an accepted ADR:
+The module has four direct third-party dependencies:
 `go.yaml.in/yaml/v3` parses the configuration format (ADR-0009),
-`github.com/jackc/pgx/v5` is the Postgres driver (ADR-0004), and
-`github.com/pressly/goose/v3` applies the migrations (ADR-0006). Once those and
+`github.com/jackc/pgx/v5` is the Postgres driver (ADR-0004),
+`github.com/pressly/goose/v3` applies the migrations (ADR-0006), and
+`github.com/gorilla/websocket` carries Discord Gateway and Slack Socket Mode
+connections. `go.mod` also lists their indirect dependencies. Once those and
 the Go release `go.mod` asks for are in the module cache, all of that works with
 no network and no services running — `go test ./...` included, because the tests
 that need Postgres carry the `integration` build tag and skip without
@@ -349,13 +394,13 @@ go run ./cmd/hearsay connectors --source github             # one of them
 curl -s localhost:8081/readyz                               # what each source says about itself
 ```
 
-What it can ingest is the registry `cmd/hearsay` builds, which is empty until
-the first connector lands: there is no global registry and no init-time
-registration, so a binary's sources are readable from its wiring
-([the connector contract](docs/connector-contract.md)). Until then a configured
-source is a startup failure — a source that cannot start is a startup failure
-and not a health status — so `--config` with a `sources/` entry does not start
-yet.
+What it can ingest is the registry `cmd/hearsay` builds: GitHub, Discord,
+Slack, Drive, Obsidian, generic tracker, agent sessions and work updates. There
+is no global registry or init-time registration, so a binary's sources are
+readable from its wiring ([the connector contract](docs/connector-contract.md)).
+It starts one connector per configured source selected by `--source`, or all
+of them when no selection is given. An unregistered type, invalid settings or
+missing required credentials is a startup failure.
 
 ## Configuration
 
@@ -388,7 +433,7 @@ go run ./cmd/hearsay migrate status        # applied and pending
 go run ./cmd/hearsay migrate up-to 1
 go run ./cmd/hearsay migrate down --i-know # dev only, and it means it
 
-dagger api call hearsay migrate --database-url=env:HEARSAY_DATABASE_URL --action=status
+dagger api call hearsay migrate --database-url=env://HEARSAY_DATABASE_URL --action=status
 ```
 
 Migrations are plain SQL in `internal/db/migrations/`, embedded in the binary
@@ -423,7 +468,7 @@ prefer: a URL on a command line puts its password in the process list.
 go run ./cmd/hearsay l0 count                        # events by source and kind
 go run ./cmd/hearsay l0 list --source github-acme    # what a source has ingested
 go run ./cmd/hearsay l0 list --source github-acme --artifact acme/api#12
-go run ./cmd/hearsay l0 get evt:github-acme:acme%2Fapi%2312
+go run ./cmd/hearsay l0 get '<event-id-from-list>'
 go run ./cmd/hearsay l0 tail --source github-acme     # follow the change feed
 ```
 
@@ -449,16 +494,21 @@ go test ./internal/service/distiller -record        # re-record the model answer
 
 The distiller is two loops over one database. The pump reads the L0 change feed
 and enqueues a `distill` job for the document each event belongs to; the worker
-claims those jobs and turns each document into an L1 row with one model call.
+claims those jobs and builds L1 documents. Threads can also produce chat
+bursts, wiki pages split at headings, and transcripts take a segmentation call
+before their per-topic distillation. Optional accepted outcome judgments can
+require an additional generative restatement.
 Events arrive in bursts and documents do not, so the queue's dedupe on
 `(kind, target)` collapses five reviews on one change proposal into one
 distillation (ADR-0007).
 
 It is stateless and idempotent: a document is a function of the current
 revisions of its artifact and of everything that hangs off it, so running it
-again writes the row that is already there and the store notices and writes
-nothing. Where it has got to on the feed is a row in `l0_feed_cursors`, not
-state in the process — a distiller that lost its position would re-distil
+again with the same model answer writes no changed document. A different
+answer may change the derived row; stored provenance and the final re-read keep
+an answer built from superseded source revisions from replacing a newer one.
+Where it has got to on the feed is a row in `l0_feed_cursors`, not state in the
+process — a distiller that lost its position would re-distil
 everything Hearsay has ever ingested, which is a model call per artifact.
 
 Two rules to know before changing it:
@@ -517,8 +567,10 @@ Four rules to know before changing it:
 - **Re-reading a document is idempotent twice over.** `l2_asserted` records
   which version (`distilled_at`) was read, so a restart makes no model call; and
   topic and stance ids are derived from what produced them — a stance's from its
-  topic, document and position, an asserted one's from its topic and event — so
-  a re-read that answers the same way writes nothing.
+  topic, document, position, document version and recorded tier, an asserted
+  one's from its topic and event — so a retry of the same reading writes
+  nothing. A new document version records a new stance even when its position
+  text is unchanged.
 - **An asserted stance was not read from what it cites.** Its origin is its
   `assertion` event (`l2_stances.assertion`), not its first piece of evidence,
   so a later reading of a cited document neither retires it nor is taken for
@@ -573,8 +625,11 @@ written in; a next action's time is its revision's edit time. A new metric is a 
 
 `l1.Store.Search` is hybrid retrieval over the document table and the whole of
 what design.md's `search(scope, query)` does: it returns documents, not answers.
-It is a callable function with no interface in front of it yet — the API process
-exposes it (#52).
+The API exposes it as `POST /v1/search` and the MCP `search` tool through the
+shared call layer. When an `embed` tier is available, each search makes one
+model call to embed the query; it never asks a model to synthesize an answer.
+The shipped provider catalogue has no embedding adapter, so this binary uses
+full-text search alone.
 
 Two halves, ranked separately and fused by reciprocal rank: similarity over the
 embedding of `text`, and Postgres full text over `raw_text`. Ranks rather than a
@@ -611,9 +666,9 @@ packages (`internal/connector`, `internal/llm`, `internal/queue`, `internal/db`,
 not. Read the one for the package you are changing, and update it when the
 answer changes. That is where the boundaries are written down; nothing else
 enforces them. Subpackages — the four under `internal/service`, the
-provider adapter and its catalogue under `internal/llm`, and the per-source
-ones to come — say it in their package comment instead of adding a second
-README.
+provider adapters and their catalogue under `internal/llm`, and the per-source
+connectors — document themselves in package comments. The distiller also has
+a README for its segmentation and optional outcome rules.
 
 ## Conventions
 
@@ -671,9 +726,10 @@ README.
 **No test calls a model provider.** Model work happens at write time — apart
 from the one embedding call `search` makes to turn a query into a vector —
 behind the tier registry in `internal/llm` (`distill`, `assert`, `embed`), and tests use
-the fake with a recorded fixture checked into the repository. Recording a new
-fixture is a deliberate act with a real call, done once, reviewed like code. A
-test that would silently make a live call is a bug in the test.
+the fake with a recorded fixture checked into the repository. Fixtures are
+authored answers or deliberately captured responses, reviewed like code. The workers' `-record` tests regenerate files from answers authored
+in `fixtures_test.go`, with no live call. A test that would silently make a live
+call is a bug in the test.
 
 A fixture is a JSON file under the package's own `testdata`, keyed by the
 request it answers (`llm.FixtureKey` computes the key, and the miss prints the

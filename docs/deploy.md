@@ -55,29 +55,49 @@ On a host with Docker Engine and a current Compose v2 plugin
 
    ```sh
    docker compose up -d --wait
-   docker compose ps          # migrate: exited (0); the rest: healthy
+   docker compose ps -a          # migrate: exited (0); the rest: healthy
    ```
 
-   `--wait` returns once every service is healthy, and fails if one is not.
+   `--wait` returns once Postgres and all four services are healthy and the
+   migration job has exited successfully; a failure stops the deployment.
 6. Put the TLS proxy in front (see [TLS](#tls-in-front-of-the-api)), and point
    the webhooks at it (see [Webhook ingress](#webhook-ingress)).
 
 ## Choosing the image
 
-The image is `ghcr.io/kpenfound/hearsay:<version>`, one multi-architecture
-manifest for `linux/amd64` and `linux/arm64`. The same image runs every
-service and the migration job; the subcommand is the argument. The tag is the
-version stamped into the binary, such as `v0.10.0`. There is no `latest`, so an
-upgrade is always a deliberate choice of version. A fork that publishes its own
-(CONTRIBUTING.md, "Publishing a release image") names its own address.
+The [release workflow](../.github/workflows/publish.yml) runs when a `v*` tag
+is pushed. It calls Dagger's `hearsay publish` with that tag as the version,
+producing `ghcr.io/kpenfound/hearsay:<tag>`: one multi-architecture manifest for
+`linux/amd64` and `linux/arm64`. The same image runs every service and the
+migration job; the subcommand is the argument. There is no `latest`.
 
-Set `HEARSAY_IMAGE` in `.env` to the whole reference. For a deployment that
-must not change under you, use the digest that `publish` printed:
-`ghcr.io/kpenfound/hearsay:v0.10.0@sha256:…`. Check what you are running with:
+Choose a tag actually listed in the
+[GHCR package's versions](https://github.com/kpenfound/hearsay/pkgs/container/hearsay),
+then open its successful
+[Publish release image run](https://github.com/kpenfound/hearsay/actions/workflows/publish.yml).
+The run log and Summary show the digest-qualified address and the smoke check
+on both platforms. A repository tag alone is not proof of an image: tags that
+predate the workflow are not published retroactively. All concrete versions in
+examples, including `v0.10.0`, are illustrative, not a claim that they exist.
+After the first publish, the owner must set the GHCR package's visibility to
+Public in Package settings for pulls without credentials.
+
+Set `HEARSAY_IMAGE` in `.env` to the whole reference. Pin the digest-qualified
+address from the run, shaped like
+`ghcr.io/kpenfound/hearsay:<tag>@sha256:<digest>`, to keep the deployment fixed.
+Also export that same reference in your shell for the `docker run` commands
+below. For example, replace the placeholder with the address you found:
 
 ```sh
-docker compose run --rm --no-deps api version
+export HEARSAY_IMAGE='ghcr.io/kpenfound/hearsay:<tag>@sha256:<digest>'
+docker run --rm "$HEARSAY_IMAGE" version
 ```
+
+It prints `hearsay <tag> (commit ..., built ...)`; the version field is exactly
+the pushed tag. In a running Compose project, check it with
+`docker compose run --rm --no-deps api version`. For forks and other registries,
+the manual [Publishing a release image](../CONTRIBUTING.md#publishing-a-release-image)
+path remains available; pin the digest that manual `publish` call prints.
 
 The Postgres image is `pgvector/pgvector:pg16` in `compose.yaml`. Pin it to a
 digest there too for production. Any pgvector build of Postgres 16 or later
@@ -94,12 +114,18 @@ It ingests nothing but agent sessions and its principals are placeholders, so
 replace it.
 
 `hearsay init` writes a team's first configuration and its env file. It needs
-no database, and it runs from the image:
+no database, and it runs from the image. Run from `deploy/compose` with
+`HEARSAY_IMAGE` exported as above. The checkout includes an example
+`config/hearsay.yaml`; `--force` replaces it and any existing `hearsay.env`,
+generating new API tokens. Preserve any configuration or tokens you need
+before this first setup:
 
 ```sh
 docker run --rm -it --user "$(id -u):$(id -g)" -v "$PWD:/work" -w /work \
-  -e HEARSAY_GITHUB_TOKEN \
-  "$HEARSAY_IMAGE" init --out config/hearsay.yaml --env-file hearsay.env
+  -e HEARSAY_GITHUB_TOKEN -e HEARSAY_DISCORD_TOKEN -e HEARSAY_DRIVE_CREDENTIALS \
+  -e HEARSAY_SLACK_BOT_TOKEN \
+  "$HEARSAY_IMAGE" init --force --out config/hearsay.yaml --env-file hearsay.env
+chmod -R a+rX config
 docker run --rm -v "$PWD/config:/etc/hearsay:ro" "$HEARSAY_IMAGE" config validate /etc/hearsay
 ```
 
@@ -115,14 +141,15 @@ never their values.
 Hearsay services. Postgres receives only `POSTGRES_PASSWORD`, and the
 migration job only `HEARSAY_DATABASE_URL`. Start from `env.example`, or from
 the `hearsay.env` that `hearsay init` wrote, plus the deployment block of
-`env.example`.
+`env.example`. Fill the empty source/model credentials and retain the generated
+principal token names; the example names may differ from your configuration.
 
 | Variable | Read by | Value |
 |---|---|---|
 | `HEARSAY_IMAGE` | compose | **Supply.** The image reference. `env.example`'s value is an example. |
 | `POSTGRES_PASSWORD` | `postgres` | **Supply** (`openssl rand -hex 32`). Used only when the volume is first created; changing it later is an `ALTER ROLE`. |
 | `HEARSAY_DATABASE_URL` | `migrate`, all four services | **Supply**: `postgres://hearsay:<password>@postgres:5432/hearsay?sslmode=disable`, with the password percent-encoded if it needs it. |
-| The `token_env` of every human and agent | `api`, all of them; `connectors`, the agents', when an `agent` source is configured | **Supply** one random, distinct value each (`openssl rand -hex 32`). `hearsay init` generates them. The names are the configuration's; `HEARSAY_OPERATOR_TOKEN` and `HEARSAY_ASSISTANT_TOKEN` are the example's. |
+| The `token_env` of every human and agent | `api`, all of them; `connectors`, agents' for `agent` sources and permitted posters' for `work` sources | **Supply** one random, distinct value each (`openssl rand -hex 32`). `hearsay init` generates them. The names are the configuration's; `HEARSAY_OPERATOR_TOKEN` and `HEARSAY_ASSISTANT_TOKEN` are the example's. |
 | `ANTHROPIC_API_KEY`, or a tier's `api_key_env` | `distiller`, `assert-worker`, `api` | **Supply.** Each builds the model tiers at startup and refuses to start without the key. |
 | `HEARSAY_JEV_API_KEY`, or `llm.boost.api_key_env` | `distiller`, `assert-worker` | Optional judgment credential. Read only with `llm.boost.enabled: true`; missing/empty degrades the boost while baseline work and readiness continue. Never needed by API, connectors or migrate. |
 | `HEARSAY_GITHUB_TOKEN` | `connectors`; `assert-worker` for a GitHub source that is not `read_only` or that `code/` names | **Supply** if the configuration names it. |
@@ -146,6 +173,10 @@ configuration knows which names it uses.
 Neither do the listen addresses (`HEARSAY_API_LISTEN`, `HEARSAY_LISTEN`,
 `HEARSAY_DISTILLER_LISTEN`, `HEARSAY_ASSERT_WORKER_LISTEN`): the ports and
 healthchecks assume the defaults.
+
+Exported shell variables override `.env` when Compose fills `${...}` references.
+Keep the shell's `HEARSAY_IMAGE` in sync with `.env`, or unset it before
+`docker compose up` so the file selects the image.
 
 Compose expands `$` in an unquoted value, so single-quote a value that contains
 one. Keep `.env` mode 0600 and out of version control. Whoever can read it, or
@@ -186,7 +217,8 @@ docker compose exec -T postgres pg_dump -U hearsay -Fc hearsay > hearsay-$(date 
 
 1. Read the release notes for anything that must happen in steps.
 2. Back up.
-3. Set `HEARSAY_IMAGE` to the new version in `.env`.
+3. Set `HEARSAY_IMAGE` to the new version in `.env`, and `unset HEARSAY_IMAGE`
+   in the shell so a previous export cannot override it.
 4. `docker compose up -d --wait`.
 
 Compose pulls the image and runs `migrate` from it. The services still running
@@ -243,6 +275,7 @@ through the proxy:
 |---|---|---|
 | GitHub (`type: github`) | `https://<host>/hooks/<source id>` on the connectors | A repository or organization webhook, content type `application/json`, the secret in the configuration's `webhook_secret` variable, for the events [docs/config.md](config.md#github-source) lists. |
 | Google Drive (`type: drive`) | `https://<host>/hooks/<source id>` on the connectors | `settings.notification_url`, set to that URL. Without it the connector polls on `refresh`. |
+| Generic tracker (`type: tracker`) | `https://<host>/hooks/<source id>` on the connectors | Your tracker sender posts tickets and comments with the configured bearer token; see [Generic tracker source](config.md#generic-tracker-source). |
 | Agent sessions (`type: agent`) | `https://<host>/hooks/<source id>` on the connectors | Agents post their session events there with their own bearer token. An agent inside the compose network can post to `http://connectors:8081/hooks/<source id>` instead. |
 | Work updates (`type: work`) | `https://<host>/hooks/<source id>` on the connectors | Factories and agents post with their principal bearer tokens. Restrict ingress to the posting clients; a tailnet URL is sufficient when all posters can reach it. |
 | Discord commands | `https://<host>/discord/<source id>/interactions` on the **API** | The application's Interactions Endpoint URL in the Discord developer portal, for a Discord source whose settings name `application_id` and `public_key` and that is not `read_only`. Discord's messages and reactions arrive over the Gateway, which is outbound. |
@@ -331,7 +364,8 @@ rather than running on part of it. Roll it like a deploy:
    A change to `.env` does change the project: `docker compose up -d --wait`
    recreates exactly the services that read it. A new token, a rotated
    credential or a new principal's `token_env` needs its variable in `.env`
-   before the restart, or the `api` (and, for an agent, the `connectors`) will
+   before the restart, or the `api` (and the `connectors` for an agent-session
+   agent or work poster) will
    refuse to start.
 3. Confirm every service is running the new configuration. Each logs
    `configuration loaded` with a `config_digest` at startup, which has to equal
@@ -348,7 +382,7 @@ again, or put the previous configuration back.
 ## Checking a deployment
 
 ```sh
-docker compose ps                                   # migrate exited 0; four services healthy
+docker compose ps -a                                   # migrate exited 0; four services healthy
 curl -s 127.0.0.1:8081/readyz                       # each source's own status
 curl -s 127.0.0.1:8080/readyz
 curl -s -X POST 127.0.0.1:8080/v1/get_bundle \
@@ -356,8 +390,9 @@ curl -s -X POST 127.0.0.1:8080/v1/get_bundle \
   -d '{"scope":"team"}'
 ```
 
-`operator` and `team` are the example configuration's. Use a principal and a
-scope of your own.
+Load the token from your env file into the shell first (for example,
+`set -a; . ./.env; set +a`). `operator` and `team` are the example
+configuration's. Use a principal and a scope of your own.
 
 ## Kubernetes with Helm
 
@@ -424,8 +459,8 @@ create first.
 
    ```yaml
    image:
-     tag: v0.10.0
-     # digest: sha256:…   # the digest `publish` printed
+     tag: <published-tag>  # replace with the tag selected in Choosing the image
+     # digest: sha256:…    # copy from that workflow run's log or Summary
    database:
      existingSecret: hearsay-database
    existingSecrets: [hearsay-env]
@@ -539,11 +574,13 @@ schema, which expand and contract allows, as with a Compose rollback.
 
 ### Upgrading and changing configuration
 
-An upgrade is the new `image.tag` and the same configuration flags as before:
+An upgrade selects another published `image.tag` using [Choosing the image](#choosing-the-image)
+and the same configuration flags as before. Replace the example placeholder;
+if you set `image.digest`, update it to the new run's digest too:
 
 ```sh
 helm upgrade hearsay deploy/helm/hearsay -f values.yaml \
-  --set image.tag=v0.11.0 --set-file config.hearsayYaml=config/hearsay.yaml --wait
+  --set image.tag="<new-published-tag>" --set-file config.hearsayYaml=config/hearsay.yaml --wait
 ```
 
 Back up first. The hook migrates, then the Deployments roll.

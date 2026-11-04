@@ -10,21 +10,26 @@ humans through a small read and assert API. It is the thing an agent asks
 instead: chat apps, CLIs and trackers become interfaces to it rather than the
 place context lives.
 
-Status: early. The design is written and the scaffold is in place; the layers
-are being built.
+Status: implemented end to end: eight source types, four services, MCP/HTTP
+bundles and assertions, human corrections, evaluation, Compose and Helm.
+Ownership views and a shipped embedding provider remain open; optional typed
+judgments ship without a qualified policy.
 
 - [docs/design.md](docs/design.md) — what Hearsay is and how it works.
 - [docs/adr/](docs/adr/) — the implementation decisions and why they were made.
 - [docs/connector-contract.md](docs/connector-contract.md) — the L0 event a
   source connector emits, and the interface it implements.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — how to build, test and run it.
-- [docs/deploy.md](docs/deploy.md) — how to deploy it with Docker Compose.
+- [docs/deploy.md](docs/deploy.md) — how to deploy it with Docker Compose or Helm.
 
 ## Architecture
 
 A rough view of the design: sources feed four services that write and read four
-layers in one Postgres. Model calls happen only on the write path; every read is
-a structured lookup. [docs/design.md](docs/design.md) has the full picture.
+layers in one Postgres. Generative model calls happen on the write path. Reads
+are structured lookups; search can embed its query when an embedding adapter is
+available. The shipped provider catalogue has no embedding adapter, so search
+currently uses full text alone.
+[docs/design.md](docs/design.md) has the full picture.
 
 ```mermaid
 flowchart LR
@@ -33,6 +38,10 @@ flowchart LR
         Discord["Discord"]
         Slack["Slack"]
         Drive["Drive"]
+        Obsidian["Obsidian"]
+        Tracker["Generic tracker"]
+        Sessions["Agent sessions"]
+        Work["Work updates"]
     end
 
     subgraph services["Four services, one binary"]
@@ -54,7 +63,7 @@ flowchart LR
         Human["Humans, via chat apps and CLIs"]
     end
 
-    GH & Discord & Slack & Drive --> C
+    GH & Discord & Slack & Drive & Obsidian & Tracker & Sessions & Work --> C
     C --> L0
     L0 --> D --> L1
     L1 --> A --> L2
@@ -65,11 +74,11 @@ flowchart LR
     API <-- "get_bundle, resolve, search, assert" --> Agent & Human
 ```
 
-GitHub, Discord and Slack (public channels) connectors ship today, along with Drive folder and
-Obsidian vault backfill, a generic tracker source that any tracker's sender posts tickets to, and
-an agent session source that agents post their own sessions to. Drive change sync, Obsidian live
-sync are where the design points next. Slack reactions and `/hearsay` commands
-support gestures in public channels.
+GitHub, Discord and Slack (public channels) connectors ship, along with Drive
+backfill and change sync, Obsidian vault backfill and polling, a generic tracker
+source that accepts tickets and comments, an agent session source, and the `work`
+source for factories and agents to post projects, workstreams and updates. Slack
+reactions and `/hearsay` commands support gestures in public channels.
 
 ## Quick start
 
@@ -82,10 +91,6 @@ dagger up              # Postgres plus all four services
 dagger api call hearsay qa --script 'hearsay version'   # try a change in the shipped image
 ```
 
-The export is not optional: Homebrew and winget carry an older CLI, which reads
-this workspace and does nothing useful with it. Any CLI runs the pinned release
-on demand, and caches it the first time.
-
 Or without [Dagger](https://dagger.io), which needs a container runtime:
 
 ```sh
@@ -95,8 +100,10 @@ go run ./cmd/hearsay help
 ```
 
 To run it for a team, [docs/deploy.md](docs/deploy.md) deploys the published
-image with Docker Compose: Postgres, the migration job and the four services,
-from [deploy/compose/](deploy/compose/). On Kubernetes, the Helm chart in
+image with [Docker Compose](docs/deploy.md#first-deployment): Postgres, the
+migration job and the four services, from [deploy/compose/](deploy/compose/).
+On Kubernetes, follow [Kubernetes with Helm](docs/deploy.md#kubernetes-with-helm);
+the chart in
 [deploy/helm/hearsay/](deploy/helm/hearsay/) deploys the same services, with the
 migration as a hook Job, against a Postgres you provide.
 
@@ -108,12 +115,9 @@ has been ingested, `hearsay distiller` turns those events into L1 documents, and
 `hearsay assert-worker` turns the documents that decided, proposed or resolved
 something into L2 topics and stances, and appends the stances agents write
 through the API's `assert` call.
-`hearsay connectors` is real too — it hosts, polls and backfills the connectors
-configuration names. GitHub (`type: github`) ingests issues, pull requests,
-reviews, comments and commits by webhook and backfill. Discord (`type: discord`)
-ingests guild messages, threads and reactions through its Gateway, backfills
-channel and thread history over REST, and re-syncs visibility changes. A source of
-an unregistered type is a startup failure.
+`hearsay connectors` hosts, polls and backfills the eight source types above as
+the configuration specifies. A source of an unregistered type is a startup
+failure. See [configuration](docs/config.md#sources) for each source's settings.
 
 ## License
 

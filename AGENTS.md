@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 Working notes for an agent (or a person) making a change in this repository.
 [CONTRIBUTING.md](CONTRIBUTING.md) has the long version.
@@ -19,22 +19,34 @@ implements, are specified in
 
 Dagger runs everything. The workspace is `dagger.toml`. The tests and the
 `go generate` drift check come from the reusable Go module
-(`github.com/dagger/go`) it installs from the remote source, pinned at v0.3.1
+(`github.com/dagger/go`) it installs from the remote source, pinned at v0.4.0
 through `dagger.lock`. Keep its version out of `dagger.toml`; refresh the pins
 with `dagger lock update`. Lint, the integration tests, the tidy,
 image, compose and Helm checks, the binary, the image, migrations and the dev stack are `hearsay`, our own module
-in `.dagger/modules/hearsay/main.dang`, written in Dang. Its `go-test-base`
-function hands the Go module a container with Postgres attached.
-There is no CI workflow: Dagger Cloud runs `dagger check` on every commit.
+in `.dagger/modules/hearsay/main.dang`, written in Dang. The lock also retains
+v0.3.1 helper resolutions; they do not select the bare Go module's release.
+`hearsay:go-test-base` hands the Go module a container with Postgres attached.
+Dagger Cloud runs `dagger check` on every commit. The
+[release workflow](.github/workflows/publish.yml) runs only on pushes of `v*`
+tags and calls `hearsay publish` to publish one `linux/amd64` and `linux/arm64`
+manifest at `ghcr.io/kpenfound/hearsay:<tag>`, with no `latest` tag. It uses the
+run's `GITHUB_TOKEN`, smoke-checks both platforms and the exact stamped version
+from the digest, and leaves the digest-qualified address in the run log and
+Summary. It must not duplicate `dagger check`. The manual `publish` function
+remains for forks and other registries; see
+[Publishing a release image](CONTRIBUTING.md#publishing-a-release-image).
+After the first publish, the owner must set the GHCR package's visibility to
+Public in Package settings for pulls without credentials. The workflow can
+pull the private package for its smoke check before that one-time step.
 
 `dagger check -l` lists these checks; `*` marks a collection dimension:
 
-| Module | Go package | Go test | Check |
-|---|---|---|---|
-| `go` | `*` | `*` | `test` |
-| `go` | `*` | | `stale` |
-| `dagger-dang-sdk` | | | `stale` |
-| `hearsay` | | | `compose-check`, `helm-check`, `image-check`, `integration-test`, `lint`, `tidy-check` |
+| Module | Go module | Go package | Go test | Check |
+|---|---|---|---|---|
+| `go` | `*` | `*` | `*` | `test` |
+| `go` | `*` | `*` | | `stale` |
+| `dagger-dang-sdk` | | | | `stale` |
+| `hearsay` | | | | `compose-check`, `helm-check`, `image-check`, `integration-test`, `lint`, `tidy-check` |
 
 Use `dagger check -l --all --go` to expand the collections and
 `dagger check --go` to run the Go checks. Tests execute once per package;
@@ -96,7 +108,8 @@ and read `HEARSAY_DATABASE_URL`, so a plain `go test ./...` skips them; with a
 database of your own, `go test -tags=integration ./...` runs them. Two things
 need the network once — the Go toolchain, on a machine whose Go is older than
 the release `go.mod` asks for, and the dependencies (the configuration parser
-`go.yaml.in/yaml/v3` per ADR-0009, pgx and goose per ADR-0004 and ADR-0006)
+`go.yaml.in/yaml/v3` per ADR-0009, pgx and goose per ADR-0004 and ADR-0006,
+and `github.com/gorilla/websocket` for Discord and Slack connections)
 until they are in the module cache.
 
 Running a service locally:
@@ -160,8 +173,9 @@ The distiller and assertion worker expose `/healthz` and `/readyz` on
 those listeners; `all` uses `--distiller-listen` and
 `--assert-worker-listen` for the same endpoints.
 
-The assertion worker is not a stub. The distiller enqueues a serialized `assert`
-job, keyed by scope, in the transaction that writes a document whose outcome is
+The assertion worker (`hearsay assert-worker`) runs serialized `assert` jobs.
+The distiller enqueues one job, keyed by scope, in the transaction that writes
+a document whose outcome is
 decided, proposed or resolved; the worker reads it with the `assert` tier,
 matches topics by reference overlap and then embedding similarity, and appends
 stances in `internal/l2`. An `assert` job whose target is an L0 `assertion`
@@ -265,8 +279,10 @@ from one call layer whose bytes both interfaces serve verbatim, on `--listen`
 them is named by `Hearsay-Agent` and must supply its own token (ADR-0014).
 An agent can send `Hearsay-Session` to link bundle audits, handle audits and
 assertions to a session artifact; `get_session` follows an assertion id to that
-ordered trace (ADR-0017). Bundle audits record the ids served in each trimmed
-section; `get_l1`, `get_l0`, `stance_history`, `search`, `resolve` and `traverse` audit
+ordered trace (ADR-0017). Search can call the `embed` tier once to vectorize
+its query; reads never use generative synthesis or typed judgments. The shipped
+provider catalogue has no embedding adapter, so search currently uses full text.
+Bundle audits record the ids served in each trimmed section; `get_l1`, `get_l0`, `stance_history`, `search`, `resolve` and `traverse` audit
 successful handles and refused attempts only when a session is named. Audits
 contain ids, never query text or content.
 Every call runs within the effective reach — the person's configured scopes
@@ -282,6 +298,17 @@ handles with no content, and waits up to 25 seconds when there are none; a
 person or an agent of class `orchestrator` or above may call it. The bundle is
 `internal/bundle`, over the views in `internal/l3`. It
 needs Postgres and refuses without it.
+
+`hearsay identities list [--json|--yaml]` requires configuration and a database
+and lists unresolved source identities, with mapping suggestions to review.
+`hearsay aliases list|confirm <entity> <name>|reject <entity> <name>` requires
+configuration, a database and `--principal <human-id>`; it reviews learned
+entity-name candidates through that person's current evidence access.
+
+`hearsay eval judgments --corpus <json> --predictions <json> [--qualify <json>]`
+compares supplied predictions and qualifies task policies offline, with no
+database, configuration or provider call. See [docs/jev-evaluation.md](docs/jev-evaluation.md).
+`hearsay version` prints build identity; `hearsay help` lists all subcommands.
 
 `hearsay l0 list|get <id>|count|tail` inspects the event store — what a source
 has ingested, an artifact's history, and the change feed the distiller
@@ -351,11 +378,11 @@ One binary, four services, layers underneath (ADR-0003).
 | `cmd/hearsay` | Subcommands. Flags, config, dependencies, then `Run`. Nothing else. |
 | `internal/service` | The four processes, one subpackage each. Every one exposes `Run(ctx, cfg, deps) error`. |
 | `internal/l0` … `internal/l3` | The four layers: events, documents, graph, derived views. |
-| `internal/eval` | The evaluation metrics `hearsay eval` prints. |
+| `internal/eval` | Windowed evaluation and offline judgment comparison and qualification. |
 | `internal/onboard` | The first configuration `hearsay init` writes: `hearsay.yaml` and its env file. |
 | `internal/bundle` | Context bundle assembly — the primary read. |
-| `internal/connector` | The connector contract and runtime. |
-| `internal/llm` | Provider abstraction and the `distill`/`assert`/`embed` tiers. |
+| `internal/connector` | The connector contract, runtime and eight shipped source adapters, including `work`. |
+| `internal/llm` | Provider abstraction, the `distill`/`assert`/`embed` tiers and optional typed judgments. |
 | `internal/queue` | The Postgres job queue. |
 | `internal/db` | Pool, migrations, shared query plumbing. |
 | `internal/config`, `internal/principal`, `internal/telemetry`, `internal/version` | Config, identity, logging and tracing, build identity. |
@@ -364,8 +391,9 @@ Every directory in that table has a README saying what belongs in it and what
 does not. Read the one for the package you are about to touch; it is short, and
 it usually names the thing you were about to do wrong. Subpackages — the four
 under `internal/service`, `internal/llm/anthropic` and `internal/llm/providers`,
-and per-source ones later — document themselves in their package comments, and
-inherit the parent's README.
+the Jev adapter and the per-source connectors — document themselves in their
+package comments and inherit the parent's README. The distiller also has its
+own README for segmentation and optional outcome rules.
 
 ## Conventions
 

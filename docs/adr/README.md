@@ -38,6 +38,7 @@ The format, numbering and supersession rules are in [ADR-0001](0001-record-archi
 | [0028](0028-readers-traverse-the-l2-graph-through-bounded-typed-steps.md) | Readers traverse the L2 graph through bounded, typed steps | accepted | 2026-10-15 |
 | [0029](0029-an-access-list-may-defer-to-other-sources-containers.md) | An access list may defer to other sources' containers | accepted | 2026-10-16 |
 | [0030](0030-a-work-updates-source-declares-entities-at-runtime.md) | A work-updates source declares entities at runtime | accepted | 2026-10-16 |
+| [0031](0031-typed-judgments-are-an-optional-write-path-capability.md) | Typed judgments are an optional write-path capability | accepted | 2026-10-17 |
 
 ## Names other work depends on
 

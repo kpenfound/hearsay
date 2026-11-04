@@ -7,10 +7,14 @@
 
 image:
   repository: ghcr.io/kpenfound/hearsay
-  # Required: a published version tag, such as v0.10.0. There is no `latest`,
-  # so an upgrade is always a deliberate choice of version.
+  # Required: a published version tag from the GHCR package
+  # (https://github.com/kpenfound/hearsay/pkgs/container/hearsay). The release
+  # workflow publishes pushed v* tags for linux/amd64 and linux/arm64; no latest.
+  # Concrete versions such as v0.10.0 are examples, not proof of publication.
   tag: ""
-  # Optional: the sha256:… digest `publish` printed, pinned beside the tag.
+  # Optional: the sha256:… digest in the successful Publish release image run
+  # log and Summary, pinned beside the tag. See docs/deploy.md, Choosing the image.
+  # For a manual fork publish, use the digest that `publish` prints.
   digest: ""
   pullPolicy: IfNotPresent
 

@@ -91,10 +91,11 @@ config.Repo.LLM  ->  llm.NewRegistry(cfg, providers.All())  ->  Completer / Embe
   `retry-after: 3600` holds `Complete` for an hour per retry. That is deliberate
   — the provider knows its own rate limit better than a constant here does — and
   it is safe only while the caller's context has a deadline. A worker calling
-  this **inside a queue handler holding a lease** (ADR-0007) must bound the call
-  to less than that lease, or its job is reclaimed and re-run underneath it. If a
-  cap belongs anywhere, it belongs here as a tier parameter; until a caller needs
-  one, the obligation is the caller's and is written down.
+  this **inside a queue handler** (ADR-0007) must still bound the call.
+  The queue worker renews its lease while the handler runs and cancels the run
+  if another worker has reclaimed it; the lease interval is not a total job
+  deadline. The distiller and assertion worker bound baseline calls to two
+  minutes; optional judgments have their own shorter budgets.
 
 See
 [ADR-0005](../../docs/adr/0005-llm-provider-abstraction-with-three-model-tiers.md).

@@ -12,7 +12,8 @@ safely.
 
 **Does not belong here:** prompts and flags, which are `cmd/hearsay`'s; the
 HTTP calls, which are the connector packages' (`github.Reader.Collaborators`,
-`discord.Connector.Member`, `drive.Connector.FolderUsers`); and what a valid
+`discord.Connector.Member`, `drive.Connector.FolderUsers`,
+`slack.Reader.Users` and `slack.Reader.PublicChannel`); and what a valid
 configuration is, which is `internal/config`'s alone. Nothing here checks what
 the loader checks: `Write` loads the generated file and refuses to write one
 that does not load.

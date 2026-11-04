@@ -3,9 +3,10 @@
 Configuration for all four services: the process settings, and the
 configuration repository they read at startup.
 
-**Belongs here:** the config types, loading and merging (defaults, then file,
-then environment, then flags), and validation that fails at startup rather than
-on the first request. `Load` reads the GitOps directory — `sources/`, `scopes/`,
+**Belongs here:** the config types, loading and merging repository defaults
+with YAML overrides, process defaults and the settings wired from environment
+and flags in `cmd/hearsay`, and validation that fails at startup rather than on
+the first request. `Load` reads the GitOps directory — `sources/`, `scopes/`,
 `principals/`, `code/`, `authority/`, `llm/` — or the single file that expands
 to it, and reports every problem it finds rather than the first.
 
@@ -17,7 +18,7 @@ and hands over shapes those packages already take: sources come out as
 builds from, and authority as a `Policy` per scope that answers "does this
 outrank that" and "does this ratify" rather than as fields to interpret.
 
-**Four rules the code depends on and a reader would not guess:**
+**Rules the code depends on and a reader would not guess:**
 
 - A list that is absent and a list that is present but empty mean different
   things in an authority policy. Absent inherits; empty inherits nothing. That

@@ -81,8 +81,9 @@ the work, which rolls back if the hold was lost:
 ```go
 job, err := client.Hold(ctx, scope, target)       // a running job, once the key is free
 ok, err := client.CompleteIn(ctx, tx, job)        // in the work's transaction
-``` `Unfinished` tells a reader of what
-jobs write which targets still have work to land. Every `Config` field may be left
+```
+
+`Unfinished` tells a reader of what jobs write which targets still have work to land. Every `Config` field may be left
 zero; the defaults are the ones the constants document.
 
 ## Things to know before changing it
