@@ -51,15 +51,31 @@ Source setup details and optional settings are in [docs/config.md](config.md).
 
 ## 2. Generate the team configuration
 
-Use a published image tag; `deploy/compose/env.example` shows the current
-example tag and deployment variables. From the repository root:
+The [release workflow](../.github/workflows/publish.yml) publishes on pushes of
+`v*` tags to `ghcr.io/kpenfound/hearsay:<tag>`, with `linux/amd64` and
+`linux/arm64` in one manifest and no `latest`. Choose a version actually listed
+in [the GHCR package](https://github.com/kpenfound/hearsay/pkgs/container/hearsay),
+then copy its digest-qualified address from the log or Summary of the successful
+[Publish release image run](https://github.com/kpenfound/hearsay/actions/workflows/publish.yml).
+Old tags are not published retroactively; `v0.10.0` and any other concrete
+version in examples do not establish that an image exists. The owner must make
+the package Public after the first publish for pulls without credentials.
+See [Choosing the image](deploy.md#choosing-the-image) for details and the manual
+publishing path for forks.
+
+From the repository root, replace the image placeholder with that address.
+The checkout includes an example `config/hearsay.yaml`; `--force` below replaces
+it and any existing `hearsay.env`, generating new API tokens. Use it only for
+this first setup, after preserving any configuration or tokens you need to keep:
 
 ```sh
-export HEARSAY_IMAGE=ghcr.io/kpenfound/hearsay:v0.10.0
+export HEARSAY_IMAGE='ghcr.io/kpenfound/hearsay:<tag>@sha256:<digest>'
+docker run --rm "$HEARSAY_IMAGE" version  # hearsay <tag> (commit ..., built ...)
 cd deploy/compose
 docker run --rm -it --user "$(id -u):$(id -g)" -v "$PWD:/work" -w /work \
   -e HEARSAY_GITHUB_TOKEN -e HEARSAY_DISCORD_TOKEN -e HEARSAY_DRIVE_CREDENTIALS \
-  "$HEARSAY_IMAGE" init \
+  -e HEARSAY_SLACK_BOT_TOKEN \
+  "$HEARSAY_IMAGE" init --force \
   --operator kyle --operator-name "Kyle Penfound" --operator-github kpenfound \
   --github-repo acme/api \
   --discord-guild 824100000000000000 --discord-channel 824100000000000001 \
@@ -72,8 +88,14 @@ credentials in the shell before running this command so `init` can look up
 collaborators and confirm any linked identities. `init` writes
 `config/hearsay.yaml` with sources, scopes, principals, identities and policy
 defaults. It writes `hearsay.env` with distinct generated API tokens and empty
-source/model credential entries. It needs no database. The generated file is
-mode 0600; keep it and `.env` out of version control.
+source/model credential entries. It needs no database. The generated env file
+is mode 0600; keep it and `.env` out of version control. The configuration file
+is mode 0644 and contains variable names, not secrets. Make its directories
+traversable and files readable by the service user (`nobody`, uid 65534):
+
+```sh
+chmod -R a+rX config
+```
 
 Start the Compose env file and copy the generated principal token assignments
 from `hearsay.env` into `.env`:
@@ -97,7 +119,8 @@ your config uses them.
 Review `config/hearsay.yaml`. In particular, add Discord `application_id` and
 `public_key` under its `settings` if you want slash commands; set
 `read_only: true` there if Discord should not provide commands or gestures.
-Validate the config before starting:
+Validate the config before starting (no database or credentials are needed
+for validation; it prints counts, model tiers and a configuration digest):
 
 ```sh
 docker run --rm -v "$PWD/config:/etc/hearsay:ro" "$HEARSAY_IMAGE" config validate /etc/hearsay
@@ -109,7 +132,7 @@ Run these commands from `deploy/compose`:
 
 ```sh
 docker compose up -d --wait
-docker compose ps
+docker compose ps -a
 curl -fsS 127.0.0.1:8081/readyz
 curl -fsS 127.0.0.1:8080/readyz
 ```
@@ -167,8 +190,11 @@ curl -fsS -X POST http://127.0.0.1:8080/v1/get_bundle \
   -d '{"scope":"api"}'
 ```
 
-An agent acting for a human sends the human bearer token plus its own token and
-identity. Use these headers on an MCP client connecting to
+To add an agent, first configure an agent principal and its distinct token as
+described in [Principals](config.md#principals), and restart the services.
+`init` creates human principals; it does not create the example `reviewer` agent
+below. An agent acting for a human sends the human bearer token plus its own token
+and identity. Use these headers on an MCP client connecting to
 `https://<public-host>/mcp` (or on a direct `/v1/get_bundle` request):
 
 ```text
@@ -187,11 +213,13 @@ not travel over an untrusted plain HTTP connection. See
 
 ## QA without live sources or a model
 
-For a dependency-free deployment check, run `dagger api call hearsay
-compose-smoke`. It starts the example Compose configuration, waits for the
-migration and services, then verifies an authenticated `get_bundle` returns
+For a deployment check without live sources or a model provider, run
+`dagger api call hearsay compose-smoke` from the repository root with Dagger
+and a container runtime. It starts the example Compose configuration, waits for
+the migration and services, then verifies an authenticated `get_bundle` returns
 HTTP 200. That example uses only the agent session source and needs no source
-credentials or model provider. It verifies the first bundle request and
-deployment wiring; exercising source backfill and meaningful distilled
+credentials or model provider; the smoke script supplies a dummy model key
+so startup can build the default tiers without making a provider call. It
+verifies the first bundle request and deployment wiring; exercising source backfill and meaningful distilled
 content requires operator-provided GitHub, Discord and Drive credentials plus
 an Anthropic API key as described above.
