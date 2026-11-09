@@ -1,0 +1,39 @@
+# The compose project in this directory as one systemd service: starts the whole
+# stack at boot and stops it on `systemctl stop`. docs/deploy.md ("Start at boot
+# with systemd") is the guide.
+#
+#   sudo cp -r deploy/compose /opt/hearsay      # with .env and config/ filled in
+#   sudo cp /opt/hearsay/hearsay.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now hearsay
+
+[Unit]
+Description=Hearsay (Docker Compose project)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# Where deploy/compose/ is copied: compose.yaml, .env and config/ live here.
+# Change it if the project is somewhere else.
+WorkingDirectory=/opt/hearsay
+
+# systemd finds a command only by absolute path. Change /usr/bin/docker if
+# Docker is installed elsewhere (`command -v docker`).
+# Compose reads .env itself, so there is no EnvironmentFile. --wait returns once
+# Postgres and the four services are healthy and `migrate` has exited 0; if one
+# is not, or it has not, the start fails and so does the unit.
+ExecStart=/usr/bin/docker compose up -d --wait
+
+# Never `-v`/`--volumes`: the pgdata volume holds the database, and a stop must
+# leave it in place.
+ExecStop=/usr/bin/docker compose down
+
+# Image pulls, Postgres's first start and the migrations.
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target
