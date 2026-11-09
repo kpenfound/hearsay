@@ -13,6 +13,7 @@ The Compose files are in [`deploy/compose/`](../deploy/compose/):
 | `compose.yaml` | Postgres, the migration job and the four services. |
 | `env.example` | Every variable the deployment reads, with the service that reads it. Copied to `.env`, which is never committed. |
 | `config/hearsay.yaml` | An example configuration that runs with no source credentials. Replace it with your own. |
+| `hearsay.service` | A systemd unit that starts and stops the whole project ([Start at boot with systemd](#start-at-boot-with-systemd)). |
 
 This is the production shape: four containers from one image, one per service,
 and never `hearsay all`, which is for development only (ADR-0003). Development
@@ -228,6 +229,52 @@ new schema (expand and contract, ADR-0006). A rollback is the old
 `HEARSAY_IMAGE` and `docker compose up -d`, as long as no migration since has
 removed anything that version needs. That is why a destructive change always
 comes a release after the one that stopped using what it removes.
+
+## Start at boot with systemd
+
+Compose's `restart: unless-stopped` already brings the containers back after a
+reboot, once Docker is up. `hearsay.service` is optional. It adds one
+`systemctl` handle for the whole stack, ordering after Docker and the network,
+and a `systemctl stop` that really stops the stack and keeps it stopped.
+
+1. Copy `deploy/compose/` to `/opt/hearsay` with `.env` and `config/` filled in
+   as under [First deployment](#first-deployment). To keep the project
+   elsewhere, edit `WorkingDirectory` in the unit. If `command -v docker` is
+   not `/usr/bin/docker`, edit the path in `ExecStart` and `ExecStop` too.
+2. Install the unit and enable it:
+
+   ```sh
+   sudo cp /opt/hearsay/hearsay.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now hearsay
+   ```
+
+Day to day:
+
+```sh
+systemctl status hearsay
+sudo systemctl stop hearsay      # docker compose down
+sudo systemctl start hearsay     # docker compose up -d --wait
+```
+
+The unit is `Type=oneshot` with `RemainAfterExit=yes`: it is active once
+`docker compose up -d --wait` returns, so a start that leaves a service
+unhealthy or fails the migration job fails the unit. `docker compose ps -a`
+shows the services themselves. A `docker compose down` run by hand leaves the
+unit reported active; use `systemctl stop` and `start` to keep the two in step.
+
+- Per-service logs stay in `docker compose logs`. The journal
+  (`journalctl -u hearsay`) holds only the output of the start and stop
+  commands.
+- `systemctl stop` runs `docker compose down` without `--volumes`, so the
+  `pgdata` volume and the database survive every stop. Nothing in the unit
+  removes it.
+- Configuration changes are still the manual rolling restart in
+  [Changing configuration](#changing-configuration). The unit has no reload.
+- Under systemd no shell exports reach Compose, so `.env` alone selects
+  `HEARSAY_IMAGE`. Upgrade as in [Upgrading](#upgrading), with
+  `docker compose up -d --wait` run in `/opt/hearsay`. The active unit is not
+  restarted by it, and `systemctl start` does nothing while the unit is active.
 
 ## TLS in front of the API
 
@@ -669,7 +716,10 @@ runs `hearsay config validate` on it. It needs no cluster.
 
 `dagger check hearsay:compose-check` validates
 `deploy/compose` with Compose's own parser and holds it to the shape described
-here. It needs no Docker daemon. `dagger api call hearsay compose-smoke` runs
+here. It also holds `hearsay.service` to its shape: a `Type=oneshot` unit with
+`RemainAfterExit=yes`, started by `docker compose up -d --wait` and stopped by
+a `docker compose down` that never passes `-v`/`--volumes`. It needs no Docker
+daemon and no systemd. `dagger api call hearsay compose-smoke` runs
 the stack for real, in a Docker daemon of its own, from the image built from the
 working tree. It checks that the migration job succeeds, the four services
 become healthy, only 8080 and 8081 are published, and an authenticated

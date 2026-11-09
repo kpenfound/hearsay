@@ -397,7 +397,9 @@ type Hearsay {
   mounting the configuration read-only, and nothing published but the API and
   the connectors, on loopback. env.example has to name every variable
   compose.yaml or the example configuration reads, and the image has to accept
-  that configuration.
+  that configuration. hearsay.service is held to its shape too: a oneshot unit,
+  RemainAfterExit=yes, started by `docker compose up -d --wait` and stopped by
+  a `docker compose down` that never removes volumes.
   """
   composeCheck(ws: Workspace!): Void @check {
     {{
@@ -450,6 +452,32 @@ type Hearsay {
           ] | .[]
           JQ
           if [ -s /tmp/failures ]; then cat /tmp/failures; exit 1; fi
+
+          # hearsay.service wraps this project and is held to its shape. Comments
+          # are ignored, so the unit may explain what it never does.
+          sec() { awk -v s="[$1]" '/^[[:space:]]*[#;]/ { next } /^[[:space:]]*[[]/ { cur = $0; next } cur == s' hearsay.service; }
+          : > /tmp/unit-failures
+          ufail() { echo "hearsay.service: $*" >> /tmp/unit-failures; }
+          # The words of every KEY= line in a section.
+          words() { sec "$1" | grep -E "^$2=" | cut -d= -f2- | tr ' ' '\n' | grep -v '^$' || true; }
+          has() { words "$1" "$2" | grep -qxF -- "$3"; }
+          [ -f hearsay.service ] || { echo "hearsay.service is missing"; exit 1; }
+          has Unit Requires docker.service || ufail "[Unit] does not require docker.service"
+          has Unit After docker.service || ufail "[Unit] does not order after docker.service"
+          has Unit Wants network-online.target || ufail "[Unit] does not want network-online.target"
+          has Unit After network-online.target || ufail "[Unit] does not order after network-online.target"
+          [ "$(words Service Type)" = oneshot ] || ufail "[Service] is not Type=oneshot"
+          [ "$(words Service RemainAfterExit)" = yes ] || ufail "[Service] does not set RemainAfterExit=yes"
+          [ "$(words Service WorkingDirectory)" = /opt/hearsay ] || ufail "[Service] WorkingDirectory is not /opt/hearsay"
+          [ "$(words Service TimeoutStartSec)" = 600 ] || ufail "[Service] TimeoutStartSec is not 600, ten minutes"
+          has Install WantedBy multi-user.target || ufail "[Install] is not WantedBy=multi-user.target"
+          [ -z "$(sec Service | grep -E '^(EnvironmentFile|ExecReload)=' || true)" ] || ufail "[Service] sets EnvironmentFile or ExecReload; Compose reads .env itself and a reload is a manual restart"
+          # Docker is named by absolute path (systemd searches no PATH for it).
+          [ "$(sec Service | grep -cE '^ExecStart=')" = 1 ] && sec Service | grep -qE '^ExecStart=(/[^ ]*/)?docker compose up -d --wait$' || ufail "[Service] ExecStart is not exactly docker compose up -d --wait"
+          [ "$(sec Service | grep -cE '^ExecStop=')" = 1 ] && sec Service | grep -qE '^ExecStop=(/[^ ]*/)?docker compose down$' || ufail "[Service] ExecStop is not exactly docker compose down"
+          # No command in the unit may remove a volume, whatever the flag or verb.
+          if sec Service | grep -E '^Exec' | grep -qE ' -[a-zA-Z]*v|--volumes?( |$)| volume( |$)| rm( |$)'; then ufail "[Service] a command removes volumes; pgdata holds the database"; fi
+          if [ -s /tmp/unit-failures ]; then cat /tmp/unit-failures; exit 1; fi
         """])
         .sync,
       config: image(ws)

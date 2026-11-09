@@ -66,7 +66,7 @@ and the dev stack.
 | `hearsay:integration-test` | hearsay | `hearsay migrate up`, then `go test -race -tags=integration ./...`, against a pgvector Postgres |
 | `hearsay:tidy-check` | hearsay | fails if `go mod tidy` would change `go.mod` or `go.sum` |
 | `hearsay:image-check` | hearsay | builds the default and two release platforms; checks the version stamp and publish address without pushing |
-| `hearsay:compose-check` | hearsay | `docker compose config` on `deploy/compose` with `env.example` filled in, held to the shape in `docs/deploy.md`; `hearsay config validate` on its example configuration. No Docker daemon |
+| `hearsay:compose-check` | hearsay | `docker compose config` on `deploy/compose` with `env.example` filled in, held to the shape in `docs/deploy.md`; `hearsay config validate` on its example configuration; `hearsay.service` held to its shape. No Docker daemon |
 | `hearsay:helm-check` | hearsay | `helm lint --strict` and `helm template` on `deploy/helm/hearsay` with the values in `deploy/helm/ci`, held to the shape in `docs/deploy.md`; the refusals it must make; `hearsay config validate` on each config form as the kubelet mounts it. No cluster |
 | `dagger-dang-sdk:stale` | Dang SDK | fails if the SDK would regenerate anything under `.dagger` |
 
