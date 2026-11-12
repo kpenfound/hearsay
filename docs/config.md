@@ -679,6 +679,82 @@ connectors process per work source, as in the shipped deployments: project
 locks are held in that process. Route `/hooks/<source id>` to its listener
 behind TLS, for example through `tailscale serve`.
 
+#### Documents, decisions and the owner source
+
+A `work` source also accepts `document` and `decision` requests for the
+projects and workstreams it holds: a sealed spec, a ruling, an assumption a
+chief of staff made. They carry the project's access list like workstreams and
+updates do. The request shapes are in
+[the connector contract](connector-contract.md#documents-and-decisions-on-the-work-source).
+
+One work source can record documents and decisions for the projects of
+another, so that who spoke is a matter of which source the record arrived on,
+not of what the record claims. The second source is the **owner source**. It is
+a `work` source whose `owner_of` setting names the first:
+
+```yaml
+settings:
+  owner_of: projects   # the work source whose projects this source records for
+```
+
+An owner source holds no projects, workstreams or updates of its own and
+answers 400 to those kinds. It accepts documents and decisions, and their
+deletions, only for projects and workstreams the named work source holds, and
+answers 409 for any other. Its records are in the project's container, and
+their access list is that project's: it follows every project post that adds,
+removes or replaces `repos`, before the project post answers 202, and the
+startup and periodic reconciliation completes an interrupted propagation.
+`hearsay config validate` refuses an `owner_of` that names the source itself, a
+source that is not of type `work`, one that is not configured, or another
+owner source. An owner source takes the same `posters`, `attributors` and
+principal tokens as a work source.
+
+A decision id, and a document id, names at most one record in its project,
+across the work source, its owner source and every workstream. A post that
+would hold an id a second time elsewhere in the project is answered 409 and
+says where it is held. Run both sources of a pair in one connectors process,
+as the shipped deployments do: the lock that makes this check hold is shared in
+the process.
+
+The **publisher** is an agent principal, such as Osmia's, that posts to both
+sources as an `attributor` and names the person who said it in `author`. Put it
+in `attributors` on each source, and list the person as a `human` principal so
+that `author` resolves. The source a record arrives on, not its `author`, is
+what a scope's `authority/` policy can rank or ratify
+([authority](#authority)), so the owner's rulings go to the owner source and a
+chief's assumptions to the work source:
+
+<!-- example: work-owner/hearsay.yaml -->
+```yaml
+sources:
+  - id: projects
+    type: work
+    containers: ["*"]
+    settings:
+      posters: [osmia]
+      attributors: [osmia]
+  - id: projects-owner
+    type: work
+    containers: ["*"]
+    settings:
+      owner_of: projects      # records documents and decisions for projects
+      posters: [osmia]
+      attributors: [osmia]
+
+principals:
+  - id: osmia
+    kind: agent
+    class: observer
+    token_env: HEARSAY_OSMIA_TOKEN
+    scopes: ["*"]
+  - id: kyle
+    kind: human
+
+scopes:
+  - id: work
+    sources: [projects, projects-owner]
+```
+
 Each POST is one JSON object, at most 4 MiB. Unknown fields are refused.
 `state` and `status` belong only on projects and workstreams. `status` requires
 `state` and has at most 64 bytes. **An update carrying `state` or `status`
@@ -695,7 +771,7 @@ source ids must be configured; repositories may arrive later.
 | 401 | Missing or unknown token |
 | 403 | Poster excluded, attribution from a non-attributor, or author not a configured human or agent |
 | 405 | Anything but POST |
-| 409 | Rewritten revision key, missing project, or an update's missing workstream |
+| 409 | Rewritten revision key, missing project, a missing workstream, an unheld superseded decision, or a document or decision id already held elsewhere in the project (the body says where) |
 | 413 | Body over 4 MiB |
 | 500 | Ingestion or propagation failed; retry |
 

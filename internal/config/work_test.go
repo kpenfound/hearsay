@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/connector/work"
 )
 
 // The source-specific example deliberately has no identities mapping: work
@@ -20,6 +21,20 @@ func TestDocsWorkSourceLoads(t *testing.T) {
 	}
 	if len(repo.Sources) != 1 || repo.Sources[0].Type != "work" || len(repo.Principals) != 1 || len(repo.Principals[0].Identities) != 0 {
 		t.Fatal("work example lost its implicit principal identity")
+	}
+}
+
+// The owner-source example is a pair: a work source and the source that records
+// documents and decisions for its projects, with one publisher an attributor on
+// both and the person it names as a human principal.
+func TestDocsWorkOwnerSourceLoads(t *testing.T) {
+	root := writeFiles(t, filesUnder(t, docExamples(t), "work-owner"))
+	repo, err := config.Load(filepath.Join(root, "hearsay.yaml"))
+	if err != nil {
+		t.Fatalf("Load(owner source example) = %v", err)
+	}
+	if len(repo.Sources) != 2 || work.OwnerOf(repo.Sources[1]) != "projects" || work.OwnerOf(repo.Sources[0]) != "" {
+		t.Fatalf("sources = %+v, want a work source and the owner source of it", repo.Sources)
 	}
 }
 

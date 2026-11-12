@@ -1,6 +1,14 @@
-// Package work accepts projects, workstreams and updates posted by factories
-// and agents to POST /hooks/<source id>. It writes ordinary issue, message and
-// tombstone events, using push for authentication, JSON handling and revisions.
+// Package work accepts projects, workstreams, updates, documents and decisions
+// posted by factories and agents to POST /hooks/<source id>. It writes ordinary
+// issue, message, document and tombstone events, and a work.decision extension
+// kind, using push for authentication, JSON handling and revisions.
+//
+// A document or decision id names at most one held record in its project,
+// across the work source, its owner source and all its workstreams ([Resolve]
+// is the one resolution). A work source whose setting owner_of names another is
+// that source's owner source: it holds only documents and decisions about the
+// named source's projects and carries their access list. The two share one
+// per-project lock through [Shared], which needs them in one process.
 //
 // Containers must be exactly ["*"], and the source takes no secrets. Settings
 // posters defaults to ["*"] (all agent principals with token_env); attributors

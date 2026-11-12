@@ -1,0 +1,12 @@
+{
+  "kind": "document",
+  "project": "payments-rewrite",
+  "workstream": "retry-policy",
+  "document": "spec-1",
+  "name": "Retry policy spec",
+  "body": "# Retry policy\n\nCap retries at 5 with jittered backoff.",
+  "url": "https://factory.example/p/payments-rewrite/specs/spec-1",
+  "author": "kyle",
+  "created_at": "2026-10-14T18:20:00Z",
+  "updated_at": "2026-10-14T18:30:00Z"
+}

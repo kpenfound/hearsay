@@ -30,7 +30,22 @@ type Request struct {
 	CreatedAt   time.Time            `json:"created_at"`
 	UpdatedAt   time.Time            `json:"updated_at,omitempty"`
 	Deleted     bool                 `json:"deleted,omitempty"`
-	fields      map[string]bool
+
+	// A document names itself with Document and has a Name and a Body. A
+	// decision names itself with Decision and carries the rest.
+	Document        string   `json:"document,omitempty"`
+	Body            string   `json:"body,omitempty"`
+	Decision        string   `json:"decision,omitempty"`
+	Context         string   `json:"context,omitempty"`
+	Outcome         string   `json:"outcome,omitempty"`
+	Rationale       string   `json:"rationale,omitempty"`
+	RejectedOptions []string `json:"rejected_options,omitempty"`
+	Decider         string   `json:"decider,omitempty"`
+	Supersedes      string   `json:"supersedes,omitempty"`
+	SpecDocument    string   `json:"spec_document,omitempty"`
+	PullRequest     string   `json:"pull_request,omitempty"`
+	Question        string   `json:"question,omitempty"`
+	fields          map[string]bool
 }
 
 // Repo names a repository's container, which need not yet have been ingested.
@@ -39,13 +54,39 @@ type Repo struct {
 	Project string `json:"project"`
 }
 
-// Native retains source ids, native status and the authenticated poster.
+// Native retains source ids, native status and the authenticated poster. On a
+// document or decision it also names the work source the record is about and,
+// on a decision, keeps the structured fields apart from the prose in the
+// payload's text, so that a later layer reads them without parsing it.
 type Native struct {
 	Project    string `json:"project"`
 	Workstream string `json:"workstream,omitempty"`
 	Update     string `json:"update,omitempty"`
 	Status     string `json:"status,omitempty"`
 	Poster     string `json:"poster"`
+
+	Document        string    `json:"document,omitempty"`
+	Decision        string    `json:"decision,omitempty"`
+	WorkSource      string    `json:"work_source,omitempty"`
+	Context         string    `json:"context,omitempty"`
+	Outcome         string    `json:"outcome,omitempty"`
+	Rationale       string    `json:"rationale,omitempty"`
+	RejectedOptions []string  `json:"rejected_options,omitempty"`
+	Decider         string    `json:"decider,omitempty"`
+	Supersedes      string    `json:"supersedes,omitempty"`
+	SupersedesAt    *Location `json:"supersedes_at,omitempty"`
+	SpecDocument    string    `json:"spec_document,omitempty"`
+	SpecDocumentAt  *Location `json:"spec_document_at,omitempty"`
+	PullRequest     string    `json:"pull_request,omitempty"`
+	Question        string    `json:"question,omitempty"`
+}
+
+// Location is where a record was held when another record named it. It is
+// evidence of what a reference resolved to at posting time. Reads resolve the
+// id again, because a deleted record's id can be held elsewhere later.
+type Location struct {
+	Source   string `json:"source"`
+	Artifact string `json:"artifact"`
 }
 
 // UnmarshalJSON preserves field presence while retaining strict decoding,
@@ -139,21 +180,45 @@ func (r Request) artifact() (string, error) {
 			artifact += "#" + r.Workstream
 		}
 		artifact += ":update:" + r.Update
+	case KindDocumentRecord, KindDecisionRecord:
+		id, other, noun := r.Document, r.Decision, "decision"
+		if r.Kind == KindDecisionRecord {
+			id, other, noun = r.Decision, r.Document, "document"
+		}
+		if !validID(id) {
+			return "", bad("a %s needs a valid %s id", r.Kind, r.Kind)
+		}
+		if r.fields["update"] || r.fields[noun] || other != "" {
+			return "", bad("a %s carries its own id only, with no update, document or decision id of another kind", r.Kind)
+		}
+		if r.fields["workstream"] {
+			if !validID(r.Workstream) {
+				return "", bad("workstream must be a valid id when given")
+			}
+			artifact += "#" + r.Workstream
+		}
+		artifact += ":" + r.Kind + ":" + id
 	default:
-		return "", bad("kind must be project, workstream or update")
+		return "", bad("kind must be project, workstream, update, document or decision")
 	}
 	return artifact, nil
 }
 
 func (c *Connector) validate(r Request) (string, error) {
+	if c.ownerOf != "" && r.Kind != KindDocumentRecord && r.Kind != KindDecisionRecord {
+		return "", bad("an owner source holds only documents and decisions; post %s to its work source %s", r.kindName(), c.ownerOf)
+	}
 	artifact, err := r.artifact()
 	if err != nil {
+		return "", err
+	}
+	if err := r.checkShape(); err != nil {
 		return "", err
 	}
 	if r.Deleted {
 		for field := range r.fields {
 			switch field {
-			case "kind", "project", "workstream", "update", "deleted":
+			case "kind", "project", "workstream", "update", "document", "decision", "deleted":
 			default:
 				return "", bad("a deletion carries only ids and deleted: true")
 			}
@@ -168,6 +233,9 @@ func (c *Connector) validate(r Request) (string, error) {
 	}
 	if r.fields["updated_at"] && (r.UpdatedAt.IsZero() || r.UpdatedAt.Before(r.CreatedAt)) {
 		return "", bad("updated_at must be RFC 3339 and not earlier than created_at")
+	}
+	if r.Kind == KindDocumentRecord || r.Kind == KindDecisionRecord {
+		return artifact, r.validateRecord()
 	}
 	if r.Kind == "update" {
 		if r.Text == "" {

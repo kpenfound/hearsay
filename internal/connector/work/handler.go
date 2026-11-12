@@ -17,6 +17,7 @@ import (
 // project access propagation before the shared push handler can answer 202.
 func (c *Connector) Handler(sink connector.Sink) http.Handler {
 	reader, _ := sink.(connector.ArtifactReader)
+	c.shared.attach(c.source, sink)
 	return push.Handler(push.Options[Request]{
 		Authenticate: func(_ context.Context, token string) (string, bool) {
 			if id, ok := c.tokens.Match(token); ok {
@@ -50,9 +51,12 @@ func (c *Connector) Handler(sink connector.Sink) http.Handler {
 			defer unlock()
 			var ev connector.Event
 			held := true
-			if req.Deleted {
+			switch {
+			case req.Deleted:
 				ev, held, err = push.Tombstone(ctx, reader, c.source, artifact)
-			} else {
+			case req.Kind == KindDocumentRecord || req.Kind == KindDecisionRecord:
+				ev, err = c.record(ctx, reader, poster, artifact, req)
+			default:
 				ev, err = c.event(ctx, reader, poster, artifact, req)
 			}
 			if err == nil && held {
@@ -153,9 +157,11 @@ func (c *Connector) event(ctx context.Context, reader connector.ArtifactReader, 
 	return push.Revise(ev, edited.UTC())
 }
 
+// emit writes ev to the source it names, which is this one or a paired one,
+// through the sink and reader that belong to that source.
 func (c *Connector) emit(ctx context.Context, sink connector.Sink, reader connector.ArtifactReader, ev connector.Event) error {
 	if ev.Kind != connector.KindTombstone {
-		current, ok, err := reader.CurrentArtifact(ctx, c.source, ev.Payload.Artifact)
+		current, ok, err := reader.CurrentArtifact(ctx, ev.Source, ev.Payload.Artifact)
 		if err != nil {
 			return fmt.Errorf("read artifact %s: %w", ev.Payload.Artifact, err)
 		}
