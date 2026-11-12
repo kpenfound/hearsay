@@ -241,6 +241,45 @@ The Go toolchain and the linter version come from the repository, not from
 this document: `hearsay` reads the `go` directive out of `go.mod`, and the
 linter image is a constant in its `main.dang`.
 
+### The owner/work decision path, end to end
+
+`TestWorkRecordsEndToEnd` (`cmd/hearsay/work_records_e2e_integration_test.go`)
+is the proof that the `work` source's documents and decisions, authority by
+source and access hold in a running Hearsay. It runs `hearsay all` (connectors,
+distiller, assertion worker and API) against a database of its own, with the
+owner/work pair and policy docs/config.md documents, posts a project and a
+workstream, owner-source documents and rulings (authored by the owner through
+the publisher agent) and work-source assumptions to `/hooks/<source>`, then
+reads the project's and the workstream's `work:` entities as the owner through
+`get_bundle` and `traverse`, and as another configured person, who gets what an
+unknown scope gets. It asserts that the owner ruling is served `ratified`, the
+chief assumption `superseded` by its successor, the successor and a relayed
+owner ruling `inferred`, and the sealed spec a `spec` document. Every output is
+in the test log, and `HEARSAY_E2E_EVIDENCE=<dir>` also writes the raw JSON.
+
+The model provider is the one thing replaced: the `distill` and `assert` tiers'
+`base_url` points at a local stub (no credential is reachable from a test), and
+the test fails if a decision's text is ever sent to it. Decisions take no model
+call. Rerun it with Docker alone, from the repository root:
+
+```sh
+deploy/smoke/work-records-e2e.sh [evidence-dir]
+```
+
+That starts the pgvector Postgres and runs the test in the Go image `go.mod`
+asks for, so its output is **container evidence**: the test names the
+environment it detected, and the script labels the run. With a Postgres of
+your own and a Go toolchain:
+
+```sh
+HEARSAY_DATABASE_URL=postgres://... go test -tags=integration -count=1 -v \
+    -run TestWorkRecordsEndToEnd ./cmd/hearsay
+```
+
+`dagger check hearsay:integration-test` runs it with every other integration
+test, so the factory's gate holds the path on every commit. It is not run
+through `qa`, whose image carries the binary and no Go toolchain.
+
 ### Changing the module
 
 The modules under `.dagger/modules/` are written in

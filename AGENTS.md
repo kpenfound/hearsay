@@ -59,6 +59,7 @@ dagger up                 # Postgres plus all four services
 dagger api functions      # the modules; `dagger api call hearsay <fn>` runs one
 dagger api call hearsay qa --script '...'     # run a test plan in the shipped image, Postgres beside it
 dagger api call hearsay compose-smoke         # run deploy/compose in a Docker daemon of its own
+deploy/smoke/work-records-e2e.sh              # owner/work decision path in a running `hearsay all`, Docker alone
 dagger settings go        # the Go module's settings
 dagger lock update        # refresh the lockfile's module and image pins
 ```
