@@ -175,6 +175,16 @@ func (a *Asserter) Handle(ctx context.Context, job queue.Job) error {
 		log.InfoContext(ctx, "assertion appended", "l0_id", job.TargetID, "scope", job.SerialKey, "written", written)
 		return nil
 	}
+	if decision, err := a.docs.Get(ctx, job.TargetID); err == nil && decision.Kind == l1.KindDecision {
+		written, err := PlaceDecision(ctx, a.pool, a.repo.Authority, job.TargetID, job.SerialKey)
+		if err != nil {
+			return err
+		}
+		log.InfoContext(ctx, "decision placed", "l1_id", job.TargetID, "scope", job.SerialKey, "written", written)
+		return nil
+	} else if err != nil && !errors.Is(err, l1.ErrNotFound) {
+		return err
+	}
 	result, err := a.assert(ctx, job.TargetID, job.SerialKey, jobQueueDelay(job))
 	if err != nil {
 		return err

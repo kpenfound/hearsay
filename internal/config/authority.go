@@ -31,6 +31,12 @@ const (
 	// ArtifactSpec is a wiki page, design doc or ADR — something written to be
 	// referred back to.
 	ArtifactSpec ArtifactClass = "spec"
+	// ArtifactDecision is a structured decision a `work` source recorded: an
+	// outcome, who decided it, and what it supersedes. It is its own class so
+	// that a policy can ratify decisions apart from specs. Like every class it
+	// is judged with the source it was posted to, never by the decision's own
+	// decider or author.
+	ArtifactDecision ArtifactClass = "decision"
 	// ArtifactMeeting is a segment of a meeting transcript.
 	ArtifactMeeting ArtifactClass = "meeting"
 	// ArtifactIssue is a tracker item and its comments.
@@ -60,6 +66,7 @@ const (
 var defaultRanking = []ArtifactClass{
 	ArtifactMergedPR,
 	ArtifactSpec,
+	ArtifactDecision,
 	ArtifactMeeting,
 	ArtifactIssue,
 	ArtifactPullRequest,

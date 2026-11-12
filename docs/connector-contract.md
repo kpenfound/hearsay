@@ -1637,7 +1637,7 @@ A deletion of an artifact not held writes nothing and returns 204.
 | 401 | Missing or unknown bearer token |
 | 403 | Poster excluded by `posters`, untrusted attribution, or author not a configured human or agent |
 | 405 | Any method but POST |
-| 409 | Rewritten revision key, missing project, or an update's missing workstream |
+| 409 | Rewritten revision key, missing project, an update's missing workstream, or (for documents and decisions) an unheld superseded decision or an id already held elsewhere in the project; see [below](#documents-and-decisions-on-the-work-source) |
 | 413 | Body over 4 MiB |
 | 500 | Ingestion or propagation could not finish; retry the request |
 
@@ -1756,6 +1756,224 @@ on the project, omit `workstream`. The project above is written as:
         }
       ]
     }
+  ]
+}
+```
+
+### Documents and decisions on the work source
+
+The `work` source also accepts two more request kinds, `document` and
+`decision`, which record what was written and what was ruled about a project or
+workstream it holds. Both are additive: the `project`, `workstream` and `update`
+requests, their validation and their L0 ids are unchanged.
+
+| Artifact | kind | artifact id | native_id | container |
+|---|---|---|---|---|
+| Document on a workstream | `document` | `<project>#<workstream>:document:<document>` | `<artifact>@<revision>` | `{kind: project, native_id: <project>}` |
+| Document on a project | `document` | `<project>:document:<document>` | `<artifact>@<revision>` | project |
+| Decision on a workstream | `work.decision` (base `document`) | `<project>#<workstream>:decision:<decision>` | `<artifact>@<revision>` | project |
+| Decision on a project | `work.decision` (base `document`) | `<project>:decision:<decision>` | `<artifact>@<revision>` | project |
+| Deletion | `tombstone` | as for the artifact, with `:tombstone:<hash>` | same | current revision's project |
+
+The `document` and `decision` ids follow the same grammar as the other ids:
+1–128 bytes of letters, digits, `-`, `_`, `.` and `/`. `workstream`, when given,
+names a held workstream of the project; a record without one is at project
+level.
+
+**A document** requires `name` and a markdown `body`, and takes an optional
+`url`, which must be an absolute `http` or `https` URL. `name`, `body` and `url`
+map to `payload.title`, `payload.text` and `payload.url`. The ids, the poster
+and the work source the record is about are kept in `payload.native`
+(`project`, `workstream`, `document`, `poster`, `work_source`). Reposting
+revises it; `deleted: true` retracts it.
+
+**A decision** carries:
+
+| Field | |
+|---|---|
+| `context` | Optional prose: the situation. |
+| `outcome` | Required: what was decided. |
+| `rationale` | Optional prose: why. |
+| `rejected_options` | Optional list of non-empty strings, at most 32. |
+| `decider` | Required: `owner`, `chief_of_staff` or `committee`. |
+| `supersedes` | Optional id of an earlier decision of the same project. |
+| `spec_document` | Optional id of a document of the same project. |
+| `pull_request` | Optional absolute `http` or `https` URL. |
+| `question` | Optional question id: 1–256 bytes, no whitespace. |
+
+Both kinds take `author`, `created_at` and `updated_at` exactly as the other
+kinds do, including that only an attributor may give `author`.
+
+L0 mapping of a decision. A decision is an extension kind, `work.decision`,
+with `payload.base_kind` `document`, so that anything that knows only core
+kinds reads it as a document, while a layer that gives decisions their own
+handling can tell them apart. That is the smaller change than a new core kind,
+which every layer's kind table would have to learn at once. `payload.title` is
+the first line of `outcome` and `payload.text` is a readable rendering of the
+fields, for search. The structured fields are kept, unrendered, in
+`payload.native`, where later layers read them without parsing the text:
+`decision`, `context`, `outcome`, `rationale`, `rejected_options`, `decider`,
+`supersedes`, `spec_document`, `pull_request` and `question`, beside `project`,
+`workstream`, `poster` and `work_source`. `pull_request` is also in
+`payload.links`. Where a `supersedes` or `spec_document` resolved when the
+record was posted, `native.supersedes_at` and `native.spec_document_at` record
+the `source` and `artifact` it resolved to. That is evidence of posting time
+only: a deleted record's id can be held elsewhere later, so reads resolve the
+id again.
+
+Both kinds copy their project's current access list, as workstreams and updates
+do, and follow it when the project's `repos` change.
+
+**Ids are project-wide.** A decision id, and likewise a document id, names at
+most one held record in its project, across the work source, its owner source
+(below) and the project and all its workstreams. Reposting the same artifact is
+a revision, not a second record. A post that would hold the id a second time,
+whether on the other source, under another workstream or at project level
+against a workstream, is answered 409, writes nothing, and says in the body
+where the id is held, which tells it apart from the missing-parent 409. Deleting
+a record frees its id. `supersedes` and `spec_document` are therefore resolved
+by (project, id) to exactly one record, whichever source or workstream holds it.
+`work.Resolve`, over the records `work.Collect` reads from the pair's sources,
+is the one resolution, and everything that follows either link, here or on a
+read, uses it.
+
+**Supersession.** `supersedes` must name a decision held in the same project,
+on either source and under any workstream, or the post is answered 409. A
+decision cannot supersede itself (400), and a post or revision that would close
+a cycle, found by walking `supersedes` through the latest revisions of held
+decisions (`work.ClosesCycle`), is answered 409. A revision is judged by its new
+`supersedes`. A decision may be revised to name a different predecessor or none.
+A `spec_document` that is not held yet is accepted, since documents can arrive
+later; it resolves when it is.
+
+**What reads serve.** A document is distilled like any markdown document, into
+sections of class `spec` about the work source's `work:<work source>:<project>`
+entity, and its workstream's when it has one: for the owner source's records as
+well, so no entity is named after the owner source. A decision is distilled with
+no model call into one L1 document of class `decision`, built from its
+`payload.native`, whose `body.decision` holds the structured fields, and it is
+placed as one topic, with one stance whose position is the outcome, about the
+entity it belongs to. A revision replaces that stance and a deletion withdraws
+it. The decision log of an entity is served by `get_bundle` and `traverse` with
+each decision's id, decider and status: a decision is *superseded* exactly when
+another held decision of the project names it in its latest revision's
+`supersedes`, whichever source or workstream that decision is on, and *current*
+otherwise. Nothing about the status is stored: it is read from the decisions
+held now, so it follows revisions and deletions and does not depend on the order
+the records were posted or processed in
+([configuration](config.md#authority-by-source)).
+
+**Posting under one lock.** The checks above and the write happen under a lock
+keyed by work source and project, which a work source and its owner source
+share, so two concurrent posts of one new id to the two sources leave exactly
+one held. This needs both sources in one connectors process.
+
+**The owner source.** A second `work` source whose `owner_of` setting names
+the first is its *owner source*. It holds only documents and decisions: it
+answers 400 to `project`, `workstream` and `update` (and their deletions), and
+409 to a document or decision whose project, or workstream, the named work
+source does not hold. Its records are in the project's container and carry the
+project's access list, which every project post that adds, removes or replaces
+`repos` brings them to before it answers 202, and the startup and periodic
+reconciliation completes. `payload.native.work_source` names the work source,
+whichever of the two the record arrived on. The source a record arrives on is
+its evidence's source, so a policy ranks or ratifies the owner source apart from
+the work source ([configuration](config.md#authority-by-source)).
+The ids of its records are as above, with the owner source's own id as the
+event's source.
+
+| Status | When |
+|---|---|
+| 202 `{"id":"<event id>"}` | Written or already held; for a project, all its records on both sources carry its current ACL |
+| 204 | Deletion of a record not held |
+| 400 | Invalid request: missing `outcome`, a missing or unknown `decider`, an unknown field or one that does not belong to the kind, self-supersession, a project, workstream or update sent to an owner source |
+| 401, 403, 405, 413 | As for the other kinds |
+| 409 | Missing project or workstream; an unheld `supersedes`; a cycle; a document or decision id already held elsewhere in the project (the body says where) |
+| 500 | Ingestion or propagation failed; retry |
+
+A document, and a decision that supersedes an earlier one and links the
+document:
+
+```json
+{
+  "kind": "document",
+  "project": "payments-rewrite",
+  "workstream": "retry-policy",
+  "document": "spec-1",
+  "name": "Retry policy spec",
+  "body": "# Retry policy\n\nCap retries at 5 with jittered backoff.",
+  "url": "https://factory.example/p/payments-rewrite/specs/spec-1",
+  "author": "kyle",
+  "created_at": "2026-10-14T18:20:00Z",
+  "updated_at": "2026-10-14T18:30:00Z"
+}
+```
+
+```json
+{
+  "kind": "decision",
+  "project": "payments-rewrite",
+  "workstream": "retry-policy",
+  "decision": "d-2",
+  "context": "Settlement calls fail transiently under load.",
+  "outcome": "Cap retries at 5 with jittered backoff.",
+  "rationale": "Five attempts cover the observed outage window.",
+  "rejected_options": ["Unbounded retries", "A dead-letter queue first"],
+  "decider": "owner",
+  "supersedes": "d-1",
+  "spec_document": "spec-1",
+  "pull_request": "https://github.com/acme/api/pull/42",
+  "question": "q-17",
+  "author": "kyle",
+  "created_at": "2026-10-14T18:40:00Z",
+  "updated_at": "2026-10-14T18:50:00Z"
+}
+```
+
+A deletion carries the ids and `deleted: true`:
+`{"kind": "decision", "project": "payments-rewrite", "workstream": "retry-policy", "decision": "d-2", "deleted": true}`.
+Post to `/hooks/<source id>` of the work source or of its owner source. The
+decision is written to L0 as:
+
+```json
+{
+  "id": "evt:owner-records:payments-rewrite#retry-policy:decision:d-2@f587029332260498",
+  "source": "owner-records",
+  "native_id": "payments-rewrite#retry-policy:decision:d-2@f587029332260498",
+  "kind": "work.decision",
+  "time": "2026-10-14T18:40:00Z",
+  "payload": {
+    "artifact": "payments-rewrite#retry-policy:decision:d-2",
+    "base_kind": "document",
+    "container": {"kind": "project", "native_id": "payments-rewrite"},
+    "title": "Cap retries at 5 with jittered backoff.",
+    "text": "Outcome: Cap retries at 5 with jittered backoff.\n\nDecider: owner\n\n…",
+    "author": {"source": "owner-records", "kind": "user", "native_id": "kyle"},
+    "participants": [{"identity": {"source": "owner-records", "kind": "agent", "native_id": "factory"}, "role": "agent"}],
+    "links": ["https://github.com/acme/api/pull/42"],
+    "revision": {"token": "f587029332260498", "edited_at": "2026-10-14T18:50:00Z"},
+    "native": {
+      "project": "payments-rewrite",
+      "workstream": "retry-policy",
+      "poster": "factory",
+      "decision": "d-2",
+      "work_source": "projects",
+      "context": "Settlement calls fail transiently under load.",
+      "outcome": "Cap retries at 5 with jittered backoff.",
+      "rationale": "Five attempts cover the observed outage window.",
+      "rejected_options": ["Unbounded retries", "A dead-letter queue first"],
+      "decider": "owner",
+      "supersedes": "d-1",
+      "supersedes_at": {"source": "owner-records", "artifact": "payments-rewrite#retry-policy:decision:d-1"},
+      "spec_document": "spec-1",
+      "spec_document_at": {"source": "projects", "artifact": "payments-rewrite#retry-policy:document:spec-1"},
+      "pull_request": "https://github.com/acme/api/pull/42",
+      "question": "q-17"
+    }
+  },
+  "acl": [
+    {"kind": "identity", "source": "projects", "native_id": "factory"},
+    {"kind": "identity", "source": "projects", "native_id": "kyle"}
   ]
 }
 ```

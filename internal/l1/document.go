@@ -58,6 +58,9 @@ const (
 	KindMeetingSegment Kind = "meeting_segment"
 	// KindWikiSection is one heading-bounded part of an L0 document.
 	KindWikiSection Kind = "wiki_section"
+	// KindDecision is one structured decision a `work` source recorded. It is
+	// built from the record's fields with no model call ([BuildDecision]).
+	KindDecision Kind = "decision"
 )
 
 // rootKinds maps the L0 kind of an artifact that makes a document of its own to
@@ -75,13 +78,13 @@ var rootKinds = map[connector.Kind]Kind{
 // Kinds is every document kind this build produces, in the order they are
 // documented.
 func Kinds() []Kind {
-	return []Kind{KindIssue, KindPR, KindCommit, KindChatThread, KindChatBurst, KindMeetingSegment, KindWikiSection}
+	return []Kind{KindIssue, KindPR, KindCommit, KindChatThread, KindChatBurst, KindMeetingSegment, KindWikiSection, KindDecision}
 }
 
 // Valid reports whether k is a kind this build produces.
 func (k Kind) Valid() bool {
 	switch k {
-	case KindIssue, KindPR, KindCommit, KindChatThread, KindChatBurst, KindMeetingSegment, KindWikiSection:
+	case KindIssue, KindPR, KindCommit, KindChatThread, KindChatBurst, KindMeetingSegment, KindWikiSection, KindDecision:
 		return true
 	}
 	return false
@@ -288,6 +291,37 @@ type Body struct {
 	// CodeNames are names a chat thread explicitly uses for code, extracted by
 	// the distill call. They are only proposals, never resolution aliases.
 	CodeNames []string `json:"code_names,omitempty"`
+	// Decision is the structured record of a decision, set only on a
+	// `decision` document. It is copied from the L0 event's fields, never read
+	// out of prose, and it is what the decision log and its supersession marks
+	// are computed from.
+	Decision *Decision `json:"decision,omitempty"`
+}
+
+// Decision is the structured fields of a decision a `work` source recorded
+// (docs/connector-contract.md#decision-records).
+type Decision struct {
+	// ID is the decision's id, unique among the decisions of its project across
+	// both sources of a pair.
+	ID string `json:"id"`
+	// WorkSource is the work source that holds the project, which is the source
+	// the decision's entities are named after even when an owner source
+	// recorded it.
+	WorkSource string `json:"work_source"`
+	// Project and Workstream place the decision; Workstream is empty at
+	// project level.
+	Project    string `json:"project"`
+	Workstream string `json:"workstream,omitempty"`
+	// Decider is who decided: owner, chief_of_staff or committee.
+	Decider         string   `json:"decider"`
+	Context         string   `json:"context,omitempty"`
+	Rationale       string   `json:"rationale,omitempty"`
+	RejectedOptions []string `json:"rejected_options,omitempty"`
+	// Supersedes is the id of the decision this one replaces.
+	Supersedes   string `json:"supersedes,omitempty"`
+	SpecDocument string `json:"spec_document,omitempty"`
+	PullRequest  string `json:"pull_request,omitempty"`
+	Question     string `json:"question,omitempty"`
 }
 
 // DocID is the id of the document for a source-native artifact or stable

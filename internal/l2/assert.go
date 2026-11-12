@@ -35,7 +35,16 @@ func AssertKind() queue.Kind { return queue.Kind{Name: AssertKindName, Serialize
 //
 // A scope id is lowercase letters, digits, `-` and `_` (docs/config.md), so it
 // cannot collide with the `source:` form.
+//
+// A `work` source that is another's owner source records about that source's
+// projects, so it is keyed as the work source it names: the two sources of a
+// pair serialize and place their records of a project under one key, whichever
+// source posted them and whatever scopes cover either. The evidence of what
+// they post keeps the posting source, which is what authority reads.
 func ScopeKey(repo config.Repo, source, container string, touches []connector.Touch) string {
+	if ws, ok := l1.WorkSourceOf(repo, source); ok {
+		source = ws
+	}
 	var ids []string
 	for _, s := range repo.Scopes {
 		if s.Covers(source, container) {

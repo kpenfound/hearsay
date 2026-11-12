@@ -50,7 +50,7 @@ A common envelope plus a per-kind body. Every L1 doc is one row in one table.
 
 ```yaml
 id: l1:discord:thread:123456789012345678
-kind: chat_thread | chat_burst | meeting_segment | pr | issue | commit | wiki_section | agent_turn
+kind: chat_thread | chat_burst | meeting_segment | pr | issue | commit | wiki_section | decision | agent_turn
 artifact_class: merged_pr | spec | meeting | issue | pull_request | commit | chat_thread | dm | agent
 state: { core: proposed | started | blocked | completed | abandoned, native: ... } # optional, stated by source
 source: { system, native_id, url }
@@ -250,6 +250,12 @@ bundle:
       since: 2026-09-05
       supersedes: "automate via job"
       evidence: [l1:meeting:..., l1:slack:...]
+    - topic: "Decision retry-cap"          # a decision of a work source's log
+      current: "Cap retries at 5 with jittered backoff."
+      tier: ratified                       # the source it was posted to decides
+      evidence: [l1:projects-owner:p1#policy:decision:retry-cap]
+      decision: { id: retry-cap, decider: owner, status: current, l1: l1:projects-owner:p1#policy:decision:retry-cap }
+      # a superseded one: { status: superseded, superseded_by: retry-cap-2, superseded_by_l1: l1:... }
 
   recent:                      # cap 5 by count, never by time
     last_activity: 23d
@@ -270,6 +276,7 @@ Rules:
 - Budget of roughly 1 to 2k tokens. Drop from the bottom. `recent` shrinks before `stances`. Ratified stances never drop.
 - `recent` is capped by count. A scope idle for three weeks needs its last five touches more, not less. Age is surfaced as `last_activity`, never used as a filter. When trimming, dedupe by kind before cutting by recency so five CI comments do not crowd out the one meeting that changed the plan.
 - `anchors` are not subject to the `recent` cap. The design doc is what the activity is about, not activity.
+- A decision a `work` source recorded is a stance with a `decision` entry: its id and decider, whether it is `current` or `superseded` and by which decision, and the L1 document holding its full record. It is served once, on the entity it belongs to — a workstream's bundle also serves the decisions it inherits from its project — and, like any stance, is held to the budget. `traverse` carries the same entry on the topic and stance nodes.
 - No code content. Entity ids and path patterns only.
 - Identical output regardless of which interface asked. That is the test of centralization.
 - Cacheable. The API keys encoded bundles by caller, scope, directive and a
@@ -311,11 +318,29 @@ the canonical list's key to the reader's audience on each read; repository
 permissions are never copied into work events at ingest. See
 [An access list may defer to other sources' containers](adr/0029-an-access-list-may-defer-to-other-sources-containers.md).
 
+A work source's `document` and `decision` records (and those of its owner
+source, which records them about the same projects) are L1 documents too. A
+document is distilled into `spec` sections about its project's or workstream's
+`work:` entity. A decision is built with no model call into one L1 document of
+kind and class `decision`, and placed as a topic of its own, about the entity it
+belongs to, with one stance whose evidence is that document alone: the tier is
+the policy's for the class and the *source* the record was posted to, never for
+its author or decider, so an owner source's records ratify under a policy that
+says so and the work source's stay inferred. A revision replaces the stance and a
+deletion withdraws it. Whether a decision is superseded is read, not stored: it
+is superseded exactly when another held decision of the project names it, in its
+latest revision, as the one it replaces. Both sources of a pair place under one
+serial key, so their order and concurrency decide nothing. See the
+[connector contract](connector-contract.md#documents-and-decisions-on-the-work-source)
+and [authority by source](config.md#authority-by-source).
+
 Work entities are visible only to readers who can read their artifact's current
 document, as well as reach the entity. Before distillation, after deletion, or
 when access is lost, resolution omits them and scoped reads answer as for a
 nonexistent entity. Repository privatization changes that visibility without a
 work-source repost.
+
+An earlier revision of an artifact is read under its current revision's access list as well as its own: narrowing who may read an artifact takes its earlier L0 revisions with it.
 
 Scopes filter for relevance. ACLs grant permission. They are never the same mechanism.
 

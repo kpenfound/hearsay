@@ -1,0 +1,18 @@
+{
+  "kind": "decision",
+  "project": "payments-rewrite",
+  "workstream": "retry-policy",
+  "decision": "d-2",
+  "context": "Settlement calls fail transiently under load.",
+  "outcome": "Cap retries at 5 with jittered backoff.",
+  "rationale": "Five attempts cover the observed outage window.",
+  "rejected_options": ["Unbounded retries", "A dead-letter queue first"],
+  "decider": "owner",
+  "supersedes": "d-1",
+  "spec_document": "spec-1",
+  "pull_request": "https://github.com/acme/api/pull/42",
+  "question": "q-17",
+  "author": "kyle",
+  "created_at": "2026-10-14T18:40:00Z",
+  "updated_at": "2026-10-14T18:50:00Z"
+}

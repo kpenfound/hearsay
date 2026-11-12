@@ -556,7 +556,8 @@ func checkListen(addr string) error {
 // agent session and work updates connectors. Any other type, or a source whose
 // connector rejects its config, is a startup failure. Agent and work factories
 // receive principals for token authentication; work also receives every
-// configured source id for validating repository references.
+// configured source, to validate repository references and to pair an owner
+// source with the work source it names.
 func connectorRegistry(principals []principal.Principal, sources []connector.SourceConfig) *connector.Registry {
 	registry := connector.NewRegistry()
 	// Register fails only for an empty type, a nil factory or a type claimed
@@ -574,7 +575,7 @@ func connectorRegistry(principals []principal.Principal, sources []connector.Sou
 	for _, source := range sources {
 		sourceIDs = append(sourceIDs, source.ID)
 	}
-	_ = registry.Register(work.Type, work.NewFactory(principals, sourceIDs, os.LookupEnv))
+	_ = registry.Register(work.Type, work.NewFactory(principals, sourceIDs, os.LookupEnv, work.WithSources(sources)))
 	return registry
 }
 

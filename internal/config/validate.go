@@ -223,7 +223,51 @@ func (l *loader) buildSources() []connector.SourceConfig {
 			out = append(out, cfg)
 		}
 	}
+	l.checkOwnerSources()
 	return out
+}
+
+// checkOwnerSources holds a work source's owner_of setting to its meaning: the
+// owner source of one other work source, which is not itself an owner source.
+// The sources are all read first, so the order of the files does not matter.
+func (l *loader) checkOwnerSources() {
+	type entry struct {
+		a     at
+		src   sourceDoc
+		named string // "" when owner_of is absent or unusable
+	}
+	byID := map[string]*entry{}
+	entries := make([]*entry, 0, len(l.sources))
+	for i, d := range l.sources {
+		e := &entry{a: locate(d, "source", d.v.ID, i), src: d.v}
+		if raw, present := d.v.Settings["owner_of"]; present && d.v.Type == "work" {
+			if name, ok := raw.(string); !ok || name == "" {
+				l.bad(e.a, "settings.owner_of", "%v is not a source id: name the work source this one holds documents and decisions for, or leave it out", raw)
+			} else {
+				e.named = name
+			}
+		}
+		entries = append(entries, e)
+		if _, dup := byID[d.v.ID]; !dup {
+			byID[d.v.ID] = e
+		}
+	}
+	for _, e := range entries {
+		if e.named == "" {
+			continue
+		}
+		target, ok := byID[e.named]
+		switch {
+		case e.named == e.src.ID:
+			l.bad(e.a, "settings.owner_of", "names this source itself: an owner source holds records for another work source")
+		case !ok:
+			l.bad(e.a, "settings.owner_of", "names source %q, which is not configured", e.named)
+		case target.src.Type != "work":
+			l.bad(e.a, "settings.owner_of", "names source %q, which is of type %q: an owner source's records are about a work source's projects", e.named, target.src.Type)
+		case target.named != "":
+			l.bad(e.a, "settings.owner_of", "names source %q, which is itself an owner source: the work source it names must hold the projects", e.named)
+		}
+	}
 }
 
 // buildPrincipals validates `principals/`.

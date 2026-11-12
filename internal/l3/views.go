@@ -67,6 +67,11 @@ type CurrentStance struct {
 	// Supersedes is the position the stance replaced, empty for the first
 	// stance on a topic and for one the reader may not read.
 	Supersedes string
+	// Decision is set where the stance is a decision's: its decider, where its
+	// full record is, and whether it is current or superseded and by which
+	// decision ([l2.Store.DecisionMarks]). A superseded decision is served with
+	// the tier its own source gave it, and is never what makes another contested.
+	Decision *l2.DecisionMark
 	// Inherited reports a topic that is not about the entity asked for itself:
 	// it is about a related entity or an ancestor of one
 	// (docs/design.md#l3-derived-views).
@@ -157,6 +162,23 @@ func (v *Views) CurrentStances(ctx context.Context, reader l1.Reader, own string
 		}
 		out = append(out, c)
 	}
+	var docs []string
+	for _, c := range out {
+		if c.Stance.Assertion == "" && len(c.Stance.Evidence) > 0 {
+			docs = append(docs, c.Stance.Evidence[0])
+		}
+	}
+	marks, err := v.graph.DecisionMarks(ctx, reader, docs)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	for i, c := range out {
+		if c.Stance.Assertion == "" && len(c.Stance.Evidence) > 0 {
+			if mark, ok := marks[c.Stance.Evidence[0]]; ok {
+				out[i].Decision = &mark
+			}
+		}
+	}
 	// Own before inherited, and each newest stated first.
 	slices.SortStableFunc(out, func(a, b CurrentStance) int {
 		if a.Inherited != b.Inherited {
@@ -233,6 +255,9 @@ func (v *Views) Recent(ctx context.Context, reader l1.Reader, scope string, n in
 		return out, nil
 	}
 	out.LastActivity = listed[0].Time.LastActivity
+	// A decision is served once, in the scope's decision log, which is its
+	// stance. It is activity, but it takes no place among the documents.
+	listed = slices.DeleteFunc(listed, func(doc l1.Stored) bool { return doc.Kind == l1.KindDecision })
 	candidates := slices.DeleteFunc(listed, func(doc l1.Stored) bool { return slices.Contains(except, doc.ID) })
 	if len(candidates) > RecentCandidates {
 		candidates = candidates[:RecentCandidates]

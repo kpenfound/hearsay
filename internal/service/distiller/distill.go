@@ -252,6 +252,9 @@ func (d *Distiller) Distill(ctx context.Context, docID string) (Result, error) {
 		return result, nil
 	}
 	root := roots[0]
+	if l1.IsDecision(root) {
+		return d.distillDecision(ctx, result, root)
+	}
 	if root.Kind == connector.KindTranscript || root.Payload.BaseKind == connector.KindTranscript {
 		return d.distillMeeting(ctx, result, root)
 	}
@@ -939,4 +942,57 @@ func (d *Distiller) distil(ctx context.Context, doc l1.Document) (l1.Body, error
 		return l1.Body{}, fmt.Errorf("distilling %s: %w", doc.ID, err)
 	}
 	return body, nil
+}
+
+// distillDecision writes the document of a decision a `work` source recorded.
+// The document is built from the record's fields ([l1.BuildDecision]), so there
+// is no model call to fail, no body to distil and no embedding: a decision is
+// found by its words through full text, and its stance is placed by the
+// assertion worker, from the same fields, in the transaction that writes the
+// document. It does not enter the model-based assertion pipeline, so it is
+// counted once.
+func (d *Distiller) distillDecision(ctx context.Context, result Result, root connector.Event) (Result, error) {
+	repo, err := d.referenceRepo(ctx)
+	if err != nil {
+		return Result{}, err
+	}
+	doc, err := l1.BuildDecision(root, d.resolver, repo)
+	if errors.Is(err, l1.ErrNotDistilled) {
+		deleted, err := d.deleteConversation(ctx, root.Source, root.Payload.Artifact, result.DocID)
+		if err != nil {
+			return Result{}, err
+		}
+		result.Deleted, result.Skipped = deleted, !deleted
+		return result, nil
+	}
+	if err != nil {
+		return Result{}, fmt.Errorf("building %s: %w", result.DocID, err)
+	}
+	// The root is read again with the write, as every distillation does, so a
+	// revision that arrived meanwhile is not overwritten by this one.
+	err = pgx.BeginFunc(ctx, d.pool, func(tx pgx.Tx) error {
+		current, err := l0.New(tx).Current(ctx, l0.ListOptions{Filter: l0.Filter{Source: root.Source, Artifact: root.Payload.Artifact}, Limit: 1})
+		if err != nil {
+			return fmt.Errorf("re-reading %s: %w", result.DocID, err)
+		}
+		if len(current) != 1 || current[0].NativeID != root.NativeID {
+			result.Superseded = true
+			return nil
+		}
+		written, err := l1.New(tx).Put(ctx, doc)
+		if err != nil {
+			return err
+		}
+		if written {
+			result.Written = true
+			if err := l2.EnqueueDecision(ctx, tx, d.repo, doc); err != nil {
+				return err
+			}
+		}
+		return rebuilt(ctx, tx, []string{doc.ID}, nil)
+	})
+	if err != nil {
+		return Result{}, err
+	}
+	return result, nil
 }

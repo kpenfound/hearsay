@@ -870,6 +870,17 @@ func getL0(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json.R
 	case !reader.Allows(ev.ACL):
 		return nil, notFound
 	}
+	// A revision an artifact has since replaced is read under its current
+	// revision's access list too: narrowing who may read an artifact — a
+	// project whose repos changed, say — takes its earlier revisions with it,
+	// and does not leave them readable by whoever the old list let in.
+	current, err := c.events.Current(ctx, l0.ListOptions{Filter: l0.Filter{Source: ev.Source, Artifact: ev.Payload.Artifact}, Limit: 1})
+	if err != nil {
+		return nil, err
+	}
+	if len(current) == 1 && current[0].ID != ev.ID && !reader.Allows(current[0].ACL) {
+		return nil, notFound
+	}
 	// An event is in reach when its artifact's document is: one out of reach,
 	// or with no document where the reader's reach is not everything, is
 	// answered as one that does not exist.

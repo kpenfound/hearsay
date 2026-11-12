@@ -39,6 +39,28 @@ type Node struct {
 	StatedAt     string `json:"stated_at,omitempty"`
 	Kind         string `json:"kind,omitempty"`
 	Class        string `json:"class,omitempty"`
+	// Decision is set on the topic and stance of a decision.
+	Decision *Decision `json:"decision,omitempty"`
+}
+
+// Decision is what a decision's stance adds to a read: the decision's id and
+// decider, its status in the log, the decision that superseded it when it is,
+// and the L1 documents holding its full record and its successor's.
+type Decision struct {
+	ID             string `json:"id"`
+	Decider        string `json:"decider"`
+	Status         string `json:"status"`
+	SupersededBy   string `json:"superseded_by,omitempty"`
+	SupersededByL1 string `json:"superseded_by_l1,omitempty"`
+	L1             string `json:"l1"`
+}
+
+// DecisionOf is the decision a mark describes, as reads serve it.
+func DecisionOf(m *l2.DecisionMark) *Decision {
+	if m == nil {
+		return nil
+	}
+	return &Decision{ID: m.ID, Decider: m.Decider, Status: m.Status, SupersededBy: m.SupersededBy, SupersededByL1: m.SupersededByL1, L1: m.L1}
 }
 
 // Edge connects two returned handles in the stored direction.
@@ -339,6 +361,9 @@ func (w *traversal) read(ctx context.Context, ref NodeRef) (*walkValue, error) {
 		if a.Stands && a.Access.Stance(w.reader, a.Standing.Current) {
 			value.node.Current = Line(a.Standing.Current.Position)
 			value.node.Tier = string(a.Standing.Tier)
+			if value.node.Decision, err = w.decision(ctx, a.Standing.Current); err != nil {
+				break
+			}
 		}
 	case "stance":
 		value.stance, err = w.v.graph.Stance(ctx, ref.ID)
@@ -361,6 +386,9 @@ func (w *traversal) read(ctx context.Context, ref NodeRef) (*walkValue, error) {
 		value.node.Author = st.Author
 		value.node.StatedAt = stampLine(st.StatedAt)
 		value.node.Current = a.Stands && a.Standing.Current.ID == st.ID && a.Access.Stance(w.reader, a.Standing.Current)
+		if value.node.Decision, err = w.decision(ctx, st); err != nil {
+			break
+		}
 	case "principal":
 		value.visible = true
 		value.node.Name = ref.ID
@@ -381,3 +409,20 @@ func (w *traversal) read(ctx context.Context, ref NodeRef) (*walkValue, error) {
 }
 
 func stampLine(at time.Time) string { return at.UTC().Format(time.RFC3339Nano) }
+
+// decision is the decision a stance is, for the reader, or nil where it is not
+// a decision's.
+func (w *traversal) decision(ctx context.Context, st l2.Stance) (*Decision, error) {
+	if st.Assertion != "" || len(st.Evidence) == 0 {
+		return nil, nil
+	}
+	marks, err := w.v.graph.DecisionMarks(ctx, w.reader, st.Evidence[:1])
+	if err != nil {
+		return nil, err
+	}
+	mark, ok := marks[st.Evidence[0]]
+	if !ok {
+		return nil, nil
+	}
+	return DecisionOf(&mark), nil
+}

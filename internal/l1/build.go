@@ -348,12 +348,8 @@ func roleFor(ev connector.Event) connector.ParticipantRole {
 // they are never the same mechanism (docs/design.md#access-control).
 func scopeOf(root connector.Event, repo config.Repo, refs []Reference) []string {
 	entities := map[string]bool{}
-	if source, ok := repo.Source(root.Source); ok && source.Type == "work" {
-		// Updates are messages in their project's or workstream's document,
-		// so the same scope covers their content without an update entity.
-		project := "work:" + root.Source + ":" + root.Payload.Container.NativeID
-		entities[project] = true
-		entities["work:"+root.Source+":"+root.Payload.Artifact] = true
+	for _, id := range workScope(root, repo) {
+		entities[id] = true
 	}
 	for _, ref := range refs {
 		if ref.Type == RefSystem {
