@@ -30,6 +30,8 @@ func ClassFor(kind Kind, root connector.Event) (config.ArtifactClass, error) {
 		return config.ArtifactMeeting, nil
 	case KindWikiSection:
 		return config.ArtifactSpec, nil
+	case KindDecision:
+		return config.ArtifactDecision, nil
 	case KindIssue:
 		return config.ArtifactIssue, nil
 	case KindCommit:

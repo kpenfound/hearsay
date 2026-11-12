@@ -1846,6 +1846,23 @@ decisions (`work.ClosesCycle`), is answered 409. A revision is judged by its new
 A `spec_document` that is not held yet is accepted, since documents can arrive
 later; it resolves when it is.
 
+**What reads serve.** A document is distilled like any markdown document, into
+sections of class `spec` about the work source's `work:<work source>:<project>`
+entity, and its workstream's when it has one: for the owner source's records as
+well, so no entity is named after the owner source. A decision is distilled with
+no model call into one L1 document of class `decision`, built from its
+`payload.native`, whose `body.decision` holds the structured fields, and it is
+placed as one topic, with one stance whose position is the outcome, about the
+entity it belongs to. A revision replaces that stance and a deletion withdraws
+it. The decision log of an entity is served by `get_bundle` and `traverse` with
+each decision's id, decider and status: a decision is *superseded* exactly when
+another held decision of the project names it in its latest revision's
+`supersedes`, whichever source or workstream that decision is on, and *current*
+otherwise. Nothing about the status is stored: it is read from the decisions
+held now, so it follows revisions and deletions and does not depend on the order
+the records were posted or processed in
+([configuration](config.md#authority-by-source)).
+
 **Posting under one lock.** The checks above and the write happen under a lock
 keyed by work source and project, which a work source and its owner source
 share, so two concurrent posts of one new id to the two sources leave exactly
@@ -1861,7 +1878,7 @@ project's access list, which every project post that adds, removes or replaces
 reconciliation completes. `payload.native.work_source` names the work source,
 whichever of the two the record arrived on. The source a record arrives on is
 its evidence's source, so a policy ranks or ratifies the owner source apart from
-the work source ([configuration](config.md#documents-decisions-and-the-owner-source)).
+the work source ([configuration](config.md#authority-by-source)).
 The ids of its records are as above, with the owner source's own id as the
 event's source.
 

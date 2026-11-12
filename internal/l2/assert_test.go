@@ -1,6 +1,7 @@
 package l2_test
 
 import (
+	"encoding/json"
 	"errors"
 	"slices"
 	"testing"
@@ -197,5 +198,64 @@ func TestScopeKeyTouches(t *testing.T) {
 				t.Fatalf("ScopeKey = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// A work source's owner source is keyed as the work source it names, so the two
+// sources of a pair place their records of a project under one key whatever
+// scopes cover either of them; a source that is not an owner source is keyed as
+// itself.
+func TestScopeKeyOfAPair(t *testing.T) {
+	sources := []connector.SourceConfig{
+		{ID: "projects", Type: "work"},
+		{ID: "projects-owner", Type: "work", Settings: json.RawMessage(`{"owner_of":"projects"}`)},
+		{ID: "other", Type: "work"},
+	}
+	cover := func(id string, sources ...string) config.Scope {
+		s := config.Scope{ID: id}
+		for _, source := range sources {
+			s.Sources = append(s.Sources, config.ScopeSource{Source: source, Containers: []string{"*"}})
+		}
+		return s
+	}
+	tests := []struct {
+		name   string
+		scopes []config.Scope
+		want   string
+	}{
+		{"no scope", nil, "source:projects"},
+		{"a scope over both", []config.Scope{cover("work", "projects", "projects-owner")}, "work"},
+		{"scopes that differ by source", []config.Scope{cover("a-owner", "projects-owner"), cover("b-work", "projects")}, "b-work"},
+		{"a scope over the owner source alone", []config.Scope{cover("a-owner", "projects-owner")}, "source:projects"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := config.Repo{Sources: sources, Scopes: tt.scopes}
+			work, owner := l2.ScopeKey(repo, "projects", "p1", nil), l2.ScopeKey(repo, "projects-owner", "p1", nil)
+			if work != tt.want || owner != tt.want {
+				t.Errorf("ScopeKey = %q for the work source and %q for the owner source, want %q for both", work, owner, tt.want)
+			}
+		})
+	}
+	if got := l2.ScopeKey(config.Repo{Sources: sources}, "other", "p1", nil); got != "source:other" {
+		t.Errorf("ScopeKey(other) = %q, want its own", got)
+	}
+}
+
+func TestDecisionEntityAndKey(t *testing.T) {
+	d := l1.Decision{ID: "d", WorkSource: "projects", Project: "p1", Workstream: "w1"}
+	if got := l2.DecisionEntity(d); got != "work:projects:p1#w1" {
+		t.Errorf("DecisionEntity = %q", got)
+	}
+	d.Workstream = ""
+	if got := l2.DecisionEntity(d); got != "work:projects:p1" {
+		t.Errorf("DecisionEntity = %q", got)
+	}
+	first, again := l2.DecisionTopicID("l1:projects:a"), l2.DecisionTopicID("l1:projects:a")
+	if first != again {
+		t.Errorf("a decision topic's id must be stable: %q then %q", first, again)
+	}
+	if other := l2.DecisionTopicID("l1:projects-owner:a"); first == other {
+		t.Errorf("distinct decision documents share the topic id %q", first)
 	}
 }

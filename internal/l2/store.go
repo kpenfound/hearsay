@@ -822,7 +822,7 @@ func (s *Store) Unasserted(ctx context.Context) ([]Pending, error) {
 	rows, err := s.db.Query(ctx, `
 SELECT d.id, d.l0_refs[1] FROM l1_docs d
 LEFT JOIN l2_asserted a ON a.doc_id = d.id
-WHERE d.outcome_kind IN ('decided', 'proposed', 'resolved')
+WHERE d.outcome_kind IN ('decided', 'proposed', 'resolved') AND d.kind <> 'decision'
   AND (a.doc_id IS NULL OR a.distilled_at <> d.distilled_at)
 ORDER BY d.last_activity_at, d.id`)
 	if err != nil {

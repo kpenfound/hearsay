@@ -18,6 +18,15 @@ text that is no longer current (ADR-0019, below).
 
 ## Things to know before changing it
 
+- **A decision is a topic of its own, placed with no model call**
+  ([Store.PlaceDecision], `decision.go`). Each `decision` L1 document gets one
+  topic, about the entity it belongs to, and one stance whose evidence is that
+  document: a revision replaces the stance, a deletion withdraws it. Whether it
+  is superseded is *read* ([Store.DecisionMarks]) from the decisions L1 holds
+  for the project, so it follows latest revisions and depends on no processing
+  order. A work source and its owner source are keyed as one ([ScopeKey]), so
+  their decisions of a project serialize and place under one key while the
+  evidence keeps the posting source, which is what authority reads.
 - **Alias candidates require a decision.** The distiller records one vote per chat
   document when it links a PR that touched code and its existing model answer
   names that code. Candidates retain both documents as evidence and intersect

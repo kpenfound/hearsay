@@ -123,7 +123,22 @@ type Stance struct {
 	// Evidence is the L1 documents the stance rests on.
 	Evidence  []string `json:"evidence"`
 	Inherited bool     `json:"inherited,omitempty"`
+	// Decision is set where the stance is a decision of the scope's decision
+	// log: who decided it, whether it is current or superseded and by which
+	// decision, and the document holding its full record.
+	Decision *Decision `json:"decision,omitempty"`
 }
+
+// Decision is what a decision's stance adds: the decision's id and decider,
+// its status in the log, the decision that superseded it when it is, and the
+// L1 documents (`get_l1`) holding its full record — context, rationale,
+// rejected options and links — and its successor's. The status follows the
+// latest revision of every held decision of the project, so a decision whose
+// successor was revised away or deleted is current again.
+type Decision = l3.Decision
+
+// DecisionOf is the decision a mark describes, as reads serve it.
+func DecisionOf(m *l2.DecisionMark) *Decision { return l3.DecisionOf(m) }
 
 // Recent is the recent activity on the scope.
 type Recent struct {
@@ -508,6 +523,7 @@ func Build(in Inputs, budget int) (Bundle, Trimmed, int, error) {
 			Supersedes: Line(c.Supersedes),
 			Evidence:   slices.Clone(c.Stance.Evidence),
 			Inherited:  c.Inherited,
+			Decision:   DecisionOf(c.Decision),
 		})
 	}
 	b.Conflicts = conflicts(in.Directive, in.Stances, in.EvidenceURLs)

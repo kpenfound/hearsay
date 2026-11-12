@@ -20,6 +20,13 @@ read path asks a model to generate anything.
 
 ## Things to know before changing it
 
+- **A decision is the one document built with no model.** [BuildDecision] makes
+  the `decision` document of a `work` source's decision record from its
+  structured fields (`Body.Decision`), so the decision log, its supersession
+  marks and its tier never depend on a model reading prose. Its class is
+  `decision` and its source is the posting source, whoever decided; its scope is
+  the work source's `work:` entity, also for an owner source's records
+  ([WorkSourceOf]).
 - **A document is a function of its events.** [Build] takes the current revision
   of an artifact and of everything that hangs off it; [BuildChatWindow] takes
   the current messages in a fixed channel time bucket; [BuildChatReplies] takes

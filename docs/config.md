@@ -755,6 +755,23 @@ scopes:
     sources: [projects, projects-owner]
 ```
 
+**Reading them back.** On `get_bundle` and `traverse` of
+`work:<work source>:<project>` or `...#<workstream>` — the work source's entity,
+for the owner source's records too — a document is a `spec` section, and a
+decision is an entry of the entity's decision log with its outcome, `decider`,
+status and the L1 document holding its full record (`get_l1`: context,
+rationale, rejected options, links). A decision is served on the entity it
+belongs to: a workstream's read also serves its project's decisions, which it
+inherits, and a project's read does not serve its workstreams'. A decision is
+`superseded`, by the decision that names it, exactly when another held decision
+names it in its latest revision's `supersedes`, and `current` otherwise; a
+superseded decision keeps the tier its own source gave it and makes nothing
+contested. Documents and decisions are readable by whoever may read their
+project, as it is now: when its `repos` change, once the distiller has processed
+the change, a reader who lost access is served none of them, by a bundle, a
+traversal or a fetch by handle. Their tier is
+[the source's](#authority-by-source), and nothing else's.
+
 Each POST is one JSON object, at most 4 MiB. Unknown fields are refused.
 `state` and `status` belong only on projects and workstreams. `status` requires
 `state` and has at most 64 bytes. **An update carrying `state` or `status`
@@ -1103,6 +1120,7 @@ ones and proceed, and stop on contested ones
     - meeting
     - merged_pr
     - spec
+    - decision
     - issue
     - pull_request
     - commit
@@ -1128,9 +1146,9 @@ omitted classes tie with each other, so between two of *them* nothing outranks
 anything and the more recent stance decides — but every class in the list beats
 all of them, `agent` included. Leaving a class out is worse for it than ranking
 it last. Writing `ranking: [merged_pr, meeting]` is therefore a decision about
-all nine classes and not just two: it puts the other seven, `agent` among them,
+all ten classes and not just two: it puts the other eight, `agent` among them,
 level with each other and below both. Write the whole order out when you mean
-the whole order — the example above overrides one position and still lists nine.
+the whole order — the example above overrides one position and still lists ten.
 
 A class that ratifies **on its own** has to be in the ranking in force for the
 scope, and the loader refuses a policy where it is not. `artifacts: [spec]`
@@ -1191,7 +1209,8 @@ and an open one are the same kind of thing with very different weight.
 | Class | What produces it |
 |---|---|
 | `merged_pr` | A pull or merge request that was merged. |
-| `spec` | A wiki page, design doc or ADR — something written to be referred back to. |
+| `spec` | A wiki page, design doc or ADR — something written to be referred back to. A `work` source's `document` is one too. |
+| `decision` | A `decision` a `work` source recorded: a structured outcome, who decided it and what it supersedes. |
 | `meeting` | A segment of a meeting transcript. |
 | `issue` | A tracker item and its comments. |
 | `pull_request` | A change proposal that was not merged, and the reviews on it. |
@@ -1203,7 +1222,7 @@ and an open one are the same kind of thing with very different weight.
 The distiller assigns a class to every L1 document it produces, from the
 document's kind and the state of the artifact behind it: `pr` is `merged_pr`
 when it merged and `pull_request` otherwise, `meeting_segment` is `meeting`,
-`wiki_section` is `spec`, `issue` is `issue`, `commit` is `commit`,
+`wiki_section` is `spec`, `decision` is `decision`, `issue` is `issue`, `commit` is `commit`,
 `chat_thread` and `chat_burst` are `chat_thread` unless the container is a
 direct-message container, and `agent_turn` is `agent`. That is a contract on L1,
 written here because authority is what needs it.
@@ -1215,6 +1234,7 @@ written here because authority is what needs it.
   ranking:
     - merged_pr              # the team did not merely say it, they shipped it
     - spec                   # written to be referred back to
+    - decision               # a structured decision someone recorded as one
     - meeting                # the team talking, with a record
     - issue                  # written down, and about one thing
     - pull_request           # proposed, not agreed
@@ -1229,7 +1249,7 @@ written here because authority is what needs it.
   contested_window: 336h     # stances within 14 days of the newest are compared
 ```
 
-The design doc fixes four of the nine positions — a merged PR outranks a
+The design doc fixes four of the ten positions — a merged PR outranks a
 meeting, which outranks a chat thread, which outranks a DM — and the rest follow
 the same principle: something written down deliberately outranks something said
 in passing.
@@ -1247,7 +1267,98 @@ in passing.
 
 A frozen spec and CODEOWNERS are named alongside a merged pull request in the
 design doc, but nothing can tell a frozen spec from a draft one, so `spec` is a
-deliberate one-line override rather than a default.
+deliberate one-line override rather than a default. The same goes for
+`decision`: nothing in the built-in default makes a decision, or a document, a
+`work` source recorded ratify on its own.
+
+**`decision` is a class of its own, placed directly after `spec`.** A
+decision is written down on purpose as a decision, so it ranks with the
+documents written to be referred back to and above everything said in passing.
+The placement matters only where stances of different classes meet on one
+topic, which a decision's own topic never has, so it decides nothing about
+which decision is current; it is there so that a ranking that is written out
+in full lists every class, and so that a policy can ratify decisions
+(`artifacts: [decision]`) without ratifying specs. A class a ranking leaves out
+ranks below every class it lists, as for any other.
+
+### Authority by source
+
+Authority is a judgement about *where* something was said, and for the `work`
+source it is the source's id that says it. A record posted to the **owner
+source** of a pair is an owner's; the same record posted to the work source is
+not, whoever it names as `author` and whatever its `decider` says. Hearsay
+never reads the author, the attributing poster or the decider to decide a tier:
+a document or decision is evidence of class `spec` or `decision` *from the
+source it arrived on*, and a policy's `ratified_by.artifacts` and
+`ratified_by.sources` rank or ratify exactly that.
+
+Under the built-in default nothing a `work` source records ratifies: every
+document and decision is **inferred**. To have the owner source's records
+ratified and the work source's left inferred, give the pair's scope a policy
+of its own. Decisions and documents of a project are placed under one key,
+whichever source of the pair posted them: the first scope that covers the
+*work* source's project, and `source:<work source>` where none does. That key is
+also the serial key their placement jobs run under, so the two sources' records
+of a project are never placed at once. A scope that covers both sources, as
+below, is therefore the scope to write the policy for; a scope covering only
+the owner source is never the scope its records are placed under.
+
+<!-- example: work-authority/hearsay.yaml -->
+```yaml
+sources:
+  - id: projects
+    type: work
+    containers: ["*"]
+    settings:
+      posters: [osmia]
+      attributors: [osmia]
+  - id: projects-owner
+    type: work
+    containers: ["*"]
+    settings:
+      owner_of: projects
+      posters: [osmia]
+      attributors: [osmia]
+
+principals:
+  - id: osmia
+    kind: agent
+    class: observer
+    token_env: HEARSAY_OSMIA_TOKEN
+    scopes: ["*"]
+  - id: kyle
+    kind: human
+
+scopes:
+  - id: work
+    sources: [projects, projects-owner]
+
+authority:
+  - scope: work
+    ratified_by:
+      artifacts: [spec, decision]   # documents and decisions ratify on their own...
+      sources: [projects-owner]     # ...when the owner source posted them
+```
+
+With this policy an owner-source document is a ratified `spec` and an
+owner-source decision a ratified one, both read on
+`work:projects:<project>`. The same records on `projects` are inferred: a
+chief's relay of an owner ruling is never ratified, even when it names the owner
+as `author` and `decider: owner`.
+
+Two things to know when writing a policy like this one:
+
+- **`ratified_by.sources` restricts every class in `ratified_by.artifacts`.**
+  A policy that ratifies owner-source specs and decisions and also keeps a
+  merged GitHub pull request ratifying has to list the GitHub source beside the
+  owner source. Giving the work scope a policy of its own, as above, avoids it:
+  the `*` default still ratifies merged pull requests from any source, and the
+  `work` scope's policy governs only what is placed under it. A policy set on
+  `*` instead applies to everything, and so has to list every source that
+  ratifies anything.
+- **A scope's `ratified_by.principals` is inherited**, so anyone it names can
+  still ratify a record by hand (`hearsay gestures ratify`); a hand ratification
+  is a person's, not a source's.
 
 ## `llm/`
 
@@ -1534,10 +1645,10 @@ authority:
 
   - scope: api
     # This team decides in meetings, so a meeting outranks a merged PR here.
-    # All nine classes are listed: one left out would rank below every one that
+    # All ten classes are listed: one left out would rank below every one that
     # is, `agent` included.
     ranking:
-      [meeting, merged_pr, spec, issue, pull_request, commit, chat_thread, dm, agent]
+      [meeting, merged_pr, spec, decision, issue, pull_request, commit, chat_thread, dm, agent]
     ratified_by:
       artifacts: [merged_pr, spec]
 
@@ -1716,11 +1827,11 @@ ratified_by:
 ```yaml
 # authority/api.yaml
 # This team decides in meetings, so a meeting outranks a merged PR here.
-# All nine classes are listed: one left out would rank below every one that is,
+# All ten classes are listed: one left out would rank below every one that is,
 # `agent` included.
 scope: api
 ranking:
-  [meeting, merged_pr, spec, issue, pull_request, commit, chat_thread, dm, agent]
+  [meeting, merged_pr, spec, decision, issue, pull_request, commit, chat_thread, dm, agent]
 ratified_by:
   artifacts: [merged_pr, spec]
 ```

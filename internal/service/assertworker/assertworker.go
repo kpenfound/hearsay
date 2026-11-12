@@ -40,6 +40,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/l0"
+	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/queue"
@@ -263,6 +264,11 @@ func Sweep(ctx context.Context, pool *pgxpool.Pool, repo config.Repo) (int, erro
 		}
 		enqueued++
 	}
+	decisions, err := sweepDecisions(ctx, pool, repo)
+	enqueued += decisions
+	if err != nil {
+		return enqueued, err
+	}
 	assertions, err := sweepAssertions(ctx, pool)
 	if err != nil {
 		return enqueued + assertions, err
@@ -299,6 +305,33 @@ func sweepAssertions(ctx context.Context, pool *pgxpool.Pool) (int, error) {
 		}
 		_, err = queue.Enqueue(ctx, pool, queue.Request{Kind: l2.AssertKind(), TargetID: id, SerialKey: topic.Scope})
 		if err != nil {
+			return enqueued, err
+		}
+		enqueued++
+	}
+	return enqueued, nil
+}
+
+// sweepDecisions enqueues a placement job for every decision document whose
+// current version was not placed, on the project's decision key
+// ([l2.DecisionKey]) — the key the distiller enqueues them under, so a restart
+// serializes them with the live ones.
+func sweepDecisions(ctx context.Context, pool *pgxpool.Pool, repo config.Repo) (int, error) {
+	ids, err := l2.New(pool).UnplacedDecisions(ctx)
+	if err != nil {
+		return 0, err
+	}
+	docs := l1.New(pool)
+	enqueued := 0
+	for _, id := range ids {
+		doc, err := docs.Get(ctx, id)
+		if errors.Is(err, l1.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return enqueued, err
+		}
+		if err := l2.EnqueueDecision(ctx, pool, repo, doc.Document); err != nil {
 			return enqueued, err
 		}
 		enqueued++

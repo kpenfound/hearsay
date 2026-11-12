@@ -11,6 +11,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/l0"
+	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 )
 
@@ -83,6 +84,32 @@ func AppendAssertion(ctx context.Context, pool *pgxpool.Pool, authority config.A
 	})
 	if err != nil {
 		return false, fmt.Errorf("appending the stance %s asserts: %w", eventID, err)
+	}
+	return written, nil
+}
+
+// PlaceDecision writes the topic and stance of a decision document, under the
+// decision key the job is serialized on, and reports whether it wrote a stance.
+// It makes no model call ([l2.Store.PlaceDecision]): the decision's fields name
+// everything, and the stance is evidenced by the document alone, so its tier is
+// the policy's for the document's class and posting source. A decision whose
+// document is gone is left to the evidence repair a deletion enqueues. It is
+// safe to run again.
+func PlaceDecision(ctx context.Context, pool *pgxpool.Pool, authority config.Authority, docID, scope string) (bool, error) {
+	written := false
+	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		stored, err := l1.New(tx).Get(ctx, docID)
+		if errors.Is(err, l1.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		written, err = l2.New(tx).PlaceDecision(ctx, stored, authority, scope)
+		return err
+	})
+	if err != nil {
+		return false, fmt.Errorf("placing decision %s: %w", docID, err)
 	}
 	return written, nil
 }

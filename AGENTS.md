@@ -164,7 +164,8 @@ comments to in a documented shape, authenticated by a bearer token) and the
 agent session source (`internal/connector/agent`, which agents push their own
 session events to, authenticated by their API tokens), and the work updates
 source (`internal/connector/work`, where factories and agents push projects,
-workstreams and updates with their principal tokens) ship. Their package comments
+workstreams, updates, documents and decisions with their principal tokens, and
+whose owner source records the documents and decisions only) ship. Their package comments
 document settings and deployment constraints. An unregistered type is a startup failure.
 
 The distiller and assertion worker expose `/healthz` and `/readyz` on
@@ -180,7 +181,11 @@ decided, proposed or resolved; the worker reads it with the `assert` tier,
 matches topics by reference overlap and then embedding similarity, and appends
 stances in `internal/l2`. An `assert` job whose target is an L0 `assertion`
 event, which the API enqueues, is an agent's stance and is appended with no
-model call. At startup it seeds entities from `code/`, from
+model call. So is one whose target is a `decision` L1 document, which the
+distiller builds with no model either: a `work` source's decision becomes a topic
+of its own about its `work:` entity, placed under one key for a work source and
+its owner source, and whether it is superseded is read from the decisions held,
+never stored. At startup it seeds entities from `code/`, from
 the root directories and CODEOWNERS files of the GitHub repositories `code/`
 names (`github.Reader`, with the source's token), and from the tracker
 hierarchy L0 holds — GitHub sub-issues, `part_of` their parent issue — and

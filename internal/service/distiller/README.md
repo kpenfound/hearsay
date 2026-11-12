@@ -92,3 +92,11 @@ per-document modeling and optional work through transaction entry; segmentation
 and embedding are separate work, and their time/cost is not imputed here.
 Recorded synthetic fixtures under `testdata/outcome-*` test integration
 mechanics; they qualify no production policy.
+
+A `work` source's `decision` is the one record distilled with no model call:
+`distillDecision` builds its `decision` document from the event's structured
+fields (`l1.BuildDecision`), writes it, and enqueues the job that places it
+(`l2.EnqueueDecision`) in the same transaction. It makes no `distill` call,
+embeds nothing and takes no part in the outcome pipeline, so a decision is
+counted once, and a model that is down stops neither its document nor its
+placement.
