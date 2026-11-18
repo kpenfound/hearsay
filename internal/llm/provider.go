@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"time"
 )
 
 // Provider is one vendor's adapter: the only code in Hearsay that knows what a
@@ -43,6 +44,22 @@ type Capabilities struct {
 	// StructuredOutput is whether it can be made to answer with JSON
 	// satisfying a schema, by any means the adapter chooses.
 	StructuredOutput bool
+
+	// NoTemperature, NoBaseURL and NoAPIKeyEnv are settings the provider has
+	// no use for. A tier whose configuration sets one is refused, by
+	// [CanServe] and so by `hearsay config validate` and the registry alike,
+	// rather than the setting being accepted in silence. They are negative so
+	// that the zero value is the usual provider, which takes all three. Only
+	// what a configuration sets is refused: a default never does.
+	NoTemperature bool
+	NoBaseURL     bool
+	NoAPIKeyEnv   bool
+
+	// DefaultTimeout is the per-attempt timeout a tier of this provider takes
+	// when its configuration sets none, for a provider whose attempt takes
+	// longer than [DefaultTimeout] by nature. Zero takes [DefaultTimeout]. A
+	// configured timeout always wins.
+	DefaultTimeout time.Duration
 }
 
 // Build is what an adapter is given to construct one tier's client: the tier,

@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","model":"claude-sonnet-5-5"}
+{"type":"assistant","message":{"model":"claude-sonnet-5-5-20261001"}}
+{"type":"result","subtype":"success","is_error":false,"result":"","structured_output":{"summary":"Postgres was chosen","topics":["storage"]},"session_id":"s1","num_turns":2,"total_cost_usd":0.5,"usage":{"input_tokens":120,"output_tokens":30,"cache_creation_input_tokens":0,"cache_read_input_tokens":900}}

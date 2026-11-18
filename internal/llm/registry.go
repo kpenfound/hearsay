@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"math"
 	"math/rand/v2"
 	"net/http"
 	"slices"
@@ -74,16 +75,23 @@ func NewRegistry(cfg Config, providers []Provider, opts ...Option) (Registry, er
 		}
 	}
 	for _, tier := range cfg.Configured() {
-		tc := cfg.Tiers[tier].withDefaults(tier)
-		if err := tc.Validate(tier); err != nil {
+		configured := cfg.Tiers[tier]
+		if err := configured.Validate(tier); err != nil {
 			errs = append(errs, fmt.Errorf("%s tier: %w", tier, err))
 			continue
 		}
-		provider, ok := byName[tc.Provider]
+		provider, ok := byName[configured.Provider]
 		if !ok {
-			errs = append(errs, fmt.Errorf("%s tier: no provider called %q was given to the registry", tier, tc.Provider))
+			errs = append(errs, fmt.Errorf("%s tier: no provider called %q was given to the registry", tier, configured.Provider))
 			continue
 		}
+		// What is refused is what the configuration set, so it is checked
+		// before the defaults are filled in.
+		if err := CanServe(provider.Name(), provider.Capabilities(), tier, configured); err != nil {
+			errs = append(errs, fmt.Errorf("%s tier: %w", tier, err))
+			continue
+		}
+		tc := configured.withDefaults(tier, provider.Capabilities().DefaultTimeout)
 		if err := r.build(tier, tc, provider); err != nil {
 			errs = append(errs, fmt.Errorf("%s tier: %w", tier, err))
 		}
@@ -97,13 +105,8 @@ func NewRegistry(cfg Config, providers []Provider, opts ...Option) (Registry, er
 // build constructs one tier's client and wraps it in the retries, timeout and
 // accounting every call gets.
 func (r *registry) build(tier Tier, tc TierConfig, p Provider) error {
-	caps := p.Capabilities()
 	build := Build{Tier: tier, Config: tc, Env: r.env, HTTPClient: r.http}
 	client := &tierClient{tier: tier, provider: p.Name(), cfg: tc, usage: r.usage}
-
-	if err := CanServe(p.Name(), caps, tier); err != nil {
-		return err
-	}
 
 	if !tier.Completion() {
 		inner, err := p.Embedder(build)
@@ -122,8 +125,10 @@ func (r *registry) build(tier Tier, tc TierConfig, p Provider) error {
 	return nil
 }
 
-// CanServe reports whether a provider can back a tier, and says what it is
-// missing when it cannot.
+// CanServe reports whether a provider can back a tier as configured, and says
+// what it is missing, or what it refuses, when it cannot. tc is the tier's
+// configuration as written, before any default is filled in: only a setting
+// somebody set is refused.
 //
 // Hearsay asks every completion tier for a system prompt and for structured
 // output, so a provider without either cannot back one. The answer is the same
@@ -131,12 +136,12 @@ func (r *registry) build(tier Tier, tc TierConfig, p Provider) error {
 // `hearsay config validate` asks it about a file in a pull request, which is
 // where ADR-0005 wants a capability gap to surface — when configuration is
 // read, rather than as a degraded call in production.
-func CanServe(name string, caps Capabilities, tier Tier) error {
+func CanServe(name string, caps Capabilities, tier Tier, tc TierConfig) error {
 	if !tier.Completion() {
 		if !caps.Embed {
 			return fmt.Errorf("%s has no embedding model: point the %s tier at a provider that has one", name, tier)
 		}
-		return nil
+		return refuseSettings(name, caps, tc)
 	}
 	switch {
 	case !caps.Complete:
@@ -146,7 +151,26 @@ func CanServe(name string, caps Capabilities, tier Tier) error {
 	case !caps.StructuredOutput:
 		return fmt.Errorf("%s cannot answer with JSON satisfying a schema, which this abstraction promises its callers", name)
 	}
-	return nil
+	return refuseSettings(name, caps, tc)
+}
+
+// refuseSettings is the settings a provider has no use for, which a tier
+// configuring them is refused for.
+func refuseSettings(name string, caps Capabilities, tc TierConfig) error {
+	var errs []error
+	refuse := func(setting, why string) {
+		errs = append(errs, fmt.Errorf("%s is set, and %s %s", setting, name, why))
+	}
+	if caps.NoTemperature && tc.Temperature != nil {
+		refuse("temperature", "has no temperature to set")
+	}
+	if caps.NoBaseURL && tc.BaseURL != "" {
+		refuse("base_url", "has no endpoint to replace")
+	}
+	if caps.NoAPIKeyEnv && tc.APIKeyEnv != "" {
+		refuse("api_key_env", "takes no API key: its login is the sandbox's")
+	}
+	return errors.Join(errs...)
 }
 
 // Completer implements [Registry].
@@ -202,7 +226,7 @@ func (c *completer) Complete(ctx context.Context, req Request) (Response, error)
 	resp, err := call(ctx, c.tierClient, func(ctx context.Context) (Response, outcome, error) {
 		resp, err := c.inner.Complete(ctx, req)
 		recordCompletionAttempt(ctx, resp)
-		return resp, outcome{tokens: resp.Tokens, model: resp.Model}, err
+		return resp, outcome{tokens: resp.Tokens, model: resp.Model, cost: reportedCost(resp.ReportedUsage)}, err
 	})
 	if err != nil {
 		return Response{}, err
@@ -274,6 +298,22 @@ func (e *embedder) Embed(ctx context.Context, texts []string) ([][]float32, erro
 type outcome struct {
 	tokens Tokens
 	model  string
+	// cost is the cost the provider reported, nil when it reported none.
+	cost *float64
+}
+
+// reportedCost is the cost a provider reported for an attempt, if it did and
+// the figure is usable. A reported zero is a cost; an unusable figure (negative,
+// NaN or infinite) is treated as none rather than poisoning the sum.
+func reportedCost(u *JudgmentUsage) *float64 {
+	if u == nil || u.CostUSD == nil {
+		return nil
+	}
+	c := *u.CostUSD
+	if math.IsNaN(c) || math.IsInf(c, 0) || c < 0 {
+		return nil
+	}
+	return &c
 }
 
 // call runs one model call: the per-attempt timeout, the retries with backoff,
@@ -297,7 +337,7 @@ func call[T any](ctx context.Context, t *tierClient, run func(context.Context) (
 			if model == "" {
 				model = t.cfg.Model
 			}
-			t.usage.answered(usageKey{tier: t.tier, provider: t.provider, model: model}, out.tokens)
+			t.usage.answered(usageKey{tier: t.tier, provider: t.provider, model: model}, out.tokens, out.cost)
 			log.LogAttrs(ctx, slog.LevelDebug, "model call",
 				slog.String("tier", string(t.tier)), slog.String("provider", t.provider),
 				slog.String("model", model), slog.Int("input_tokens", out.tokens.Input),

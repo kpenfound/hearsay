@@ -7,9 +7,13 @@ import (
 	"time"
 )
 
-// ProviderAnthropic is the first provider (ADR-0005), and the only one this
-// build ships an adapter for. The adapter is internal/llm/anthropic.
+// ProviderAnthropic is the first provider (ADR-0005), and the shipped default.
+// The adapter is internal/llm/anthropic.
 const ProviderAnthropic = "anthropic"
+
+// ProviderClaudeSbx is the second provider: the Claude Code CLI run inside a
+// Docker Sandbox, on the host. The adapter is internal/llm/claudesbx.
+const ProviderClaudeSbx = "claude-sbx"
 
 // The defaults a tier takes for everything its configuration leaves out. They
 // are the shape of the work ADR-0005 describes: one call per artifact, seconds
@@ -17,7 +21,8 @@ const ProviderAnthropic = "anthropic"
 // hammered.
 const (
 	// DefaultTimeout bounds one attempt, not the call: a retried call may take
-	// this long several times over.
+	// this long several times over. A provider whose attempt takes longer by
+	// nature says so in [Capabilities.DefaultTimeout].
 	DefaultTimeout = 60 * time.Second
 	// DefaultMaxRetries is how many further attempts a transient failure gets.
 	DefaultMaxRetries = 3
@@ -89,8 +94,8 @@ type Config struct {
 // character asks for (ADR-0005 deliberately names no model, so this is the one
 // line that gets bumped when a better one ships).
 //
-// There is no default embed tier. Anthropic has no embedding model and it is
-// the only adapter this build ships, so an embed tier is something an operator
+// There is no default embed tier. Neither shipped adapter has an embedding
+// model, so an embed tier is something an operator
 // configures rather than something that can be defaulted; until they do,
 // [Registry.Embedder] is [ErrTierNotConfigured] and nothing writes a vector.
 func Default() Config {
@@ -187,13 +192,18 @@ func (tc TierConfig) Validate(t Tier) error {
 	return nil
 }
 
-// withDefaults fills in everything the configuration left out.
-func (tc TierConfig) withDefaults(t Tier) TierConfig {
+// withDefaults fills in everything the configuration left out. providerTimeout
+// is the provider's own per-attempt default ([Capabilities.DefaultTimeout]),
+// zero where it has none; a configured timeout beats both.
+func (tc TierConfig) withDefaults(t Tier, providerTimeout time.Duration) TierConfig {
 	if tc.MaxTokens == 0 && t.Completion() {
 		tc.MaxTokens = DefaultMaxTokens
 	}
 	if tc.Timeout == 0 {
 		tc.Timeout = DefaultTimeout
+		if providerTimeout > 0 {
+			tc.Timeout = providerTimeout
+		}
 	}
 	if tc.MaxRetries == 0 {
 		tc.MaxRetries = DefaultMaxRetries

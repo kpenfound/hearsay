@@ -27,6 +27,13 @@ type Usage struct {
 	// for. An embedding call reports input tokens only.
 	InputTokens  int64
 	OutputTokens int64
+	// CostReported is whether any answered call reported a cost, and CostUSD
+	// is those costs summed exactly as the provider reported them. A provider
+	// that reports none (anthropic) leaves both zero-valued, which is how a
+	// reported zero (CostReported with a CostUSD of 0) stays distinct from no
+	// cost at all. A price is never derived from tokens.
+	CostUSD      float64
+	CostReported bool
 }
 
 // usageKey is what usage is counted per.
@@ -56,14 +63,19 @@ func (u *usageTable) row(k usageKey) *Usage {
 	return row
 }
 
-// answered records a call that returned.
-func (u *usageTable) answered(k usageKey, t Tokens) {
+// answered records a call that returned. cost is what the provider reported
+// the call cost, nil when it reported none.
+func (u *usageTable) answered(k usageKey, t Tokens, cost *float64) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	row := u.row(k)
 	row.Calls++
 	row.InputTokens += int64(t.Input)
 	row.OutputTokens += int64(t.Output)
+	if cost != nil {
+		row.CostReported = true
+		row.CostUSD += *cost
+	}
 }
 
 // failed records a call that ran out of attempts.

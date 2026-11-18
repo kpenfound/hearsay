@@ -14,6 +14,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/llm/anthropic"
+	"github.com/kpenfound/hearsay/internal/llm/claudesbx"
 	"github.com/kpenfound/hearsay/internal/llm/jev"
 )
 
@@ -27,7 +28,7 @@ func Judgments(cfg llm.JudgmentConfig) (llm.Judgments, error) {
 // All is every provider this build has an adapter for. It is what
 // [llm.NewRegistry] is given.
 func All() []llm.Provider {
-	return []llm.Provider{anthropic.New()}
+	return []llm.Provider{anthropic.New(), claudesbx.New()}
 }
 
 // Names is what configuration may call a provider, in the order [All] lists
