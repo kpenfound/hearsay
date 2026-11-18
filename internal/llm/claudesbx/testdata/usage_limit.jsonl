@@ -1,0 +1,2 @@
+{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":@RESETS_AT@}}
+{"type":"result","subtype":"success","is_error":true,"result":"LEAK-RESULT You've hit your session limit · resets 11:50pm","num_turns":1,"usage":{"input_tokens":0,"output_tokens":0}}

@@ -1389,14 +1389,14 @@ In the directory form this is `llm/anything.yaml` holding what is under the
 
 | Field | Meaning |
 |---|---|
-| `provider` | The adapter that answers this tier. This build ships `anthropic`. A provider that cannot do what the tier needs is an error here, not a degraded call later: Anthropic has no embedding model, so it cannot back `embed`. |
+| `provider` | The adapter that answers this tier. This build ships `anthropic`, the default, and `claude-sbx` ([below](#the-claude-sbx-provider)). A provider that cannot do what the tier needs is an error here, not a degraded call later: neither has an embedding model, so neither can back `embed`. |
 | `model` | The provider's model id, passed through untouched. |
-| `max_tokens` | The answer budget, on `distill` and `assert`. A call site whose prompt needs a bigger one asks for it; this is the default for the rest. Setting it on `embed` is an error, because an embedding has no answer to budget. |
-| `temperature` | Between 0 and 1, on `distill` and `assert`. Left out, the provider's own default applies. |
+| `max_tokens` | The answer budget, on `distill` and `assert`. A call site whose prompt needs a bigger one asks for it; this is the default for the rest. Setting it on `embed` is an error, because an embedding has no answer to budget. On `claude-sbx` it is the output-token budget the Claude Code CLI is given (`CLAUDE_CODE_MAX_OUTPUT_TOKENS`). |
+| `temperature` | Between 0 and 1, on `distill` and `assert`. Left out, the provider's own default applies. `claude-sbx` refuses it. |
 | `dimensions` | The width of the vectors, on `embed`, where it is required. It has to match the `vector(N)` column the embeddings are written to, which holds **1536** (`l1.EmbeddingDimensions`), so a model of another width is a migration and a re-embed of every row rather than a configuration edit. The distiller compares the two at startup and refuses to run on a mismatch. |
-| `base_url` | Replaces the provider's endpoint. This is how a gateway goes in front of a provider. |
-| `api_key_env` | The **name** of the environment variable holding this tier's credential, where it is not the provider's usual one (`ANTHROPIC_API_KEY`). Like `secrets:` on a source, this never holds the credential itself. |
-| `timeout` | A duration bounding one attempt, not the call: a retried call may take it several times over. Default 60s. |
+| `base_url` | Replaces the provider's endpoint. This is how a gateway goes in front of a provider. `claude-sbx` refuses it. |
+| `api_key_env` | The **name** of the environment variable holding this tier's credential, where it is not the provider's usual one (`ANTHROPIC_API_KEY`). Like `secrets:` on a source, this never holds the credential itself. `claude-sbx` refuses it. |
+| `timeout` | A duration bounding one attempt, not the call: a retried call may take it several times over. Default 60s; 105s on `claude-sbx`, whose attempt starts a sandbox first. |
 | `max_retries` | How many further attempts a transient failure gets — a rate limit, an overloaded provider, a timeout. Default 3; `-1` is none. |
 | `backoff` | The first retry's delay, doubled per attempt and jittered. Default 500ms. A provider that asks to be left alone for longer with a `Retry-After` header gets what it asked for instead. |
 
@@ -1406,16 +1406,91 @@ team overrides rather than what it has to write, and a configuration with no
 rate-limit waits, timeouts and token accounting are the same wherever a model is
 called; none of it is any caller's to configure twice.
 
-**The `embed` tier has no default and no shipped provider.** Anthropic has no
-embedding model, and it is the only adapter this build has, so
-`hearsay config validate` refuses `provider: anthropic` on `embed` and there is
-nothing else to name yet. Until an embedding adapter ships, no document is
+**The `embed` tier has no default and no shipped provider.** Neither adapter
+this build has (`anthropic`, `claude-sbx`) has an embedding model, so
+`hearsay config validate` refuses both on `embed` and there is nothing else to
+name yet. Until an embedding adapter ships, no document is
 embedded: documents are written and searchable, and `search` runs on its
 full-text half alone — it finds a document by the words the team wrote in it and
 never by what it is about.
 
 **Credentials are never in here.** They come from the environment, per provider,
 because a configuration repository is checked into git (ADR-0005).
+
+### The `claude-sbx` provider
+
+`claude-sbx` answers a tier through the Claude Code the machine's owner is
+already logged in to, with no API key. Each call is one tool-free
+`claude -p` turn ([headless mode](https://code.claude.com/docs/en/headless))
+inside its own Docker Sandbox (`sbx`), so the Slack and GitHub text
+being distilled never reaches the owner's files, and the sandbox's proxy supplies
+the stored login. It is chosen per tier, on `distill` and `assert`, and the
+shipped default stays `anthropic`
+([ADR-0032](adr/0032-a-second-completion-provider-runs-claude-code-in-a-sandbox-per-call.md)).
+
+<!-- example: claude-sbx/hearsay.yaml -->
+```yaml
+# Both completion tiers answered by the owner's Claude Code, in a sandbox per call.
+sources:
+  - id: github
+    type: github
+    containers: [acme/api]
+
+scopes:
+  - id: api
+    sources: [github]
+
+llm:
+  tiers:
+    distill:
+      provider: claude-sbx
+      model: claude-haiku-4-5-20251001   # passed to Claude Code as written
+      max_tokens: 4096                   # the output-token budget
+    assert:
+      provider: claude-sbx
+      model: claude-opus-5
+      timeout: 110s                      # optional; the default is 105s
+```
+
+Naming `provider: claude-sbx` and a `model` is enough; the rest of the tier keeps
+its default, as for any provider.
+
+- **Host-only.** The process needs the `sbx` CLI and its daemon, and a Claude
+  Code login stored with it (`sbx secret set`), on the machine it runs on. The
+  Compose and Helm deployments do not have either, so `claude-sbx` is not
+  available there ([deploy.md](deploy.md)). `distiller`, `assert-worker`, `api`
+  and `all` check that `sbx` answers when they build their tiers, and refuse to
+  start naming the tier, the provider and `sbx` when it does not.
+  `hearsay config validate` never runs that check, so a configuration
+  repository's CI needs no `sbx`. No credential variable is read: not
+  `ANTHROPIC_API_KEY`, not any other.
+- **Refused settings.** `temperature` (the CLI has no temperature control),
+  `base_url` and `api_key_env` (there is no endpoint to replace and no key to
+  name) are errors on a `claude-sbx` tier, naming the tier and the setting, in
+  `hearsay config validate` and at startup alike. A value a tier merely inherits
+  never fires the refusal: only what the configuration sets does. So an
+  `assert` tier that sets `temperature: 0` for `anthropic` has to drop it
+  when it moves to `claude-sbx`.
+- **`max_tokens` is the output-token budget.** The tier's value, or the call
+  site's own where it asks for a bigger one, is handed to the sandboxed CLI as
+  `CLAUDE_CODE_MAX_OUTPUT_TOKENS`. It is never refused or dropped.
+- **Timeout.** One attempt covers starting the sandbox and the turn, so the
+  default is **105s** rather than 60s, inside the two minutes the distiller and
+  the assertion worker bound a call to. It is an estimate: nobody has timed a
+  real start. A configured `timeout` always wins.
+- **Usage limits.** When the subscription's usage limit is hit, the attempt
+  fails as a rate limit and is retried when the CLI says the limit resets,
+  however far away that is. Only the caller's own deadline ends the wait — the
+  two minutes the distiller and the assertion worker give a baseline call — so
+  in practice a limit that resets later than that fails the call.
+- **Cost.** The cost Hearsay records for a call is the figure the CLI reports:
+  what the call would have cost at **API prices**, an estimate and not what the
+  subscription costs you. Hearsay sums it as reported and derives no price from
+  tokens. A tier with no such report, such as `anthropic`, shows no cost at all.
+- **Structured answers.** A schema goes to the CLI's own structured output and
+  is still checked by Hearsay against the schema the caller wrote. A turn that
+  ends without a structured answer, or without text, is an error, never an empty
+  answer.
 
 ### Optional global judgment boost
 
@@ -1853,8 +1928,10 @@ tiers:
 ```
 
 Both examples are loaded by the tests in `internal/config`, which check that
-they are valid and that the two forms produce the same configuration. An example
-here that stops working stops the build.
+they are valid and that the two forms produce the same configuration. The
+`claude-sbx` example above is loaded there too, and must come out as the two
+completion tiers on `claude-sbx`. An example here that stops working stops the
+build.
 
 ## Not in this version
 

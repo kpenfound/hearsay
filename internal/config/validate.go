@@ -962,8 +962,8 @@ func isRepoRelativePath(s string) bool {
 // all: ADR-0005 puts the shipped model in the config defaults so that bumping
 // it is one line.
 //
-// The exception is the embed tier, which has no default. Anthropic has no
-// embedding model and it is the only adapter this build ships, so an embed tier
+// The exception is the embed tier, which has no default. Neither shipped adapter
+// (anthropic, claude-sbx) has an embedding model, so an embed tier
 // is something an operator configures; until they do there is no embedder and
 // nothing writes a vector.
 func (l *loader) buildLLM() llm.Config {
@@ -1048,7 +1048,7 @@ func (l *loader) buildTier(d doc[llmDoc], name string, td llmTierDoc, cfg llm.Co
 	// problem, not a runtime one: it is the same check the registry makes when
 	// a process starts, made here where it has a file and a line and runs in
 	// CI on the configuration repository (ADR-0005).
-	if err := llm.CanServe(provider.Name(), provider.Capabilities(), tier); err != nil {
+	if err := llm.CanServe(provider.Name(), provider.Capabilities(), tier, tc); err != nil {
 		l.bad(a, "provider", "%s", err)
 	}
 }

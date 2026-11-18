@@ -1,0 +1,2 @@
+{"type":"assistant","message":{"model":"claude-sonnet-5-5-20261001"}}
+{"type":"result","subtype":"error_max_structured_output_retries","is_error":true,"result":"LEAK-RESULT the schema was never met","num_turns":6,"total_cost_usd":0.4,"usage":{"input_tokens":50,"output_tokens":60}}

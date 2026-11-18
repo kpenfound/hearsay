@@ -1,0 +1,2 @@
+{"type":"assistant","message":{"model":"claude-sonnet-5-5-20261001"}}
+{"type":"result","subtype":"success","is_error":false,"result":"","structured_output":{"summary":42},"num_turns":2,"total_cost_usd":0.25,"usage":{"input_tokens":5,"output_tokens":6}}

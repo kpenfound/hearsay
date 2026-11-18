@@ -350,12 +350,13 @@ golangci-lint fmt --diff   # fails if anything is unformatted
 golangci-lint fmt          # fixes it
 ```
 
-The module has four direct third-party dependencies:
+The module has five direct third-party dependencies:
 `go.yaml.in/yaml/v3` parses the configuration format (ADR-0009),
 `github.com/jackc/pgx/v5` is the Postgres driver (ADR-0004),
-`github.com/pressly/goose/v3` applies the migrations (ADR-0006), and
+`github.com/pressly/goose/v3` applies the migrations (ADR-0006),
 `github.com/gorilla/websocket` carries Discord Gateway and Slack Socket Mode
-connections. `go.mod` also lists their indirect dependencies. Once those and
+connections, and `github.com/kpenfound/agentcore` runs the `claude-sbx`
+provider's sandboxed Claude Code call (ADR-0032). `go.mod` also lists their indirect dependencies. Once those and
 the Go release `go.mod` asks for are in the module cache, all of that works with
 no network and no services running — `go test ./...` included, because the tests
 that need Postgres carry the `integration` build tag and skip without

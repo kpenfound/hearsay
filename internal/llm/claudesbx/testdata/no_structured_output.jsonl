@@ -1,0 +1,2 @@
+{"type":"assistant","message":{"model":"claude-sonnet-5-5-20261001"}}
+{"type":"result","subtype":"success","is_error":false,"result":"LEAK-ANSWER the free text that was written instead","num_turns":1,"total_cost_usd":0.01,"usage":{"input_tokens":3,"output_tokens":4}}
