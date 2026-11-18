@@ -336,9 +336,9 @@ func (r Report) WriteText(w io.Writer) error {
 	fmt.Fprintln(tw, "pipeline observations")
 	for _, c := range []struct {
 		name string
-		data PipelineCohort
-	}{{"baseline", r.Pipelines.Baseline}, {"shadow", r.Pipelines.Shadow}, {"accepted", r.Pipelines.Accepted}} {
-		fmt.Fprintf(tw, "  %s\t%d runs\tcost USD %s\tmean handler seconds %s\tmean queue seconds %s\tfallback %s\n", c.name, c.data.Runs, rate(c.data.TotalCostUSD), rate(c.data.MeanHandlerSeconds), rate(c.data.MeanQueueDelaySeconds), percent(c.data.FallbackFrequency))
+		data PipelineStage
+	}{{"distill", r.Pipelines.Distill}, {"assert", r.Pipelines.Assert}} {
+		fmt.Fprintf(tw, "  %s\t%d runs\tcost USD %s\tmean handler seconds %s\tmean queue seconds %s\n", c.name, c.data.Runs, rate(c.data.TotalCostUSD), rate(c.data.MeanHandlerSeconds), rate(c.data.MeanQueueDelaySeconds))
 	}
 	return tw.Flush()
 }

@@ -21,8 +21,8 @@ import (
 )
 
 // runTopics is `hearsay topics`: a configured human reading a scope's topics
-// and its topic ledger, and merging, splitting and undoing by hand
-// (ADR-0020). Every read is the one the API serves that person
+// and its topic ledger, and merging, splitting and undoing by hand. Every
+// read is the one the API serves that person
 // (`stance_history`): the topics as the ledger makes them now, filtered by
 // their reach and by what the evidence's access lists allow now. A topic, a
 // stance or an operation they may not read is answered exactly as one that

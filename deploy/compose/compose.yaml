@@ -1,6 +1,6 @@
 # Hearsay in its production shape: Postgres with pgvector, a one-shot
 # `hearsay migrate up` job, and the four services as four containers from the
-# published image (ADR-0003, ADR-0006). `hearsay all` is for development and is
+# published image. `hearsay all` is for development and is
 # not used here. docs/deploy.md is the operator guide.
 #
 #   cp env.example .env        # then fill it in; never commit it
@@ -40,7 +40,7 @@ x-healthcheck: &healthcheck
 
 services:
   postgres:
-    # pgvector on Postgres 16, the minimum ADR-0004 sets. Pin a digest for
+    # pgvector on Postgres 16, the minimum Hearsay supports. Pin a digest for
     # production; a major version change is a dump and restore.
     image: pgvector/pgvector:pg16
     environment:
@@ -58,7 +58,7 @@ services:
       retries: 12
     restart: unless-stopped
 
-  # The deploy job (ADR-0006): runs to completion before any service starts, and
+  # The deploy job: runs to completion before any service starts, and
   # again on every `docker compose up`, where it applies what is pending and
   # otherwise does nothing. No service migrates for itself.
   migrate:
@@ -104,7 +104,7 @@ services:
     command: ["api"]
     # HTTP (/v1/<call>), MCP (/mcp), /healthz and /readyz. Callers send bearer
     # tokens, so it is published on the host's loopback only and reached
-    # through a TLS proxy (ADR-0014, docs/deploy.md).
+    # through a TLS proxy (docs/deploy.md).
     ports:
       - "127.0.0.1:8080:8080"
     healthcheck:

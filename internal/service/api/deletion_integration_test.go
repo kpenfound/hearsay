@@ -51,7 +51,7 @@ func TestSourceTombstoneWithdrawsEvidenceAndKeepsSurvivorsReadable(t *testing.T)
 	}
 	cfg := config.Default()
 	cfg.Repo = repo(w.src)
-	d, err := distiller.New(w.pool, registry, &cfg)
+	d, err := distiller.New(w.pool, registry, llm.Unconfigured(), &cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

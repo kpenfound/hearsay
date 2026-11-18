@@ -309,7 +309,7 @@ func TestRun(t *testing.T) {
 
 // Every long-running subcommand has to come back when the process is signalled,
 // which is what main's signal context does to it. Each one also has to carry the
-// three fields ADR-0008 says a process attaches at startup — service, version,
+// three fields a process attaches at startup — service, version,
 // instance — on every line, once each rather than once per wrapper the line
 // passed through.
 func TestServiceSubcommandsReturnWhenTheContextIsCancelled(t *testing.T) {
@@ -641,7 +641,7 @@ func TestConfigValidate(t *testing.T) {
 }
 
 // A service reads its configuration before it starts, so a mistake in it stops
-// the process rather than showing up on the first request (ADR-0009).
+// the process rather than showing up on the first request.
 func TestServicesLoadTheirConfiguration(t *testing.T) {
 	noDatabase(t)
 	valid := writeConfig(t, validConfig)

@@ -208,7 +208,6 @@ Configure the MCP client to POST to `/mcp` with those headers and the agent's
 MCP transport. The human and agent tokens must be distinct values from their
 respective `token_env` entries. Put TLS in front of the API; bearer tokens must
 not travel over an untrusted plain HTTP connection. See
-[ADR-0014](adr/0014-api-callers-use-per-principal-bearer-tokens.md) and
 [the API authentication section](config.md#principals).
 
 ## QA without live sources or a model

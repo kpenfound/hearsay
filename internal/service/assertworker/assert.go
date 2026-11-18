@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -29,13 +28,23 @@ const CallTimeout = 2 * time.Minute
 
 // Topic matching's bounds.
 const (
-	// MaxCandidates is how many existing topics one document is shown.
-	MaxCandidates = 5
+	// MaxCandidates is how many existing topics Jev is asked about for each
+	// position of one document: every topic the matchers below find, up to
+	// this many. The model is shown none of them.
+	MaxCandidates = 20
+	// MinTextSimilarity and MinSharedTerms are how much of a document's
+	// distillation a topic's evidence must share, as lexeme sets
+	// (l2.Store.TopicsByText), to be offered. Reference overlap is the first
+	// matcher and a precise one; this is the second, for a document that cites
+	// nothing the topic does, and the one a deployment with no `embed` tier
+	// relies on. On distillations of one decision written two ways the
+	// similarity runs 0.4 to 0.5, and unrelated decisions share a word or two at
+	// under 0.1; a lower bar would offer every topic in a scope.
+	MinTextSimilarity = 0.2
+	MinSharedTerms    = 3
 	// MaxSimilarityDistance is the cosine distance within which a topic's
-	// evidence counts as near a document. Reference overlap is the first
-	// matcher and a precise one; this is the fallback for a document that
-	// shares no reference with the topic it continues, and a wide threshold
-	// there would offer every topic in a scope.
+	// evidence counts as near a document by embedding, the third matcher, which
+	// finds nothing without an `embed` tier.
 	MaxSimilarityDistance = 0.25
 )
 
@@ -64,7 +73,7 @@ func (a *Asserter) WithReplies(replies Replies) *Asserter {
 
 // New builds the asserter. The `assert` tier is resolved here, so a
 // configuration that names none is a startup failure rather than a job that
-// fails an hour later (ADR-0005).
+// fails an hour later.
 func New(pool *pgxpool.Pool, registry llm.Registry, cfg *config.Config, registries ...*connector.Registry) (*Asserter, error) {
 	if pool == nil {
 		return nil, errors.New("the assertion worker needs a database")
@@ -73,10 +82,6 @@ func New(pool *pgxpool.Pool, registry llm.Registry, cfg *config.Config, registri
 		return nil, errors.New("the assertion worker needs the model tier registry")
 	}
 	tier, err := registry.Completer(llm.TierAssert)
-	if err != nil {
-		return nil, err
-	}
-	judgments, err := llm.NewJudgments(cfg.Repo.Boost, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +98,6 @@ func New(pool *pgxpool.Pool, registry llm.Registry, cfg *config.Config, registri
 		connectors:      connectors,
 		timeout:         CallTimeout,
 		commitJudgments: l1.CommitJudgments,
-		judgments:       judgments,
 	}, nil
 }
 
@@ -202,9 +206,10 @@ func (a *Asserter) Handle(ctx context.Context, job queue.Job) error {
 }
 
 // Assert reads one document under a scope: extracts its positions with the
-// `assert` tier, matches each to a topic by reference overlap first and
-// embedding similarity second, and appends a stance or opens a topic
-// (docs/design.md#l2-write-path).
+// `assert` tier, finds the topics it may continue by reference overlap, then
+// shared words, then embedding similarity, has Jev judge which topic each
+// position continues and whether it changes the position there, and appends a
+// stance or opens a topic (docs/design.md#l2-write-path).
 //
 // It is safe to run again. A document whose current version has been read is
 // not read twice, and one read again after a crash between the model call and
@@ -224,91 +229,39 @@ func jobQueueDelay(job queue.Job) *int64 {
 func (a *Asserter) assert(ctx context.Context, docID, scope string, queueDelay *int64) (Result, error) {
 	ctx, accounting := llm.ObserveCompletions(ctx)
 	started := time.Now()
-	prepared, err := a.prepare(ctx, docID, scope)
+	p, err := a.prepare(ctx, docID, scope)
 	if err != nil {
 		return Result{}, err
 	}
-	result := prepared.result
+	result := p.result
 	if result.Skipped || result.Unchanged {
 		return result, nil
 	}
-	stored, candidates := prepared.stored, prepared.candidates
-	doc := stored.Document
-	baseline, err := a.extract(ctx, doc, candidates)
+	ans, err := a.extract(ctx, p.stored.Document)
 	if err != nil {
 		return Result{}, err
 	}
-	// One deadline for the entire optional stage. Topic matching and broader
-	// shortlisting must use this same context, never create a fresh budget.
-	optional, cancel := NewJobBudget(ctx, a.repo.Boost)
-	defer cancel()
-	batch := newJudgmentBatch(prepared.inputs, started, len(prepared.topics))
-	batch.observation.QueueDelayNS = queueDelay
-	ans := cloneAnswer(baseline)
-	working := prepared
-	if a.repo.Boost.Enabled && a.judgments != nil && prepared.inputs.Hash != "" {
-		batch.observation.Cohort = "shadow"
-		if a.repo.Boost.Policies[llm.TaskStanceComparison].Name != "" {
-			batch.observation.Cohort = "accepted"
-		}
-		a.compareStances(optional, &ans, prepared, &batch)
-		pool, poolErr := a.preparePool(optional, prepared, scope)
-		if poolErr == nil {
-			batch.observation.Inputs = pool.inputs
-			batch.observation.CandidateCount = l1.AddPipelineCount(batch.observation.CandidateCount, count(int64(len(pool.topics))))
-			selected := a.shortlist(optional, prepared, pool, &batch)
-			if !slices.EqualFunc(selected.topics, prepared.topics, func(a, b l2.Topic) bool { return a.ID == b.ID }) && optional.Err() == nil {
-				alternate, extractErr := a.extract(optional, doc, selected.candidates)
-				if extractErr == nil {
-					ans, working = alternate, selected
-					batch.observation.Cohort = "accepted"
-					a.compareStances(optional, &ans, working, &batch)
-				}
-			}
-		}
-		if !a.matchTopics(optional, &ans, working, &batch) || optional.Err() != nil || batch.refused {
-			ans, working = cloneAnswer(baseline), prepared
-			batch.observation.Cohort = "baseline"
-		}
+	batch, err := newJudgmentBatch(p.inputs, started, len(p.topics))
+	if err != nil {
+		return Result{}, err
 	}
-
+	batch.observation.QueueDelayNS = queueDelay
+	placements, err := a.place(ctx, ans, p, &batch)
+	if err != nil {
+		return Result{}, err
+	}
 	batch.observation.GenerativeCalls, batch.observation.GenerativeAttempts, batch.observation.GenerativeUsage = accounting.Snapshot()
+	// The judgments are committed before the stances they decided, against the
+	// inputs they were asked about: a change since is a refusal, and the job is
+	// retried against what is there now.
 	err = pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) error {
-		write := func(tx pgx.Tx, extraction answer, p preparedAssertion) error {
-			return a.writeExtraction(ctx, tx, stored, scope, p.topics, p.candidates, extraction, &result)
-		}
-		// The savepoint covers BOTH the journal and consumer writes. Validate
-		// judgments before changing inputs; measure the complete stage after
-		// writing, then commit its observation against the post-write snapshot.
-		// Any refusal, including the observation, rolls the whole pass back.
-		var writeErr error
-		optionalErr := pgx.BeginFunc(ctx, tx, func(sub pgx.Tx) error {
-			if prepared.inputs.Hash == "" || batch.refused {
-				return l1.JournalStorageFailure
-			}
-			if err := a.commitJudgments(ctx, sub, batch.records, nil, l1.JournalCommitOptions{}); err != nil {
-				return err
-			}
-			if writeErr = write(sub, ans, working); writeErr != nil {
-				return writeErr
-			}
-			return a.observeStage(ctx, sub, batch.observation, started)
-		})
-		if optionalErr == nil {
-			return nil
-		}
-		if writeErr != nil {
-			return writeErr
-		}
-		// The complete original extraction is the only input to this rebuild.
-		if err := write(tx, baseline, prepared); err != nil {
+		if err := a.commitJudgments(ctx, tx, batch.records, nil, l1.JournalCommitOptions{}); err != nil {
 			return err
 		}
-		// Optional recording can fail persistently. Observation refusal must
-		// likewise leave these baseline writes usable.
-		batch.observation.Cohort = "baseline"
-		_ = a.observeStage(ctx, tx, batch.observation, started)
-		return nil
+		if err := a.writeExtraction(ctx, tx, p.stored, scope, p.topics, placements, &result); err != nil {
+			return err
+		}
+		return a.observeStage(ctx, tx, batch.observation, started)
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("writing what %s asserts: %w", docID, err)
@@ -317,16 +270,13 @@ func (a *Asserter) assert(ctx context.Context, docID, scope string, queueDelay *
 }
 
 // candidates is the topics a document may be continuing: reference overlap
-// first, then embedding similarity for what is left of the budget, each only
-// among topics everyone who may read the document may read — decided by the
+// first, then shared words, then embedding similarity for what is left of
+// [MaxCandidates], each only among topics everyone who may read the document may read — decided by the
 // opener while it exists, then by a surviving live stance. They are topics as
 // the ledger makes them now: a topic merged away is offered as the topic it
 // went into, and only once.
 func (a *Asserter) candidates(ctx context.Context, graph *l2.Store, scope string, doc l1.Document, keys []string) ([]l2.Topic, error) {
-	return a.candidatePool(ctx, graph, scope, doc, keys, MaxCandidates)
-}
-
-func (a *Asserter) candidatePool(ctx context.Context, graph *l2.Store, scope string, doc l1.Document, keys []string, limit int) ([]l2.Topic, error) {
+	limit := MaxCandidates
 	byKeys, err := graph.TopicsByJoinKeys(ctx, scope, keys, doc.ACL, limit)
 	if err != nil {
 		return nil, err
@@ -335,41 +285,38 @@ func (a *Asserter) candidatePool(ctx context.Context, graph *l2.Store, scope str
 	for i, t := range byKeys {
 		ids[i] = t.ID
 	}
-	near, err := graph.TopicsBySimilarity(ctx, scope, doc.ID, doc.ACL, MaxSimilarityDistance, limit-len(byKeys), ids)
+	found := byKeys
+	byText, err := graph.TopicsByText(ctx, scope, doc.ID, doc.ACL, MinTextSimilarity, MinSharedTerms, limit-len(found), ids)
 	if err != nil {
 		return nil, err
 	}
-	return append(byKeys, near...), nil
+	found = append(found, byText...)
+	for _, t := range byText {
+		ids = append(ids, t.ID)
+	}
+	near, err := graph.TopicsBySimilarity(ctx, scope, doc.ID, doc.ACL, MaxSimilarityDistance, limit-len(found), ids)
+	if err != nil {
+		return nil, err
+	}
+	return append(found, near...), nil
 }
 
-// extract calls the generative assert tier. A qualified shortlist may call it
-// again; the original extraction always remains available for baseline recovery.
+// extract calls the generative assert tier, which extracts the document's
+// positions and the question each answers.
 //
 // The error it returns is a log line and a queue_job.last_error column, so it
 // names the document and the tier and never a word of what was sent or what
-// came back (ADR-0008).
-func (a *Asserter) extract(ctx context.Context, doc l1.Document, candidates []Candidate) (answer, error) {
+// came back.
+func (a *Asserter) extract(ctx context.Context, doc l1.Document) (answer, error) {
 	call, done := context.WithTimeout(ctx, a.timeout)
 	defer done()
-	resp, err := a.tier.Complete(call, RequestFor(doc, candidates, 0))
+	resp, err := a.tier.Complete(call, RequestFor(doc, 0))
 	if err != nil {
 		return answer{}, fmt.Errorf("asserting %s: %w", doc.ID, err)
 	}
 	var ans answer
 	if err := json.Unmarshal(resp.JSON, &ans); err != nil {
 		return answer{}, fmt.Errorf("asserting %s: the %s answer did not decode: %w", doc.ID, llm.TierAssert, err)
-	}
-	for i, as := range ans.Assertions {
-		if as.Topic != NewTopic && topicIndex(as.Topic, len(candidates)) < 0 {
-			return answer{}, fmt.Errorf("asserting %s: the %s answer names an unoffered topic for assertion %d", doc.ID, llm.TierAssert, i+1)
-		}
-		valid := as.Judgement == nil
-		if as.Topic != NewTopic {
-			valid = as.Judgement != nil && (*as.Judgement == l2.JudgementChanges || *as.Judgement == l2.JudgementRestates)
-		}
-		if !valid {
-			return answer{}, fmt.Errorf("asserting %s: the %s answer has invalid judgement for assertion %d", doc.ID, llm.TierAssert, i+1)
-		}
 	}
 	return ans, nil
 }

@@ -1,7 +1,7 @@
 # internal/llm
 
 The model provider abstraction and the three model tiers: `distill`, `assert`,
-`embed`. Those three names are a contract (ADR-0005) — config and the docs use
+`embed`. Those three names are a contract — config and the docs use
 them verbatim.
 
 **Belongs here:** the tier registry, the `Completer` and `Embedder` interfaces,
@@ -34,8 +34,7 @@ Two adapters ship, both completion-only, and neither has an embedding model:
 - **`claudesbx`** (`claude-sbx`) answers through the owner's Claude Code login,
   with no API key: each call is agentcore's `Runner.Complete`, one tool-free
   `claude -p` turn in a Docker Sandbox created for that call, so ingested text
-  never reaches the owner's files
-  ([ADR-0032](../../docs/adr/0032-a-second-completion-provider-runs-claude-code-in-a-sandbox-per-call.md)).
+  never reaches the owner's files.
   It is host-only, and building a tier runs agentcore's `CheckSandbox`, which
   fails registry construction naming the tier, the provider and `sbx` where
   `sbx` does not answer. Its system prompt replaces the CLI's; a schema goes
@@ -66,7 +65,7 @@ Two adapters ship, both completion-only, and neither has an embedding model:
 ## Things to know before changing it
 
 - **Nothing provider-shaped may appear in `Request` or `Response`.** That is the
-  leak ADR-0005 exists to stop: a caller that built a tool block would be a
+  leak the tier abstraction exists to stop: a caller that built a tool block would be a
   caller that has to be edited to add a second provider. Anthropic's tool call
   and `tool_choice` live in `anthropic/` and nowhere else.
 - **Structured output is validated here, against the caller's schema**, before
@@ -103,7 +102,7 @@ Two adapters ship, both completion-only, and neither has an embedding model:
   price is ever computed from tokens. For `claude-sbx` the figure is the CLI's
   estimate of what the call would have cost at API prices, not what a
   subscription costs.
-- **`Embedder` is the interface ADR-0005 fixes, and it reports no tokens.**
+- **`Embedder` is a fixed interface, and it reports no tokens.**
   An adapter whose provider counts them implements `UsageEmbedder` as well, and
   the registry accounts through that; an adapter that does not is counted with
   no tokens against it rather than with a guess.
@@ -114,7 +113,7 @@ Two adapters ship, both completion-only, and neither has an embedding model:
 - **An error here must be free of request content and of answer content.** A
   prompt is L1 text on its way to a model, a completion is what comes back, and
   an error string ends up in a log line — and, for a caller inside a queue
-  handler, in `queue_job.last_error` (ADR-0007, ADR-0008). Errors here name the
+  handler, in `queue_job.last_error`. Errors here name the
   tier, the provider, the model, the field, the schema and the fixture key —
   never the text. A schema violation says what the schema allowed and what
   *kind* of thing came back (`not one of "decided", "proposed", found a
@@ -125,7 +124,7 @@ Two adapters ship, both completion-only, and neither has an embedding model:
   identifier (`boundedField`).
 - **There is no metric emission yet.** `Registry.Usage` is the read, tagged by
   tier, provider and model, with calls, failures, tokens and any reported cost,
-  and it is where ADR-0008's metrics come from once `internal/telemetry` has a
+  and it is where the per-tier metrics come from once `internal/telemetry` has a
   meter to report through.
 - **A caller owes this package a deadline.** A provider's `Retry-After` is
   honoured as asked and is not capped, and the per-attempt timeout does not bound
@@ -133,32 +132,34 @@ Two adapters ship, both completion-only, and neither has an embedding model:
   `retry-after: 3600` holds `Complete` for an hour per retry. That is deliberate
   — the provider knows its own rate limit better than a constant here does — and
   it is safe only while the caller's context has a deadline. A worker calling
-  this **inside a queue handler** (ADR-0007) must still bound the call.
+  this **inside a queue handler** must still bound the call.
   The queue worker renews its lease while the handler runs and cancels the run
   if another worker has reclaimed it; the lease interval is not a total job
-  deadline. The distiller and assertion worker bound baseline calls to two
-  minutes; optional judgments have their own shorter budgets.
+  deadline. The distiller and assertion worker bound model calls to two
+  minutes; judgments have their own shorter bounds.
 
-See
-[ADR-0005](../../docs/adr/0005-llm-provider-abstraction-with-three-model-tiers.md).
+## Typed judgments
 
-## Optional typed judgments
+`Judgments` is Jev, separate from the three tiers and their provider catalogue.
+The distiller and the assertion worker require it: `NewJudgments` refuses a
+`JudgmentConfig` with no model, an environment with no key under its
+`APIKeyEnv`, or no provider. Use one instance per process.
 
-`Judgments` is separate from the three tiers and their provider catalogue.
-`NewJudgments` lazily constructs a `JudgmentProvider` only when the global
-`JudgmentConfig.Enabled` switch is on and its environment credential is present.
-Disabled calls and missing credentials produce counted, zero-attempt fallbacks.
-Use one instance per process so the assertion worker and distiller share the
-cooldown. Missing credentials and optional provider failures never fail startup.
-
-Callers own questions, minimized state and acceptance decisions. `Judge` batches
+Callers own questions, minimized state and decisions. `Judge` batches
 independent questions over shared state; `Choice`, `Score` and `YesNo` are
 single-question conveniences. Every usable answer includes a complete normalized
-distribution, confidence and the resolved model version. An abstain/none-fit
-option is an ordinary caller-supplied choice. `AcceptancePolicy.Accepts` checks
-confidence against the exact resolved version; policies never enable a task.
+distribution, confidence and the resolved model version. Hearsay's callers ask
+only atomic yes/no questions, one `JudgmentTask` each, and make decisions from
+the answers in code; `Choice` and `Score` remain for other callers.
+`JudgmentConfig.Yes` is the one reading of an answer: a yes counts only at the
+configured `Threshold` (default 0.8), and anything else is a no.
 
-`providers.Judgments` lazily constructs the Jev adapter, separately from
+A failed call is a `JudgmentResult` with a sanitized `Failure` and its
+accounting; `Err` turns it into a `*JudgmentError` the worker returns, so the
+job fails and the queue retries it, as for a failed model call. Status reports
+health, the last failure and counts for `/readyz`.
+
+`providers.Judgments` constructs the Jev adapter, separately from
 `providers.All`. Its wire contract follows the recorded agentcore System One
 client: POST `/v1/systemone`, ordered choice criteria, score levels lowest first
 and `noul` probabilities. Score results may be fractional within the requested
@@ -168,23 +169,14 @@ Choice and score confidence is vendor-reported. Rounded distributions within
 the vendor's 0.02 tolerance are normalized; larger deviations are refused.
 
 Defaults bound an attempt to 2s, a call including retries and waits to 5s, and
-retries to one additional attempt. `MaxRetries: -1` disables retries. Three
-consecutive provider failures open a 30s cooldown; invalid answers never count
-toward that outage state. Every suppressed call still increments observations.
-Caller deadlines can shorten every bound and yield `budget_exhausted`.
-
-The assertion job's **entire optional-work budget defaults to 5s and cannot exceed
-30s**. The worker creates one deadline for the job and passes it to all stance,
-topic and broader-pool calls. It must never reset the budget per question or
-assertion. This bounds extra time holding the scope's serial key by that budget.
-The caller owns that context; the capability honors it during attempts, retries
-and Retry-After waits.
+retries to one additional attempt. `MaxRetries: -1` disables retries. A caller
+deadline shortens every bound, during attempts, retries and Retry-After waits.
 
 Accounting uses independently nullable input tokens, output tokens and reported
 USD cost. A reported zero remains known; missing values and overflowing sums
 remain unknown. Invalid supplied accounting refuses the answer, retaining other
 valid fields. Invalid-response markers are terminal even inside retryable errors.
-Only sanitized fallback constants leave the wrapper; provider error bodies,
+Only sanitized failure constants leave the wrapper; provider error bodies,
 prompts and answers never enter errors or logs. `FakeJudgmentProvider` scripts
 slow, failing, rate-limited and invalid attempts through the same wrapper.
 

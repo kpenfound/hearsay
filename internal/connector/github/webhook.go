@@ -222,7 +222,7 @@ func (c *Connector) events(ctx context.Context, event string, v view, d delivery
 			return nil, missing("review or pull_request")
 		}
 		// An edit or a dismissal changes a review's content token, so it is a new
-		// revision (ADR-0012); a pending review is not an artifact yet.
+		// revision; a pending review is not an artifact yet.
 		switch d.Action {
 		case "submitted", "edited", "dismissed":
 		default:

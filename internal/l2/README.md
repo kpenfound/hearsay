@@ -14,7 +14,7 @@ them), and anything derived that can be recomputed — that is `internal/l3`.
 Two invariants to preserve: a stance is never overwritten, only superseded; and
 one scope's writes are serialized, or supersession chains interleave and
 corrupt. The one exception to the first is an operator deletion's redaction of
-text that is no longer current (ADR-0019, below).
+text that is no longer current (below).
 
 ## Things to know before changing it
 
@@ -54,13 +54,12 @@ text that is no longer current (ADR-0019, below).
   a disagreement, and position text is never compared.
 - **Serialization is the queue's, and the store assumes it.** `AppendStance`
   reads the predecessor and writes the row in two statements. That is only safe
-  because every job under one serial key runs alone (ADR-0007), and topics are
+  because every job under one serial key runs alone, and topics are
   only ever matched under the key they were opened under ([ScopeKey]). Matching
   across keys would need a different lock, not a different query. A topic
   operation takes the same key as an assert job would ([Operate]).
 - **Merge, split and undo are a ledger, not a rewrite** ([Operate],
-  `l2_topic_operations`,
-  [ADR-0020](../../docs/adr/0020-topic-operations-are-a-ledger-held-on-the-scope-key.md)).
+  `l2_topic_operations`).
   An operation appends one row and touches no topic or stance; what the
   operations in force make of a scope is the ledger replayed over the rows
   ([ScopeState]), and an undo is leaving one out, which is refused
@@ -68,8 +67,7 @@ text that is no longer current (ADR-0019, below).
   a configured human who may ratify by hand in the scope operates
   ([CheckOperator]).
 - **Ratify, demote and pin are a ledger too** ([RecordGesture],
-  `l2_gestures`,
-  [ADR-0023](../../docs/adr/0023-human-gestures-are-a-ledger-every-standing-reads.md)).
+  `l2_gestures`).
   A gesture appends one row keyed by the L0 event it came from, so a retry
   records nothing, under the scope's serial key like an operation. A ratify
   or a demote names the live stances drawn from its documents when it was
@@ -79,16 +77,14 @@ text that is no longer current (ADR-0019, below).
   undo is another row; a gesture whose event an operator deletion deleted is
   out of force. Who may gesture is [CheckGesturer], the operators' rule.
 - **Chat commands are applied here, for whichever process received them**
-  ([Commands],
-  [ADR-0025](../../docs/adr/0025-chat-commands-are-applied-by-the-receiving-process-through-one-applier.md)).
+  ([Commands]).
   It maps the invoker to a configured human, reads through their [View], and
   writes only through [RecordGesture] and [Operate], so the serial key,
   idempotency and authority are theirs. It returns a
   `connector.CommandResult` and never words: the API's Discord adapter and each
   connector phrase it for their own surface, so a new outcome is one every
   caller has to phrase.
-- **Every read follows the ledger** (`effective.go`,
-  [ADR-0021](../../docs/adr/0021-reads-follow-the-topic-ledger.md)). `Topic`,
+- **Every read follows the ledger** (`effective.go`). `Topic`,
   `Topics`, `TopicsOver`, the stance reads and matching replay the ledgers of
   the scopes they touch: a topic merged away is the topic it went into, a
   stance's `TopicID` is the topic it is on now, and an edge a split cut is
@@ -111,8 +107,7 @@ text that is no longer current (ADR-0019, below).
   same position and still asserting citations, or an explicit withdrawal when
   none remain. Withdrawals stay in history but never stand as a current
   position. The original citation ids remain on a withdrawal for provenance.
-- **An operator deletion redacts text; a tombstone does not** ([RedactDeleted],
-  [ADR-0019](../../docs/adr/0019-operator-deletion-redacts-superseded-l2-text.md)).
+- **An operator deletion redacts text; a tombstone does not** ([RedactDeleted]).
   The distiller records each document an operator deletion rebuilt in
   `l0_deletion_rebuilds`. A stance written before that rebuild, once it is
   superseded, has its position replaced by [Redacted]; a topic whose opening
@@ -153,7 +148,7 @@ text that is no longer current (ADR-0019, below).
   surviving stance; a stance by every piece of its evidence, each still in L1
   and readable. The `acl` written on a topic
   or a stance is what its first document allowed when the worker read it; a
-  second piece of evidence, an ACL re-sync (ADR-0013) or a retraction is not in
+  second piece of evidence, an ACL re-sync or a retraction is not in
   it, so no read authorizes on it. A stance whose evidence is gone fails closed.
   Reach is decided from the same read.
   `Descendants` and `LinkedCode` are what a reach is expanded over
@@ -170,7 +165,7 @@ text that is no longer current (ADR-0019, below).
   nothing was shown to judge against.
 - **Join keys leave out people and code entities.** Everybody's documents name
   the same people and systems, and a key everything shares joins everything.
-- **The hierarchy is merged, not accumulated** ([MergeHierarchy], ADR-0016).
+- **The hierarchy is merged, not accumulated** ([MergeHierarchy]).
   `code/`, then tracker hierarchy, then work declarations, then repository
   structure: the highest source that sets any parent for an entity replaces the others' parents, and
   an edge closing a cycle is dropped from the lower rank and logged. Repository

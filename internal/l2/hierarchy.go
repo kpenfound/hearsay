@@ -10,7 +10,7 @@ import (
 )
 
 // HierarchySource is one of the places a `part_of` edge comes from. They are
-// ranked (ADR-0016): configuration outranks tracker hierarchy, which outranks
+// ranked: configuration outranks tracker hierarchy, which outranks
 // work declarations, which outrank repository structure.
 type HierarchySource string
 
@@ -40,7 +40,7 @@ type HierarchyInputs struct {
 }
 
 // MergeHierarchy is the `part_of` edges of every entity any source sets a
-// parent for (ADR-0016).
+// parent for.
 //
 // For each entity, the highest-ranked source that sets any parent is the one
 // its parents come from: they replace every lower source's, and are never

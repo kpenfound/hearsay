@@ -21,7 +21,7 @@ import (
 // reads L0, writes L1 and calls a model, the assertion worker reads L1, writes
 // L2 and calls a model, the connectors write L0 and keep their backfill
 // positions there, and the API reads every layer and writes an audit event to
-// L0 per bundle (ADR-0003, ADR-0004, ADR-0005).
+// L0 per bundle.
 //
 // Every service must also return when its context is cancelled — `hearsay all`
 // composes them, so one that ignores cancellation hangs the dev process — and

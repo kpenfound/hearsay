@@ -195,7 +195,15 @@ func (w *postedWork) distillWork(t *testing.T, name string, decided bool) l1.Doc
 	if decided {
 		body = l1.Body{Summary: "The retry policy limits attempts.", Outcome: "Retry twice, then stop.", OutcomeKind: l1.OutcomeDecided}
 	}
-	raw, _ := json.Marshal(body)
+	// The model writes the summary and the outcome sentence; Jev decides the
+	// kind, so the recorded answer carries none.
+	raw, _ := json.Marshal(map[string]any{"summary": body.Summary, "outcome": body.Outcome})
+	jev := llm.FakeJudgments(func(_ string, q llm.JudgmentQuestion) float64 {
+		if decided && q.ID == "binding_agreement" {
+			return 0.95
+		}
+		return 0.05
+	})
 	budget, _ := w.cfg.Repo.LLM.Tier(llm.TierDistill)
 	fixtureName := strings.ReplaceAll(name, "#", "-")
 	if decided {
@@ -205,7 +213,7 @@ func (w *postedWork) distillWork(t *testing.T, name string, decided bool) l1.Doc
 		}
 	}
 	registry := workRegistry(t, fixtureName, []llm.CompletionFixture{{Tier: llm.TierDistill, Request: distiller.RequestFor(expected, budget.MaxTokens), Response: llm.Response{JSON: raw, StopReason: llm.StopEnd}}})
-	d, err := distiller.New(w.pool, registry, &w.cfg)
+	d, err := distiller.New(w.pool, registry, jev, &w.cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,7 +428,7 @@ func TestPostedWorkAttributedUpdateStandingAndScopeRecovery(t *testing.T) {
 				}
 			}
 			budget, _ := w.cfg.Repo.LLM.Tier(llm.TierAssert)
-			fixture := llm.CompletionFixture{Tier: llm.TierAssert, Request: assertworker.RequestFor(doc, nil, budget.MaxTokens), Response: llm.Response{JSON: json.RawMessage(`{"assertions":[{"topic":"new","topic_name":"How many times delivery retries","position":"Retry twice, then stop."}]}`), StopReason: llm.StopEnd}}
+			fixture := llm.CompletionFixture{Tier: llm.TierAssert, Request: assertworker.RequestFor(doc, budget.MaxTokens), Response: llm.Response{JSON: json.RawMessage(`{"assertions":[{"topic_name":"How many times delivery retries","position":"Retry twice, then stop."}]}`), StopReason: llm.StopEnd}}
 			a, err := assertworker.New(w.pool, workRegistry(t, "assert-retry", []llm.CompletionFixture{fixture}), &w.cfg)
 			if err != nil {
 				t.Fatal(err)

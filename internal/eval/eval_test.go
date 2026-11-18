@@ -283,9 +283,8 @@ next actions
 `
 	pipelineText := `
 pipeline observations
-  baseline  0 runs  cost USD -  mean handler seconds -  mean queue seconds -  fallback -
-  shadow    0 runs  cost USD -  mean handler seconds -  mean queue seconds -  fallback -
-  accepted  0 runs  cost USD -  mean handler seconds -  mean queue seconds -  fallback -
+  distill  0 runs  cost USD -  mean handler seconds -  mean queue seconds -
+  assert   0 runs  cost USD -  mean handler seconds -  mean queue seconds -
 `
 	wantText += pipelineText
 	if text.String() != wantText {

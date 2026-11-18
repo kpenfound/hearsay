@@ -1,5 +1,5 @@
 // Package llm is the model provider abstraction, with three named tiers:
-// distill, assert and embed (ADR-0005).
+// distill, assert and embed.
 //
 // Callers ask for a tier and get a client. Which provider and which model back
 // a tier is configuration, not code, and no provider shape — no Anthropic tool
@@ -15,6 +15,4 @@
 //
 // Tests build the same registry over recorded fixtures with [NewFake]. No test
 // in this repository calls a provider.
-//
-// See docs/adr/0005-llm-provider-abstraction-with-three-model-tiers.md.
 package llm

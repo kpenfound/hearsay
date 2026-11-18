@@ -17,7 +17,7 @@ import (
 // Querier is what [Enqueue] and [Expedite] run on: a pgx pool, or — the point of the
 // interface — a transaction the caller is already in. A job row is written in
 // the same transaction as the L0 or L1 write that causes it, so either both
-// happen or neither does (ADR-0007).
+// happen or neither does.
 type Querier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
@@ -40,7 +40,7 @@ const jobColumns = `id, target_id, serial_key, priority, state, attempt,
 //
 // ON CONFLICT ... DO NOTHING is not an optimisation here: the enqueue shares
 // the caller's transaction, and a unique violation would abort the L0 or L1
-// write that was the point of it (ADR-0007). The WHERE clause is what lets
+// write that was the point of it. The WHERE clause is what lets
 // Postgres infer the partial index.
 //
 // The notification is fired from the same statement, which means it is
@@ -199,7 +199,7 @@ func (c *Client) Expedite(ctx context.Context, kind Kind, target string) (bool, 
 
 // claimSQL is the unserialized claim: a batch, taken with FOR UPDATE SKIP
 // LOCKED so that two workers scanning the same backlog step over each other's
-// rows rather than blocking on them (ADR-0007).
+// rows rather than blocking on them.
 //
 // The id is the last term of the ordering. Jobs enqueued in one transaction
 // share run_after to the microsecond, and FIFO within a kind is only true if
@@ -259,7 +259,7 @@ RETURNING ` + jobColumns
 // lease of Config.Lease on each. An empty result is a normal empty poll.
 //
 // Which of the two claim paths runs is decided by the kind, and they are not
-// interchangeable (ADR-0007): an unserialized kind claims a batch with FOR
+// interchangeable: an unserialized kind claims a batch with FOR
 // UPDATE SKIP LOCKED, and a serialized one claims a single job under an
 // advisory lock on the kind, so that two claims cannot both decide that a
 // serial key is free.
@@ -348,7 +348,7 @@ func (c *Client) Complete(ctx context.Context, job Job) (bool, error) {
 // pendingTargetIndex is the partial unique index that dedupes a kind's pending
 // jobs on their target (migration 00003). Every statement that moves a job
 // back to pending can collide with it, because a running job does not occupy
-// it: a target can have one job running and another pending (ADR-0011).
+// it: a target can have one job running and another pending.
 const pendingTargetIndex = "queue_job_pending_target_idx"
 
 // supersededPrefix starts the last_error of a job that was superseded rather
@@ -364,7 +364,7 @@ const supersededPrefix = "superseded by a pending job for the same target; "
 //
 // A retry whose target already has a pending job is not requeued, because that
 // would violate the index that dedupes it: the pending job does the same work
-// against a newer read, so this one is done (ADR-0011). A spent job still
+// against a newer read, so this one is done. A spent job still
 // fails: a failed row is the record that a target used its attempts up, and
 // failing does not touch the index.
 //
@@ -418,13 +418,13 @@ func onPendingConflict(stmt func() error) error {
 
 // Fail records why an attempt did not work and decides what happens next: a
 // retry, at a backed-off and jittered run_after, or the failed state, which a
-// job stays in and is queryable from (ADR-0007 — a failed job is a visible row
-// and a metric, not a lost event).
+// job stays in and is queryable from (a failed job is a visible row and a
+// metric, not a lost event).
 //
 // It returns the state the job is now in and, for a retry, when it runs again.
 // The state is empty when the job was no longer this run's to report on, in
 // which case nothing was written. It is [StateDone] when the retry was
-// superseded by a job already pending for the same target (ADR-0011): the
+// superseded by a job already pending for the same target: the
 // work is that job's now, and this row's LastError says so.
 func (c *Client) Fail(ctx context.Context, job Job, cause error) (State, Retry, error) {
 	spent := job.Attempt >= c.cfg.MaxAttempts
@@ -492,7 +492,7 @@ func (c *Client) Heartbeat(ctx context.Context, job Job) (bool, error) {
 //
 // It is one UPDATE over the whole kind, so a single row that would violate the
 // pending-target index would abort the sweep for every other job of the kind.
-// The decision is therefore made per row before anything is written (ADR-0011):
+// The decision is therefore made per row before anything is written:
 // an expired job that would go back to pending is done instead when its target
 // already has a pending job, or when a newer expired job for the same target
 // is going back to pending in this same statement — two running jobs for one
@@ -537,7 +537,7 @@ type Reclaimed struct {
 	// Failed is how many had no attempts left.
 	Failed int
 	// Superseded is how many were done instead of requeued, because another
-	// job for the same target was already pending (ADR-0011).
+	// job for the same target was already pending.
 	Superseded int
 }
 
@@ -547,8 +547,8 @@ func (r Reclaimed) Total() int { return r.Pending + r.Failed + r.Superseded }
 // Reclaim takes back every job of this kind whose lease has expired. It is
 // what makes delivery at-least-once: a worker that dies mid-job leaves a
 // running row, and this is what turns it back into work — or, when the target
-// already has a pending job, what records it superseded by that one
-// (ADR-0011). A worker calls it on its maintenance interval; nothing else has
+// already has a pending job, what records it superseded by that one. A worker
+// calls it on its maintenance interval; nothing else has
 // to.
 func (c *Client) Reclaim(ctx context.Context) (Reclaimed, error) {
 	var out Reclaimed
@@ -689,8 +689,8 @@ SELECT count(*) FILTER (WHERE state = 'pending'),
   FROM queue_job
  WHERE kind = $1`
 
-// Stats is a kind's queue depth and how far behind it is: the numbers ADR-0008
-// asks an operator to be given, and the first ones to look at when the system
+// Stats is a kind's queue depth and how far behind it is: the numbers an
+// operator needs to be given, and the first ones to look at when the system
 // feels slow.
 type Stats struct {
 	Kind    string

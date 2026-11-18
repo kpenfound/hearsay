@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// ProviderAnthropic is the first provider (ADR-0005), and the shipped default.
+// ProviderAnthropic is the first provider, and the shipped default.
 // The adapter is internal/llm/anthropic.
 const ProviderAnthropic = "anthropic"
 
@@ -16,7 +16,7 @@ const ProviderAnthropic = "anthropic"
 const ProviderClaudeSbx = "claude-sbx"
 
 // The defaults a tier takes for everything its configuration leaves out. They
-// are the shape of the work ADR-0005 describes: one call per artifact, seconds
+// are the shape of the work the tiers do: one call per artifact, seconds
 // rather than minutes, on an API that asks to be backed off rather than
 // hammered.
 const (
@@ -39,8 +39,8 @@ const (
 )
 
 // TierConfig is what backs one tier: a provider, a model, and the parameters
-// the abstraction applies around them. It is configuration rather than code
-// (ADR-0005), so every field here can be set in the `llm:` section of the
+// the abstraction applies around them. It is configuration rather than code,
+// so every field here can be set in the `llm:` section of the
 // configuration repository (docs/config.md).
 //
 // A zero value of every field but Provider and Model is a working tier: the
@@ -63,13 +63,13 @@ type TierConfig struct {
 	// ([CheckDimensions]).
 	Dimensions int
 	// BaseURL replaces the provider's own endpoint. An operator who wants a
-	// gateway in front of a provider points a tier at it here (ADR-0005), and
+	// gateway in front of a provider points a tier at it here, and
 	// a test points one at a server replaying recorded responses.
 	BaseURL string
 	// APIKeyEnv is the name of the environment variable holding this
 	// provider's credential, where it is not the provider's usual one.
 	// Credentials are never in the configuration repository, which is checked
-	// into git (ADR-0005, ADR-0009): this is the name of a variable, never a
+	// into git: this is the name of a variable, never a
 	// value.
 	APIKeyEnv string
 	// Timeout bounds one attempt.
@@ -91,8 +91,8 @@ type Config struct {
 
 // Default is the configuration a Hearsay with no `llm:` section runs on: the
 // two completion tiers on the first provider, with the model each tier's
-// character asks for (ADR-0005 deliberately names no model, so this is the one
-// line that gets bumped when a better one ships).
+// character asks for (the tier abstraction deliberately names no model, so this
+// is the one line that gets bumped when a better one ships).
 //
 // There is no default embed tier. Neither shipped adapter has an embedding
 // model, so an embed tier is something an operator

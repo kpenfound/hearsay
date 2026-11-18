@@ -3,7 +3,7 @@
     {
       "tier": "distill",
       "request": {
-        "system": "You are Hearsay's distiller. You turn one artifact from a team's tools into one short document that a coding agent will read later, when the artifact itself is long gone from anybody's memory.\n\nWrite for someone who has to make a decision and has not read any of this. Say what the team worked out and why, not what the software does. Keep every claim to what the document in front of you says: if something is not there, leave the field empty rather than filling it in from what usually happens.\n\nNever quote a credential, a token, a key or a personal email address, even if the document contains one.\n\nThis is a conversation in a chat channel or native thread.\n\n- summary: briefly describe what people discussed.\n- question: the main question, if one was asked. Empty otherwise.\n- outcome: only what participants explicitly decided or resolved. Empty for a routine exchange.\n- open_questions: questions the conversation leaves unanswered, one per entry.\n- code_names: short names participants explicitly use for code in this thread, without guessing what they refer to. Empty if none.\n\nA routine exchange has outcome_kind none. Do not turn a suggestion into a decision.\n\noutcome_kind classifies the outcome, and it is always one of five:\n\n- resolved: a question was answered or the work was finished. A merged change, a bug someone fixed.\n- decided: the team took a decision that binds later work, whether or not it has been carried out.\n- proposed: something was put forward and nobody has agreed to it yet.\n- open: it is still being worked out, and the artifact says so.\n- none: nothing was concluded. A note, a report nobody answered, a routine change.\n\nUse none rather than guessing. An outcome you had to infer is not an outcome.",
+        "system": "You are Hearsay's distiller. You turn one artifact from a team's tools into one short document that a coding agent will read later, when the artifact itself is long gone from anybody's memory.\n\nWrite for someone who has to make a decision and has not read any of this. Say what the team worked out and why, not what the software does. Keep every claim to what the document in front of you says: if something is not there, leave the field empty rather than filling it in from what usually happens.\n\nNever quote a credential, a token, a key or a personal email address, even if the document contains one.\n\nThis is a conversation in a chat channel or native thread.\n\n- summary: briefly describe what people discussed.\n- question: the main question, if one was asked. Empty otherwise.\n- outcome: only what participants explicitly decided, resolved or proposed. Empty for a routine exchange.\n- open_questions: questions the conversation leaves unanswered, one per entry.\n- code_names: short names participants explicitly use for code in this thread, without guessing what they refer to. Empty if none.\n\noutcome is one sentence stating the substance of what the artifact concluded, settled or put forward, such as \"take the lock before the write\". Do not say whether anyone agreed to it or whether it was carried out; that is judged separately. Leave it empty when the artifact states nothing of the kind. An outcome you had to infer is not an outcome.",
         "messages": [
           {
             "role": "user",
@@ -18,6 +18,16 @@
             "type": "object",
             "description": "One distilled document.",
             "properties": {
+              "code_names": {
+                "type": "array",
+                "description": "Short names explicitly used for code in this conversation; do not infer them.",
+                "maxItems": 8,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100
+                }
+              },
               "open_questions": {
                 "type": "array",
                 "description": "What the artifact leaves unanswered, one question per entry.",
@@ -30,19 +40,8 @@
               },
               "outcome": {
                 "type": "string",
-                "description": "What was concluded. Empty when nothing was.",
+                "description": "The substance of what was concluded, settled or put forward, in one sentence. Empty when nothing was.",
                 "maxLength": 1000
-              },
-              "outcome_kind": {
-                "type": "string",
-                "description": "How to classify the outcome.",
-                "enum": [
-                  "resolved",
-                  "decided",
-                  "proposed",
-                  "open",
-                  "none"
-                ]
               },
               "question": {
                 "type": "string",
@@ -54,21 +53,10 @@
                 "description": "What happened, in a few sentences, for someone who has not read the artifact.",
                 "minLength": 1,
                 "maxLength": 2000
-              },
-              "code_names": {
-                "type": "array",
-                "description": "Short names explicitly used for code in this conversation; do not infer them.",
-                "maxItems": 8,
-                "items": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 100
-                }
               }
             },
             "required": [
-              "summary",
-              "outcome_kind"
+              "summary"
             ],
             "additionalProperties": false
           }
@@ -76,9 +64,8 @@
       },
       "response": {
         "json": {
-          "summary": "The team agreed to take the lock before writing.",
           "outcome": "Take the lock before writing.",
-          "outcome_kind": "decided"
+          "summary": "The team agreed to take the lock before writing."
         },
         "stop_reason": "end"
       }

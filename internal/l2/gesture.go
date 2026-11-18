@@ -42,7 +42,7 @@ func (a GestureAction) Valid() bool {
 
 // GestureTarget starts the target of the assert job that interprets a
 // gesture's L0 event, or the tombstone that withdraws one: `gesture:` and the
-// event id (ADR-0022). The assertion worker's change-feed follower enqueues it
+// event id. The assertion worker's change-feed follower enqueues it
 // under the scope's serial key, and a repeated enqueue collapses into it.
 const GestureTarget = "gesture:"
 
@@ -454,8 +454,8 @@ RETURNING id, created_at`, g.Event, string(g.Action), g.Scope, g.Principal, orEm
 }
 
 // gestureInForceSQL is whether the gesture g is in force: no undo reverses
-// it, and an operator deletion has not deleted the event it came from
-// (ADR-0018), which takes the gesture back with it.
+// it, and an operator deletion has not deleted the event it came from, which
+// takes the gesture back with it.
 const gestureInForceSQL = `(NOT EXISTS (SELECT 1 FROM l2_gestures x WHERE x.undoes = g.id)
   AND NOT EXISTS (SELECT 1 FROM l0_events e WHERE e.id = g.event AND e.deletion IS NOT NULL))`
 

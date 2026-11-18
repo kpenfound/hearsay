@@ -10,7 +10,7 @@ import (
 
 // The prompts belong to this package, not to internal/l1: what a document is,
 // and what may be stored in one, is the layer's; how a model is asked to
-// produce one is the distiller's (ADR-0005). A second consumer of L1 does not
+// produce one is the distiller's. A second consumer of L1 does not
 // inherit these words.
 //
 // Both halves of the ask are here — the system prompt and the schema the answer
@@ -55,33 +55,29 @@ var kindPrompts = map[l1.Kind]string{
 	l1.KindMeetingSegment: `This is one topic of a meeting transcript. Use only the transcript lines in this segment.
 
 - summary: preserve the discussion and reasoning on this topic alone.
-- outcome: only the decision, resolution, or proposal explicitly made in these lines.
+- outcome: only a decision, resolution, or proposal explicitly made in these lines. Empty when these lines conclude nothing.
 - open_questions: questions left unanswered in these lines.
 
-Do not import an outcome from another topic. Use outcome_kind none when these lines conclude nothing.`,
+Do not import an outcome from another topic.`,
 	l1.KindWikiSection: `This is one section of a document or wiki page. The markdown heading and body are source text, including any frontmatter, tags, and wikilinks.
 
 - summary: preserve the facts and reasoning in this section only.
-- outcome: only a decision or resolution explicitly stated in this section. Do not carry conclusions from other sections.
-- open_questions: questions left unanswered in this section, one per entry.
-
-Use outcome_kind none for descriptive material. Classify a proposal or decision only when this section itself states it.`,
+- outcome: only a decision, resolution or proposal this section itself states. Empty for descriptive material. Do not carry conclusions from other sections.
+- open_questions: questions left unanswered in this section, one per entry.`,
 	l1.KindChatBurst: `This is one author's contiguous tangent inside a longer chat conversation.
 
 - summary: preserve the distinct facts or reasoning in this tangent, using only these messages.
 - outcome: empty; the containing thread owns any conclusion.
 - open_questions: empty.
 
-Set outcome_kind to none. Do not repeat the containing thread's conclusion.`,
+Do not repeat the containing thread's conclusion.`,
 	l1.KindChatThread: `This is a conversation in a chat channel or native thread.
 
 - summary: briefly describe what people discussed.
 - question: the main question, if one was asked. Empty otherwise.
-- outcome: only what participants explicitly decided or resolved. Empty for a routine exchange.
+- outcome: only what participants explicitly decided, resolved or proposed. Empty for a routine exchange.
 - open_questions: questions the conversation leaves unanswered, one per entry.
-- code_names: short names participants explicitly use for code in this thread, without guessing what they refer to. Empty if none.
-
-A routine exchange has outcome_kind none. Do not turn a suggestion into a decision.`,
+- code_names: short names participants explicitly use for code in this thread, without guessing what they refer to. Empty if none.`,
 	l1.KindIssue: `This is a tracker issue and the conversation on it.
 
 - summary: what is being asked for or reported, and where the conversation got to.
@@ -93,7 +89,7 @@ A routine exchange has outcome_kind none. Do not turn a suggestion into a decisi
 
 - summary: what is being proposed and what the review said about it.
 - change: what the change does, in one or two sentences. Behaviour, not files.
-- outcome: what was decided about it — merged, rejected, reworked, still open.
+- outcome: what the change settles or puts forward, if anything.
 - open_questions: what the review raised and nobody answered, one per entry.`,
 
 	l1.KindCommit: `This is one commit on a watched branch.
@@ -104,20 +100,12 @@ A routine exchange has outcome_kind none. Do not turn a suggestion into a decisi
 - open_questions: usually empty. A commit message rarely leaves a question.`,
 }
 
-// outcomeRules is the classification, which is the same for every kind because
-// it is the L2 trigger: only decided, proposed and resolved enter the assertion
-// pipeline (docs/design.md#l1-distilled-documents), so a document classified
-// generously puts noise into the graph and one classified meanly loses a
-// decision.
-const outcomeRules = `outcome_kind classifies the outcome, and it is always one of five:
-
-- resolved: a question was answered or the work was finished. A merged change, a bug someone fixed.
-- decided: the team took a decision that binds later work, whether or not it has been carried out.
-- proposed: something was put forward and nobody has agreed to it yet.
-- open: it is still being worked out, and the artifact says so.
-- none: nothing was concluded. A note, a report nobody answered, a routine change.
-
-Use none rather than guessing. An outcome you had to infer is not an outcome.`
+// outcomeRules is how the outcome is written, the same for every kind. The model
+// does not classify it: whether an outcome was resolved, decided, proposed,
+// still open or nothing at all is Jev's judgment and code's decision
+// ([OutcomeRequest]). So the sentence states the substance alone, and reads
+// true whichever way it is classified.
+const outcomeRules = `outcome is one sentence stating the substance of what the artifact concluded, settled or put forward, such as "take the lock before the write". Do not say whether anyone agreed to it or whether it was carried out; that is judged separately. Leave it empty when the artifact states nothing of the kind. An outcome you had to infer is not an outcome.`
 
 // answer is the JSON the model returns, which internal/llm has already checked
 // against [schemaFor] by the time this package decodes it.
@@ -125,27 +113,22 @@ type answer struct {
 	Summary       string   `json:"summary"`
 	Question      string   `json:"question,omitempty"`
 	Outcome       string   `json:"outcome,omitempty"`
-	OutcomeKind   string   `json:"outcome_kind"`
 	OpenQuestions []string `json:"open_questions,omitempty"`
 	Change        string   `json:"change,omitempty"`
 	CodeNames     []string `json:"code_names,omitempty"`
 }
 
-// body turns an answer into the document body.
-func (a answer) body() (l1.Body, error) {
-	kind, err := l1.ParseOutcomeKind(a.OutcomeKind)
-	if err != nil {
-		return l1.Body{}, err
-	}
+// body turns an answer into the document body. Its outcome kind is unset:
+// [decideOutcome] sets it from the judgments.
+func (a answer) body() l1.Body {
 	return l1.Body{
 		Summary:       a.Summary,
 		Question:      a.Question,
 		Outcome:       a.Outcome,
-		OutcomeKind:   kind,
 		OpenQuestions: a.OpenQuestions,
 		Change:        a.Change,
 		CodeNames:     a.CodeNames,
-	}, nil
+	}
 }
 
 // The bounds the schema puts on an answer. They are the shape of a distillation
@@ -174,13 +157,8 @@ func schemaFor(kind l1.Kind) *llm.Schema {
 		},
 		"outcome": {
 			Type:        "string",
-			Description: "What was concluded. Empty when nothing was.",
+			Description: "The substance of what was concluded, settled or put forward, in one sentence. Empty when nothing was.",
 			MaxLength:   maxOutcome,
-		},
-		"outcome_kind": {
-			Type:        "string",
-			Description: "How to classify the outcome.",
-			Enum:        outcomeEnum(),
 		},
 		"open_questions": {
 			Type:        "array",
@@ -212,7 +190,7 @@ func schemaFor(kind l1.Kind) *llm.Schema {
 		Type:                 "object",
 		Description:          "One distilled document.",
 		Properties:           properties,
-		Required:             []string{"summary", "outcome_kind"},
+		Required:             []string{"summary"},
 		AdditionalProperties: &closed,
 	})
 	if err != nil {
@@ -226,17 +204,6 @@ func schemaFor(kind l1.Kind) *llm.Schema {
 		Description: "The distillation of one " + string(kind) + ".",
 		Definition:  definition,
 	}
-}
-
-// outcomeEnum is the five outcome kinds, taken from internal/l1 rather than
-// written out again: the enum a model answers from and the values the column
-// accepts are one list.
-func outcomeEnum() []string {
-	out := make([]string, len(l1.OutcomeKinds))
-	for i, o := range l1.OutcomeKinds {
-		out[i] = string(o)
-	}
-	return out
 }
 
 // schemaNode is one level of a JSON Schema, in the subset internal/llm enforces.

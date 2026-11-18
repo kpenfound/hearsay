@@ -1,10 +1,10 @@
 # Contributor and reference audit — 2026-11-04
 
 This audit covers CONTRIBUTING.md, AGENTS.md, the design, configuration,
-connector contract and judgment evaluation references, the ADR index, the command
+connector contract and judgment evaluation references, the command
 README and all 20 READMEs under `internal/` (28 documents total). Code is the
 reference. This change corrects descriptions, not connector contracts or runtime
-behavior. Existing trial records and accepted ADR bodies are unchanged.
+behavior. Existing trial records are unchanged.
 
 ## Corrections and reported divergences
 
@@ -24,7 +24,6 @@ Slack history and ACL re-sync, work source configuration, hierarchy precedence,
 segmentation, stance version identity, authored fixture recording, renewed leases,
 service README placement and build-info fallback descriptions were refreshed.
 The queue usage example's closing code fence was repaired.
-The ADR index lists all 31 records, including ADR-0031.
 
 The following discrepancies were reported through factory discoveries and retained
 for separate follow-up; this change does not fix their code or pins:
@@ -58,7 +57,6 @@ as well; a matching statement did not need an edit.
 | `docs/config.md` | Work posters use principal tokens; Slack backfill persists a cursor | `internal/connector/work/work.go`; `internal/connector/slack/backfill.go`; `internal/connector/runtime.go:backfill` |
 | `docs/connector-contract.md` | Required Connector methods and optional ingest interfaces; Discord token limitation | `internal/connector/connector.go`; `internal/connector/discord/events.go:permissionToken` |
 | `docs/jev-evaluation.md` | Qualification refuses nondefault comparison splits | `cmd/hearsay/eval_judgments.go:runJudgmentEval` |
-| `docs/adr/README.md` | All 31 ADRs indexed with status and date | `docs/adr/[0-9]*.md` headers; body hashes unchanged |
 | `cmd/hearsay/README.md` | Help lists the command surface; offline evaluation needs no DB | `cmd/hearsay/run.go:commands`; `cmd/hearsay/eval_judgments.go` |
 | `internal/bundle/README.md` | Directive comes from L0 and cannot be trimmed | `internal/bundle/bundle.go` |
 | `internal/config/README.md` | Absent and empty authority lists differ | `internal/config/schema.go`; `internal/config/validate.go` |
@@ -112,8 +110,8 @@ provider form without touching a real database; it is not a migration success.
 
 A one-off link/anchor checker found all 184 relative links and anchors across
 these 28 documents resolve. The operator unit owns the complete end-to-end link
-walk and deployment rehearsal. SHA-256 comparisons verify the root lockfile and
-every existing ADR body are byte-identical to their pre-audit snapshots.
+walk and deployment rehearsal. SHA-256 comparisons verify the root lockfile is
+byte-identical to its pre-audit snapshot.
 The unchanged root lockfile SHA-256 is
 `13be864d51af0f46435f608d5bba31a5632682fbb0729f6505b3a608787abd56`.
 

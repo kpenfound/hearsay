@@ -26,7 +26,7 @@ func TestWikiStateOnlyEditsRefreshSectionEnvelopes(t *testing.T) {
 	}
 	fixtures := llm.NewFixtures()
 	for _, doc := range initial {
-		if err := fixtures.Add(llm.CompletionFixture{Tier: llm.TierDistill, Request: distiller.RequestFor(doc, distillBudget()), Response: llm.Response{JSON: json.RawMessage(`{"summary":"Descriptive notes","outcome_kind":"none"}`), StopReason: llm.StopEnd, Model: "recorded"}}); err != nil {
+		if err := fixtures.Add(llm.CompletionFixture{Tier: llm.TierDistill, Request: distiller.RequestFor(doc, distillBudget()), Response: llm.Response{JSON: json.RawMessage(`{"summary":"Descriptive notes"}`), StopReason: llm.StopEnd, Model: "recorded"}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -34,7 +34,7 @@ func TestWikiStateOnlyEditsRefreshSectionEnvelopes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := distiller.New(pool, registry, testConfig(src))
+	d, err := distiller.New(pool, registry, newOutcomeJev(t).judgments(), testConfig(src))
 	if err != nil {
 		t.Fatal(err)
 	}

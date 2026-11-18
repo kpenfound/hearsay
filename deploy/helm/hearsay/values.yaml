@@ -21,7 +21,7 @@ image:
 # Existing Secrets of type kubernetes.io/dockerconfigjson, by name.
 imagePullSecrets: []
 
-# Postgres 16 or later with pgvector (ADR-0004). The chart does not run one.
+# Postgres 16 or later with pgvector. The chart does not run one.
 database:
   # Required: the name of an existing Secret holding the connection URL, such
   # as postgres://hearsay:<password>@db.example.internal:5432/hearsay?sslmode=require.
@@ -31,7 +31,7 @@ database:
 
 # The configuration repository (docs/config.md), mounted read-only at
 # /etc/hearsay in every service. Set exactly one of hearsayYaml, files and
-# volume. It is read once, at startup (ADR-0009).
+# volume. It is read once, at startup.
 config:
   # The single-file form: the contents of hearsay.yaml, for instance with
   # `--set-file config.hearsayYaml=./hearsay.yaml`. Rendered into a ConfigMap.
@@ -137,13 +137,10 @@ connectors:
     port: 8081
     annotations: {}
 
-# Optional Jev boost: one llm.boost.enabled switch, off by default. Set its
-# explicit model and qualify pinned task policies using docs/jev-evaluation.md.
-# Missing credentials/provider/journal refusal retain baseline output; degraded
-# judgments in /readyz never make baseline workers unready. All assertion work
-# shares assertion_job_budget (default 5s, max 30s), bounding extra scope-key time.
-# Confidence is not correctness; typed shape is not truth. See docs/config.md
-# for limitations, fallback and model policy. The chart creates no Secrets.
+# The distiller and the assertion worker require Jev: the configuration's
+# llm.judgments names its model, and each needs its key, HEARSAY_JEV_API_KEY
+# unless llm.judgments.api_key_env says otherwise, from a Secret in secretEnv
+# below (docs/config.md). The chart creates no Secrets.
 distiller:
   replicas: 1
   resources: {}
@@ -178,7 +175,7 @@ api:
     annotations: {}
 
 # `hearsay migrate up` from the image being deployed, as a pre-install and
-# pre-upgrade hook Job (ADR-0006). It reads only the database URL. It is kept
+# pre-upgrade hook Job. It reads only the database URL. It is kept
 # after it succeeds, so its log can be read, and replaced by the next one.
 migrate:
   enabled: true

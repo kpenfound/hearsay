@@ -1,6 +1,6 @@
 # internal/db/migrations
 
-Schema migrations, applied by `hearsay migrate` (ADR-0006).
+Schema migrations, applied by `hearsay migrate` as a deploy job, never at service startup.
 
 - One file per migration, `NNNNN_short_description.sql`, never edited once
   merged.
@@ -14,5 +14,3 @@ Schema migrations, applied by `hearsay migrate` (ADR-0006).
   goose could not version fails the build rather than a deployment.
 - Anything running in production changes by expand-and-contract, never in one
   step.
-
-See [ADR-0006](../../../docs/adr/0006-schema-migrations-with-goose.md).

@@ -2,9 +2,7 @@
 
 Read [docs/design.md](docs/design.md) first. It is the source of truth for what
 Hearsay is, and most disagreements about a change are settled by a paragraph in
-it. The implementation decisions behind it — language, process model, storage,
-model tiers, migrations, queue, observability — are in
-[docs/adr/](docs/adr/).
+it.
 
 [AGENTS.md](AGENTS.md) has shorter working notes for an agent or a returning
 contributor who wants the commands and conventions without the reasons.
@@ -13,7 +11,7 @@ contributor who wants the commands and conventions without the reasons.
 
 - Go, at the release `go.mod` declares. The floor tracks the current Go release
   rather than the oldest one that compiles, and it is raised deliberately, in
-  its own commit ([ADR-0010](docs/adr/0010-go-version-floor-tracks-the-current-release.md)).
+  its own commit.
   With the default `GOTOOLCHAIN=auto`, an older toolchain fetches the right one
   on the first build.
 
@@ -54,16 +52,14 @@ nothing about Hearsay. The remote module is pinned at v0.4.0 through
 `dagger.lock`; its source in `dagger.toml` has no version or branch. Refresh
 the lockfile with `dagger lock update`. `hearsay`, in
 `.dagger/modules/hearsay/main.dang`, is
-ours and holds everything that module could not know: lint, the integration
-tests, the tidy, image, compose and Helm checks, the binary, the image, migrations
+ours and holds everything that module could not know: lint, the tidy, image, compose and Helm checks, the binary, the image, migrations
 and the dev stack.
 
 | Check | From | Does |
 |---|---|---|
-| `go:test` | Go module | tests selected by `go-module`, `go-package` and `go-test`, run once per package |
+| `go:test` | Go module | tests selected by `go-module`, `go-package` and `go-test`, run once per package, with `-tags=integration -race` against a migrated pgvector Postgres |
 | `go:stale` | Go module | fails if a selected package's `go generate` would change a committed file |
 | `hearsay:lint` | hearsay | `go vet`, `golangci-lint run`, `golangci-lint fmt --diff` |
-| `hearsay:integration-test` | hearsay | `hearsay migrate up`, then `go test -race -tags=integration ./...`, against a pgvector Postgres |
 | `hearsay:tidy-check` | hearsay | fails if `go mod tidy` would change `go.mod` or `go.sum` |
 | `hearsay:image-check` | hearsay | builds the default and two release platforms; checks the version stamp and publish address without pushing |
 | `hearsay:compose-check` | hearsay | `docker compose config` on `deploy/compose` with `env.example` filled in, held to the shape in `docs/deploy.md`; `hearsay config validate` on its example configuration; `hearsay.service` held to its shape. No Docker daemon |
@@ -81,13 +77,15 @@ The Go module keeps linting in separate modules. Hearsay uses `hearsay:lint`,
 which runs a golangci-lint release built with the current Go, plus `go vet`
 and the formatter check.
 
-`hearsay:go-test-base` is a Go image with Postgres bound as a service and
-`HEARSAY_DATABASE_URL` pointing at it, and the Go module's `base` setting in
-`dagger.toml` is wired to it. This gives the Go module the release `go.mod`
-asks for and a database beside
-every test it runs. Today no test it runs uses the database: the ones that need
-Postgres carry the `integration` build tag and run in `hearsay:integration-test`
-instead, after the migrations. The default test and generate selections cover
+`hearsay:go-test-base` is a Go image with a migrated Postgres bound as a
+service (`hearsay:migrated-postgres`) and `HEARSAY_DATABASE_URL` pointing at
+it, and the Go module's `base` setting in `dagger.toml` is wired to it. This
+gives the Go module the release `go.mod` asks for and a database with the
+current schema beside every test it runs. Its `goflags` setting,
+`-tags=integration -race`, compiles in the tests that need Postgres and runs
+everything under the race detector (the base carries gcc for its cgo), so
+`dagger check --go` is the whole suite and each integration test has a DAG
+link of its own. The default test and generate selections cover
 the whole workspace. The other setting, `includeExtraFiles`, mounts
 `docs/config.md`, `docs/connector-contract.md` and `cmd/hearsay/README.md`, which tests read and which live
 outside `testdata/`; a test that opens another such file needs it added there.
@@ -226,16 +224,17 @@ The same script produces a cached result until the tree changes.
 
 `dev` has no file watcher: restarting is the reload. Stop it, run it again, and
 the rebuild is a cached one. Its database is a throwaway that starts empty every
-time, and `hearsay all` migrates it on the way up (ADR-0006), so the schema is
+time, and `hearsay all` migrates it on the way up, so the schema is
 there and the rows are not.
 
-`hearsay:integration-test` runs `hearsay migrate up` between the database and
-the tests, from the code under test, so a missing migration fails the check
-rather than being papered over by a fixture (ADR-0006). That step is also what
+`hearsay:migrated-postgres` runs `hearsay migrate up`, from the code under
+test, in the Postgres image's init hook, before the server opens its TCP port,
+so a test never connects to an empty database and a missing migration fails
+the tests rather than being papered over by a fixture. That step is also what
 proves the image is the pgvector build: migration 1 creates the `vector`
-extension, which stock Postgres cannot. The tests it runs carry the
-`integration` build tag and read `HEARSAY_DATABASE_URL`; the check's output has
-a services section showing Postgres starting alongside them.
+extension, which stock Postgres cannot. The tests carry the `integration`
+build tag and read `HEARSAY_DATABASE_URL`; a check's output has a services
+section showing Postgres starting alongside them.
 
 The Go toolchain and the linter version come from the repository, not from
 this document: `hearsay` reads the `go` directive out of `go.mod`, and the
@@ -276,8 +275,8 @@ HEARSAY_DATABASE_URL=postgres://... go test -tags=integration -count=1 -v \
     -run TestWorkRecordsEndToEnd ./cmd/hearsay
 ```
 
-`dagger check hearsay:integration-test` runs it with every other integration
-test, so the factory's gate holds the path on every commit. It is not run
+`dagger check --go --go-package=cmd/hearsay --go-test=TestWorkRecordsEndToEnd`
+runs it alone, and `dagger check` runs it with every other test, so the factory's gate holds the path on every commit. It is not run
 through `qa`, whose image carries the binary and no Go toolchain.
 
 ### Changing the module
@@ -313,10 +312,9 @@ does not type-check the `hearsay:go-test-base` function they receive.
 
 ### Raising the Go floor
 
-The floor tracks the current Go release rather than the oldest one that compiles
-([ADR-0010](docs/adr/0010-go-version-floor-tracks-the-current-release.md)). Raise
-it in its own commit, doing nothing else, so a new toolchain's stricter vet or
-lint lands somewhere it can be read:
+The floor tracks the current Go release rather than the oldest one that
+compiles. Raise it in its own commit, doing nothing else, so a new toolchain's
+stricter vet or lint lands somewhere it can be read:
 
 1. Edit the `go` directive in `go.mod`. That is the only place a person writes
    the version: `hearsay` reads it for every Go container.
@@ -351,17 +349,17 @@ golangci-lint fmt          # fixes it
 ```
 
 The module has five direct third-party dependencies:
-`go.yaml.in/yaml/v3` parses the configuration format (ADR-0009),
-`github.com/jackc/pgx/v5` is the Postgres driver (ADR-0004),
-`github.com/pressly/goose/v3` applies the migrations (ADR-0006),
+`go.yaml.in/yaml/v3` parses the configuration format,
+`github.com/jackc/pgx/v5` is the Postgres driver,
+`github.com/pressly/goose/v3` applies the migrations,
 `github.com/gorilla/websocket` carries Discord Gateway and Slack Socket Mode
 connections, and `github.com/kpenfound/agentcore` runs the `claude-sbx`
-provider's sandboxed Claude Code call (ADR-0032). `go.mod` also lists their indirect dependencies. Once those and
-the Go release `go.mod` asks for are in the module cache, all of that works with
-no network and no services running — `go test ./...` included, because the tests
-that need Postgres carry the `integration` build tag and skip without
-`HEARSAY_DATABASE_URL`. With an older Go and the default `GOTOOLCHAIN=auto`, the
-first build downloads that toolchain too.
+provider's sandboxed Claude Code call. `go.mod` also lists their indirect
+dependencies. Once those and the Go release `go.mod` asks for are in the module
+cache, all of that works with no network and no services running — `go test
+./...` included, because the tests that need Postgres carry the `integration`
+build tag and skip without `HEARSAY_DATABASE_URL`. With an older Go and the
+default `GOTOOLCHAIN=auto`, the first build downloads that toolchain too.
 
 That is a fallback, not a second gate: the pull request is judged by
 `dagger check`, which Dagger Cloud runs on every commit whether or not you could
@@ -382,7 +380,7 @@ Logging is `--log-level` (debug, info, warn, error) and `--log-format` (json,
 text, auto — auto means text when stderr is a terminal). Both also read
 `HEARSAY_LOG_LEVEL` and `HEARSAY_LOG_FORMAT`; the flag wins. Logs go to stderr.
 
-Every line carries the three fields ADR-0008 attaches at process start:
+Every line carries the three fields the process attaches at start:
 `service`, `version` and `instance`. `instance` is the hostname, which is the
 replica identity in every container runtime; set `HEARSAY_INSTANCE` where
 something knows better.
@@ -391,8 +389,8 @@ Fields are added as work descends, and `slog` appends rather than replaces, so
 two writers reaching for one key put it on the line twice — `encoding/json`
 keeps the last, and the field then answers two questions with one name. Two
 facts are two fields: the connectors service says which connectors it hosts in
-`hosting`, and the runtime says which source a line is about in `source`, which
-is ADR-0008's own name for that.
+`hosting`, and the runtime says which source a line is about in `source`, the
+standard field name for that.
 
 Every service returns when the process is interrupted. That is not a
 nicety — `hearsay all` composes all four, so a service that ignores cancellation
@@ -404,7 +402,7 @@ The API is built. It needs Postgres — it reads every layer and writes an L0
 `/readyz` on `--listen` (`HEARSAY_API_LISTEN`, default `:8080`; `hearsay all`
 takes `--api-listen`). The caller is named by `Hearsay-Principal` and must
 present that person's bearer token. An agent named by `Hearsay-Agent` must also
-present its own token. Configure each in `principals/` (ADR-0014). To try it:
+present its own token. Configure each in `principals/`. To try it:
 
 ```sh
 curl -s -X POST localhost:8080/v1/get_bundle -H 'Hearsay-Principal: kyle' \
@@ -416,7 +414,7 @@ The distiller is built. It needs Postgres, so `hearsay distiller` and
 `hearsay all` refuse without `--database-url` (or `HEARSAY_DATABASE_URL`); with
 no `--config` they start and distil nothing, because the configuration is what
 names the model tier and the sources. Running it against a real provider needs
-that provider's credential in the environment (ADR-0005); no test ever does —
+that provider's credential in the environment; no test ever does —
 they replay recorded answers through the fake in `internal/llm`.
 
 The connectors service is built too, and needs Postgres for the same reason: it
@@ -452,9 +450,8 @@ go run ./cmd/hearsay api --config ./config      # what a service reads at startu
 
 Configuration is a directory of YAML applied like GitOps, or a single file that
 expands to it: what Hearsay ingests, who people are, who may decide things, and
-which model answers each tier. [docs/config.md](docs/config.md) is the schema and
-[ADR-0009](docs/adr/0009-configuration-as-a-gitops-directory.md) is why it looks
-like that. Two things to know before changing the loader: it is read once, at
+which model answers each tier. [docs/config.md](docs/config.md) is the schema.
+Two things to know before changing the loader: it is read once, at
 startup, so a change to configuration is a restart; and it reports every problem
 rather than the first, because fixing configuration one error at a time is what
 makes it miserable.
@@ -479,8 +476,7 @@ dagger api call hearsay migrate --database-url=env://HEARSAY_DATABASE_URL --acti
 Migrations are plain SQL in `internal/db/migrations/`, embedded in the binary
 with `go:embed`, applied by `hearsay migrate` as a deploy job, and **never**
 automatically on service startup — the one exception is `hearsay all`, which is
-local development only and migrates for itself. Read
-[ADR-0006](docs/adr/0006-schema-migrations-with-goose.md) before writing one.
+local development only and migrates for itself.
 
 The rules that matter when you add one:
 
@@ -516,7 +512,7 @@ go run ./cmd/hearsay l0 tail --source github-acme     # follow the change feed
 prints the whole event, which is what asking for one by id means. `count`
 reports what was ever ingested beside what a read returns: a tombstone hides an
 event and keeps its row, and so does an operator deletion, which redacts the
-row's payload in place ([ADR-0018](docs/adr/0018-operator-deletion-redacts-l0-in-place.md)).
+row's payload in place.
 `get` on either fails naming the tombstone, or the deletion and its operator.
 
 `list` and `tail` take the same `--source`, `--kind` and `--artifact`; `get` and
@@ -540,7 +536,7 @@ before their per-topic distillation. Optional accepted outcome judgments can
 require an additional generative restatement.
 Events arrive in bursts and documents do not, so the queue's dedupe on
 `(kind, target)` collapses five reviews on one change proposal into one
-distillation (ADR-0007).
+distillation.
 
 It is stateless and idempotent: a document is a function of the current
 revisions of its artifact and of everything that hangs off it, so running it
@@ -556,7 +552,7 @@ Two rules to know before changing it:
 - **The prompts belong to `internal/service/distiller`, the document to
   `internal/l1`.** What may be stored in a document, how references are
   extracted and what the scrub takes out are the layer's; how a model is asked
-  for a summary is the service's (ADR-0005).
+  for a summary is the service's.
 - **No test calls a provider.** The answers are recorded in
   `internal/service/distiller/testdata/fixtures`, keyed by the request, and
   replayed through the fake in `internal/llm`. Edit a prompt and the keys change:
@@ -575,9 +571,10 @@ The distiller enqueues an `assert` job in the transaction that writes a document
 whose outcome is decided, proposed or resolved. The job is serialized: its serial
 key is the first configured scope, by id, that covers the artifact's container
 (`source:<id>` where none does), and topics are only matched within that key, so
-two jobs that run at once never touch the same topic (ADR-0007). The worker
+two jobs that run at once never touch the same topic. The worker
 shows the `assert` tier the topics the document may be continuing — reference
-overlap first, embedding similarity second, and only topics everyone who may
+overlap first, then shared words in the distillations (`l2.Store.TopicsByText`,
+which needs no `embed` tier), then embedding similarity where there is one, and only topics everyone who may
 read the document may read — and appends a stance to one or opens a new one. At
 startup it seeds `l2_entities` from `code/`, and from the root directories and
 CODEOWNERS files of the GitHub repositories `code/` names (read with the
@@ -602,8 +599,7 @@ Four rules to know before changing it:
   newest live stance on its topic stated no later than it; a document read late
   forks the chain rather than rewriting a later stance. The one update is an
   operator deletion's redaction of a superseded stance's position and of a
-  topic's name
-  ([ADR-0019](docs/adr/0019-operator-deletion-redacts-superseded-l2-text.md)).
+  topic's name.
 - **Re-reading a document is idempotent twice over.** `l2_asserted` records
   which version (`distilled_at`) was read, so a restart makes no model call; and
   topic and stance ids are derived from what produced them — a stance's from its
@@ -631,10 +627,8 @@ go run ./cmd/hearsay topics ops --scope api --since 2026-09-01T00:00:00Z --json 
 A person corrects the assertion worker's topics by hand: merge two topics,
 split stances off onto a new one, undo either. Each is one row appended to the
 scope's ledger by `l2.Operate`, which holds the scope's `assert` serial key
-while it decides, and changes no topic or stance row
-([ADR-0020](docs/adr/0020-topic-operations-are-a-ledger-held-on-the-scope-key.md));
-every read replays the ledger
-([ADR-0021](docs/adr/0021-reads-follow-the-topic-ledger.md)). The
+while it decides, and changes no topic or stance row;
+every read replays the ledger. The
 `--principal` is a configured human the scope's `ratified_by.principals`
 names, and they see only what `stance_history` would show them: a topic, a
 stance or an operation they may not read is refused as one that does not exist.
@@ -730,8 +724,7 @@ a README for its segmentation and optional outcome rules.
   can block. It is never stored in a struct.
 - No `context.TODO()` in shipped code.
 - Every goroutine has an owner that can cancel it and wait for it. Go gives you
-  no structured concurrency, so this is a convention and a review point
-  (ADR-0002).
+  no structured concurrency, so this is a convention and a review point.
 - The logger travels in the context. Add fields once, where the work starts,
   with `telemetry.With(ctx, "job_kind", kind)`.
 
@@ -755,9 +748,8 @@ a README for its segmentation and optional outcome rules.
   undo the fix and watch the test fail — a regression test that passes either
   way guards nothing.
 - Integration tests that need Postgres carry the `integration` build tag, and
-  read the connection URL from `HEARSAY_DATABASE_URL`. The
-  `hearsay:integration-test` check brings the database up and sets it; nothing
-  else does, so a plain `go test ./...` skips them rather than failing on a
+  read the connection URL from `HEARSAY_DATABASE_URL`. The Go module's
+  `test` check brings a migrated database up and sets it; nothing else does, so a plain `go test ./...` skips them rather than failing on a
   machine with no Postgres. Tests never build a schema of their own — they run
   the real migrations, so a missing migration fails CI instead of hiding.
 
@@ -781,9 +773,9 @@ fixture fails where it is loaded rather than where it is replayed.
 ### Logging
 
 `log/slog`, taken from the context, never a package-level `slog.Info`. Use the
-standard field names in
-[ADR-0008](docs/adr/0008-observability-slog-and-opentelemetry.md) so lines from
-different services join up, and one `info` line per completed unit of work
+standard field names listed in
+[internal/telemetry](internal/telemetry/README.md) so lines from different
+services join up, and one `info` line per completed unit of work
 rather than a narration of steps.
 
 Never log L0 `payload`, L1 `text` or `raw_text`, prompts, completions,
@@ -793,7 +785,7 @@ control, not style.
 
 ### Dependencies
 
-The standard library is the default (ADR-0002). Add a dependency when it carries
+The standard library is the default. Add a dependency when it carries
 real weight — a database driver, a migration tool — not for a convenience
 wrapper. Say why in the pull request. Run `go mod tidy`; CI checks that `go.mod`
 and `go.sum` are unchanged by it.
@@ -802,15 +794,15 @@ and `go.sum` are unchanged by it.
 
 The subcommand names, the model tier names, the `Run(ctx, cfg, deps) error`
 signature and the L0 event shape are contracts that other work depends on.
-Changing one is a design change: write an ADR that supersedes the old one
-(`docs/adr/README.md` explains how), and do not edit an accepted ADR to say
-something different.
+Changing one is a breaking change: say so in the pull request description, and
+update [docs/design.md](docs/design.md) where it describes the contract.
 
 The L0 event shape and the interface a connector implements are specified in
 [docs/connector-contract.md](docs/connector-contract.md), which third parties
 build against. Adding an optional payload field or a core kind is additive and
 only needs that document and `internal/connector` changed together; anything a
-connector outside this repository would have to react to needs the ADR.
+connector outside this repository would have to react to is a breaking change,
+called out in the pull request description.
 
 ## Pull requests
 

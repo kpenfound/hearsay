@@ -287,7 +287,7 @@ func TestInitWritesAValidConfiguration(t *testing.T) {
 			wantSources: []string{"github", "discord", "drive"},
 			wantScopes:  []string{"api", "infra"},
 			want:        full,
-			wantEmpty:   []string{"HEARSAY_GITHUB_TOKEN", "HEARSAY_GITHUB_WEBHOOK_SECRET", "HEARSAY_DISCORD_TOKEN", "HEARSAY_DRIVE_CREDENTIALS", "ANTHROPIC_API_KEY"},
+			wantEmpty:   []string{"HEARSAY_GITHUB_TOKEN", "HEARSAY_GITHUB_WEBHOOK_SECRET", "HEARSAY_DISCORD_TOKEN", "HEARSAY_DRIVE_CREDENTIALS", "ANTHROPIC_API_KEY", "HEARSAY_JEV_API_KEY"},
 			wantOutput: []string{
 				"github: dependabot[bot] is a bot, and is not seeded as a person",
 				"discord: account 302100000000000006 is linked from GitHub by alex and jordan, so it is written on nobody",
@@ -306,7 +306,7 @@ func TestInitWritesAValidConfiguration(t *testing.T) {
 				"discord/302100000000000003/",
 				"drive//kyle@acme.example",
 			),
-			wantEmpty:  []string{"HEARSAY_GITHUB_TOKEN", "HEARSAY_GITHUB_WEBHOOK_SECRET", "HEARSAY_DISCORD_TOKEN", "HEARSAY_DRIVE_CREDENTIALS", "ANTHROPIC_API_KEY"},
+			wantEmpty:  []string{"HEARSAY_GITHUB_TOKEN", "HEARSAY_GITHUB_WEBHOOK_SECRET", "HEARSAY_DISCORD_TOKEN", "HEARSAY_DRIVE_CREDENTIALS", "ANTHROPIC_API_KEY", "HEARSAY_JEV_API_KEY"},
 			wantOutput: []string{"github: HEARSAY_GITHUB_TOKEN is not set, so the collaborators were not read and you are the only principal"},
 		},
 		{
@@ -318,7 +318,7 @@ func TestInitWritesAValidConfiguration(t *testing.T) {
 			wantSources: []string{"github", "discord", "drive"},
 			wantScopes:  []string{"api", "infra"},
 			want:        operatorOnly("github//kpenfound"),
-			wantEmpty:   []string{"HEARSAY_GITHUB_TOKEN", "HEARSAY_GITHUB_WEBHOOK_SECRET", "HEARSAY_DISCORD_TOKEN", "HEARSAY_DRIVE_CREDENTIALS", "ANTHROPIC_API_KEY"},
+			wantEmpty:   []string{"HEARSAY_GITHUB_TOKEN", "HEARSAY_GITHUB_WEBHOOK_SECRET", "HEARSAY_DISCORD_TOKEN", "HEARSAY_DRIVE_CREDENTIALS", "ANTHROPIC_API_KEY", "HEARSAY_JEV_API_KEY"},
 		},
 		{
 			name:        "GitHub alone: no Discord or Drive account is confirmed",
@@ -333,7 +333,7 @@ func TestInitWritesAValidConfiguration(t *testing.T) {
 				"robinok": {"Robin Okonkwo", []string{"github/MDQ6VXNlcjI=/robinok"}},
 				"sam-r":   full["sam-r"],
 			},
-			wantEmpty: []string{"HEARSAY_GITHUB_TOKEN", "HEARSAY_GITHUB_WEBHOOK_SECRET", "HEARSAY_DISCORD_TOKEN", "HEARSAY_DRIVE_CREDENTIALS", "ANTHROPIC_API_KEY"},
+			wantEmpty: []string{"HEARSAY_GITHUB_TOKEN", "HEARSAY_GITHUB_WEBHOOK_SECRET", "HEARSAY_DISCORD_TOKEN", "HEARSAY_DRIVE_CREDENTIALS", "ANTHROPIC_API_KEY", "HEARSAY_JEV_API_KEY"},
 			wantOutput: []string{
 				"discord: HEARSAY_DISCORD_TOKEN is not set, so no collaborator's Discord account was confirmed",
 				"drive: HEARSAY_DRIVE_CREDENTIALS is not set, so no collaborator's Drive account was confirmed",
@@ -352,7 +352,7 @@ func TestInitWritesAValidConfiguration(t *testing.T) {
 				"robinok": {"Robin Okonkwo", []string{"github/MDQ6VXNlcjI=/robinok"}},
 				"sam-r":   full["sam-r"],
 			},
-			wantEmpty: []string{"HEARSAY_GITHUB_TOKEN", "HEARSAY_GITHUB_WEBHOOK_SECRET", "ANTHROPIC_API_KEY"},
+			wantEmpty: []string{"HEARSAY_GITHUB_TOKEN", "HEARSAY_GITHUB_WEBHOOK_SECRET", "ANTHROPIC_API_KEY", "HEARSAY_JEV_API_KEY"},
 		},
 		{
 			name: "GitHub skipped: one scope over what is left",
@@ -361,7 +361,7 @@ func TestInitWritesAValidConfiguration(t *testing.T) {
 			wantSources: []string{"discord", "drive"},
 			wantScopes:  []string{"team"},
 			want:        operatorOnly("discord/302100000000000003/"),
-			wantEmpty:   []string{"HEARSAY_DISCORD_TOKEN", "HEARSAY_DRIVE_CREDENTIALS", "ANTHROPIC_API_KEY"},
+			wantEmpty:   []string{"HEARSAY_DISCORD_TOKEN", "HEARSAY_DRIVE_CREDENTIALS", "ANTHROPIC_API_KEY", "HEARSAY_JEV_API_KEY"},
 		},
 		{
 			name:        "Drive alone",
@@ -369,7 +369,7 @@ func TestInitWritesAValidConfiguration(t *testing.T) {
 			wantSources: []string{"drive"},
 			wantScopes:  []string{"team"},
 			want:        operatorOnly("drive//kyle@acme.example"),
-			wantEmpty:   []string{"HEARSAY_DRIVE_CREDENTIALS", "ANTHROPIC_API_KEY"},
+			wantEmpty:   []string{"HEARSAY_DRIVE_CREDENTIALS", "ANTHROPIC_API_KEY", "HEARSAY_JEV_API_KEY"},
 		},
 	}
 	for _, tt := range tests {

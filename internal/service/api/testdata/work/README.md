@@ -8,9 +8,12 @@ Normal integration runs load these files and fail on an unrecorded request.
 To deliberately regenerate the exchanges after reviewing the authored answers:
 
 ```sh
-go test -count=1 -tags=integration ./internal/service/api -run '^TestPostedWork' -record-work
+dagger api call hearsay go-test-base with-directory --path /src --source . with-workdir --path /src \
+  with-exec --args go,test,-count=1,-tags=integration,./internal/service/api,-run,^TestPostedWork,-record-work \
+  directory --path /src/internal/service/api/testdata/work export --path ./internal/service/api/testdata/work
 ```
 
-The database must be disposable and migrated. Review the JSON changes as code.
+That runs the tests against the migrated Postgres the test base binds and
+exports the rewritten files. Review the JSON changes as code.
 The attributed and unattributed decisions differ in the source author's name;
 the assertion request is the same because its text contains only distillation.

@@ -52,7 +52,7 @@ of Hearsay's — keep it that way, because everything above L0 imports this.
 The mapping is read-only once `NewResolver` returns and the record of what did
 not resolve is behind a mutex, so one resolver serves every connector at once.
 
-Log principal ids, never email addresses or display names (ADR-0008). That
+Log principal ids, never email addresses or display names. That
 applies to an `Unresolved` too: it is made of source data.
 
 See [docs/design.md](../../docs/design.md#access-control) and the

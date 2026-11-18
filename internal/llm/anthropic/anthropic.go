@@ -1,6 +1,6 @@
 // Package anthropic is the Anthropic adapter: the Messages API behind
 // internal/llm's [llm.Provider], and the only place in Hearsay that knows what
-// an Anthropic request looks like (ADR-0005).
+// an Anthropic request looks like.
 //
 // It is deliberately thin. Retries, backoff, rate-limit waits, timeouts and
 // token accounting belong to the registry that wraps it, so what is here is one
@@ -8,7 +8,7 @@
 // error vocabulary to say whether trying again could work.
 //
 // Anthropic has no embedding model, which is why the embed tier points at
-// another provider from the first day (ADR-0005). That is declared as a
+// another provider from the first day. That is declared as a
 // capability rather than discovered on the first call.
 package anthropic
 
@@ -33,8 +33,7 @@ const (
 	// one at a server replaying recorded responses.
 	DefaultBaseURL = "https://api.anthropic.com"
 	// APIKeyEnv is where the credential comes from unless a tier names another
-	// variable. Credentials are never in the configuration repository
-	// (ADR-0005).
+	// variable. Credentials are never in the configuration repository.
 	APIKeyEnv = "ANTHROPIC_API_KEY"
 	// apiVersion is the version header every request carries. It is pinned:
 	// the shape this adapter reads is the shape this version returns.
@@ -323,7 +322,7 @@ func retryAfter(h http.Header) time.Duration {
 
 // err builds this provider's error, with what the registry needs to decide
 // whether to try again. It carries no request content: an error string reaches
-// a log line, and a prompt in a log line is L1 text in a log line (ADR-0008).
+// a log line, and a prompt in a log line is L1 text in a log line.
 func (c *client) err(status int, kind, msg string, retryable bool, after time.Duration, wrapped error) error {
 	return &llm.Error{
 		Provider:   llm.ProviderAnthropic,

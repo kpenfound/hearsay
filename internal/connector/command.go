@@ -92,7 +92,7 @@ const (
 	// so it was not applied. Running it again may work.
 	CommandNotRecorded CommandOutcome = "not_recorded"
 	// CommandDeleted is a command whose event an operator deleted from
-	// Hearsay (ADR-0018), delivered again.
+	// Hearsay, delivered again.
 	CommandDeleted CommandOutcome = "deleted"
 	// CommandUnknown is a verb Hearsay does not have.
 	CommandUnknown CommandOutcome = "unknown"
@@ -166,7 +166,7 @@ type CommandResult struct {
 // applies it through the process's [CommandApplier] and returns the result
 // for the connector to deliver ephemerally. The applier writes under the
 // scope's serial key; a process that dies mid-command leaves it unapplied,
-// and nothing retries it (ADR-0025).
+// and nothing retries it.
 type CommandSink interface {
 	Command(ctx context.Context, cmd Command) (CommandResult, error)
 }

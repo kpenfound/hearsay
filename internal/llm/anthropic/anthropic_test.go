@@ -470,7 +470,7 @@ func TestARequestThatNeverArrived(t *testing.T) {
 }
 
 // Anthropic has no embedding model, and that is a fact about the provider
-// rather than something to find out on the first call (ADR-0005).
+// rather than something to find out on the first call.
 func TestNoEmbeddingModel(t *testing.T) {
 	config := llm.Config{Tiers: map[llm.Tier]llm.TierConfig{
 		llm.TierEmbed: {Provider: "anthropic", Model: "claude-haiku-4-5-20251001", Dimensions: 1024},

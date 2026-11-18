@@ -34,7 +34,7 @@ var (
 // callers mostly just print it.
 //
 // It carries no request content — a message that quoted the prompt would put
-// L1 text in a log line, which is access control rather than style (ADR-0008).
+// L1 text in a log line, which is access control rather than style.
 type Error struct {
 	// Provider and Model are what was called, and Tier is what for.
 	Provider string

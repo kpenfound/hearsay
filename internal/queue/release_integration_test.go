@@ -127,7 +127,7 @@ func TestFailureAndReclaimAnnounceReleasedKeys(t *testing.T) {
 			if mode == "failure" {
 				_, _, err = client.Fail(t.Context(), jobs[0], errors.New("fixture"))
 			} else {
-				time.Sleep(2 * lease)
+				expireLeases(lease)
 				_, err = client.Reclaim(t.Context())
 			}
 			if err != nil {

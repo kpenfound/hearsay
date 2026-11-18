@@ -98,7 +98,7 @@ func (d *Distiller) distillMeeting(ctx context.Context, result Result, root conn
 		if err != nil {
 			return Result{}, err
 		}
-		runs[i], segments[i] = run, run.selected
+		runs[i], segments[i] = run, run.doc
 	}
 	current, err := d.events.Current(ctx, l0.ListOptions{Filter: l0.Filter{Source: root.Source, Artifact: root.Payload.Artifact}, Limit: 1})
 	if err != nil {
@@ -107,6 +107,11 @@ func (d *Distiller) distillMeeting(ctx context.Context, result Result, root conn
 	if len(current) != 1 || current[0].NativeID != root.NativeID {
 		result.Superseded = true
 		return result, nil
+	}
+	for _, run := range runs {
+		if err := stale(run); err != nil {
+			return Result{}, err
+		}
 	}
 	ids := make([]string, len(segments))
 	for i, segment := range segments {
@@ -117,9 +122,8 @@ func (d *Distiller) distillMeeting(ctx context.Context, result Result, root conn
 		for _, run := range runs {
 			batch = append(batch, run)
 		}
-		commitOutcomes(ctx, tx, batch...)
-		for i, run := range runs {
-			segments[i] = run.selected
+		if err := commitOutcomes(ctx, tx, batch...); err != nil {
+			return err
 		}
 
 		removed, err := deleteDerived(ctx, tx, `DELETE FROM l1_docs WHERE source = $1 AND kind = $2 AND left(source_native_id, length($3)) = $3 AND NOT (id = ANY($4))`, root.Source, l1.KindMeetingSegment, l1.MeetingSegmentPrefix(root.Payload.Artifact), ids)

@@ -483,7 +483,7 @@ func (r review) submitted() bool {
 }
 
 // reviewToken is a review's content token: the first 16 hex digits of the
-// SHA-256 of its lower-case state, a newline, and its body (ADR-0012). GitHub
+// SHA-256 of its lower-case state, a newline, and its body. GitHub
 // moves no version field when a review is edited or dismissed, so what changed
 // is hashed instead; a state has no newline in it, so the two cannot run
 // together.

@@ -8,9 +8,10 @@ import (
 	"github.com/kpenfound/hearsay/internal/llm"
 )
 
-// PipelineCohort is retained worker-stage work, not documents or replay runs.
-// All consumption totals become null when any contributor is unknown/invalid.
-type PipelineCohort struct {
+// PipelineStage is one stage's retained work (distill or assert), not
+// documents or replay runs. All consumption totals become null when any
+// contributor is unknown or invalid.
+type PipelineStage struct {
 	Runs                  int               `json:"runs"`
 	HandlerSeconds        *float64          `json:"handler_seconds"`
 	MeanHandlerSeconds    *float64          `json:"mean_handler_seconds"`
@@ -24,20 +25,17 @@ type PipelineCohort struct {
 	GenerativeUsage       llm.JudgmentUsage `json:"generative_usage"`
 	JudgmentRequests      *int64            `json:"judgment_requests"`
 	JudgmentAttempts      *int64            `json:"judgment_attempts"`
-	JudgmentFallbacks     *int64            `json:"judgment_fallbacks"`
-	FallbackFrequency     *float64          `json:"fallback_frequency"`
 	JudgmentUsage         llm.JudgmentUsage `json:"judgment_usage"`
 	CandidateCount        *int64            `json:"candidate_count"`
 	TotalCostUSD          *float64          `json:"total_cost_usd"`
 }
 
-// PipelineReport deliberately contains no savings estimate. Cohorts need
-// comparable workloads and complete accounting before any causal comparison.
+// PipelineReport is the recorded work of each stage: model calls, Jev
+// requests, their consumption and time.
 type PipelineReport struct {
-	Baseline         PipelineCohort `json:"baseline"`
-	Shadow           PipelineCohort `json:"shadow"`
-	Accepted         PipelineCohort `json:"accepted"`
-	UnclassifiedRuns int            `json:"unclassified_runs"`
+	Distill          PipelineStage `json:"distill"`
+	Assert           PipelineStage `json:"assert"`
+	UnclassifiedRuns int           `json:"unclassified_runs"`
 }
 
 func addCost(a, b *float64) *float64 {
@@ -63,8 +61,8 @@ func nsSeconds(n *int64) *float64 {
 	return &s
 }
 
-func pipelineCohort(os []l1.PipelineObservation) PipelineCohort {
-	c := PipelineCohort{Runs: len(os)}
+func pipelineStage(os []l1.PipelineObservation) PipelineStage {
+	c := PipelineStage{Runs: len(os)}
 	if len(os) == 0 {
 		return c
 	}
@@ -74,7 +72,6 @@ func pipelineCohort(os []l1.PipelineObservation) PipelineCohort {
 	c.GenerativeAttempts = &zero
 	c.JudgmentRequests = &zero
 	c.JudgmentAttempts = &zero
-	c.JudgmentFallbacks = &zero
 	c.CandidateCount = &zero
 	c.GenerativeUsage = llm.JudgmentUsage{InputTokens: &zero, OutputTokens: &zero, CostUSD: &costZero}
 	c.JudgmentUsage = c.GenerativeUsage
@@ -89,7 +86,6 @@ func pipelineCohort(os []l1.PipelineObservation) PipelineCohort {
 		c.GenerativeAttempts = l1.AddPipelineCount(c.GenerativeAttempts, o.GenerativeAttempts)
 		c.JudgmentRequests = l1.AddPipelineCount(c.JudgmentRequests, o.JudgmentRequests)
 		c.JudgmentAttempts = l1.AddPipelineCount(c.JudgmentAttempts, o.JudgmentAttempts)
-		c.JudgmentFallbacks = l1.AddPipelineCount(c.JudgmentFallbacks, o.JudgmentFallbacks)
 		c.CandidateCount = l1.AddPipelineCount(c.CandidateCount, o.CandidateCount)
 		c.GenerativeUsage = addUsage(c.GenerativeUsage, o.GenerativeUsage)
 		c.JudgmentUsage = addUsage(c.JudgmentUsage, o.JudgmentUsage)
@@ -123,25 +119,21 @@ func pipelineCohort(os []l1.PipelineObservation) PipelineCohort {
 		n := float64(*knownQueue) / 1e9 / float64(knownQueues)
 		c.MeanQueueDelaySeconds = &n
 	}
-	if c.JudgmentRequests != nil && c.JudgmentFallbacks != nil && *c.JudgmentRequests > 0 && *c.JudgmentFallbacks <= *c.JudgmentRequests {
-		n := float64(*c.JudgmentFallbacks) / float64(*c.JudgmentRequests)
-		c.FallbackFrequency = &n
-	}
 	return c
 }
 
-// SummarizePipelines includes retries, generation and candidate processing as
-// recorded; no failed/fallback run is moved out of its intended cohort.
+// SummarizePipelines totals each stage's observations, retries, generation and
+// candidate processing included as recorded.
 func SummarizePipelines(os []l1.PipelineObservation) PipelineReport {
-	cohorts := map[string][]l1.PipelineObservation{}
+	stages := map[string][]l1.PipelineObservation{}
 	unknown := 0
 	for _, o := range os {
-		switch o.Cohort {
-		case "baseline", "shadow", "accepted":
-			cohorts[o.Cohort] = append(cohorts[o.Cohort], o)
+		switch o.Stage {
+		case "distill", "assert":
+			stages[o.Stage] = append(stages[o.Stage], o)
 		default:
 			unknown++
 		}
 	}
-	return PipelineReport{Baseline: pipelineCohort(cohorts["baseline"]), Shadow: pipelineCohort(cohorts["shadow"]), Accepted: pipelineCohort(cohorts["accepted"]), UnclassifiedRuns: unknown}
+	return PipelineReport{Distill: pipelineStage(stages["distill"]), Assert: pipelineStage(stages["assert"]), UnclassifiedRuns: unknown}
 }

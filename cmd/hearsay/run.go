@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -32,6 +33,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
 	"github.com/kpenfound/hearsay/internal/service/connectors"
 	"github.com/kpenfound/hearsay/internal/service/distiller"
+	"github.com/kpenfound/hearsay/internal/tailnet"
 	"github.com/kpenfound/hearsay/internal/telemetry"
 	"github.com/kpenfound/hearsay/internal/version"
 )
@@ -45,7 +47,7 @@ type command struct {
 }
 
 // commands is the whole command surface, in the order `hearsay help` prints it.
-// The four service names are fixed by ADR-0003 and are a contract with the
+// The four service names are fixed and are a contract with the
 // Dagger module and the deployment manifests; do not rename them casually.
 func commands() []command {
 	return []command{
@@ -62,7 +64,7 @@ func commands() []command {
 		{"aliases", "list|confirm <entity> <name>|reject <entity> <name>", "Review learned entity names.", runAliases},
 		{"topics", "list <scope>|merge <from> <into>|split <topic> --stance <id>... --name <name>|undo <op>|ops", "List topics and their operations; merge, split and undo by hand.", runTopics},
 		{"gestures", "ratify|demote|pin|unpin <document>|undo <gesture-id>|list", "Record and list human stance and pin gestures.", runGestures},
-		{"eval", "[--since <time>] [--until <time>] [--scope <id>] [--json]", "Print evaluation metrics and pipeline accounting; eval judgments compares supplied predictions and qualifies task policies offline.", runEval},
+		{"eval", "[--since <time>] [--until <time>] [--scope <id>] [--json]", "Print evaluation metrics and pipeline accounting; eval judgments compares supplied Jev predictions with a labelled corpus offline.", runEval},
 		{"delete", "--event <id>|--artifact <source> <id>|--author <identity> [--apply] | list | show <id>", "Preview deletion provenance; --apply redacts L0 and re-distills; list and show read the records.", runDelete},
 		{"version", "", "Print version, commit and build date.", runVersion},
 		{"help", "", "Print this message.", runHelp},
@@ -133,8 +135,8 @@ func newFlagSet(name string, w io.Writer) (*flag.FlagSet, *config.Config, *strin
 //
 // A process started without a configuration runs empty — it ingests nothing and
 // serves no bundles — which is what evaluating the binary looks like and is why
-// this warns rather than refuses. An invalid configuration is a startup failure
-// (ADR-0009): configuration is read once, so a mistake in it must stop the
+// this warns rather than refuses. An invalid configuration is a startup
+// failure: configuration is read once, so a mistake in it must stop the
 // process rather than surface on the first request.
 func loadConfig(ctx context.Context, cfg *config.Config, path string) error {
 	log := telemetry.Logger(ctx)
@@ -159,6 +161,13 @@ func loadConfig(ctx context.Context, cfg *config.Config, path string) error {
 	return nil
 }
 
+// envBool is whether key is set to a true value (1, t, true, and the rest
+// strconv.ParseBool accepts); unset or unparseable is false.
+func envBool(key string) bool {
+	v, err := strconv.ParseBool(os.Getenv(key))
+	return err == nil && v
+}
+
 func envOr(key, fallback string) string {
 	if v, ok := os.LookupEnv(key); ok && v != "" {
 		return v
@@ -167,7 +176,7 @@ func envOr(key, fallback string) string {
 }
 
 // withLogger builds the process logger from cfg and attaches it to ctx, along
-// with the fields that hold for the whole process (ADR-0008).
+// with the fields that hold for the whole process.
 //
 // An empty service name leaves the `service` field off, which is what
 // `hearsay all` needs: it runs four of them, and each gets its own name from
@@ -201,10 +210,9 @@ func instanceName() string {
 
 // runDistiller runs the distiller, which unlike the other three services has
 // dependencies: Postgres, and a model tier registry built from the
-// configuration. Both are the process's to build and to own (ADR-0003), and
+// configuration. Both are the process's to build and to own, and
 // both are refused up front rather than at the first job — configuration is
-// read once, so a process that cannot make a model call should not start
-// (ADR-0005, ADR-0009).
+// read once, so a process that cannot make a model call should not start.
 func runDistiller(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, cfg, configPath := newFlagSet(distiller.Name, stderr)
 	pumpOptions := distillFlags(fs)
@@ -390,6 +398,12 @@ func runAPI(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	fs, cfg, configPath := newFlagSet(api.Name, stderr)
 	listen := fs.String("listen", envOr("HEARSAY_API_LISTEN", api.DefaultListen),
 		"address the API serves HTTP (/v1/<call>), MCP (/mcp) and its health on")
+	tailnetName := fs.String("tailnet", os.Getenv("HEARSAY_API_TAILNET"),
+		"hostname to also serve the API as on the tailnet, through an embedded Tailscale node; empty serves only --listen")
+	tailnetDir := fs.String("tailnet-dir", os.Getenv("HEARSAY_API_TAILNET_DIR"),
+		"the tailnet node's state directory, which must persist; required with --tailnet")
+	tailnetHTTP := fs.Bool("tailnet-http", envBool("HEARSAY_API_TAILNET_HTTP"),
+		"serve plain HTTP on the tailnet's port 80 instead of HTTPS on 443")
 	resolveDatabase := databaseFlag(fs, cfg)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -402,6 +416,10 @@ func runAPI(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 		return errors.New("--listen is empty: it is the address the API is served on")
 	}
 	ctx, err := withLogger(ctx, api.Name, cfg, stderr)
+	if err != nil {
+		return err
+	}
+	node, err := apiTailnet(ctx, *tailnetName, *tailnetDir, *tailnetHTTP)
 	if err != nil {
 		return err
 	}
@@ -424,11 +442,25 @@ func runAPI(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	if err != nil {
 		return err
 	}
-	return api.Run(ctx, cfg, api.Deps{Pool: pool, LLM: registry, Listen: *listen, Discord: apps})
+	return api.Run(ctx, cfg, api.Deps{Pool: pool, LLM: registry, Listen: *listen, Discord: apps, Tailnet: node})
+}
+
+// apiTailnet is the API's tailnet node, or nil when no hostname names one.
+func apiTailnet(ctx context.Context, hostname, dir string, http bool) (*tailnet.Node, error) {
+	if hostname == "" {
+		return nil, nil
+	}
+	if !tailnet.ValidHostname(hostname) {
+		return nil, fmt.Errorf("--tailnet %q is not a tailnet hostname: one DNS label of lowercase letters, digits and hyphens", hostname)
+	}
+	if dir == "" {
+		return nil, errors.New("--tailnet needs --tailnet-dir (or HEARSAY_API_TAILNET_DIR): the node's state has to persist, or every start is a new node")
+	}
+	return tailnet.New(tailnet.Config{Hostname: hostname, Dir: dir, HTTP: http, Join: tailnet.JoinTailscale(telemetry.Logger(ctx))}), nil
 }
 
 // discordApps are the Discord applications of the sources that configure
-// one and are not read-only: the API answers their slash commands (ADR-0022).
+// one and are not read-only: the API answers their slash commands.
 // Only the bot token is read from the environment, to register the commands.
 func discordApps(repo config.Repo, lookup func(string) (string, bool)) ([]*discord.App, error) {
 	var apps []*discord.App
@@ -467,16 +499,16 @@ func stoppingEarly(ctx context.Context, err error) error {
 	return err
 }
 
-// modelRegistry builds the model tiers the configuration names (ADR-0005).
+// modelRegistry builds the model tiers the configuration names.
 //
 // A process with no configuration repository gets no registry at all, and the
 // service it is handed to starts and does nothing — the same as every other
-// service without one (ADR-0009). It is not an error here because it is not a
+// service without one. It is not an error here because it is not a
 // mistake: a configuration is what says there is anything to do.
 //
 // A configuration that names a tier the process cannot build — an unknown
 // provider, a credential that is not in the environment — is a startup failure,
-// which is what ADR-0005 asks for: configuration is read once, so a process
+// because configuration is read once, so a process
 // that cannot make a model call should not be serving.
 func modelRegistry(ctx context.Context, cfg *config.Config) (llm.Registry, error) {
 	if cfg.Repo.Path == "" {
@@ -580,8 +612,7 @@ func connectorRegistry(principals []principal.Principal, sources []connector.Sou
 }
 
 // runAll runs the four services in one process. It exists so that evaluating
-// Hearsay does not need four terminals; it is never a deployment target
-// (ADR-0003).
+// Hearsay does not need four terminals; it is never a deployment target.
 func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, cfg, configPath := newFlagSet("all", stderr)
 	pumpOptions := distillFlags(fs)
@@ -677,7 +708,7 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 // runConfig is the configuration subcommand. `validate` is the whole of it: it
 // loads a configuration repository the way a service would and reports
 // everything wrong with it, so that a bad change is caught by CI on the
-// configuration repository rather than by a deployment (ADR-0009).
+// configuration repository rather than by a deployment.
 func runConfig(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, _, configPath := newFlagSet("config", stderr)
 	action, actionArgs, err := parseAction(fs, args, "")
@@ -730,8 +761,7 @@ func printSummary(w io.Writer, repo config.Repo) {
 }
 
 // modelTiers is what each model tier resolves to, which is worth printing
-// because most of it is usually a default that is nowhere in the files
-// (ADR-0005).
+// because most of it is usually a default that is nowhere in the files.
 func modelTiers(repo config.Repo) []string {
 	tiers := repo.LLM.Configured()
 	out := make([]string, 0, len(tiers))
@@ -839,11 +869,18 @@ func distillFlags(fs *flag.FlagSet) func() (distiller.PumpOptions, error) {
 	}
 }
 
-// judgmentCapability builds exactly one capability per process. The factory is
-// injectable for service-wiring tests; disabled operation never constructs it.
+// judgmentCapability builds Jev, once per process. The distiller and the
+// assertion worker require it, so a configuration with no model or an
+// environment with no key is a startup failure. A process started without a
+// configuration has nothing to judge and gets llm.Unconfigured, so `hearsay
+// all` with no --config still starts. The factory is injectable for
+// service-wiring tests.
 func judgmentCapability(cfg *config.Config, factory llm.JudgmentFactory) (llm.Judgments, error) {
+	if cfg.Repo.Path == "" {
+		return llm.Unconfigured(), nil
+	}
 	if factory == nil {
 		factory = func(c llm.JudgmentConfig, key string) llm.JudgmentProvider { return jev.New(c, key) }
 	}
-	return llm.NewJudgments(cfg.Repo.Boost, factory, os.Getenv)
+	return llm.NewJudgments(cfg.Repo.Judgments, factory, os.Getenv)
 }

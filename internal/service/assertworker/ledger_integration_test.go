@@ -4,6 +4,7 @@ package assertworker_test
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -16,8 +17,7 @@ import (
 // A document whose join keys find a topic that was merged away is
 // offered the topic it went into, with that topic's current position, and its
 // stance is written there: no duplicate topic, and nothing on the merged-away
-// row. The fake answers only the requests recorded here, so a prompt that
-// offered the merged-away topic would fail with no fixture.
+// row.
 func TestMatchingReusesTheTopicAMergeKept(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
@@ -25,22 +25,25 @@ func TestMatchingReusesTheTopicAMergeKept(t *testing.T) {
 	scope := l2.ScopeKey(testRepo(src), src, repo, nil)
 	issue, pr := issueDoc(t, src), prDoc(t, src)
 	const keptName, keptPosition = "How the engine serializes its writes", "The engine serializes writes behind one lock."
+	// The pull request names the question the kept topic asks, so Jev finds
+	// it there; the merged-away topic is never shown.
 	fx := llm.NewFixtures()
 	for _, fixture := range []llm.CompletionFixture{
 		{
-			Tier: llm.TierAssert, Request: assertworker.RequestFor(issue, nil, assertBudget()),
-			Response: llm.Response{JSON: []byte(`{"assertions":[{"topic":"new","topic_name":"` + topicName + `","position":"` + issuePosition + `"}]}`), StopReason: llm.StopEnd, Model: "recorded"},
+			Tier: llm.TierAssert, Request: assertworker.RequestFor(issue, assertBudget()),
+			Response: llm.Response{JSON: []byte(`{"assertions":[{"topic_name":"` + topicName + `","position":"` + issuePosition + `"}]}`), StopReason: llm.StopEnd, Model: "recorded"},
 		},
 		{
-			Tier: llm.TierAssert, Request: assertworker.RequestFor(pr, []assertworker.Candidate{{Name: keptName, Current: keptPosition}}, assertBudget()),
-			Response: llm.Response{JSON: []byte(`{"assertions":[{"topic":"T1","topic_name":"` + keptName + `","position":"` + prPosition + `","judgement":"changes"}]}`), StopReason: llm.StopEnd, Model: "recorded"},
+			Tier: llm.TierAssert, Request: assertworker.RequestFor(pr, assertBudget()),
+			Response: llm.Response{JSON: []byte(`{"assertions":[{"topic_name":"` + keptName + `","position":"` + prPosition + `"}]}`), StopReason: llm.StopEnd, Model: "recorded"},
 		},
 	} {
 		if err := fx.Add(fixture); err != nil {
 			t.Fatal(err)
 		}
 	}
-	a := newAsserter(t, pool, src, fx)
+	jev := newRuleJev()
+	a := newJevAsserter(t, pool, src, fx, jev)
 	if r := assertDoc(t, a, f.issueID, scope); r.TopicsOpened != 1 {
 		t.Fatalf("Assert(issue) = %+v, want a topic opened", r)
 	}
@@ -76,6 +79,10 @@ func TestMatchingReusesTheTopicAMergeKept(t *testing.T) {
 	if err != nil || len(written) != 1 || written[0].TopicID != kept.ID || written[0].Judgement != l2.JudgementChanges {
 		t.Fatalf("StancesFrom(pull request) = %+v, %v, want one stance on %s, judged against the kept position", written, err, kept.ID)
 	}
+	asked := jev.asked("same_question")
+	if len(asked) != 1 || !slices.Equal(shown(t, asked[0]), []shownCandidate{{Label: "T1", Name: keptName, Current: keptPosition}}) {
+		t.Errorf("Jev was shown %+v, want only the kept topic at its position", asked)
+	}
 	rows, err := pool.Query(t.Context(), `SELECT topic_id, count(*) FROM l2_stances WHERE topic_id = ANY($1) GROUP BY topic_id`, []string{kept.ID, opened[0].ID})
 	if err != nil {
 		t.Fatal(err)
@@ -109,15 +116,12 @@ func TestAReadingThatReopensAMergedTopicWritesWhereItWent(t *testing.T) {
 	scope := l2.ScopeKey(testRepo(src), src, repo, nil)
 	issue := issueDoc(t, src)
 	const keptName = "How the engine serializes its writes"
-	opens := llm.Response{JSON: []byte(`{"assertions":[{"topic":"new","topic_name":"` + topicName + `","position":"` + issuePosition + `"}]}`), StopReason: llm.StopEnd, Model: "recorded"}
+	// Read again, the issue's position is not the kept topic's question, so it
+	// opens the topic it opened the first time.
+	opens := llm.Response{JSON: []byte(`{"assertions":[{"topic_name":"` + topicName + `","position":"` + issuePosition + `"}]}`), StopReason: llm.StopEnd, Model: "recorded"}
 	fx := llm.NewFixtures()
-	for _, fixture := range []llm.CompletionFixture{
-		{Tier: llm.TierAssert, Request: assertworker.RequestFor(issue, nil, assertBudget()), Response: opens},
-		{Tier: llm.TierAssert, Request: assertworker.RequestFor(issue, []assertworker.Candidate{{Name: keptName, Current: issuePosition}}, assertBudget()), Response: opens},
-	} {
-		if err := fx.Add(fixture); err != nil {
-			t.Fatal(err)
-		}
+	if err := fx.Add(llm.CompletionFixture{Tier: llm.TierAssert, Request: assertworker.RequestFor(issue, assertBudget()), Response: opens}); err != nil {
+		t.Fatal(err)
 	}
 	a := newAsserter(t, pool, src, fx)
 	assertDoc(t, a, f.issueID, scope)

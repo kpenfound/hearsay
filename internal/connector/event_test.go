@@ -807,18 +807,3 @@ func TestEventJSONOmitsEmptyPayloadFields(t *testing.T) {
 		}
 	}
 }
-
-func TestCoreKinds(t *testing.T) {
-	kinds := connector.CoreKinds()
-	if len(kinds) < 10 {
-		t.Fatalf("CoreKinds() returned %d kinds, want the whole vocabulary", len(kinds))
-	}
-	for i, k := range kinds {
-		if !k.IsCore() {
-			t.Errorf("CoreKinds()[%d] = %q, which is not a core kind", i, k)
-		}
-		if i > 0 && kinds[i-1] >= k {
-			t.Errorf("CoreKinds() is not sorted: %q before %q", kinds[i-1], k)
-		}
-	}
-}

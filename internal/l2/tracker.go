@@ -67,7 +67,7 @@ func TrackerItem(repo config.Repo, source, item string) (Entity, bool) {
 }
 
 // Configured is the part_of `code/` sets, per entity: the hierarchy's
-// highest-ranked source (ADR-0016).
+// highest-ranked source.
 func Configured(repo config.Repo) Parents {
 	out := Parents{}
 	for _, c := range repo.Code {
@@ -81,8 +81,8 @@ func Configured(repo config.Repo) Parents {
 const hierarchyLock int64 = 0x68656172_73617931 // "hearsay1"
 
 // Place records where a tracker or work source puts an item now, replacing
-// its former parents, and merges all four hierarchy sources under configuration
-// (ADR-0016): the merge may keep or drop an edge of another item's that closes
+// its former parents, and merges all four hierarchy sources under
+// configuration: the merge may keep or drop an edge of another item's that closes
 // a cycle with this one's, and every item whose parents it changed is written.
 //
 // A work declaration always creates or renames its entity and only uses

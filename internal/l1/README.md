@@ -11,8 +11,8 @@ reference extraction, the secrets and PII scrub that runs before `text` is
 written, and hybrid search over the table (embeddings plus full text).
 
 **Does not belong here:** the prompts that produce a document — those belong to
-the distiller in `internal/service/distiller`, which owns its own prompt
-(ADR-0005). Entities, topics and stances are `internal/l2`.
+the distiller in `internal/service/distiller`, which owns its own prompt.
+Entities, topics and stances are `internal/l2`.
 
 Distillation is a write-time LLM call. The only model call a read makes is the
 one that turns a search query into a vector, on the `embed` tier; nothing on the
@@ -120,8 +120,8 @@ See [docs/design.md](../../docs/design.md#l1-distilled-documents).
 
 ## Judgment journal and pipeline accounting
 
-The journal is an optional write-path record, with no model calls in this
-package. `JudgmentInputSpec` names the incoming document, ordered candidate
+The journal records every Jev judgment the workers decide from, with no model
+calls in this package. `JudgmentInputSpec` names the incoming document, ordered candidate
 ids, exact compared stance ids, source event ids (also needed before the first
 L1 write), scope and computed ACL. `CaptureJudgmentInputs` records their
 identities and revisions, including `distilled_at`, hashes of the rows and
@@ -134,7 +134,7 @@ It returns no source, position, prompt or answer text. `DocumentRevision`
 lets a worker compare the captured revision to the document it actually read.
 Capture **before** reading the state used in a question, while holding the
 worker's existing scope key where applicable. If a later read sees another
-revision, discard the optional judgment or capture and judge again.
+revision, discard the judgment or capture and judge again.
 
 `BeginJudgment` on an autocommit store records an attempt before the provider
 call. Use its returned id for the final `JudgmentRecord`. An attempt remains
@@ -148,18 +148,18 @@ Question/schema versions, task, policy and result labels belong to the worker;
 only categorical labels and hashes belong in these fields, never question or
 completion text.
 
-Call `CommitJudgments` in the worker's **READ COMMITTED** baseline transaction,
+Call `CommitJudgments` in the worker's **READ COMMITTED** write transaction,
 **before** writing documents, topics or stances. It validates every judgment
 and observation before writing any of them, then records the batch under a
 savepoint. `JournalStorageFailure`, `JournalTimeout` and
 `JournalInputsChanged` are distinct sanitized refusal values, compared with
-`errors.Is`. The savepoint rolls back the whole optional batch on a refusal,
-including an earlier successful record or observation in that batch, and
-restores the caller's server timeout settings. The caller then writes its
-complete baseline result. The journal never writes a consumer's result.
-Use the live baseline context here, not the optional model call's exhausted
-deadline; connection loss or cancellation of the baseline transaction itself
-cannot be repaired by a savepoint. Repeatable-read/serializable transactions
+`errors.Is`. The savepoint rolls back the whole batch on a refusal, including
+an earlier successful record or observation in that batch, and restores the
+caller's server timeout settings. The worker then returns the refusal as its
+job's error, so the job's writes roll back with it and the queue retries it.
+The journal never writes a consumer's result. Use the job's live context here;
+connection loss or cancellation of the transaction itself cannot be repaired by
+a savepoint. Repeatable-read/serializable transactions
 are refused rather than validating against an old snapshot.
 
 Validation takes `SHARE ROW EXCLUSIVE` on `judgment_input_guard` until the
@@ -169,7 +169,7 @@ the interval between validation and commit. Successful journal commits
 serialize this short database interval, including the caller's consumer
 writes, but never provider work. Server statement and lock timeouts default
 to 100 ms each and are configurable per call. A refused savepoint releases
-its guard immediately so the baseline write can proceed. Source writers
+its guard immediately. Source writers
 remain concurrent: source/ledger change markers are appended, not updated
 on a single counter row. Counts of visible committed markers for each scope
 include late commits that a sequence watermark would miss. Source markers
@@ -195,14 +195,16 @@ reusable. TRUNCATE conservatively invalidates everything. Do not prune the
 marker log independently of the journal. **Any new table that changes
 effective inputs must join this trigger/guard protocol.**
 
-`PipelineObservation` is one stage run for `baseline`, `shadow` or `accepted`.
-It includes handler/queue time in nanoseconds, generative calls/tokens/cost,
-judgment attempts/fallbacks/tokens/cost and candidate processing. Durations,
+`PipelineObservation` is one stage run, `distill` or `assert`; its cohort is
+always `accepted` now, and `baseline` and `shadow` survive only on rows written
+before Jev was required. It includes handler/queue time in nanoseconds,
+generative calls/tokens/cost, judgment attempts/tokens/cost and candidate
+processing. Durations,
 counts and usage are pointers: nil means unknown, and a pointer to zero is
 reported zero. `AddPipelineCount` and `llm.AddJudgmentUsage` propagate unknown
 and overflow. Negative/non-finite accounting is cleared to unknown before
-storage. Observations use the same commit operation, including baseline runs
-with no judgment records; their evidence snapshots are validated too.
+storage. Observations use the same commit operation, including runs with no
+judgment records; their evidence snapshots are validated too.
 Summaries and reports over these tables belong to `internal/eval`.
 
 `JudgmentsFor`, `LookupJudgment` and `ObservationsFor` filter both scope and

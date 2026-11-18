@@ -33,7 +33,7 @@ var (
 
 // Store is the graph's tables. It is safe for concurrent use; it does not
 // serialize anything itself — one scope's writes are serialized by the queue
-// that runs the assertion worker (ADR-0007), and every read-then-write here
+// that runs the assertion worker, and every read-then-write here
 // assumes it.
 type Store struct {
 	db Querier
@@ -292,7 +292,7 @@ OR (NOT EXISTS (SELECT 1 FROM l1_docs o WHERE o.id = t.opened_by)
     WHERE d.id IS NULL OR NOT ` + readableBy("d.acl", readers) + `))))`
 }
 
-// TopicsByJoinKeys is the first half of topic matching: the topics in one scope
+// TopicsByJoinKeys is topic matching's first matcher: the topics in one scope
 // that share a join key with a document and that its readers may read, most
 // shared keys first, then oldest. They are topics as the ledger makes them
 // now ([Store.TopicsOver]): a row merged away is found as the topic it went
@@ -312,11 +312,63 @@ LIMIT $4`, scope, keys, aclJSON(readers), limit)
 	return s.matchable(ctx, rows, readers, limit, nil)
 }
 
-// TopicsBySimilarity is the second half: the topics in one scope whose evidence
+// MatchStopwords are the words every distillation an assert job reads shares,
+// so they say nothing about which topic it continues: the labels L1 renders
+// its text with ("Question:", "Outcome (decided):", "Open questions:") and the
+// outcome kinds. [Store.TopicsByText] leaves them out of both sides.
+const MatchStopwords = "question change outcome open decided proposed resolved none"
+
+// TopicsByText is the second matcher, and the one that needs no
+// `embed` tier: the topics in one scope whose evidence shares enough words with
+// the document, excluding the ones already found, most similar first. Both
+// sides are the distillation (`text`, what an embedding would cover) as
+// English lexemes less [MatchStopwords], and the similarity is the cosine of
+// the two lexeme sets — shared lexemes over the square root of the product of
+// their sizes — so a long document is not near everything by being long. A
+// topic qualifies through any stance's evidence that shares at least
+// minShared lexemes at a similarity of at least minSimilarity.
+//
+// It ranks every topic's evidence in the scope exactly, with no index: what it
+// reads is one short distillation per stance, under one scope's serial key,
+// and like [Store.TopicsBySimilarity] it filters by readers before it ranks.
+// Like [Store.TopicsByJoinKeys] it finds topics as the ledger makes them now.
+func (s *Store) TopicsByText(ctx context.Context, scope, docID string, readers connector.ACL, minSimilarity float64, minShared, limit int, exclude []string) ([]Topic, error) {
+	if limit <= 0 {
+		return []Topic{}, nil
+	}
+	rows, err := s.topics(ctx, `
+WITH stop AS (SELECT tsvector_to_array(to_tsvector('english', $7)) AS lx),
+q AS (
+  SELECT tsvector_to_array(ts_delete(to_tsvector('english', text), stop.lx)) AS lx
+  FROM l1_docs, stop WHERE id = $2
+)
+SELECT `+topicColumns+` FROM l2_topics t
+JOIN l2_stances s ON s.topic_id = t.id
+JOIN l1_docs d ON d.id = s.evidence[1]
+CROSS JOIN q CROSS JOIN stop
+CROSS JOIN LATERAL (SELECT tsvector_to_array(ts_delete(to_tsvector('english', d.text), stop.lx)) AS lx) e
+CROSS JOIN LATERAL (
+  SELECT cardinality(ARRAY(SELECT unnest(e.lx) INTERSECT SELECT unnest(q.lx))) AS shared,
+         sqrt(cardinality(e.lx)::float8 * cardinality(q.lx)) AS norm
+) o
+WHERE t.scope = $1 AND d.id <> $2 AND o.norm > 0
+  AND o.shared >= $4 AND o.shared / o.norm >= $3
+  AND NOT (t.id = ANY($6::text[])) AND `+topicReadableBy("$8")+`
+GROUP BY t.id
+ORDER BY max(o.shared / o.norm) DESC, t.id
+LIMIT $5`, scope, docID, minSimilarity, minShared, limit, orEmpty(exclude), MatchStopwords, aclJSON(readers))
+	if err != nil {
+		return nil, err
+	}
+	return s.matchable(ctx, rows, readers, limit, exclude)
+}
+
+// TopicsBySimilarity is the third matcher: the topics in one scope whose evidence
 // is nearest the document by embedding, within a cosine distance, excluding the
 // ones already found. It reads the vectors stored on L1 documents and makes no
 // model call, and it finds nothing for a document that has not been embedded —
-// which is every document in a deployment with no `embed` tier. Like
+// which is every document in a deployment with no `embed` tier, the shipped
+// one. [Store.TopicsByText] is the matcher such a deployment relies on. Like
 // [Store.TopicsByJoinKeys] it finds topics as the ledger makes them now.
 func (s *Store) TopicsBySimilarity(ctx context.Context, scope, docID string, readers connector.ACL, maxDistance float64, limit int, exclude []string) ([]Topic, error) {
 	if limit <= 0 {
@@ -474,7 +526,7 @@ LIMIT 1`
 // stance the topic holds, whichever row it was written on.
 //
 // The predecessor is read and the row written in two statements, which is safe
-// only because one scope's writes are serialized (ADR-0007); the caller runs it
+// only because one scope's writes are serialized; the caller runs it
 // in the transaction that holds the rest of what the document asserted.
 func (s *Store) AppendStance(ctx context.Context, st Stance, distilledAt time.Time) (Stance, bool, error) {
 	if err := st.Validate(); err != nil {

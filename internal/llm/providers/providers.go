@@ -1,8 +1,8 @@
 // Package providers is the list of provider adapters this build ships, in one
 // place so that nothing keeps its own copy of it: a process wiring up a
 // registry, and `hearsay config validate` deciding whether a configured
-// provider exists and can do what the tier needs, read the same list (ADR-0005:
-// adding a provider is writing one adapter and no other change).
+// provider exists and can do what the tier needs, read the same list (adding
+// a provider is writing one adapter and no other change).
 //
 // It is separate from internal/llm because an adapter imports the abstraction:
 // the list has to live somewhere that can import both.
@@ -18,9 +18,9 @@ import (
 	"github.com/kpenfound/hearsay/internal/llm/jev"
 )
 
-// Judgments builds the separate, process-shared typed capability. A disabled
-// boost never constructs Jev or reads its credential; a missing key degrades.
-// It is intentionally absent from All, Names and ByName.
+// Judgments builds Jev, the separate, process-shared typed capability the
+// distiller and the assertion worker require; a missing model or key is an
+// error. It is intentionally absent from All, Names and ByName.
 func Judgments(cfg llm.JudgmentConfig) (llm.Judgments, error) {
 	return llm.NewJudgments(cfg, func(c llm.JudgmentConfig, key string) llm.JudgmentProvider { return jev.New(c, key) }, os.Getenv)
 }

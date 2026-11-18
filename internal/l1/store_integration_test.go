@@ -80,8 +80,8 @@ func storedDoc(t *testing.T, src, artifact string, with func(*l1.Document)) l1.D
 	return doc
 }
 
-// At the level of one row, writing the same document twice writes it once, and
-// the second write does not touch the row.
+// The artifact class is part of what makes a document changed: a pull request
+// that merges is rewritten, and writing the merged one again is not.
 func TestChangingArtifactClassUpdatesRow(t *testing.T) {
 	store := l1.New(newPool(t))
 	doc := storedDoc(t, newSource(t), "acme/api#class", nil)

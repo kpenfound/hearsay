@@ -847,7 +847,7 @@ func TestAWaitingCommandExpeditesDistillationAcrossRollbackAndPumpReads(t *testi
 			cfg.Repo = c.repo
 			cfg.Repo.Scopes = append([]config.Scope(nil), c.repo.Scopes...)
 			cfg.Repo.Scopes[0].Tracker = config.SourceRef{Source: c.src, Project: repo}
-			d, err := distiller.New(c.pool, registry, &cfg)
+			d, err := distiller.New(c.pool, registry, newRuleJev().judgments(t), &cfg)
 			if err != nil {
 				t.Fatal(err)
 			}

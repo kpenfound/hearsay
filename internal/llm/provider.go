@@ -10,7 +10,7 @@ import (
 // Provider is one vendor's adapter: the only code in Hearsay that knows what a
 // provider's API looks like. Adapters live in a subpackage each
 // (internal/llm/anthropic), and adding a vendor is writing one and no other
-// change (ADR-0005).
+// change.
 //
 // An adapter is thin on purpose. Retries, backoff, rate-limit waits, timeouts
 // and token accounting are applied by the registry around whatever it returns,
@@ -21,7 +21,7 @@ type Provider interface {
 	Name() string
 	// Capabilities is what it can do. A provider that cannot do what a tier
 	// needs is refused when the registry is built, which is the whole point of
-	// declaring them (ADR-0005).
+	// declaring them.
 	Capabilities() Capabilities
 	// Completer builds the client for a completion tier.
 	Completer(Build) (Completer, error)
@@ -32,7 +32,7 @@ type Provider interface {
 // Capabilities is what a provider can do. Hearsay asks every completion tier
 // for a system prompt and for structured output, so a provider without either
 // cannot back one: it is refused when configuration is read rather than
-// degrading a call in production (ADR-0005).
+// degrading a call in production.
 type Capabilities struct {
 	// Complete is whether the provider generates text at all.
 	Complete bool
@@ -89,7 +89,7 @@ func (b Build) Getenv(name string) string {
 
 // APIKey is the credential for this tier: the variable the configuration names,
 // or the provider's usual one. Credentials come from the environment and never
-// from the configuration repository, which is checked into git (ADR-0005).
+// from the configuration repository, which is checked into git.
 //
 // A missing credential is an error here, when the registry is built, rather
 // than a 401 on the first artifact somebody ingests.

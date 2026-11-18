@@ -31,7 +31,7 @@ func TestSourceBuiltJournalSurvivesItsOutputAndInvalidatesEvidence(t *testing.T)
 			if _, ok := inputs.DocumentRevision(); ok {
 				t.Fatal("derived L1 output is still an input")
 			}
-			r := l1.JudgmentRecord{ID: "source-judgment", Task: "outcome_classification", QuestionVersion: "v1", QuestionHash: "source-question", Inputs: inputs, Mode: "accepted", Policy: "test-only", ModelVersion: "recorded-v1", Outcome: "answer", Label: "none"}
+			r := l1.JudgmentRecord{ID: "source-judgment", Task: "outcome.binding_agreement", QuestionVersion: "v1", QuestionHash: "source-question", Inputs: inputs, Mode: "accepted", Policy: "test-only", ModelVersion: "recorded-v1", Outcome: "answer", Label: "no"}
 			tx, err := pool.Begin(t.Context())
 			if err != nil {
 				t.Fatal(err)
@@ -45,7 +45,7 @@ func TestSourceBuiltJournalSurvivesItsOutputAndInvalidatesEvidence(t *testing.T)
 				t.Fatal(err)
 			}
 			got := lookupJournal(t, pool, r)
-			if got == nil || got.Label != "none" {
+			if got == nil || got.Label != "no" {
 				t.Fatal("writing L1 invalidated its committed source judgment")
 			}
 			if tc.mutation != "" {

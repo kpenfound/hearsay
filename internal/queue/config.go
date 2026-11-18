@@ -7,7 +7,7 @@ import (
 )
 
 // The defaults a zero Config fills in. They are the shape of the work
-// ADR-0007 describes: jobs that are model calls measured in seconds, on a
+// the queue is for: jobs that are model calls measured in seconds, on a
 // queue that is thousands of events a day rather than millions a minute.
 const (
 	// DefaultLease is how long a claim is believed without a heartbeat.
@@ -51,7 +51,7 @@ type Config struct {
 	// once. It must be 1 on a serialized kind: batching there would claim
 	// several jobs sharing a serial key in one statement, all of them checked
 	// against a snapshot in which none of them is running yet, which is the
-	// exact failure ADR-0007 works through.
+	// exact failure serialization exists to prevent.
 	Concurrency int
 
 	// Lease is how long a claimed job is another worker's to take back. The
@@ -125,7 +125,7 @@ func (c Config) Validate() error {
 	case c.Concurrency < 1:
 		return fmt.Errorf("%w: concurrency %d for kind %s; it is how many jobs run at once, so it is at least 1", ErrInvalidJob, c.Concurrency, c.Kind.Name)
 	case c.Kind.Serialized && c.Concurrency > 1:
-		return fmt.Errorf("%w: kind %s is serialized and claims one job at a time, so concurrency %d cannot be honoured (ADR-0007)", ErrInvalidJob, c.Kind.Name, c.Concurrency)
+		return fmt.Errorf("%w: kind %s is serialized and claims one job at a time, so concurrency %d cannot be honoured", ErrInvalidJob, c.Kind.Name, c.Concurrency)
 	case c.Lease <= 0:
 		return fmt.Errorf("%w: lease %s for kind %s; a claim that is already expired would be reclaimed under the worker running it", ErrInvalidJob, c.Lease, c.Kind.Name)
 	case c.PollInterval <= 0:

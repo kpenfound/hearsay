@@ -136,11 +136,14 @@ func TestTheServiceIngestsIntoL0AndKeepsItsPosition(t *testing.T) {
 	// all.
 	second := &pager{Fake: connector.NewFake(src)}
 	second.Pages = fake.Pages
-	_, stop = run(t, cfg, connectors.Deps{
+	addr, stop = run(t, cfg, connectors.Deps{
 		Pool:     pool,
 		Registry: fakeRegistry(t, map[string]connector.Connector{id: second}),
 	})
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, "the restarted process to read the stored position", func() bool {
+		_, body := get(t, addr, "/readyz")
+		return strings.Contains(body, `"backfill_done": true`)
+	})
 	if err := stop(); err != nil {
 		t.Fatalf("Run(second) = %v, want nil", err)
 	}
@@ -153,7 +156,7 @@ func TestTheServiceIngestsIntoL0AndKeepsItsPosition(t *testing.T) {
 }
 
 // Ready is not the same as up: a process whose database has gone away is
-// running and cannot ingest (ADR-0008).
+// running and cannot ingest.
 func TestReadyzFailsWhenTheDatabaseIsUnreachable(t *testing.T) {
 	newPool(t) // skips the test when there is no database
 
@@ -187,7 +190,7 @@ func TestReadyzFailsWhenTheDatabaseIsUnreachable(t *testing.T) {
 }
 
 // A database this binary is ahead of is one this process cannot ingest into,
-// and ADR-0008 makes that a readiness failure — which is what turns ADR-0006's
+// and that is a readiness failure — which is what turns the schema
 // version check into a deployment that stops rather than one that half-works.
 func TestReadyzFailsWhenTheSchemaIsBehindTheBinary(t *testing.T) {
 	newPool(t) // skips the test when there is no database

@@ -63,7 +63,7 @@ type SearchOptions struct {
 	// Embedder is the `embed` tier, used to embed the query. With none, the
 	// search is its full-text half alone: fewer documents, all of them
 	// matching words the team actually wrote. That is what a deployment with
-	// no `embed` tier configured gets (ADR-0005, docs/config.md).
+	// no `embed` tier configured gets (docs/config.md).
 	Embedder Embedder
 	// Limit is how many documents to return, defaulting to
 	// [DefaultSearchLimit] and capped at [MaxSearchLimit].
@@ -223,7 +223,7 @@ func embedQuery(ctx context.Context, e Embedder, q string) (*string, error) {
 	vectors, err := e.Embed(ctx, []string{EmbedText(q)})
 	if err != nil {
 		// The query is a person's words: it is named as a length and never
-		// quoted, the same rule the write path holds to (ADR-0008).
+		// quoted, the same rule the write path holds to.
 		return nil, fmt.Errorf("embedding a %d byte query: %w", len(q), err)
 	}
 	if len(vectors) != 1 {

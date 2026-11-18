@@ -133,12 +133,12 @@ type ratifiersDoc struct {
 }
 
 // llmDoc is `llm/`, or the `llm:` key of the single file: which provider and
-// which model backs each of the three model tiers (ADR-0005). A tier the file
+// which model backs each of the three model tiers. A tier the file
 // does not name keeps the shipped default, so this section is what a team
 // changes rather than what it has to write.
 type llmDoc struct {
-	Boost *boostDoc             `yaml:"boost"`
-	Tiers map[string]llmTierDoc `yaml:"tiers"`
+	Judgments *judgmentsDoc         `yaml:"judgments"`
+	Tiers     map[string]llmTierDoc `yaml:"tiers"`
 }
 
 // llmTierDoc is one tier's entry. It is the on-disk form of an
@@ -189,26 +189,17 @@ func (t *llmTierDoc) UnmarshalYAML(n *yaml.Node) error {
 	return nil
 }
 
-// boostDoc is the separate typed capability; enabled is its sole global switch.
-type boostDoc struct {
-	MaxTotalTokens         int                            `yaml:"max_total_tokens"`
-	MaxStateQuestionTokens int                            `yaml:"max_state_question_tokens"`
-	Enabled                any                            `yaml:"enabled"`
-	Model                  string                         `yaml:"model"`
-	BaseURL                string                         `yaml:"base_url"`
-	APIKeyEnv              string                         `yaml:"api_key_env"`
-	Timeout                string                         `yaml:"timeout"`
-	TotalTimeout           string                         `yaml:"total_timeout"`
-	MaxRetries             int                            `yaml:"max_retries"`
-	Backoff                string                         `yaml:"backoff"`
-	Cooldown               string                         `yaml:"cooldown"`
-	CooldownFailures       int                            `yaml:"cooldown_failures"`
-	AssertionJobBudget     string                         `yaml:"assertion_job_budget"`
-	Policies               map[string]acceptancePolicyDoc `yaml:"policies"`
-}
-
-type acceptancePolicyDoc struct {
-	Name         string   `yaml:"name"`
-	ModelVersion string   `yaml:"model_version"`
-	Threshold    *float64 `yaml:"threshold"`
+// judgmentsDoc is `llm.judgments`: Jev, which decides what the distiller's
+// and the assertion worker's yes/no questions answer.
+type judgmentsDoc struct {
+	Model                  string   `yaml:"model"`
+	BaseURL                string   `yaml:"base_url"`
+	APIKeyEnv              string   `yaml:"api_key_env"`
+	Threshold              *float64 `yaml:"threshold"`
+	Timeout                string   `yaml:"timeout"`
+	TotalTimeout           string   `yaml:"total_timeout"`
+	MaxRetries             int      `yaml:"max_retries"`
+	Backoff                string   `yaml:"backoff"`
+	MaxTotalTokens         int      `yaml:"max_total_tokens"`
+	MaxStateQuestionTokens int      `yaml:"max_state_question_tokens"`
 }

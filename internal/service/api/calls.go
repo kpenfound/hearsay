@@ -1038,7 +1038,7 @@ func assertStance(ctx context.Context, c *Calls, caller Caller, reader l1.Reader
 		// Who may read the stance is decided on every read from all of its
 		// evidence as it is then, which an access list written once cannot
 		// say: it would neither be the intersection of several documents' lists
-		// nor follow a re-sync (ADR-0013). So get_l0 fails closed. A linked
+		// nor follow a re-sync. So get_l0 fails closed. A linked
 		// assertion id can lead to get_session after current evidence checks.
 		ACL: connector.ACL{{Kind: connector.ACLIdentity, Source: AuditSource, NativeID: caller.Principal}},
 	}

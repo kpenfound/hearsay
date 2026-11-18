@@ -297,8 +297,8 @@ func TestSchemaValidateJSON(t *testing.T) {
 
 // An enum is matched against a completion, and the error goes to the caller,
 // which for the distiller and the assertion worker is a queue handler: its text
-// is written to last_error and logged at error level (ADR-0007). ADR-0008 says
-// a completion reaches neither. So the message says what was allowed and what
+// is written to last_error and logged at error level, and a completion must
+// reach neither. So the message says what was allowed and what
 // kind of thing came back, and not one byte of what came back.
 func TestASchemaViolationDoesNotQuoteTheAnswer(t *testing.T) {
 	answered := "the team decided to defer until the Acme contract closes"

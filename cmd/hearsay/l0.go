@@ -19,10 +19,10 @@ import (
 // operator asking why a source is quiet or where a bundle's evidence came from.
 // It is read-only — nothing here writes an event — and it reads the store
 // directly, so `get` prints an event's payload in full. That is what an
-// inspection tool is for; ADR-0008's rule is about log lines, which go to
+// inspection tool is for; the logging rule is about log lines, which go to
 // whoever can read the logs rather than to whoever ran the command. An event a
 // tombstone covers or an operator deleted is not printed: `get` fails naming
-// the source's tombstone, or the deletion and its operator (ADR-0018).
+// the source's tombstone, or the deletion and its operator.
 func runL0(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, cfg, _ := newFlagSet("l0", stderr)
 	resolveDatabase := databaseFlag(fs, cfg)
@@ -63,7 +63,7 @@ func runL0(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	// Connect rather than Open: an inspect command reading a database older
-	// than its own migrations would report a schema it cannot see (ADR-0006).
+	// than its own migrations would report a schema it cannot see.
 	pool, err := db.Connect(ctx, cfg.Database.URL)
 	if err != nil {
 		return err

@@ -2,16 +2,16 @@
 // nothing else: they turn a Slack thread, a GitHub webhook or a Drive change
 // into events, and every layer above is someone else's job. The one exception
 // is the process's, not a connector's: a chat command a connector receives is
-// applied here, through the shared applier ([l2.Commands], ADR-0025), so the
+// applied here, through the shared applier ([l2.Commands]), so the
 // connector can answer it.
 //
 // One process can host several connectors; which ones it hosts is the
-// `--source` selection (ADR-0003). What it hosts them with is
+// `--source` selection. What it hosts them with is
 // [connector.Runtime]: this package is the wiring — the configured sources, the
 // registry of factories, the L0 store to write to, the cursor store to keep
 // backfill positions in, the store ACL re-syncs are kept in and the L0 read that
 // finds a container still served as public — and the HTTP surface the runtime needs, which is the
-// push connectors' handlers and the service's health (ADR-0008).
+// push connectors' handlers and the service's health.
 package connectors
 
 import (
@@ -36,7 +36,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
-// Name is the subcommand this service runs as (ADR-0003).
+// Name is the subcommand this service runs as.
 const Name = "connectors"
 
 // DefaultListen is where the service serves the push connectors' handlers and
@@ -56,7 +56,7 @@ type Deps struct {
 	// them, which is the default. A name that is not a configured source is a
 	// startup failure rather than a process that hosts nothing.
 	Sources []string
-	// Pool is the database (ADR-0004). The caller owns it and closes it. It is
+	// Pool is the database. The caller owns it and closes it. It is
 	// what [Sink] and [Deps.Cursors] are built from when they are not supplied.
 	Pool *pgxpool.Pool
 	// Registry is the connector types this binary can ingest. There is no
@@ -98,9 +98,9 @@ type Deps struct {
 // cannot ingest, and a runtime with no listener cannot be delivered to or asked
 // how it is.
 func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
-	// `hosting`, not `source`: ADR-0008 makes `source` the source an event or a
-	// line is about, which is what the runtime puts on its own lines. This is
-	// the different fact that one process may host several of them.
+	// `hosting`, not `source`: the standard `source` field is the source an
+	// event or a line is about, which is what the runtime puts on its own
+	// lines. This is the different fact that one process may host several of them.
 	ctx = telemetry.With(ctx, "hosting", Selection(deps.Sources))
 	log := telemetry.Logger(ctx)
 
@@ -321,8 +321,8 @@ func ids(sources []connector.SourceConfig) []string {
 // this service logs carries it, because "which connectors is this container
 // running" is the first question asked of a process hosting a subset.
 //
-// It is not the `source` field. That one is ADR-0008's, is the source a line is
-// about, and is what the runtime puts on the lines of each connector it drives;
+// It is not the `source` field. That one is a standard field, is the source a
+// line is about, and is what the runtime puts on the lines of each connector it drives;
 // one process hosts several of them, so the two facts are two fields.
 func Selection(sources []string) string {
 	if len(sources) == 0 {
@@ -332,7 +332,7 @@ func Selection(sources []string) string {
 }
 
 // handler is the service's HTTP surface: the runtime's own paths, and the two
-// endpoints ADR-0008 gives every service.
+// endpoints every service has.
 func handler(runtime *connector.Runtime, pool *pgxpool.Pool) http.Handler {
 	mux := http.NewServeMux()
 	// Everything under the prefix is the runtime's, including the 404 for a
@@ -349,7 +349,7 @@ func handler(runtime *connector.Runtime, pool *pgxpool.Pool) http.Handler {
 }
 
 // Readiness is what `/readyz` reports: whether this process is ingesting, and
-// what each source it hosts says about itself (ADR-0008).
+// what each source it hosts says about itself.
 //
 // It is served more widely than L0, so it carries ids and statuses and nothing
 // else: no credential, no event text, no error from a source or from the
@@ -368,9 +368,9 @@ func readiness(ctx context.Context, runtime *connector.Runtime, pool *pgxpool.Po
 	if pool == nil {
 		return out
 	}
-	// ADR-0008 defines readiness as the database being reachable and its schema
-	// acceptable per ADR-0006, and the credentials being present. The schema
-	// half is what turns ADR-0006's version check into a deployment that stops
+	// Readiness is the database being reachable and its schema acceptable to
+	// this binary, and the credentials being present. The schema half is what
+	// turns the schema version check into a deployment that stops
 	// rather than one that half-works, so it is one query and not a ping. The
 	// credentials half has nothing to check here: a source's secrets are
 	// resolved from the environment at startup and a missing one refuses to

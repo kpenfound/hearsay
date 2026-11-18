@@ -29,10 +29,10 @@ func cliCorpus() (eval.Corpus, eval.Predictions) {
 	c := eval.Corpus{Version: 1, Provenance: "synthetic CLI fixture"}
 	p := eval.Predictions{}
 	for _, split := range []string{"tuning", "held_out"} {
-		for _, label := range []string{"changes", "restates"} {
+		for _, label := range []string{"no", "yes"} {
 			id := split + "-" + label
 			confidence := .9
-			c.Examples = append(c.Examples, eval.Example{ID: id, Group: id, Task: llm.TaskStanceComparison, Split: split, Label: label, Sources: []eval.CorpusSource{{ID: id, Revision: "r1", URI: "fixture://" + id, ACL: []string{"public"}, Text: "PRIVATE SOURCE TEXT MUST NOT APPEAR"}}, Review: eval.Review{Adjudicator: "test-reviewer", Revision: "r1", Rationale: "fixture"}})
+			c.Examples = append(c.Examples, eval.Example{ID: id, Group: id, Task: llm.TaskStanceSameAnswer, Split: split, Label: label, Sources: []eval.CorpusSource{{ID: id, Revision: "r1", URI: "fixture://" + id, ACL: []string{"public"}, Text: "PRIVATE SOURCE TEXT MUST NOT APPEAR"}}, Review: eval.Review{Adjudicator: "test-reviewer", Revision: "r1", Rationale: "fixture"}})
 			p.Jev = append(p.Jev, eval.Prediction{ExampleID: id, ModelVersion: "test-v1", Label: label, Confidence: &confidence})
 			p.Baseline = append(p.Baseline, eval.Prediction{ExampleID: id, Label: label})
 		}
@@ -60,44 +60,6 @@ func TestEvalJudgmentsOfflineCLI(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "PRIVATE SOURCE") {
 		t.Fatal("source leaked")
-	}
-}
-
-func TestEvalQualificationCLI(t *testing.T) {
-	for _, tt := range []struct {
-		name, status string
-		limit        float64
-		minimum      int
-		wrong        bool
-		wantErr      bool
-	}{
-		{"passes", "qualified", 0, 1, false, false},
-		{"fails", "failed_qualification", 0, 1, true, true},
-		{"insufficient", "insufficient_evidence", 0, 2, false, true},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			c, p := cliCorpus()
-			if tt.wrong {
-				p.Jev[2].Label = "restates"
-			}
-			o := eval.QualificationOptions{Task: llm.TaskStanceComparison, Name: "test-only", ModelVersion: "test-v1", Limits: map[string]float64{"false_changes": tt.limit, "missed_changes": tt.limit}, MinimumPerClass: map[string]int{"changes": tt.minimum, "restates": tt.minimum}}
-			args := []string{"eval", "judgments", "--corpus", writeEvalJSON(t, "c.json", c), "--predictions", writeEvalJSON(t, "p.json", p), "--qualify", writeEvalJSON(t, "options.json", o)}
-			var out, stderr bytes.Buffer
-			err := run(t.Context(), args, &out, &stderr)
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("err=%v", err)
-			}
-			var q eval.Qualification
-			if err := json.Unmarshal(out.Bytes(), &q); err != nil {
-				t.Fatal(err)
-			}
-			if q.Status != tt.status {
-				t.Fatalf("q=%+v", q)
-			}
-			if tt.wrong && (len(q.FailedLimits) != 1 || q.FailedLimits[0] != "missed_changes") {
-				t.Fatal(q)
-			}
-		})
 	}
 }
 

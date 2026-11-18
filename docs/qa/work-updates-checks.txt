@@ -143,7 +143,6 @@ exit code: 0
 Drift rebase review follow-up, 2026-10-17 UTC
 Upstream: 2b57d6156481721245e8569df16d204ad82f4786
 Candidate: resolved working tree; migration schema 33
-Upstream ADR 0028 unchanged; feature ADRs 0029 and 0030.
 No authority production code, migration/rollback tests, repeatable-read state
 test or recorded model exchanges changed in this follow-up.
 

@@ -254,9 +254,8 @@ func TestEvalCommand(t *testing.T) {
 			"with no bundle before them 0",
 			"",
 			"pipeline observations",
-			"baseline 0 runs cost USD - mean handler seconds - mean queue seconds - fallback -",
-			"shadow 0 runs cost USD - mean handler seconds - mean queue seconds - fallback -",
-			"accepted 0 runs cost USD - mean handler seconds - mean queue seconds - fallback -",
+			"distill 0 runs cost USD - mean handler seconds - mean queue seconds -",
+			"assert 0 runs cost USD - mean handler seconds - mean queue seconds -",
 		}
 		if lines := table(got); strings.Join(lines, "\n") != strings.Join(want, "\n") {
 			t.Errorf("eval printed\n%s\nwant (spacing aside)\n%s", got, strings.Join(want, "\n"))

@@ -193,7 +193,9 @@ func testRepo(src string) config.Repo {
 
 // answers are the model's replies, one per document, written by hand. They are
 // what a person maintains: `-record` turns them into the fixture file, keyed by
-// the request the distiller would send.
+// the request the distiller would send. Each keeps the outcome kind its document
+// is meant to have beside them; that is Jev's to answer, not the model's, and
+// the recording leaves it out (modelAnswer).
 var answers = map[string]map[string]any{
 	issueID: {
 		"summary":        "The engine writes before taking the lock, which races with the job queue. Two people confirmed it, and the author said they would send a change.",
@@ -308,10 +310,7 @@ func TestRecordFixtures(t *testing.T) {
 			if !ok {
 				t.Fatalf("no answer is written down for %s", doc.ID)
 			}
-			body, err := json.Marshal(answer)
-			if err != nil {
-				t.Fatalf("encoding the answer for %s: %v", doc.ID, err)
-			}
+			body, _ := modelAnswer(t, answer)
 			req := distiller.RequestFor(doc, distillBudget())
 			key := llm.FixtureKey(llm.TierDistill, req)
 			if seen[key] {

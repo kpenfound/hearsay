@@ -284,8 +284,10 @@ func renderConfig(in Input, sources []source, all []*person, envs map[string]str
 	}
 	top = append(top, comment(key("llm"),
 		"The shipped defaults for the two completion tiers, written out; "+EnvAnthropicAPIKey+" is their credential.",
-		"There is no embed tier: this build ships no embedding provider, and search runs on full text until one is named."),
-		mapping(key("tiers"), mapping(tiers...)))
+		"There is no embed tier: this build ships no embedding provider, and search runs on full text until one is named.",
+		"Jev answers the yes/no questions the distiller and the assertion worker decide from; "+EnvJevAPIKey+" is its key."),
+		mapping(key("tiers"), mapping(tiers...),
+			key("judgments"), mapping(key("model"), str(JevModel))))
 
 	// Each section is encoded on its own and the sections joined with a blank
 	// line, which the encoder does not put between mapping keys.

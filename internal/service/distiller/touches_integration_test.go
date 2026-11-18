@@ -70,7 +70,7 @@ func TestWorkTouchesSeededRepositoryProject(t *testing.T) {
 			budget, _ := cfg.Repo.LLM.Tier(llm.TierDistill)
 			if err := fixtures.Add(llm.CompletionFixture{
 				Tier: llm.TierDistill, Request: distiller.RequestFor(expected, budget.MaxTokens),
-				Response: llm.Response{JSON: json.RawMessage(`{"summary":"Repository changes are planned.","outcome_kind":"none"}`), StopReason: llm.StopEnd},
+				Response: llm.Response{JSON: json.RawMessage(`{"summary":"Repository changes are planned."}`), StopReason: llm.StopEnd},
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -78,7 +78,7 @@ func TestWorkTouchesSeededRepositoryProject(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			d, err := distiller.New(pool, registry, &cfg)
+			d, err := distiller.New(pool, registry, newOutcomeJev(t).judgments(), &cfg)
 			if err != nil {
 				t.Fatal(err)
 			}

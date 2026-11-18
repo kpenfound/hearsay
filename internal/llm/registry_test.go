@@ -631,7 +631,7 @@ func TestEmbedRefusesTheWrongShape(t *testing.T) {
 }
 
 // Cost is observable per tier by construction: every call goes through one
-// place that knows which tier, provider and model it was (ADR-0005).
+// place that knows which tier, provider and model it was.
 func TestUsageIsCountedPerTierProviderAndModel(t *testing.T) {
 	provider := newStub("anthropic")
 	provider.complete = func(_ context.Context, req llm.Request) (llm.Response, error) {

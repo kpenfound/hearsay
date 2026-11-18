@@ -2,7 +2,7 @@ package llm
 
 import "fmt"
 
-// Tier names one of the three things Hearsay uses a model for (ADR-0005). The
+// Tier names one of the three things Hearsay uses a model for. The
 // three names are a contract: configuration, the docs and the Dagger module use
 // them verbatim, so renaming one is a breaking change.
 type Tier string

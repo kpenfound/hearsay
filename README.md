@@ -12,11 +12,10 @@ place context lives.
 
 Status: implemented end to end: eight source types, four services, MCP/HTTP
 bundles and assertions, human corrections, evaluation, Compose and Helm.
-Ownership views and a shipped embedding provider remain open; optional typed
-judgments ship without a qualified policy.
+Ownership views and a shipped embedding provider remain open. The distiller
+and the assertion worker decide from Jev's typed judgments, and require it.
 
 - [docs/design.md](docs/design.md) — what Hearsay is and how it works.
-- [docs/adr/](docs/adr/) — the implementation decisions and why they were made.
 - [docs/connector-contract.md](docs/connector-contract.md) — the L0 event a
   source connector emits, and the interface it implements.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — how to build, test and run it.

@@ -69,7 +69,7 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 }
 
 // A worker with a backlog still does its maintenance. The drain loop is where
-// a busy worker lives — ADR-0007's distiller backfill keeps it there for as
+// a busy worker lives — the distiller backfill keeps it there for as
 // long as the backfill lasts — so if the maintenance tick were only read by
 // the outer select, a kind's expired leases would go unreclaimed for exactly
 // as long as there is most to reclaim, and every extra worker would make that
@@ -205,18 +205,23 @@ func TestAWorkerStartsAJobItIsNotifiedOfWithoutWaitingForThePoll(t *testing.T) {
 		return nil
 	})
 
-	// Let the worker settle into its wait: a job enqueued before it starts
-	// would be found by the first claim, which would prove nothing about the
-	// notification.
-	time.Sleep(500 * time.Millisecond)
+	// Wait until the worker is listening: a job enqueued before that would be
+	// found by the claim the worker makes on starting, which would prove
+	// nothing about the notification.
+	pool := newPool(t)
+	waitFor(t, "the worker to listen on its kind's channel", func() bool {
+		var listening bool
+		err := pool.QueryRow(t.Context(),
+			`SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE query ILIKE 'LISTEN %' AND strpos(query, $1) > 0)`,
+			kind.Channel()).Scan(&listening)
+		return err == nil && listening
+	})
 
-	enqueued := time.Now()
-	enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
+	enqueue(t, pool, queue.Request{Kind: kind, TargetID: "evt-1"})
+	// Well inside the minute-long polling floor, so only the notification can
+	// have woken the worker in time.
 	select {
 	case job := <-handled:
-		if latency := time.Since(enqueued); latency > 30*time.Second {
-			t.Errorf("the job was handled after %s, want the notification to have woken the worker", latency)
-		}
 		if job.TargetID != "evt-1" || job.Attempt != 1 {
 			t.Errorf("handled %+v, want the job that was enqueued, on attempt 1", job)
 		}

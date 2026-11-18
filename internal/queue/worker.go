@@ -18,14 +18,14 @@ import (
 // Returning nil marks the job done. Returning an error schedules a retry, or
 // fails the job for good once its attempts are spent; the error's message is
 // stored on the row and logged, so it says what went wrong and carries no
-// document text, no prompt and no completion (ADR-0008).
+// document text, no prompt and no completion.
 //
 // A handler must be safe to run twice on the same job. Delivery is
 // at-least-once: a worker that dies mid-job leaves a job that is reclaimed and
-// run again, and that is the semantics ADR-0007 chose knowing both of
+// run again, and that is the semantics the queue chose knowing both of
 // Hearsay's workers are idempotent. The exception is a job whose target has
 // another job pending by then: that one does the work, and this one is marked
-// done as superseded rather than run again (ADR-0011).
+// done as superseded rather than run again.
 //
 // The context is cancelled when the worker is shutting down and when the
 // job's lease has been lost to another worker, which is the signal to stop
@@ -34,7 +34,7 @@ type Handler func(ctx context.Context, job Job) error
 
 // Worker is the loop over a [Client]: claim, run, report, repeat. It wakes on
 // a notification for its kind and, failing that, on the polling floor, so a
-// missed notification delays a job rather than stranding it (ADR-0007).
+// missed notification delays a job rather than stranding it.
 type Worker struct {
 	client  *Client
 	handler Handler
@@ -210,7 +210,7 @@ func (w *Worker) runOne(ctx context.Context, job Job) {
 		log.ErrorContext(report, "job failed for good", "error", err, "attempts", job.Attempt)
 	case state == StateDone:
 		// Not an error: the job pending for the same target does this work
-		// against a newer read (ADR-0011).
+		// against a newer read.
 		log.InfoContext(report, "a failed job was superseded by one already pending for its target, so it will not be retried",
 			"error", err)
 	default:

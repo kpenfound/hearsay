@@ -136,41 +136,6 @@ func TestContainersAndTouchesJSON(t *testing.T) {
 	}
 }
 
-func TestACLEquality(t *testing.T) {
-	entry := connector.ACLEntry{Kind: connector.ACLContainers, NativeID: "key", Containers: []connector.ContainerRef{{Source: "github", NativeID: "acme/api"}}}
-	for _, tt := range []struct {
-		name   string
-		mutate func(*connector.ACLEntry)
-		want   bool
-	}{
-		{"equal separate slices", func(*connector.ACLEntry) {}, true},
-		{"kind", func(e *connector.ACLEntry) { e.Kind = connector.ACLIdentity }, false},
-		{"source", func(e *connector.ACLEntry) { e.Source = "other" }, false},
-		{"key", func(e *connector.ACLEntry) { e.NativeID = "other" }, false},
-		{"label", func(e *connector.ACLEntry) { e.Label = "other" }, false},
-		{"container", func(e *connector.ACLEntry) { e.Containers[0].NativeID = "acme/web" }, false},
-		{"no containers", func(e *connector.ACLEntry) { e.Containers = nil }, false},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			other := entry
-			other.Containers = slices.Clone(entry.Containers)
-			tt.mutate(&other)
-			if got := entry.Equal(other); got != tt.want {
-				t.Errorf("entry Equal() = %v, want %v", got, tt.want)
-			}
-			if got := (connector.ACL{entry}).Equal(connector.ACL{other}); got != tt.want {
-				t.Errorf("ACL Equal() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-	if !(connector.ACL(nil)).Equal(connector.ACL{}) {
-		t.Error("nil and empty ACLs differ")
-	}
-	if (connector.ACL{entry}).Equal(nil) {
-		t.Error("nonempty and nil ACLs are equal")
-	}
-}
-
 func TestExistingACLEntryJSON(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
@@ -225,6 +190,12 @@ func TestACLEqualityPreservesFieldAndOrderSemantics(t *testing.T) {
 				{"source differs", func(e *connector.ACLEntry) { e.Source += "-other" }, false},
 				{"native id differs", func(e *connector.ACLEntry) { e.NativeID += "-other" }, false},
 				{"label differs", func(e *connector.ACLEntry) { e.Label += "-other" }, false},
+				{"a container differs", func(e *connector.ACLEntry) {
+					if len(e.Containers) > 0 {
+						e.Containers[0].NativeID = "acme/other"
+					}
+				}, len(tt.entry.Containers) == 0},
+				{"containers dropped", func(e *connector.ACLEntry) { e.Containers = nil }, len(tt.entry.Containers) == 0},
 			} {
 				t.Run(change.name, func(t *testing.T) {
 					other := tt.entry
@@ -250,6 +221,8 @@ func TestACLEqualityPreservesFieldAndOrderSemantics(t *testing.T) {
 		{"containers order", connector.ACL{public, containers}, connector.ACL{containers, public}, false},
 		{"duplicate entry", connector.ACL{group}, connector.ACL{group, group}, false},
 		{"container list order", connector.ACL{containers}, connector.ACL{{Kind: containers.Kind, NativeID: containers.NativeID, Containers: []connector.ContainerRef{containers.Containers[1], containers.Containers[0]}}}, false},
+		{"nil and empty", nil, connector.ACL{}, true},
+		{"nonempty and nil", connector.ACL{public}, nil, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.left.Equal(tt.right); got != tt.want {

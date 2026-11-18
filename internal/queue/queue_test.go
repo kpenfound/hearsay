@@ -154,7 +154,8 @@ func TestConfigValidate(t *testing.T) {
 }
 
 // The defaults are what a service that configures nothing gets, so they have
-// to be the ones ADR-0007 describes rather than whatever the zero value is.
+// to be the ones the queue is designed for rather than whatever the zero
+// value is.
 func TestConfigDefaults(t *testing.T) {
 	cfg := queue.Config{Kind: queue.Kind{Name: "distill"}}
 	if err := cfg.Validate(); err != nil {
@@ -234,7 +235,7 @@ func TestLimit(t *testing.T) {
 }
 
 // A job goes into log lines, and a log line must not carry what a job is
-// about beyond its ids (ADR-0008).
+// about beyond its ids.
 func TestJobStringNamesIdsOnly(t *testing.T) {
 	job := queue.Job{ID: 7, Kind: queue.Kind{Name: "assert", Serialized: true}, TargetID: "l1-42", SerialKey: "scope-payments", Attempt: 2}
 	want := "assert job 7 for l1-42 on scope-payments (attempt 2)"

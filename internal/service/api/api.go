@@ -13,9 +13,9 @@
 //
 // Both interfaces authenticate the person named in [PrincipalHeader] with a
 // bearer token. When [AgentHeader] names an agent, that agent's token is also
-// required. Authentication precedes the shared call layer (ADR-0014).
+// required. Authentication precedes the shared call layer.
 // An authenticated agent may name its session in [SessionHeader]; the call
-// layer links audits and assertions to its artifact (ADR-0017).
+// layer links audits and assertions to its artifact.
 //
 // Every call runs within the caller's effective reach (docs/design.md#access-control):
 // the person's configured scopes and the agent's, each covering everything
@@ -44,10 +44,10 @@
 // stops.
 //
 // Beside the calls, the API is the Discord interaction adapter
-// ([Interactions], ADR-0022, ADR-0024): for a Discord source that configures
+// ([Interactions]): for a Discord source that configures
 // its application and is not read-only, it answers `/hearsay pin` and `/hearsay merge` on
-// [DiscordPath], applying them through the shared applier ([l2.Commands],
-// ADR-0025), and registers the two commands at startup.
+// [DiscordPath], applying them through the shared applier ([l2.Commands]),
+// and registers the two commands at startup.
 package api
 
 import (
@@ -69,10 +69,11 @@ import (
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/service"
+	"github.com/kpenfound/hearsay/internal/tailnet"
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
-// Name is the subcommand this service runs as (ADR-0003).
+// Name is the subcommand this service runs as.
 const Name = "api"
 
 // DefaultListen is where the API serves when nothing says otherwise.
@@ -88,7 +89,7 @@ const shutdownGrace = 5 * time.Second
 
 // Deps are the dependencies the process builds and hands to Run.
 type Deps struct {
-	// Pool is the database (ADR-0004). The caller owns it and closes it.
+	// Pool is the database. The caller owns it and closes it.
 	Pool *pgxpool.Pool
 	// LLM is the model tier registry; the API uses the `embed` tier alone, for
 	// search, and runs full-text search without it. Nil is a process given no
@@ -100,6 +101,10 @@ type Deps struct {
 	// Listen is the address to serve on when Listener is nil. Empty is
 	// [DefaultListen].
 	Listen string
+	// Tailnet, when set, serves the same handler on the owner's tailnet too,
+	// through an embedded Tailscale node, beside Listener. Its failure is
+	// logged and retried, and never stops the API. Nil serves only Listener.
+	Tailnet *tailnet.Node
 	// Discord are the Discord applications whose slash commands the API
 	// answers on [DiscordPath] ([Interactions]); none is a process that takes
 	// no commands.
@@ -160,6 +165,13 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 		"embedding", embedder != nil)
 
 	var wg sync.WaitGroup
+	if deps.Tailnet != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			deps.Tailnet.Run(ctx, log, handler)
+		}()
+	}
 	if interactions != nil {
 		wg.Add(1)
 		go func() {
@@ -214,7 +226,7 @@ func embedTier(registry llm.Registry) (l1.Embedder, error) {
 }
 
 // Handler is the API's HTTP surface: the calls over HTTP and over MCP, and the
-// two endpoints ADR-0008 gives every service. A nil pool serves readiness
+// two endpoints every service has. A nil pool serves readiness
 // without the database check, for a test.
 func Handler(calls *Calls, pool *pgxpool.Pool) http.Handler {
 	mux := http.NewServeMux()

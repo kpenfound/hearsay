@@ -71,7 +71,7 @@ func (o PumpOptions) withDefaults() PumpOptions {
 // queue debounces each document when Quiet > 0: a burst waits for Quiet,
 // capped by MaxDelay from its first enqueue, then costs one model call.
 // The CLI settings are --distill-quiet and --distill-max-delay; zero Quiet
-// keeps the ordinary pending-job deduplication (ADR-0007).
+// keeps the ordinary pending-job deduplication.
 type Pump struct {
 	pool    *pgxpool.Pool
 	events  *l0.Store
@@ -301,7 +301,7 @@ func threadHeadOf(ctx context.Context, ev connector.Event, events *l0.Store) (st
 // its turns, tool calls and next actions are provenance — what an agent was doing when
 // it said something — rather than team knowledge, and distilling every tool
 // call would flood L1. A command a person gave Hearsay is control
-// traffic, not team content (ADR-0022).
+// traffic, not team content.
 var undistilled = []connector.Kind{connector.KindAgentSession, connector.KindAgentTurn, connector.KindToolCall, connector.KindNextAction, connector.KindCommand}
 
 // distilled reports whether an event's kind, or the core kind an extension

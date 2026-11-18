@@ -16,13 +16,11 @@ things about it are worth knowing before you use it:
   returns `ErrRewrite` rather than overwriting the row. The exception is an
   operator deletion, `Delete`, which redacts the covered rows' payloads in
   place in the caller's transaction, records the deletion in `l0_deletions`,
-  and writes a `deletion` event under source `hearsay`
-  ([ADR-0018](../../docs/adr/0018-operator-deletion-redacts-l0-in-place.md)).
+  and writes a `deletion` event under source `hearsay`.
   Every read hides a deleted row, `Get` says `ErrDeleted` (never
   `ErrRetracted`), and `Append` drops and counts a replay of one instead of
   calling it a rewrite. `RecordRebuilt` is how the distiller tells a deletion
-  what became of each document it queued (`l0_deletion_rebuilds`,
-  [ADR-0019](../../docs/adr/0019-operator-deletion-redacts-superseded-l2-text.md)).
+  what became of each document it queued (`l0_deletion_rebuilds`).
 - **A deletion at the source is a tombstone.** A tombstone event names the artifact it
   retracts. Revisions ingested before it are hidden — `Get` says
   `ErrRetracted`, `List` and `Changes` leave them out, and `Counts` shows
@@ -72,7 +70,7 @@ container of a source: owed or not, the cursor of the walk, a generation that a
 request bumps and a walk must still match to save or finish, and when the last
 one finished. `Store.Exposed` is the read that goes with it, which containers of
 a source have an artifact whose current revision is public; it reads a whole
-source, so the runtime asks once at startup (ADR-0013).
+source, so the runtime asks once at startup.
 
 `BackfillCursors` is the other cursor, and it is not the same thing. A feed
 cursor is a *reader's* position in the change feed and only moves forward; a
@@ -88,5 +86,4 @@ ingest. It implements `connector.CursorStore` the way `Store` implements
 that produces events — live in `internal/connector`, and so does the event type
 itself: the event shape is the connector contract, and this package stores it.
 
-See [docs/design.md](../../docs/design.md#l0-events) and
-[ADR-0004](../../docs/adr/0004-one-postgres-for-all-four-layers.md).
+See [docs/design.md](../../docs/design.md#l0-events).

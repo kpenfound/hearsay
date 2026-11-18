@@ -1,10 +1,10 @@
 # cmd/hearsay
 
-The one binary Hearsay ships. Each process is a subcommand of it (ADR-0003).
+The one binary Hearsay ships. Each process is a subcommand of it.
 
 | Subcommand | What it runs |
 |---|---|
-| `hearsay connectors [--source name]...` | Source connectors. Writes L0, and applies the chat commands they receive (ADR-0025). Serves webhooks and health on `--listen`. |
+| `hearsay connectors [--source name]...` | Source connectors. Writes L0, and applies the chat commands they receive. Serves webhooks and health on `--listen`. |
 | `hearsay distiller` | The distiller. L0 to L1. |
 | `hearsay assert-worker` | The assertion worker. L1 to L2. |
 | `hearsay api` | The read and assert API. |
@@ -18,7 +18,7 @@ The one binary Hearsay ships. Each process is a subcommand of it (ADR-0003).
 | `hearsay topics list <scope>\|merge <from> <into>\|split <topic> --stance <id>... --name <name>\|undo <op-id>\|ops` | List a scope's topics and the topic ledger; merge, split and undo as a configured human. |
 | `hearsay gestures ratify\|demote\|pin\|unpin <document>\|undo <gesture-id>\|list` | Record and list human stance and pin gestures. |
 | `hearsay eval [--since <RFC3339>] [--until <RFC3339>] [--scope <id>] [--json]` | The evaluation metrics over a window: time to ratification, topic merge and split rate, drill-down rate per bundle section, conflict-flag precision and next actions. Read-only; aggregates and ids only. |
-| `hearsay eval judgments --corpus <json> --predictions <json> [--qualify <operator-options-json>]` | Offline comparison and held-out policy qualification using supplied worker predictions and operator limits. No provider calls. |
+| `hearsay eval judgments --corpus <json> --predictions <json>` | Offline comparison of supplied Jev predictions with a labelled corpus. No provider calls. |
 | `hearsay delete --event <l0-id>\|--artifact <source> <artifact-id>\|--author <identity> [--apply]` | Preview deletion provenance; with `--apply`, redact L0 and re-distill what depended on it. |
 | `hearsay delete list\|show <deletion-id>` | The deletions applied and what each rebuilt. Read-only. |
 | `hearsay version` | Version, commit and build date. |
@@ -55,8 +55,7 @@ evidence document. Confirm and reject take the entity id and name shown by list.
 human; an unknown id, an agent or a team is refused before the database is
 opened. It reads what the API's `stance_history` would serve that person: the
 topics as the topic ledger makes them now, within their reach, where the current
-access lists of the evidence allow them
-([ADR-0021](../../docs/adr/0021-reads-follow-the-topic-ledger.md)). A topic, a
+access lists of the evidence allow them. A topic, a
 stance or an operation they may not read is refused with the same message as
 one that does not exist.
 
@@ -67,8 +66,7 @@ one that does not exist.
   --stance <id>... --name <name>` moves the named stances, each one the person
   may read on that topic, onto a new topic; `undo <op-id>` reverses one merge
   or split. Each prints the id of the operation it recorded and nothing else.
-  They go through `l2.Operate`
-  ([ADR-0020](../../docs/adr/0020-topic-operations-are-a-ledger-held-on-the-scope-key.md)),
+  They go through `l2.Operate`,
   which refuses a person the scope's authority policy does not let ratify by
   hand (`ratified_by.principals`). An undo that later operations in force are
   in the way of fails naming the ones the person may read. There is no dry run:
@@ -147,12 +145,11 @@ with `topics`, `ratified`, `unratified`, `unratified_share`,
 `unflagged_verdicts`; and `next_actions` with `actions`, `asked`,
 `proceeded` and `asserted` (each `count` and `share`) and `unattributed`. A
 ratio with nothing to divide by is null.
-The additive `pipelines` object reports retained baseline, shadow and accepted
-stage-run accounting: reported cost, handler latency, queue delay, generation,
-judgment requests/attempts/fallbacks, and candidate processing. Unknown and
-overflowing accounting stays null. Offline `eval judgments` adds `judgments`
-comparisons; it requires source-backed labels and supplied worker predictions,
-and `--qualify` also requires operator limits and minimum class evidence.
+The `pipelines` object reports each stage's (`distill`, `assert`) recorded
+accounting: reported cost, handler latency, queue delay, generation, Jev
+requests and attempts, and candidate processing. Unknown and overflowing
+accounting stays null. Offline `eval judgments` adds `judgments` comparisons;
+it requires source-backed labels and supplied worker predictions.
 Fields are added, never renamed.
 
 `hearsay delete` takes exactly one selector and requires `--reason` even for a
@@ -170,8 +167,7 @@ refused before the database is opened, and `--principal` without `--apply` is
 an error. One transaction records the deletion with the principal as operator,
 redacts the covered L0 events in place, writes a `deletion` event under source
 `hearsay`, takes out the pins the covered gestures made, and enqueues a
-`distill` job for every L1 document the walk found
-([ADR-0018](../../docs/adr/0018-operator-deletion-redacts-l0-in-place.md)).
+`distill` job for every L1 document the walk found.
 It prints the deletion id, the events redacted and the documents queued, or
 with `--json` the same as an object. Events an earlier deletion already covered
 are left alone. `hearsay l0 get` on a deleted event fails naming the deletion
@@ -214,8 +210,7 @@ to start without it. Offline `eval judgments` needs none.
 `--listen` is on `connectors` and on `all`, which runs it, and also reads
 `HEARSAY_LISTEN`. It is where the push connectors' handlers are mounted, under
 `/hooks/<source>`, and where the connectors service answers `/healthz` and
-`/readyz`
-([ADR-0008](../../docs/adr/0008-observability-slog-and-opentelemetry.md)). The
+`/readyz`. The
 default is `:8081`, the port after the API's 8080; a machine where something
 else holds that port is why `all` takes the flag too.
 
@@ -228,8 +223,7 @@ calls as MCP tools at `/mcp`, and `/healthz` and `/readyz`.
 `--config` points at the configuration repository, and also reads
 `HEARSAY_CONFIG`. A service loads it before it starts and refuses to start if it
 is invalid; started without one it warns and runs empty, which is what
-evaluating the binary looks like. Configuration is read once
-([ADR-0009](../../docs/adr/0009-configuration-as-a-gitops-directory.md)), so
+evaluating the binary looks like. Configuration is read once, so
 this package has no reload path to maintain.
 
 `hearsay distiller` serves `/healthz` and `/readyz` on `--listen` (default

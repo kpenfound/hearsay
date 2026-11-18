@@ -5,8 +5,7 @@ and which model answers each tier. It is a directory of YAML applied like GitOps
 — checked in, reviewed, deployed — or a single file that says the same thing,
 for a team that does not need six directories yet.
 
-This document is the schema. [ADR-0009](adr/0009-configuration-as-a-gitops-directory.md)
-is why it is shaped this way, [design.md](design.md#configuration) is what it is
+This document is the schema. [design.md](design.md#configuration) is what it is
 for, and `internal/config` is the loader that reads it.
 
 ## The two forms
@@ -151,8 +150,8 @@ configuration repository.
 ## When configuration is read
 
 **At startup, once.** Every process reads it, validates it and either starts or
-refuses. Nothing polls, nothing watches, and there is no reload signal
-(ADR-0009). A configuration change is a deploy: change the repository, let
+refuses. Nothing polls, nothing watches, and there is no reload signal. A
+configuration change is a deploy: change the repository, let
 `hearsay config validate` gate the merge, roll the processes.
 
 Every process logs `configuration loaded` at startup with a `config_digest`,
@@ -907,7 +906,7 @@ ordered session events and audit records. Session ids use the agent connector's
 The agent needs both credentials: possession of the person's token is the
 delegation to act for that person, and its own token identifies the agent.
 Missing or mismatched credentials are HTTP 401 before a call runs. Put TLS in
-front of the API so these bearer tokens are not exposed in transit (ADR-0014).
+front of the API so these bearer tokens are not exposed in transit.
 
 - `native_id` is the source's stable id — a GitHub node id, a Discord user id, a
   Google account id. It survives a rename, so it is the key to match on. It is
@@ -1068,8 +1067,7 @@ walk up this hierarchy, and a cycle makes it a walk with no end. An alias may
 only mean one thing — an alias that resolves to two entities resolves to
 neither.
 
-`part_of` here outranks every other source of the hierarchy
-([ADR-0016](adr/0016-entity-hierarchy-sources-are-ranked-and-replace.md)):
+`part_of` here outranks every other source of the hierarchy:
 configuration, then tracker hierarchy, then work declarations, then repository
 structure. An entity
 with `part_of` set has exactly those parents; they replace, and are never added
@@ -1362,8 +1360,7 @@ Two things to know when writing a policy like this one:
 
 ## `llm/`
 
-Which provider and which model answers each of the three model tiers
-([ADR-0005](adr/0005-llm-provider-abstraction-with-three-model-tiers.md)). The
+Which provider and which model answers each of the three model tiers. The
 three names are fixed — `distill` is L0 to L1 in the distiller, `assert` is L1
 to L2 in the assertion worker, `embed` is the embeddings retrieval runs on — and
 what backs them is configuration, so changing a model is an edit here and no
@@ -1415,7 +1412,7 @@ full-text half alone — it finds a document by the words the team wrote in it a
 never by what it is about.
 
 **Credentials are never in here.** They come from the environment, per provider,
-because a configuration repository is checked into git (ADR-0005).
+because a configuration repository is checked into git.
 
 ### The `claude-sbx` provider
 
@@ -1425,8 +1422,7 @@ already logged in to, with no API key. Each call is one tool-free
 inside its own Docker Sandbox (`sbx`), so the Slack and GitHub text
 being distilled never reaches the owner's files, and the sandbox's proxy supplies
 the stored login. It is chosen per tier, on `distill` and `assert`, and the
-shipped default stays `anthropic`
-([ADR-0032](adr/0032-a-second-completion-provider-runs-claude-code-in-a-sandbox-per-call.md)).
+shipped default stays `anthropic`.
 
 <!-- example: claude-sbx/hearsay.yaml -->
 ```yaml
@@ -1458,7 +1454,9 @@ its default, as for any provider.
 - **Host-only.** The process needs the `sbx` CLI and its daemon, and a Claude
   Code login stored with it (`sbx secret set`), on the machine it runs on. The
   Compose and Helm deployments do not have either, so `claude-sbx` is not
-  available there ([deploy.md](deploy.md)). `distiller`, `assert-worker`, `api`
+  available there; the systemd deployment, whose services are the owner's
+  user units on the host, is the one that has them
+  ([deploy.md](deploy.md#on-one-host-with-systemd)). `distiller`, `assert-worker`, `api`
   and `all` check that `sbx` answers when they build their tiers, and refuse to
   start naming the tier, the provider and `sbx` when it does not.
   `hearsay config validate` never runs that check, so a configuration
@@ -1492,67 +1490,66 @@ its default, as for any provider.
   ends without a structured answer, or without text, is an error, never an empty
   answer.
 
-### Optional global judgment boost
+### Jev: `llm.judgments`
 
-`llm.boost` is separate from `tiers`. In a directory repository it sits beside
-`tiers` in one `llm/*.yaml` file. `enabled` is the only switch: it governs stance
-comparison, topic matching and outcome classification together. There are no
-per-task enable flags. Absent or false constructs no Jev client, needs no Jev
-credential and makes no judgment calls. The three existing tiers remain unchanged.
+`llm.judgments` configures Jev (TypeSafe's System One), which answers the
+yes/no questions Hearsay's decisions are made from. It is separate from
+`tiers`; in a directory repository it sits beside `tiers` in one `llm/*.yaml`
+file. The distiller and the assertion worker require it: started with a
+configuration, either one refuses to start without a `model`, or without the
+key `api_key_env` names. Started without one, they have nothing to judge and
+need neither. The API and the other commands never call Jev.
+
+Jev makes judgments and code makes decisions ([the judgments](jev-evaluation.md)):
+
+- **A document's outcome.** The distill tier writes the summary and the outcome
+  sentence; four questions decide whether that outcome is resolved, decided,
+  proposed, open or none. The first confident yes, in that order, wins; with
+  none the document concludes nothing.
+- **Which topic an assertion continues.** The assert tier writes each position
+  and the question it answers; one question per candidate topic asks whether it
+  is the same question. The most probable confident yes wins; with none the
+  assertion opens a new topic. Wrong matches are one `hearsay topics merge` or
+  split to undo.
+- **Whether a stance changes or restates.** A confident yes to "same answer"
+  restates the current position; anything else changes it.
+
+Only a confident yes counts: a yes below `threshold`, and every no, is a no.
+A Jev call that fails after its retries, or answers malformed, fails the job,
+and the queue retries it as it would a failed model call.
 
 ```yaml
 llm:
-  boost:
-    enabled: false
-    model: jev-1.13.0            # explicit requested id; no automatic alias choice
+  judgments:
+    model: jev-latest            # requested model; each judgment records the version that answered
     api_key_env: HEARSAY_JEV_API_KEY
+    threshold: 0.8
     timeout: 2s
     total_timeout: 5s
     max_retries: 1
-    assertion_job_budget: 5s
 ```
 
-| Boost field | Meaning |
+| Field | Meaning |
 |---|---|
-| `enabled` | Default false. One switch for all integrations. |
-| `model` | Required when enabled. Configure an explicit model id; record the resolved version returned by the provider. |
-| `api_key_env` | Credential variable name, default `HEARSAY_JEV_API_KEY`. Never put its value here. Missing credentials degrade the capability and preserve baseline startup/work. |
-| `base_url` | Optional absolute HTTP(S) endpoint, default `https://api.typesafe.ai`. No URL credentials, query or fragment. |
+| `model` | Required by the distiller and the assertion worker: `jev-latest`, or `~typesafe/jev-latest` through OpenRouter. Each judgment records the version that answered, and a journaled answer is never re-asked of a newer one. |
+| `api_key_env` | Credential variable name, default `HEARSAY_JEV_API_KEY`. Never put its value here. |
+| `base_url` | Optional absolute HTTP(S) endpoint, default `https://api.typesafe.ai`; `https://openrouter.ai/api` with an OpenRouter model id and key reaches Jev through OpenRouter. No URL credentials, query or fragment. |
+| `threshold` | The confidence a yes must reach to count, above 0 and at most 1; default 0.8. |
 | `timeout` | Per attempt; default 2s, maximum 30s. |
-| `total_timeout` | Per capability call including retries and waits; default 5s, maximum 1m, further bounded by the caller's remaining budget. |
+| `total_timeout` | Per call including retries and waits; default 5s, maximum 1m. |
 | `max_retries` | Additional attempts; default 1, `-1` disables retries, maximum 5. |
 | `backoff` | Default 100ms, maximum 5s. Retry-After is honored only within the remaining deadline. |
-| `cooldown`, `cooldown_failures` | Default 30s after 3 outage failures; bounds 5m and 100 failures. Invalid responses do not count as outages. One shared instance per process; separate processes do not share cooldown. |
-| `assertion_job_budget` | One total deadline per assertion job, default 5s, maximum 30s. Covers stance, topic, broader-pool shortlisting, replacement comparisons, optional re-extraction, retries and waits together. Never resets per assertion or integration. |
-| `max_total_tokens`, `max_state_question_tokens` | Local conservative UTF-8 byte upper bounds against the model snapshot: default/max 64000 total and 32000 state plus longest question. Oversize requests fall back before network IO. |
-| `policies` | Task-keyed qualified policies with `name`, pinned `model_version` and explicit `threshold` in [0,1]. Valid tasks: `stance_comparison`, `topic_matching`, `topic_shortlist`, `outcome_classification`. Policies govern adoption, never enablement. No policy ships. |
+| `max_total_tokens`, `max_state_question_tokens` | Local conservative UTF-8 byte upper bounds against the model snapshot: default and maximum 64000 total and 32000 state plus longest question. An oversize request fails before any network IO. |
 
-Enablement alone runs shadow and leaves baseline L1/L2 output unchanged. Use
-[the evaluation guide](jev-evaluation.md) to supply adjudicated tuning/held-out
-examples, pinned predictions, minimum evidence and quality limits, then copy only
-a qualified task policy into `policies`. Thresholds are tuned without held-out
-labels; qualification evaluates the fixed threshold on held-out labels. Model
-version mismatch falls back. An upgrade never reinterprets historical consumed
-judgments or rewrites stances by itself.
-
-Timeout, rate limit, cooldown, uncertainty, abstention, malformed output and any
-journal refusal (storage, statement/lock timeout, changed inputs) write the complete
-baseline result. Outcome disagreements require a supported distill-tier restatement
-of coherent outcome text; otherwise keep the baseline pair. None-fit never creates
-a topic. The document optional path, including restatement, has a fixed 5s budget.
-The assertion budget adds at most its duration to baseline scope-key holding;
-baseline model/database time and queue scheduling are separate. The renewed queue
-lease does not bound job duration. Human gestures wait on that same key.
-
-Worker `/readyz` includes `judgments.enabled`, `healthy`, `last_fallback`,
-`observations`, `attempts`, `fallbacks`. Disabled is `enabled: false`; enabled and
-unhealthy means degraded. Degradation does not make a baseline worker unready.
-Reads, search, authorization, standing, human commands/gestures and deletion have
-no judgment dependency. Confidence is not validated correctness; typed output
-constrains shape only. Negation, ambiguous topics, proposal/decision confusion,
-domain-specific wording and adversarial text require local measurement. Usage and
-cost, including retries, preserve unknown separately from reported zero; price
-alone proves no savings. See [ADR-0031](adr/0031-typed-judgments-are-an-optional-write-path-capability.md).
+Every answer is recorded in the judgment journal with the inputs it read, and
+a later run over the same inputs reuses it rather than asking again, so a model
+upgrade never reinterprets a judgment already made. Worker `/readyz` reports
+`judgments.healthy`, `last_failure`, `observations`, `attempts` and `failures`;
+a failing Jev does not make a worker unready, because the jobs that need it
+fail and are retried. Reads, search, authorization, standing, human commands
+and gestures, and deletion never call Jev. Confidence is not correctness:
+negation, ambiguous topics, proposal-versus-decision and adversarial text are
+worth measuring on a team's own sources with `hearsay eval judgments`.
 
 ## Validation
 
@@ -1728,11 +1725,9 @@ authority:
       artifacts: [merged_pr, spec]
 
 llm:
-  boost:
-    enabled: false
-    model: jev-1.13.0
+  judgments:
+    model: jev-latest
     api_key_env: HEARSAY_JEV_API_KEY
-    assertion_job_budget: 5s
   tiers:
     # The distill tier keeps the shipped provider and model and gets a bigger
     # budget; assert keeps everything but the model. A tier nobody names here
@@ -1914,11 +1909,9 @@ ratified_by:
 <!-- example: dir/llm/tiers.yaml -->
 ```yaml
 # llm/tiers.yaml — what is under the single file's `llm:` key.
-boost:
-  enabled: false
-  model: jev-1.13.0
+judgments:
+  model: jev-latest
   api_key_env: HEARSAY_JEV_API_KEY
-  assertion_job_budget: 5s
 tiers:
   distill:
     max_tokens: 4096
@@ -1941,8 +1934,8 @@ Named deliberately, so that the absence is a decision rather than an oversight.
   groups; flattening them here keeps membership a list rather than a second
   hierarchy to walk and to check for cycles. Claim the group as an identity and
   let the source do the nesting.
-- **Reload without a restart.** ADR-0009 has the reasons and what would have to
-  be true first.
+- **Reload without a restart.** Configuration is read once, at startup, and a
+  change to it is a restart.
 - **Per-scope ACLs.** Access control is inherited from the source at ingest, not
   configured here. A scope filters for relevance, and that is all it does.
 - **Anchors.** A scope's anchors are pinned by people in the tools they are

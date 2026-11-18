@@ -32,7 +32,6 @@ func request() llm.JudgmentRequest {
 }
 func judgments(t *testing.T, s *httptest.Server, cfg llm.JudgmentConfig) llm.Judgments {
 	t.Helper()
-	cfg.Enabled = true
 	cfg.Model = "configured-model"
 	cfg.BaseURL = s.URL
 	j, err := llm.NewJudgments(cfg, func(c llm.JudgmentConfig, key string) llm.JudgmentProvider { return jev.New(c, key) }, func(string) string { return "SECRET KEY" })
@@ -78,7 +77,7 @@ func TestAdapterBatchWireContract(t *testing.T) {
 	r := request()
 	r.Questions = append(r.Questions, llm.JudgmentQuestion{ID: "score", Kind: llm.JudgmentScore, Question: "rate", Rubric: "quality rubric", Min: 1, Max: 3}, llm.JudgmentQuestion{ID: "boolean", Kind: llm.JudgmentYesNo, Question: "true?"})
 	out := judgments(t, s, llm.JudgmentConfig{}).Judge(t.Context(), r)
-	if out.Fallback != "" || calls.Load() != 1 || out.ModelVersion != "jev-1.13.0" || len(out.Answers) != 3 {
+	if out.Failure != "" || calls.Load() != 1 || out.ModelVersion != "jev-1.13.0" || len(out.Answers) != 3 {
 		t.Fatalf("result=%+v calls=%d", out, calls.Load())
 	}
 	if *out.Answers[1].Score != 2.25 || out.Answers[1].Probabilities["2"] != 0.7 || !*out.Answers[2].Yes || out.Answers[2].Probabilities["no"] != 0.25 || out.Answers[2].Confidence != 0.75 {
@@ -89,7 +88,7 @@ func TestAdapterBatchWireContract(t *testing.T) {
 	}
 }
 
-func TestAdapterInvalidResponseRetainsAccountingWithoutCooldown(t *testing.T) {
+func TestAdapterInvalidResponseRetainsAccounting(t *testing.T) {
 	good := fixture(t, "choice")
 	for _, tt := range []struct {
 		name, body          string
@@ -133,10 +132,10 @@ func TestAdapterInvalidResponseRetainsAccountingWithoutCooldown(t *testing.T) {
 				}
 			}))
 			defer s.Close()
-			j := judgments(t, s, llm.JudgmentConfig{CooldownFailures: 1})
+			j := judgments(t, s, llm.JudgmentConfig{})
 			for range 2 {
 				out := j.Judge(t.Context(), request())
-				if out.Fallback != llm.JudgmentInvalidResponse || out.Attempts != 1 || out.Wait != 0 || len(out.Answers) != 0 {
+				if out.Failure != llm.JudgmentInvalidResponse || out.Attempts != 1 || out.Wait != 0 || len(out.Answers) != 0 {
 					t.Fatalf("invalid response=%+v", out)
 				}
 				if (out.Usage.InputTokens != nil) != tt.input || (out.Usage.OutputTokens != nil) != tt.output || (out.Usage.CostUSD != nil) != tt.cost {
@@ -148,7 +147,7 @@ func TestAdapterInvalidResponseRetainsAccountingWithoutCooldown(t *testing.T) {
 				t.Fatalf("unsafe error: %v", err)
 			}
 			out := j.Judge(t.Context(), request())
-			if out.Fallback != "" || calls.Load() != 4 || !j.Status().Healthy {
+			if out.Failure != "" || calls.Load() != 4 || !j.Status().Healthy {
 				t.Fatalf("invalid answer contributed to cooldown: %+v", out)
 			}
 		})
@@ -173,7 +172,7 @@ func TestAdapterAccountingUnknownVersusZero(t *testing.T) {
 			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, tt.body) }))
 			defer s.Close()
 			out := judgments(t, s, llm.JudgmentConfig{}).Judge(t.Context(), request())
-			if out.Fallback != "" || (out.Usage.InputTokens != nil) != tt.input || (out.Usage.OutputTokens != nil) != tt.output || (out.Usage.CostUSD != nil) != tt.cost {
+			if out.Failure != "" || (out.Usage.InputTokens != nil) != tt.input || (out.Usage.OutputTokens != nil) != tt.output || (out.Usage.CostUSD != nil) != tt.cost {
 				t.Fatalf("result=%+v", out)
 			}
 			if out.Usage.CostUSD != nil && *out.Usage.CostUSD != 0 {
@@ -240,7 +239,7 @@ func TestAdapterRefusesOversizeBeforeNetwork(t *testing.T) {
 				r.State = strings.Repeat("s", 200)
 			}
 			out := judgments(t, s, cfg).Judge(t.Context(), r)
-			if out.Fallback != llm.JudgmentOversize || calls.Load() != 0 {
+			if out.Failure != llm.JudgmentOversize || calls.Load() != 0 {
 				t.Fatalf("result=%+v calls=%d", out, calls.Load())
 			}
 		})
@@ -275,7 +274,7 @@ func TestAdapterRetryRecoveryAndDeadlines(t *testing.T) {
 			// Only the cases testing exhaustion get a short total or caller budget.
 			cfg := llm.JudgmentConfig{Backoff: time.Millisecond, Timeout: 20 * time.Millisecond, TotalTimeout: time.Second, MaxRetries: 5}
 			ctx := t.Context()
-			want := llm.JudgmentFallback("")
+			want := llm.JudgmentFailure("")
 			attempts := 2
 			if mode == "total timeout" {
 				cfg.TotalTimeout = 40 * time.Millisecond
@@ -287,13 +286,13 @@ func TestAdapterRetryRecoveryAndDeadlines(t *testing.T) {
 				var cancel context.CancelFunc
 				ctx, cancel = context.WithTimeout(ctx, 20*time.Millisecond)
 				defer cancel()
-				want = llm.JudgmentBudgetExhausted
+				want = llm.JudgmentTimeout
 				attempts = 1
 			}
 			j := judgments(t, s, cfg)
 			start := time.Now()
 			out := j.Judge(ctx, request())
-			if out.Fallback != want || (attempts >= 0 && out.Attempts != attempts) {
+			if out.Failure != want || (attempts >= 0 && out.Attempts != attempts) {
 				t.Fatalf("result=%+v want fallback=%s attempts=%d", out, want, attempts)
 			}
 			if time.Since(start) > 2*time.Second {
@@ -312,7 +311,7 @@ func TestAdapterDoesNotFollowRedirect(t *testing.T) {
 	}))
 	defer s.Close()
 	out := judgments(t, s, llm.JudgmentConfig{}).Judge(t.Context(), request())
-	if received.Load() != 0 || out.Attempts != 1 || out.Fallback != llm.JudgmentUnavailable {
+	if received.Load() != 0 || out.Attempts != 1 || out.Failure != llm.JudgmentUnavailable {
 		t.Fatalf("redirect followed: %+v calls=%d", out, received.Load())
 	}
 }
@@ -337,8 +336,8 @@ func TestAdapterScoreAndBooleanValidation(t *testing.T) {
 			defer s.Close()
 			r := request()
 			r.Questions = append(r.Questions, llm.JudgmentQuestion{ID: "score", Kind: llm.JudgmentScore, Question: "rate", Rubric: "rubric", Min: 1, Max: 3}, llm.JudgmentQuestion{ID: "boolean", Kind: llm.JudgmentYesNo, Question: "true?"})
-			out := judgments(t, s, llm.JudgmentConfig{CooldownFailures: 1}).Judge(t.Context(), r)
-			if out.Fallback != llm.JudgmentInvalidResponse || out.Attempts != 1 || len(out.Answers) != 0 || out.Usage.InputTokens == nil {
+			out := judgments(t, s, llm.JudgmentConfig{}).Judge(t.Context(), r)
+			if out.Failure != llm.JudgmentInvalidResponse || out.Attempts != 1 || len(out.Answers) != 0 || out.Usage.InputTokens == nil {
 				t.Fatalf("result=%+v", out)
 			}
 		})

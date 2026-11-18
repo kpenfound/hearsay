@@ -33,7 +33,7 @@ const DefaultAnswerWithin = 2 * time.Second
 const followUpWithin = 5 * time.Minute
 
 // Interactions is the HTTP interaction adapter for Discord's `/hearsay pin`
-// and `/hearsay merge` (ADR-0022). It verifies every request with the
+// and `/hearsay merge`. It verifies every request with the
 // application's public key and answers every command and autocomplete within
 // Discord's deadline. A command is recorded in L0 as a `command` event of its
 // source, in a channel that source ingests, and then applied as the person
@@ -46,7 +46,7 @@ const followUpWithin = 5 * time.Minute
 // token. Nothing else is written to Discord.
 //
 // Applying the command is [l2.Commands], the applier every process that
-// receives a chat command shares (ADR-0025); this adapter records the command,
+// receives a chat command shares; this adapter records the command,
 // and turns what the applier returns into the answer's words.
 //
 // Autocomplete offers the topics the person may read, through the same view

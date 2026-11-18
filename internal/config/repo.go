@@ -25,8 +25,8 @@ type Repo struct {
 	Path string
 	// Digest identifies the configuration as it was read: `sha256:` followed by
 	// hex. Two processes reporting the same digest are running the same
-	// configuration, which is what makes "restart to reload" checkable
-	// (ADR-0009). The two forms of the same configuration have different
+	// configuration, which is what makes "restart to reload" checkable. The two
+	// forms of the same configuration have different
 	// digests: it identifies the bytes, not the meaning.
 	Digest string
 
@@ -46,7 +46,7 @@ type Repo struct {
 	// stance, per scope, and how sources rank against each other.
 	Authority Authority
 	// LLM is the `llm/` directory: which provider and model backs each of the
-	// three model tiers (ADR-0005), merged onto the shipped defaults, so every
+	// three model tiers, merged onto the shipped defaults, so every
 	// tier a default names is here whether the configuration mentioned it or
 	// not. It is an [llm.Config] because the registry, the tiers and the
 	// adapters are internal/llm's, the way sources are the connector
@@ -56,8 +56,9 @@ type Repo struct {
 	// given no configuration and makes no model calls.
 	LLM llm.Config
 
-	// Boost is the optional global typed-judgment capability, separate from tiers.
-	Boost llm.JudgmentConfig
+	// Judgments is Jev's configuration, separate from the model tiers. The
+	// distiller and the assertion worker require it.
+	Judgments llm.JudgmentConfig
 }
 
 // Source returns the source configured with this id.

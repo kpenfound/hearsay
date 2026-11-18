@@ -19,7 +19,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/l0"
 )
 
-// `hearsay all` is local development only, and ADR-0006 has it migrate for
+// `hearsay all` is local development only, so it migrates for
 // itself because a local database is nobody's production. Every other command
 // verifies and refuses.
 func TestAllMigratesTheDatabaseItIsPointedAt(t *testing.T) {
@@ -103,8 +103,8 @@ func TestConnectorsRunsAndStops(t *testing.T) {
 		t.Fatalf("run(connectors) = %v, want nil", err)
 	}
 	// Which connectors a process is hosting is the first question asked of one,
-	// so every line it logs says. It is `hosting` and not `source`: ADR-0008's
-	// `source` is the source a line is about, and the runtime writes that.
+	// so every line it logs says. It is `hosting` and not `source`: the standard
+	// `source` field is the source a line is about, and the runtime writes that.
 	if !strings.Contains(stderr.String(), `"hosting":"all"`) {
 		t.Errorf("the connectors service logged no hosting field:\n%s", stderr.String())
 	}
@@ -124,7 +124,7 @@ func TestConnectorsRefusesASourceNobodyConfigured(t *testing.T) {
 }
 
 // A database with no Hearsay schema in it is one every command but `migrate`
-// and `all` refuses, saying what to run (ADR-0006).
+// and `all` refuses, saying what to run.
 func TestL0RefusesADatabaseBehindTheBinary(t *testing.T) {
 	url := os.Getenv("HEARSAY_DATABASE_URL")
 	if url == "" {
@@ -264,16 +264,29 @@ func TestL0AndMigrateAgainstARealDatabase(t *testing.T) {
 		go func() {
 			done <- run(ctx, []string{"l0", "tail", "--source", source, "--interval", "50ms"}, &stdout, &stderr)
 		}()
-		deadline := time.Now().Add(10 * time.Second)
-		for !strings.Contains(stdout.String(), appended.ID) && time.Now().Before(deadline) {
-			time.Sleep(20 * time.Millisecond)
+		waitFor := func(id string) bool {
+			deadline := time.Now().Add(10 * time.Second)
+			for !strings.Contains(stdout.String(), id) && time.Now().Before(deadline) {
+				time.Sleep(20 * time.Millisecond)
+			}
+			return strings.Contains(stdout.String(), id)
 		}
-		if !strings.Contains(stdout.String(), appended.ID) {
+		if !waitFor(appended.ID) {
 			t.Errorf("l0 tail did not print the event within 10s:\nstdout: %s\nstderr: %s", stdout.String(), stderr.String())
 		} else {
-			// Allow two more polling intervals after observing the event, so the
-			// source-filter assertion also covers continued following.
-			time.Sleep(100 * time.Millisecond)
+			// While it follows, another source's event and then one of its own
+			// arrive. The feed is ordered, so once the later one is printed the
+			// other source's has been read past, and its absence is the filter.
+			if _, err := l0.New(pool).Append(t.Context(), other.NewEvent(connector.KindMessage, "m2", "another source, later")); err != nil {
+				t.Fatalf("Append(another source) = %v, want no error", err)
+			}
+			later, err := l0.New(pool).Append(t.Context(), fake.NewEvent(connector.KindMessage, "m2", "followed"))
+			if err != nil {
+				t.Fatalf("Append(followed) = %v, want no error", err)
+			}
+			if !waitFor(later.ID) {
+				t.Errorf("l0 tail did not follow an event appended while it ran:\nstdout: %s\nstderr: %s", stdout.String(), stderr.String())
+			}
 		}
 		cancel()
 		select {

@@ -5,25 +5,24 @@
 // The configuration repository — `sources/`, `scopes/`, `principals/`, `code/`,
 // `authority/` and `llm/`, or the single file that expands to it — is read by
 // [Load], which reports everything wrong with it rather than the first. The
-// format is documented in docs/config.md and decided in ADR-0009.
+// format is documented in docs/config.md.
 //
-// The parsed configuration reaches the four services as the argument ADR-0003
-// fixes:
+// The parsed configuration reaches the four services as the fixed argument:
 //
 //	func Run(ctx context.Context, cfg *config.Config, deps Deps) error
 package config
 
-// Config is the whole of Hearsay's configuration, shared by all four services
-// (ADR-0003). Per-service sections are added under it where something genuinely
+// Config is the whole of Hearsay's configuration, shared by all four
+// services. Per-service sections are added under it where something genuinely
 // differs, such as worker concurrency.
 type Config struct {
 	Log Log
-	// Database is the Postgres connection (ADR-0004). It is a process setting
+	// Database is the Postgres connection. It is a process setting
 	// rather than part of the configuration repository: the repository is
-	// checked in, and a connection URL carries a password (ADR-0009).
+	// checked in, and a connection URL carries a password.
 	Database Database
 	// Repo is the configuration repository, loaded at startup and never
-	// reloaded while the process runs (ADR-0009). Its zero value is a process
+	// reloaded while the process runs. Its zero value is a process
 	// that was started without one: it ingests nothing and serves no bundles,
 	// which is the state `hearsay` runs in until it is pointed at a
 	// configuration.
@@ -38,7 +37,7 @@ type Database struct {
 	URL string
 }
 
-// Log configures the process logger (ADR-0008).
+// Log configures the process logger.
 type Log struct {
 	// Level is one of debug, info, warn, error.
 	Level string

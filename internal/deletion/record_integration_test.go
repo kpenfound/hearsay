@@ -163,7 +163,7 @@ func workers(t *testing.T, pool *pgxpool.Pool) (distil, assert func(queue.Job) e
 	}
 	cfg := config.Default()
 	cfg.Repo = repo
-	d, err := distiller.New(pool, registry, &cfg)
+	d, err := distiller.New(pool, registry, llm.Unconfigured(), &cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

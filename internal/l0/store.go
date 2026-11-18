@@ -28,8 +28,8 @@ var (
 	// (docs/design.md#deletion-and-provenance).
 	ErrRetracted = errors.New("the event has been retracted by a tombstone")
 
-	// ErrDeleted is returned for an event an operator deleted in Hearsay
-	// (ADR-0018). It is not [ErrRetracted]: the source did not delete the
+	// ErrDeleted is returned for an event an operator deleted in Hearsay. It is
+	// not [ErrRetracted]: the source did not delete the
 	// event, and a reader must never be told that it did. The error is a
 	// [*DeletedError], which names the deletion and no content.
 	ErrDeleted = errors.New("the event has been deleted by an operator")
@@ -106,7 +106,7 @@ type Store struct {
 // Querier is what a Store runs its statements on: a pgx pool, or a transaction
 // taken from one. It is an interface so that an event can be appended in the
 // same transaction as whatever else a caller is doing — enqueuing the
-// distillation job for it, in particular (ADR-0007).
+// distillation job for it, in particular.
 type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
@@ -172,7 +172,7 @@ type Appended struct {
 	// replay of an event an operator deleted. Nothing was written to the event,
 	// the replay was counted on the deletion record, and it is not an error:
 	// a backfill or a redelivery must neither restore the content nor stall the
-	// connector (ADR-0018).
+	// connector.
 	Dropped string
 }
 
@@ -314,7 +314,7 @@ const retractedSQL = `EXISTS (
 )`
 
 // visibleSQL is what a read admits: neither retracted by a source tombstone
-// nor deleted by an operator (ADR-0018). A deleted row is hidden by its own
+// nor deleted by an operator. A deleted row is hidden by its own
 // column rather than by a tombstone, so it is hidden whatever the source says
 // later, and a later revision of the artifact — a new row — is not.
 const visibleSQL = `e.deletion IS NULL AND NOT ` + retractedSQL
@@ -439,7 +439,7 @@ SELECT DISTINCT ON (e.artifact) `+eventColumns+`
 // every read a person or an agent reaches goes through the visible reads. An
 // event an operator also deleted comes back with its redacted payload, which
 // keeps the artifact, container, thread and parent this question needs and
-// none of the content (ADR-0018).
+// none of the content.
 func (s *Store) Retracted(ctx context.Context, source, artifact string) (connector.Event, error) {
 	if source == "" || artifact == "" {
 		return connector.Event{}, errors.New("reading a retracted artifact needs its source and its artifact id")

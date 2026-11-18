@@ -58,7 +58,7 @@ func SchemaVersion(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
 	return version, nil
 }
 
-// CheckSchema is the startup check ADR-0006 puts on every process that reads
+// CheckSchema is the startup check on every process that reads
 // the database. It fails when the database is behind the binary and passes when
 // it is level or ahead.
 func CheckSchema(ctx context.Context, pool *pgxpool.Pool) error {

@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// Registry resolves a tier to a client, per configuration (ADR-0005). Callers
+// Registry resolves a tier to a client, per configuration. Callers
 // see tiers, not providers: which provider and which model answers a tier is
 // [Config], and swapping one is a configuration edit rather than a code change.
 //
@@ -23,9 +23,9 @@ type Registry interface {
 	// Embedder returns the client for [TierEmbed].
 	Embedder() (Embedder, error)
 	// Usage is what has been spent through this registry since it was built,
-	// one row per tier, provider and model. It is the read ADR-0005's "cost is
-	// observable per tier by construction" asks for; until the metric provider
-	// in internal/telemetry lands (ADR-0008), it is also where those metrics
+	// one row per tier, provider and model. It is the read that makes cost
+	// observable per tier by construction; until the metric provider
+	// in internal/telemetry lands, it is also where those metrics
 	// come from.
 	Usage() []Usage
 }
@@ -41,7 +41,7 @@ type Embedder interface {
 	// values.
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
 	// Dimensions is the width of the vectors this tier produces. It has to
-	// match the vector(N) column L1 stores them in (ADR-0004), which is what
+	// match the vector(N) column L1 stores them in, which is what
 	// [CheckDimensions] compares it against. What comes back from [Embed] is
 	// held to it whether anything checks the column or not.
 	Dimensions() int
@@ -53,7 +53,7 @@ type Embedder interface {
 // [Embedder], and its calls are counted with no tokens against them.
 //
 // It is a second method rather than a change to [Embedder] because the
-// interface ADR-0005 fixes is the one callers use, and no caller wants the
+// fixed interface is the one callers use, and no caller wants the
 // token count: the registry does, on their behalf.
 type UsageEmbedder interface {
 	Embedder
@@ -82,7 +82,7 @@ type Message struct {
 // ordered list of messages, a token budget, and optionally a schema the answer
 // has to satisfy. Nothing provider-shaped belongs in it — a caller that needed
 // an Anthropic tool block here would be a caller that has to be edited to add a
-// second provider, which is the leak ADR-0005 exists to stop.
+// second provider, which is the leak the tier abstraction exists to stop.
 type Request struct {
 	// System is the system prompt. It may be empty; a provider that cannot
 	// take one at all is refused when the registry is built, not here.
@@ -94,7 +94,7 @@ type Request struct {
 	Messages []Message `json:"messages"`
 	// MaxTokens is the budget for the answer. Zero takes the tier's configured
 	// budget, which is the usual case; a call site whose prompt needs a bigger
-	// one sets it (ADR-0005).
+	// one sets it.
 	MaxTokens int `json:"max_tokens,omitempty"`
 	// Schema, when set, asks for JSON satisfying it rather than text. How the
 	// provider is made to produce it — a tool definition, a response format, a
@@ -188,10 +188,10 @@ func (r Request) Validate() error {
 }
 
 // CheckDimensions reports whether an embed tier fits the column its vectors are
-// written to: ADR-0004's vector(N) on L1, whose N is fixed by a migration.
+// written to: the vector(N) on L1, whose N is fixed by a migration.
 // Changing the embed model to one of a different width is that migration plus a
-// re-embed of every row, not a configuration edit, which is why ADR-0005 asks
-// for the two to be compared before anything is written rather than after.
+// re-embed of every row, not a configuration edit, which is why the two are
+// compared before anything is written rather than after.
 //
 // The process that writes vectors calls this at startup and refuses to run on a
 // mismatch: the distiller, against l1.EmbeddingDimensions.

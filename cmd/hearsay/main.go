@@ -1,5 +1,5 @@
 // Command hearsay is the single binary Hearsay ships. Each of the four
-// services is a subcommand of it (ADR-0003); `hearsay help` lists them.
+// services is a subcommand of it; `hearsay help` lists them.
 package main
 
 import (

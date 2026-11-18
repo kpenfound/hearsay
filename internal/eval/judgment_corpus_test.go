@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 
@@ -14,7 +13,7 @@ import (
 )
 
 func example(id string, task llm.JudgmentTask, label, split string) eval.Example {
-	return eval.Example{ID: id, Group: id, Task: task, Split: split, Category: "hand-built", Label: label, Candidates: []string{"a", "b"}, Sources: []eval.CorpusSource{{ID: "source-" + id, Revision: "r1", URI: "fixture://" + id, ACL: []string{"public"}, Text: "source content"}}, Review: eval.Review{Adjudicator: "test-reviewer", Revision: "r1", Rationale: "hand-built label"}}
+	return eval.Example{ID: id, Group: id, Task: task, Split: split, Category: "hand-built", Label: label, Sources: []eval.CorpusSource{{ID: "source-" + id, Revision: "r1", URI: "fixture://" + id, ACL: []string{"public"}, Text: "source content"}}, Review: eval.Review{Adjudicator: "test-reviewer", Revision: "r1", Rationale: "hand-built label"}}
 }
 func corpus(es ...eval.Example) eval.Corpus {
 	return eval.Corpus{Version: 1, Provenance: "hand-built test", Examples: es}
@@ -37,56 +36,53 @@ func readFixture(t *testing.T, path string, v any) {
 func TestNamedJudgmentErrors(t *testing.T) {
 	tests := []struct {
 		name       string
-		task       llm.JudgmentTask
 		gold, pred []string
 		check      func(*testing.T, eval.JudgmentMetrics)
 	}{
-		{"stance", llm.TaskStanceComparison, []string{"restates", "restates", "changes", "changes"}, []string{"changes", "restates", "restates", "changes"}, func(t *testing.T, m eval.JudgmentMetrics) {
-			assertMeasure(t, m.FalseChanges, 1, 2)
-			assertMeasure(t, m.MissedChanges, 1, 2)
+		{"false yes and false no", []string{"no", "no", "yes", "yes"}, []string{"yes", "no", "no", "yes"}, func(t *testing.T, m eval.JudgmentMetrics) {
+			assertMeasure(t, m.FalseYes, 1, 2)
+			assertMeasure(t, m.FalseNo, 1, 2)
 			assertMeasure(t, m.Errors, 2, 4)
 		}},
-		{"attachment and duplicates", llm.TaskTopicMatching, []string{"a", "a", "none_fit", "a"}, []string{"b", "new", "a", "a"}, func(t *testing.T, m eval.JudgmentMetrics) {
-			assertMeasure(t, m.IncorrectAttachments, 2, 3)
-			assertMeasure(t, m.DuplicateTopics, 1, 3)
+		{"unanswered is an error and decides nothing", []string{"yes", "no"}, []string{"", ""}, func(t *testing.T, m eval.JudgmentMetrics) {
+			assertMeasure(t, m.Errors, 2, 2)
+			assertMeasure(t, m.FalseNo, 1, 1)
+			assertMeasure(t, m.FalseYes, 0, 1)
+			if m.Unanswered != 2 {
+				t.Fatalf("unanswered=%d", m.Unanswered)
+			}
 		}},
-		{"new topic when none fits", llm.TaskTopicMatching, []string{"none_fit"}, []string{"new"}, func(t *testing.T, m eval.JudgmentMetrics) {
-			assertMeasure(t, m.Errors, 0, 1)
-			assertMeasure(t, m.DuplicateTopics, 0, 0)
-			assertMeasure(t, m.IncorrectAttachments, 0, 0)
-		}},
-
-		{"outcome", llm.TaskOutcomeClassification, []string{"resolved", "decided", "proposed", "open", "none"}, []string{"open", "resolved", "decided", "open", "none"}, func(t *testing.T, m eval.JudgmentMetrics) {
-			assertMeasure(t, m.OutcomeConfusion, 3, 5)
-			assertMeasure(t, m.MissedDecisions, 1, 2)
-			if len(m.Confusion) != 5 || m.Confusion["resolved"]["open"] != 1 || m.Confusion["decided"]["resolved"] != 1 || m.Confusion["proposed"]["decided"] != 1 {
+		{"confusion matrix is complete", []string{"yes", "no", "no"}, []string{"yes", "yes", ""}, func(t *testing.T, m eval.JudgmentMetrics) {
+			if m.Confusion["yes"]["yes"] != 1 || m.Confusion["no"]["yes"] != 1 || m.Confusion["no"]["none"] != 1 {
 				t.Fatalf("confusion=%v", m.Confusion)
 			}
 			for _, row := range m.Confusion {
-				if len(row) != 6 {
+				if len(row) != 3 {
 					t.Fatal("incomplete confusion matrix")
 				}
 			}
 		}},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var es []eval.Example
-			var ps []eval.Prediction
-			for i, gold := range tt.gold {
-				id := string(rune('A' + i))
-				es = append(es, example(id, tt.task, gold, "held_out"))
-				ps = append(ps, prediction(id, tt.pred[i]))
-			}
-			got, err := eval.CompareJudgments(corpus(es...), eval.Predictions{Baseline: ps, Jev: ps}, "held_out")
-			if err != nil {
-				t.Fatal(err)
-			}
-			tt.check(t, got[tt.task].Jev)
-			if !reflect.DeepEqual(got[tt.task].Baseline, got[tt.task].Jev) {
-				t.Fatal("baseline and Jev scoring differ")
-			}
-		})
+	for _, task := range llm.JudgmentTasks() {
+		for _, tt := range tests {
+			t.Run(string(task)+"/"+tt.name, func(t *testing.T) {
+				var es []eval.Example
+				var ps []eval.Prediction
+				for i, gold := range tt.gold {
+					id := string(rune('A' + i))
+					es = append(es, example(id, task, gold, "held_out"))
+					ps = append(ps, prediction(id, tt.pred[i]))
+				}
+				got, err := eval.CompareJudgments(corpus(es...), eval.Predictions{Baseline: ps, Jev: ps}, "held_out")
+				if err != nil {
+					t.Fatal(err)
+				}
+				tt.check(t, got[task].Jev)
+				if !reflect.DeepEqual(got[task].Baseline, got[task].Jev) {
+					t.Fatal("baseline and Jev scoring differ")
+				}
+			})
+		}
 	}
 }
 
@@ -105,9 +101,9 @@ func assertMeasure(t *testing.T, m eval.ErrorMeasure, n, d int) {
 }
 
 func TestDownstreamAndEmptyJudgments(t *testing.T) {
-	c := corpus(example("a", llm.TaskStanceComparison, "changes", "held_out"), example("b", llm.TaskStanceComparison, "restates", "held_out"), example("missing", llm.TaskStanceComparison, "restates", "held_out"))
+	c := corpus(example("a", llm.TaskStanceSameAnswer, "no", "held_out"), example("b", llm.TaskStanceSameAnswer, "yes", "held_out"), example("missing", llm.TaskStanceSameAnswer, "yes", "held_out"))
 	yes, no := true, false
-	a, b := prediction("a", "changes"), prediction("b", "restates")
+	a, b := prediction("a", "no"), prediction("b", "yes")
 	a.ConflictFlag = &yes
 	a.ConflictReal = &yes
 	a.Corrected = &no
@@ -118,7 +114,7 @@ func TestDownstreamAndEmptyJudgments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := got[llm.TaskStanceComparison].Jev
+	m := got[llm.TaskStanceSameAnswer].Jev
 	assertMeasure(t, m.ConflictPrecision, 1, 2)
 	assertMeasure(t, m.Corrections, 1, 2)
 	if m.Missing != 1 {
@@ -126,10 +122,10 @@ func TestDownstreamAndEmptyJudgments(t *testing.T) {
 	}
 	for task, c := range got {
 		m := c.Baseline
-		for _, v := range []eval.ErrorMeasure{m.Errors, m.FalseChanges, m.MissedChanges, m.IncorrectAttachments, m.DuplicateTopics, m.OutcomeConfusion, m.MissedDecisions, m.ConflictPrecision, m.Corrections} {
+		for _, v := range []eval.ErrorMeasure{m.Errors, m.FalseYes, m.FalseNo, m.ConflictPrecision, m.Corrections} {
 			assertMeasure(t, v, 0, 0)
 		}
-		if task == llm.TaskStanceComparison && m.Missing != 3 {
+		if task == llm.TaskStanceSameAnswer && m.Missing != 3 {
 			t.Fatal(m)
 		}
 	}
@@ -151,54 +147,22 @@ func TestSeedRecordedFixtures(t *testing.T) {
 		steps = append(steps, llm.JudgmentStep{Response: r})
 	}
 	fake := llm.NewFakeJudgmentProvider(steps...)
-	judge, err := llm.NewJudgments(llm.JudgmentConfig{Enabled: true, Model: "fixture-judge-v1"}, func(llm.JudgmentConfig, string) llm.JudgmentProvider { return fake }, func(string) string { return "fixture-only" })
+	judge, err := llm.NewJudgments(llm.JudgmentConfig{Model: "fixture-judge-v1"}, func(llm.JudgmentConfig, string) llm.JudgmentProvider { return fake }, func(string) string { return "fixture-only" })
 	if err != nil {
 		t.Fatal(err)
 	}
 	var replayed []eval.Prediction
 	for _, e := range c.Examples {
 		categories[e.Category] = true
-		opts := []string{"changes", "restates", "abstain"}
-		switch e.Task {
-		case llm.TaskOutcomeClassification:
-			opts = []string{"resolved", "decided", "proposed", "open", "none"}
-		case llm.TaskTopicMatching, llm.TaskTopicShortlist:
-			opts = append(slices.Clone(e.Candidates), "none_fit")
+		r := judge.YesNo(t.Context(), e.Sources[0].Text, llm.JudgmentQuestion{ID: e.ID, Question: "Answer the recorded source's judgment"})
+		if r.Failure != "" || len(r.Answers) != 1 || r.Answers[0].Yes == nil {
+			t.Fatalf("%s: %+v", e.ID, r)
 		}
-		p := eval.Prediction{ExampleID: e.ID}
-		if e.Task == llm.TaskTopicShortlist {
-			p.Shortlist = &eval.Shortlist{Selected: []string{}}
+		label := "no"
+		if *r.Answers[0].Yes {
+			label = "yes"
 		}
-		for {
-			r := judge.Choice(t.Context(), e.Sources[0].Text, llm.JudgmentQuestion{ID: e.ID, Question: "Classify the recorded source under the task rubric", Options: opts})
-			if r.Fallback != "" || len(r.Answers) != 1 {
-				t.Fatalf("%s: %+v", e.ID, r)
-			}
-			a := r.Answers[0]
-			p.ModelVersion = r.ModelVersion
-			if p.Confidence == nil || a.Confidence < *p.Confidence {
-				p.Confidence = share(a.Confidence)
-			}
-			if p.Shortlist == nil {
-				p.Label = a.Choice
-				break
-			}
-			if a.Choice == "none_fit" {
-				p.Shortlist.End = "none_fit"
-				break
-			}
-			p.Shortlist.Selected = append(p.Shortlist.Selected, a.Choice)
-			opts = slices.DeleteFunc(opts, func(o string) bool { return o == a.Choice })
-			if len(p.Shortlist.Selected) == eval.ShortlistCapacity {
-				p.Shortlist.End = "capacity"
-				break
-			}
-			if len(opts) == 1 {
-				p.Shortlist.End = "pool_exhausted"
-				break
-			}
-		}
-		replayed = append(replayed, p)
+		replayed = append(replayed, eval.Prediction{ExampleID: e.ID, ModelVersion: r.ModelVersion, Label: label, Confidence: share(r.Answers[0].Confidence)})
 	}
 	for _, category := range []string{"paraphrase", "negation", "proposal_versus_decision", "source_edits", "private_evidence", "adversarial_source_text"} {
 		if !categories[category] {
@@ -217,13 +181,8 @@ func TestSeedRecordedFixtures(t *testing.T) {
 		t.Fatal(err)
 	}
 	for task, m := range report {
-		wantErrors := 0
-		if task == llm.TaskTopicShortlist {
-			wantErrors = 1
-			assertMeasure(t, m.Jev.ShortlistOmissions, 4, 12)
-		}
-		if m.Jev.Examples == 0 || m.Jev.Errors.Count != wantErrors || m.Baseline.Errors.Count == 0 {
-			t.Fatalf("%s: %+v", task, m)
+		if m.Jev.Examples == 0 || m.Jev.Errors.Count != 0 || m.Baseline.Errors.Count == 0 {
+			t.Fatalf("%s: jev=%+v baseline errors=%+v", task, m.Jev, m.Baseline.Errors)
 		}
 	}
 	encoded, err := json.Marshal(report)
@@ -245,22 +204,24 @@ func TestCorpusRefusals(t *testing.T) {
 		mutate func(*eval.Corpus)
 		want   string
 	}{
-		{"label", func(c *eval.Corpus) { c.Examples[0].Label = "" }, "adjudicated"},
+		{"label", func(c *eval.Corpus) { c.Examples[0].Label = "" }, "yes or no label"},
+		{"multi-way label", func(c *eval.Corpus) { c.Examples[0].Label = "restates" }, "yes or no label"},
+		{"unknown task", func(c *eval.Corpus) { c.Examples[0].Task = "stance_comparison" }, "known task"},
 		{"review", func(c *eval.Corpus) { c.Examples[0].Review.Adjudicator = "" }, "review"},
 		{"source revision", func(c *eval.Corpus) { c.Examples[0].Sources[0].Revision = "" }, "revision"},
 		{"group leak", func(c *eval.Corpus) {
-			e := example("b", llm.TaskStanceComparison, "restates", "held_out")
+			e := example("b", llm.TaskStanceSameAnswer, "yes", "held_out")
 			e.Group = c.Examples[0].Group
 			c.Examples = append(c.Examples, e)
 		}, "leaks"},
 		{"source leak", func(c *eval.Corpus) {
-			e := example("b", llm.TaskStanceComparison, "restates", "held_out")
+			e := example("b", llm.TaskStanceSameAnswer, "yes", "held_out")
 			e.Sources[0].ID = c.Examples[0].Sources[0].ID
 			c.Examples = append(c.Examples, e)
 		}, "leaks"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			c := corpus(example("a", llm.TaskStanceComparison, "restates", "tuning"))
+			c := corpus(example("a", llm.TaskStanceSameAnswer, "yes", "tuning"))
 			tt.mutate(&c)
 			if err := c.Validate(); err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("Validate=%v", err)

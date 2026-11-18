@@ -1,5 +1,5 @@
 // Package service holds the four long-running processes Hearsay ships as
-// subcommands of one binary (ADR-0003): connectors, distiller, assertworker and
+// subcommands of one binary: connectors, distiller, assertworker and
 // api. Each subpackage exposes the same entry point:
 //
 //	func Run(ctx context.Context, cfg *config.Config, deps Deps) error
@@ -29,8 +29,8 @@ type RunFunc func(ctx context.Context) error
 // that subcommand differs from running the four services separately, so the dev
 // path cannot drift from the deployed one.
 //
-// ADR-0003 says `all` "calls all four in one errgroup". This is a WaitGroup and
-// [errors.Join] instead, which keeps the module free of dependencies, and the
+// `all` runs all four with a WaitGroup and [errors.Join] rather than an
+// errgroup, which keeps the module free of dependencies, and the
 // semantics differ on purpose: an errgroup cancels on the first *error*, and a
 // service of ours returning nil is just as much a reason to stop as one
 // returning an error. Every error is reported rather than only the first.

@@ -14,8 +14,7 @@ import (
 const CommandWord = "/hearsay"
 
 // KindReply is the extension kind of a comment Hearsay wrote to answer a
-// command. It behaves like a `command`: control traffic, never distilled
-// (ADR-0022).
+// command. It behaves like a `command`: control traffic, never distilled.
 const KindReply connector.Kind = "github.reply"
 
 // replyMarker starts the invisible line every reply ends with. It names the

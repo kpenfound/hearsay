@@ -170,20 +170,17 @@ func buildDoc(t *testing.T, src string, root connector.Event, children []connect
 }
 
 // exchange is one recorded call: what the worker asks, and what the model says.
+// The request is the document alone, so each document has one answer: the
+// model extracts the same positions however often the document is read.
 type exchange struct {
-	name       string
-	doc        func(t *testing.T, src string) l1.Document
-	candidates []assertworker.Candidate
-	answer     map[string]any
+	name   string
+	doc    func(t *testing.T, src string) l1.Document
+	answer map[string]any
 }
 
 // restatedPosition is the issue's proposal as the model words it when the
 // issue is read again after a comment: the same position, other words.
 const restatedPosition = "The job queue should hold the lock."
-
-// uncommentedPosition is the issue's proposal as the model words it a third
-// time, when the comment is deleted and the issue is read again without it.
-const uncommentedPosition = "The lock belongs in the job queue."
 
 // issueComment is a comment on the issue made after the pull request merged.
 func issueComment(src string) connector.Event {
@@ -212,52 +209,20 @@ func issueDoc(t *testing.T, src string) l1.Document { issue, _ := documents(t, s
 func prDoc(t *testing.T, src string) l1.Document    { _, pr := documents(t, src); return pr }
 
 func exchanges() []exchange {
+	one := func(name, position string) map[string]any {
+		return map[string]any{"assertions": []map[string]any{{"topic_name": name, "position": position}}}
+	}
 	return []exchange{
-		{
-			name:   "the issue, with nothing to continue, opens a topic",
-			doc:    issueDoc,
-			answer: map[string]any{"assertions": []map[string]any{{"topic": "new", "topic_name": topicName, "position": issuePosition}}},
-		},
-		{
-			name:       "the pull request continues it with a different position",
-			doc:        prDoc,
-			candidates: []assertworker.Candidate{{Name: topicName, Current: issuePosition}},
-			answer:     map[string]any{"assertions": []map[string]any{{"topic": "T1", "topic_name": topicName, "position": prPosition, "judgement": "changes"}}},
-		},
-		{
-			name:       "the issue read again finds the topic it opened and takes the same position",
-			doc:        issueDoc,
-			candidates: []assertworker.Candidate{{Name: topicName, Current: issuePosition}},
-			answer:     map[string]any{"assertions": []map[string]any{{"topic": "T1", "topic_name": topicName, "position": issuePosition, "judgement": "restates"}}},
-		},
-		{
-			name:       "the issue, commented on after the merge, restates its proposal in other words",
-			doc:        commentedIssueDoc,
-			candidates: []assertworker.Candidate{{Name: topicName, Current: prPosition}},
-			answer:     map[string]any{"assertions": []map[string]any{{"topic": "T1", "topic_name": topicName, "position": restatedPosition, "judgement": "changes"}}},
-		},
-		{
-			name:       "the issue, its comment deleted, is read again and restates its proposal a third way",
-			doc:        issueDoc,
-			candidates: []assertworker.Candidate{{Name: topicName, Current: restatedPosition}},
-			answer:     map[string]any{"assertions": []map[string]any{{"topic": "T1", "topic_name": topicName, "position": uncommentedPosition, "judgement": "restates"}}},
-		},
-		{
-			// The newest stated stance is the issue's restatement, which the
-			// issue's reading without the comment retired: the topic is shown
-			// at the merged pull request's position.
-			name:       "the pull request read again is shown the topic at its own position",
-			doc:        prDoc,
-			candidates: []assertworker.Candidate{{Name: topicName, Current: prPosition}},
-			answer:     map[string]any{"assertions": []map[string]any{{"topic": "T1", "topic_name": topicName, "position": prPosition, "judgement": "restates"}}},
-		},
+		{name: "the issue proposes moving the lock", doc: issueDoc, answer: one(topicName, issuePosition)},
+		{name: "the pull request takes the lock before the write", doc: prDoc, answer: one(topicName, prPosition)},
+		{name: "the issue, commented on after the merge, restates its proposal in other words", doc: commentedIssueDoc, answer: one(topicName, restatedPosition)},
 		{
 			name: "the commit's answer carries what must not be stored",
 			doc:  commitDocument,
 			answer: map[string]any{"assertions": []map[string]any{
-				{"topic": "new", "topic_name": "Who to ask about the lock order", "position": "Ask " + commitEmail + " before changing the lock order."},
-				{"topic": "new", "topic_name": "   ", "position": "A position on a topic with no name."},
-				{"topic": "new", "topic_name": "A topic with no position", "position": "   "},
+				{"topic_name": "Who to ask about the lock order", "position": "Ask " + commitEmail + " before changing the lock order."},
+				{"topic_name": "   ", "position": "A position on a topic with no name."},
+				{"topic_name": "A topic with no position", "position": "   "},
 			}},
 		},
 	}
@@ -290,7 +255,7 @@ func TestRecordFixtures(t *testing.T) {
 		}
 		file.Completions = append(file.Completions, llm.CompletionFixture{
 			Tier:     llm.TierAssert,
-			Request:  assertworker.RequestFor(ex.doc(t, "github-acme"), ex.candidates, assertBudget()),
+			Request:  assertworker.RequestFor(ex.doc(t, "github-acme"), assertBudget()),
 			Response: llm.Response{JSON: body, StopReason: llm.StopEnd, Model: "recorded"},
 		})
 	}
@@ -300,7 +265,7 @@ func TestRecordFixtures(t *testing.T) {
 	budget, _ := llm.Default().Tier(llm.TierDistill)
 	body, err := json.Marshal(map[string]any{
 		"summary": issueBody.Summary, "question": issueBody.Question,
-		"outcome": issueBody.Outcome, "outcome_kind": issueBody.OutcomeKind,
+		"outcome": issueBody.Outcome,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -350,19 +315,20 @@ func TestRecordFixtures(t *testing.T) {
 	}
 }
 
-func TestJudgementResponseShape(t *testing.T) {
-	_, pr := documents(t, "github-acme")
-	request := assertworker.RequestFor(pr, []assertworker.Candidate{{Name: topicName, Current: issuePosition}}, assertBudget())
+// The model answers with positions and their questions alone: which topic a
+// position continues, and whether it changes it, are Jev's to judge.
+func TestTheAnswerIsPositionsAndTheirQuestions(t *testing.T) {
+	request := assertworker.RequestFor(prDoc(t, "github-acme"), assertBudget())
 	for _, tc := range []struct {
 		name  string
 		json  string
 		valid bool
 	}{
-		{"change", `{"assertions":[{"topic":"T1","topic_name":"lock","position":"before write","judgement":"changes"}]}`, true},
-		{"restatement", `{"assertions":[{"topic":"T1","topic_name":"lock","position":"job queue lock","judgement":"restates"}]}`, true},
-		{"malformed", `{"assertions":[{"topic":"T1","topic_name":"lock","position":"before write","judgement":"maybe"}]}`, false},
-		{"wrong type", `{"assertions":[{"topic":"T1","topic_name":"lock","position":"before write","judgement":7}]}`, false},
-		{"new without judgement", `{"assertions":[{"topic":"new","topic_name":"lock","position":"before write"}]}`, true},
+		{"a position", `{"assertions":[{"topic_name":"lock","position":"before write"}]}`, true},
+		{"no positions", `{"assertions":[]}`, true},
+		{"a topic choice", `{"assertions":[{"topic":"T1","topic_name":"lock","position":"before write"}]}`, false},
+		{"a judgement", `{"assertions":[{"topic_name":"lock","position":"before write","judgement":"changes"}]}`, false},
+		{"no question", `{"assertions":[{"position":"before write"}]}`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := request.Schema.ValidateJSON([]byte(tc.json))

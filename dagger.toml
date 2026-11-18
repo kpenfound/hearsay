@@ -9,6 +9,7 @@ source = "github.com/dagger/go"
 [modules.go.settings]
 includeExtraFiles = ["docs/config.md", "docs/connector-contract.md", "cmd/hearsay/README.md"]
 base = "dag://hearsay/go-test-base"
+goflags = "-tags=integration -race"
 
 [modules.dagger-dang-sdk]
 source = "github.com/dagger/dang-sdk@v1.0.1"
@@ -21,3 +22,6 @@ module = "dagger-dang-sdk"
 
 [sdks.dang.scopes.".dagger/modules/hearsay"]
 is-module = true
+
+[modules.dagger-skill]
+source = "dagger.io/skill"

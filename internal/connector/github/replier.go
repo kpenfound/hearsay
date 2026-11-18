@@ -25,7 +25,7 @@ var ErrReplyGone = errors.New("the reply comment is gone")
 
 // Replier writes Hearsay's answer to a `/hearsay` command: one comment on the
 // issue or pull request the command was written on, and edits to that comment
-// and no other (ADR-0022). It is not the connector, which never writes to
+// and no other. It is not the connector, which never writes to
 // GitHub; the assertion worker builds one per GitHub source, from the same
 // configuration, and it needs the token and not the webhook secret. The token
 // has to be allowed to write issue and pull request comments.

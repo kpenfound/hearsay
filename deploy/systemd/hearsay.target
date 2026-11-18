@@ -1,0 +1,12 @@
+# The four Hearsay services as one unit to start, stop and enable:
+#   systemctl --user enable --now hearsay.target
+#   systemctl --user restart hearsay.target    # after a configuration change
+# Configuration is read once, at startup, so a change to it is a restart.
+
+[Unit]
+Description=Hearsay
+Documentation=https://github.com/kpenfound/hearsay/blob/main/docs/deploy.md
+Wants=hearsay@api.service hearsay@connectors.service hearsay@distiller.service hearsay@assert-worker.service
+
+[Install]
+WantedBy=default.target

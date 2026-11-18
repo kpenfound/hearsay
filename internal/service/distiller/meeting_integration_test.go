@@ -59,6 +59,7 @@ func TestMeetingSegmentsTrackEditsAndDeletion(t *testing.T) {
 		{},
 	}
 	fixtures := llm.NewFixtures()
+	jev := newOutcomeJev(t)
 	seen := map[string]bool{}
 	add := func(req llm.Request, response any) {
 		t.Helper()
@@ -86,14 +87,14 @@ func TestMeetingSegmentsTrackEditsAndDeletion(t *testing.T) {
 			if j == 1 {
 				answer = map[string]any{"summary": "A dashboard was proposed and left open.", "outcome_kind": "open"}
 			}
-			add(distiller.RequestFor(doc, distillBudget()), answer)
+			add(distiller.RequestFor(doc, distillBudget()), json.RawMessage(jev.answer(doc, answer)))
 		}
 	}
 	registry, err := llm.NewFake(testRepo(src).LLM, fixtures)
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := distiller.New(pool, registry, testConfig(src))
+	d, err := distiller.New(pool, registry, jev.judgments(), testConfig(src))
 	if err != nil {
 		t.Fatal(err)
 	}

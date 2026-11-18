@@ -1,5 +1,5 @@
 {{- /*
-The deploy job of ADR-0006: `hearsay migrate up` from the image being
+The deploy job: `hearsay migrate up` from the image being
 deployed, run to completion before install creates the services and before an
 upgrade rolls them. A hook runs before the release's own objects exist, so it
 reads nothing the chart renders: only the database URL, from the existing

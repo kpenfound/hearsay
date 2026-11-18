@@ -3,7 +3,6 @@
 package distiller_test
 
 import (
-	"encoding/json"
 	"errors"
 	"slices"
 	"testing"
@@ -32,6 +31,7 @@ func TestWikiSectionsTrackSourceEdits(t *testing.T) {
 
 	fixtures := llm.NewFixtures()
 	seen := map[string]bool{}
+	jev := newOutcomeJev(t)
 	for _, revision := range []connector.Event{first, second, third, fourth} {
 		sections, err := l1.BuildWikiSections(revision, nil, testRepo(src))
 		if err != nil {
@@ -44,17 +44,14 @@ func TestWikiSectionsTrackSourceEdits(t *testing.T) {
 				continue
 			}
 			seen[key] = true
-			answer := map[string]any{"summary": "Background notes.", "outcome_kind": "none"}
+			answer := map[string]any{"summary": "Background notes."}
 			if section.RawText != "" && section.RawText[0] == '#' && section.RawText != "# Beta\nBackground with [[Home]] and #tag." {
 				answer = map[string]any{"summary": "A choice about the implementation.", "outcome": "Use the engine.", "outcome_kind": "decided"}
 				if revision.NativeID != first.NativeID {
 					answer = map[string]any{"summary": "A queue approach was suggested.", "outcome": "Use the queue.", "outcome_kind": "proposed"}
 				}
 			}
-			body, err := json.Marshal(answer)
-			if err != nil {
-				t.Fatal(err)
-			}
+			body := jev.answer(section, answer)
 			if err := fixtures.Add(llm.CompletionFixture{Tier: llm.TierDistill, Request: req, Response: llm.Response{JSON: body, StopReason: llm.StopEnd, Model: "recorded"}}); err != nil {
 				t.Fatal(err)
 			}
@@ -64,7 +61,7 @@ func TestWikiSectionsTrackSourceEdits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := distiller.New(pool, registry, testConfig(src))
+	d, err := distiller.New(pool, registry, jev.judgments(), testConfig(src))
 	if err != nil {
 		t.Fatal(err)
 	}

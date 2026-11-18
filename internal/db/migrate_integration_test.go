@@ -71,7 +71,7 @@ func swapDatabaseName(url, name string) string {
 
 // Migration application, status and schema checks start with an empty
 // database. Reversible history and refused rollbacks are exercised separately.
-func TestMigrateUpAndDown(t *testing.T) {
+func TestMigrateUpFromAnEmptyDatabase(t *testing.T) {
 	url := scratchDatabase(t)
 	migrator, err := db.NewMigrator(t.Context(), url, nil)
 	if err != nil {
@@ -275,7 +275,7 @@ func TestReversibleMigrationHistory(t *testing.T) {
 	}
 }
 
-// ADR-0006: a down migration that would destroy data says so and fails rather
+// A down migration that would destroy data says so and fails rather
 // than pretending to reverse. The vector extension may predate this schema.
 func TestTheVectorExtensionRefusesToBeRolledBack(t *testing.T) {
 	url := scratchDatabase(t)
@@ -327,7 +327,7 @@ func TestMigrateUpTo(t *testing.T) {
 }
 
 // A database ahead of the binary is allowed: a rollout is migrated forward
-// before every replica has been replaced (ADR-0006).
+// before every replica has been replaced.
 func TestADatabaseAheadOfTheBinaryIsAllowed(t *testing.T) {
 	url := scratchDatabase(t)
 	migrator, err := db.NewMigrator(t.Context(), url, nil)

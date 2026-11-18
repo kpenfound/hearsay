@@ -34,8 +34,8 @@ func scopedRecord(t *testing.T, pool *pgxpool.Pool, shape string) l1.JudgmentRec
 	if err != nil {
 		t.Fatal(err)
 	}
-	return l1.JudgmentRecord{ID: "scoped", Task: "outcome_classification", QuestionVersion: "v1", QuestionHash: "question",
-		Inputs: in, Mode: "shadow", ModelVersion: "recorded", Outcome: "answer", Label: "none"}
+	return l1.JudgmentRecord{ID: "scoped", Task: "outcome.binding_agreement", QuestionVersion: "v1", QuestionHash: "question",
+		Inputs: in, Mode: "shadow", ModelVersion: "recorded", Outcome: "answer", Label: "no"}
 }
 
 const newThreadMember = `INSERT INTO l0_events(id,source,native_id,kind,artifact,occurred_at,payload,acl)

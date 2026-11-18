@@ -5,7 +5,7 @@
 // connector contract, and this package is what stores it. L0 is append-only;
 // a deletion at the source writes a tombstone and then walks provenance
 // forward. The one exception is an operator deletion, [Delete], which redacts
-// payloads in place (ADR-0018). Connectors write here and nowhere else.
+// payloads in place. Connectors write here and nowhere else.
 //
 // See docs/design.md#l0-events and docs/connector-contract.md. Nothing in this
 // package may call a model.

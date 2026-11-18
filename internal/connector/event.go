@@ -252,7 +252,7 @@ type Identity struct {
 	// DisplayName is the name the source shows.
 	DisplayName string `json:"display_name,omitempty"`
 	// Email is set only where the source gives one. It is a hint for identity
-	// mapping, and like the rest of the payload it is never logged (ADR-0008).
+	// mapping, and like the rest of the payload it is never logged.
 	Email string `json:"email,omitempty"`
 }
 

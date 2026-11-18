@@ -135,7 +135,7 @@ func TestThePumpDebouncesBurstsWithinAndAcrossReads(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			d, err := distiller.New(pool, registry, testConfig(src))
+			d, err := distiller.New(pool, registry, newOutcomeJev(t).judgments(), testConfig(src))
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -32,3 +32,10 @@ principals:
     identities:
       - source: agent-sessions
         native_id: assistant
+
+# Jev answers the yes/no questions the distiller and the assertion worker
+# decide from; both refuse to start without a model here and
+# HEARSAY_JEV_API_KEY in the environment (docs/config.md, `llm.judgments`).
+llm:
+  judgments:
+    model: jev-latest

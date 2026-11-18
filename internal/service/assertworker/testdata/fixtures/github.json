@@ -3,11 +3,11 @@
     {
       "tier": "assert",
       "request": {
-        "system": "You are Hearsay's assertion worker. You read one distilled document from a team's tools and write down the positions it takes: what the team proposed, decided or did, each as an answer to one question.\n\nA topic is a question the team takes positions on, phrased so that a later document about the same question would recognise it — \"where the engine takes its lock relative to the write\", not \"pull request 31\". A position is one answer to that question, in one sentence, as this document states it.\n\nYou are shown the existing topics this document may be continuing, each with a label and the position currently recorded on it. Where the document takes a position on one of them, answer with that label and judge whether this position changes or restates the current position shown, even if the words differ. Judge against the position shown, including when this document was read before. Answer \"new\" only for a question none of them asks, and omit the judgement for a new topic. Never put two positions from this document on one topic.\n\nTake at most 4 positions, and none where the document takes none: an empty list is a correct answer. Keep every position to what the document says. Never quote a credential, a token, a key or a personal email address.",
+        "system": "You are Hearsay's assertion worker. You read one distilled document from a team's tools and write down the positions it takes: what the team proposed, decided or did, each as an answer to one question.\n\nA topic is a question the team takes positions on, phrased so that a later document about the same question would recognise it — \"where the engine takes its lock relative to the write\", not \"pull request 31\". A position is one answer to that question, in one sentence, as this document states it.\n\nGive each position the question it answers as its topic name. Which existing topic a position continues, and whether it changes the position recorded there, is decided after you answer. Never take two positions on one question.\n\nTake at most 4 positions, and none where the document takes none: an empty list is a correct answer. Keep every position to what the document says. Never quote a credential, a token, a key or a personal email address.",
         "messages": [
           {
             "role": "user",
-            "text": "This is a issue document. What it concluded is classified as proposed.\n\nThe engine writes before taking its lock, which races with the job queue. The author proposes moving the lock into the job queue.\n\nQuestion: Where should the lock be taken?\n\nOutcome (proposed): Proposed: take the lock inside the job queue.\n\nThere are no existing topics this document could be continuing."
+            "text": "This is a issue document. What it concluded is classified as proposed.\n\nThe engine writes before taking its lock, which races with the job queue. The author proposes moving the lock into the job queue.\n\nQuestion: Where should the lock be taken?\n\nOutcome (proposed): Proposed: take the lock inside the job queue."
           }
         ],
         "max_tokens": 4096,
@@ -20,41 +20,25 @@
             "properties": {
               "assertions": {
                 "type": "array",
-                "description": "One entry per position, at most one per topic. Empty when the document takes none.",
+                "description": "One entry per position, at most one per question. Empty when the document takes none.",
                 "maxItems": 4,
                 "items": {
                   "type": "object",
                   "properties": {
-                    "judgement": {
-                      "type": "string",
-                      "description": "For an existing topic only: changes or restates the current position shown. Omit for new topics.",
-                      "enum": [
-                        "changes",
-                        "restates"
-                      ]
-                    },
                     "position": {
                       "type": "string",
                       "description": "The position, in one sentence, as the document states it.",
                       "minLength": 1,
                       "maxLength": 1000
                     },
-                    "topic": {
-                      "type": "string",
-                      "description": "The label of the existing topic this position is on, or \"new\".",
-                      "enum": [
-                        "new"
-                      ]
-                    },
                     "topic_name": {
                       "type": "string",
-                      "description": "The question this position answers, in a line. For an existing topic, its name.",
+                      "description": "The question this position answers, in a line.",
                       "minLength": 1,
                       "maxLength": 300
                     }
                   },
                   "required": [
-                    "topic",
                     "topic_name",
                     "position"
                   ],
@@ -74,7 +58,6 @@
           "assertions": [
             {
               "position": "Move the lock into the job queue.",
-              "topic": "new",
               "topic_name": "Where the engine takes its lock relative to the write"
             }
           ]
@@ -86,11 +69,11 @@
     {
       "tier": "assert",
       "request": {
-        "system": "You are Hearsay's assertion worker. You read one distilled document from a team's tools and write down the positions it takes: what the team proposed, decided or did, each as an answer to one question.\n\nA topic is a question the team takes positions on, phrased so that a later document about the same question would recognise it — \"where the engine takes its lock relative to the write\", not \"pull request 31\". A position is one answer to that question, in one sentence, as this document states it.\n\nYou are shown the existing topics this document may be continuing, each with a label and the position currently recorded on it. Where the document takes a position on one of them, answer with that label and judge whether this position changes or restates the current position shown, even if the words differ. Judge against the position shown, including when this document was read before. Answer \"new\" only for a question none of them asks, and omit the judgement for a new topic. Never put two positions from this document on one topic.\n\nTake at most 4 positions, and none where the document takes none: an empty list is a correct answer. Keep every position to what the document says. Never quote a credential, a token, a key or a personal email address.",
+        "system": "You are Hearsay's assertion worker. You read one distilled document from a team's tools and write down the positions it takes: what the team proposed, decided or did, each as an answer to one question.\n\nA topic is a question the team takes positions on, phrased so that a later document about the same question would recognise it — \"where the engine takes its lock relative to the write\", not \"pull request 31\". A position is one answer to that question, in one sentence, as this document states it.\n\nGive each position the question it answers as its topic name. Which existing topic a position continues, and whether it changes the position recorded there, is decided after you answer. Never take two positions on one question.\n\nTake at most 4 positions, and none where the document takes none: an empty list is a correct answer. Keep every position to what the document says. Never quote a credential, a token, a key or a personal email address.",
         "messages": [
           {
             "role": "user",
-            "text": "This is a pr document. What it concluded is classified as resolved.\n\nFixes the race the issue described by having the engine take its lock before it writes, rather than moving the lock into the job queue. Approved and merged.\n\nChange: The engine takes its lock before the write.\n\nOutcome (resolved): Merged.\n\nExisting topics this document may be continuing:\n\nT1: Where the engine takes its lock relative to the write\nCurrent position: Move the lock into the job queue."
+            "text": "This is a pr document. What it concluded is classified as resolved.\n\nFixes the race the issue described by having the engine take its lock before it writes, rather than moving the lock into the job queue. Approved and merged.\n\nChange: The engine takes its lock before the write.\n\nOutcome (resolved): Merged."
           }
         ],
         "max_tokens": 4096,
@@ -103,42 +86,25 @@
             "properties": {
               "assertions": {
                 "type": "array",
-                "description": "One entry per position, at most one per topic. Empty when the document takes none.",
+                "description": "One entry per position, at most one per question. Empty when the document takes none.",
                 "maxItems": 4,
                 "items": {
                   "type": "object",
                   "properties": {
-                    "judgement": {
-                      "type": "string",
-                      "description": "For an existing topic only: changes or restates the current position shown. Omit for new topics.",
-                      "enum": [
-                        "changes",
-                        "restates"
-                      ]
-                    },
                     "position": {
                       "type": "string",
                       "description": "The position, in one sentence, as the document states it.",
                       "minLength": 1,
                       "maxLength": 1000
                     },
-                    "topic": {
-                      "type": "string",
-                      "description": "The label of the existing topic this position is on, or \"new\".",
-                      "enum": [
-                        "new",
-                        "T1"
-                      ]
-                    },
                     "topic_name": {
                       "type": "string",
-                      "description": "The question this position answers, in a line. For an existing topic, its name.",
+                      "description": "The question this position answers, in a line.",
                       "minLength": 1,
                       "maxLength": 300
                     }
                   },
                   "required": [
-                    "topic",
                     "topic_name",
                     "position"
                   ],
@@ -157,9 +123,7 @@
         "json": {
           "assertions": [
             {
-              "judgement": "changes",
               "position": "The engine takes its own lock, before it writes.",
-              "topic": "T1",
               "topic_name": "Where the engine takes its lock relative to the write"
             }
           ]
@@ -171,11 +135,11 @@
     {
       "tier": "assert",
       "request": {
-        "system": "You are Hearsay's assertion worker. You read one distilled document from a team's tools and write down the positions it takes: what the team proposed, decided or did, each as an answer to one question.\n\nA topic is a question the team takes positions on, phrased so that a later document about the same question would recognise it — \"where the engine takes its lock relative to the write\", not \"pull request 31\". A position is one answer to that question, in one sentence, as this document states it.\n\nYou are shown the existing topics this document may be continuing, each with a label and the position currently recorded on it. Where the document takes a position on one of them, answer with that label and judge whether this position changes or restates the current position shown, even if the words differ. Judge against the position shown, including when this document was read before. Answer \"new\" only for a question none of them asks, and omit the judgement for a new topic. Never put two positions from this document on one topic.\n\nTake at most 4 positions, and none where the document takes none: an empty list is a correct answer. Keep every position to what the document says. Never quote a credential, a token, a key or a personal email address.",
+        "system": "You are Hearsay's assertion worker. You read one distilled document from a team's tools and write down the positions it takes: what the team proposed, decided or did, each as an answer to one question.\n\nA topic is a question the team takes positions on, phrased so that a later document about the same question would recognise it — \"where the engine takes its lock relative to the write\", not \"pull request 31\". A position is one answer to that question, in one sentence, as this document states it.\n\nGive each position the question it answers as its topic name. Which existing topic a position continues, and whether it changes the position recorded there, is decided after you answer. Never take two positions on one question.\n\nTake at most 4 positions, and none where the document takes none: an empty list is a correct answer. Keep every position to what the document says. Never quote a credential, a token, a key or a personal email address.",
         "messages": [
           {
             "role": "user",
-            "text": "This is a issue document. What it concluded is classified as proposed.\n\nThe engine writes before taking its lock, which races with the job queue. The author proposes moving the lock into the job queue.\n\nQuestion: Where should the lock be taken?\n\nOutcome (proposed): Proposed: take the lock inside the job queue.\n\nExisting topics this document may be continuing:\n\nT1: Where the engine takes its lock relative to the write\nCurrent position: Move the lock into the job queue."
+            "text": "This is a issue document. What it concluded is classified as proposed.\n\nThe engine writes before taking its lock, which races with the job queue. The author proposes moving the lock into the job queue; a later comment notes #31 fixed it differently.\n\nQuestion: Where should the lock be taken?\n\nOutcome (proposed): Proposed: take the lock inside the job queue."
           }
         ],
         "max_tokens": 4096,
@@ -188,42 +152,25 @@
             "properties": {
               "assertions": {
                 "type": "array",
-                "description": "One entry per position, at most one per topic. Empty when the document takes none.",
+                "description": "One entry per position, at most one per question. Empty when the document takes none.",
                 "maxItems": 4,
                 "items": {
                   "type": "object",
                   "properties": {
-                    "judgement": {
-                      "type": "string",
-                      "description": "For an existing topic only: changes or restates the current position shown. Omit for new topics.",
-                      "enum": [
-                        "changes",
-                        "restates"
-                      ]
-                    },
                     "position": {
                       "type": "string",
                       "description": "The position, in one sentence, as the document states it.",
                       "minLength": 1,
                       "maxLength": 1000
                     },
-                    "topic": {
-                      "type": "string",
-                      "description": "The label of the existing topic this position is on, or \"new\".",
-                      "enum": [
-                        "new",
-                        "T1"
-                      ]
-                    },
                     "topic_name": {
                       "type": "string",
-                      "description": "The question this position answers, in a line. For an existing topic, its name.",
+                      "description": "The question this position answers, in a line.",
                       "minLength": 1,
                       "maxLength": 300
                     }
                   },
                   "required": [
-                    "topic",
                     "topic_name",
                     "position"
                   ],
@@ -242,94 +189,7 @@
         "json": {
           "assertions": [
             {
-              "judgement": "restates",
-              "position": "Move the lock into the job queue.",
-              "topic": "T1",
-              "topic_name": "Where the engine takes its lock relative to the write"
-            }
-          ]
-        },
-        "stop_reason": "end",
-        "model": "recorded"
-      }
-    },
-    {
-      "tier": "assert",
-      "request": {
-        "system": "You are Hearsay's assertion worker. You read one distilled document from a team's tools and write down the positions it takes: what the team proposed, decided or did, each as an answer to one question.\n\nA topic is a question the team takes positions on, phrased so that a later document about the same question would recognise it — \"where the engine takes its lock relative to the write\", not \"pull request 31\". A position is one answer to that question, in one sentence, as this document states it.\n\nYou are shown the existing topics this document may be continuing, each with a label and the position currently recorded on it. Where the document takes a position on one of them, answer with that label and judge whether this position changes or restates the current position shown, even if the words differ. Judge against the position shown, including when this document was read before. Answer \"new\" only for a question none of them asks, and omit the judgement for a new topic. Never put two positions from this document on one topic.\n\nTake at most 4 positions, and none where the document takes none: an empty list is a correct answer. Keep every position to what the document says. Never quote a credential, a token, a key or a personal email address.",
-        "messages": [
-          {
-            "role": "user",
-            "text": "This is a issue document. What it concluded is classified as proposed.\n\nThe engine writes before taking its lock, which races with the job queue. The author proposes moving the lock into the job queue; a later comment notes #31 fixed it differently.\n\nQuestion: Where should the lock be taken?\n\nOutcome (proposed): Proposed: take the lock inside the job queue.\n\nExisting topics this document may be continuing:\n\nT1: Where the engine takes its lock relative to the write\nCurrent position: The engine takes its own lock, before it writes."
-          }
-        ],
-        "max_tokens": 4096,
-        "schema": {
-          "name": "l2_assertions",
-          "description": "The topics and positions one document asserts.",
-          "definition": {
-            "type": "object",
-            "description": "The positions one document takes.",
-            "properties": {
-              "assertions": {
-                "type": "array",
-                "description": "One entry per position, at most one per topic. Empty when the document takes none.",
-                "maxItems": 4,
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "judgement": {
-                      "type": "string",
-                      "description": "For an existing topic only: changes or restates the current position shown. Omit for new topics.",
-                      "enum": [
-                        "changes",
-                        "restates"
-                      ]
-                    },
-                    "position": {
-                      "type": "string",
-                      "description": "The position, in one sentence, as the document states it.",
-                      "minLength": 1,
-                      "maxLength": 1000
-                    },
-                    "topic": {
-                      "type": "string",
-                      "description": "The label of the existing topic this position is on, or \"new\".",
-                      "enum": [
-                        "new",
-                        "T1"
-                      ]
-                    },
-                    "topic_name": {
-                      "type": "string",
-                      "description": "The question this position answers, in a line. For an existing topic, its name.",
-                      "minLength": 1,
-                      "maxLength": 300
-                    }
-                  },
-                  "required": [
-                    "topic",
-                    "topic_name",
-                    "position"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "required": [
-              "assertions"
-            ],
-            "additionalProperties": false
-          }
-        }
-      },
-      "response": {
-        "json": {
-          "assertions": [
-            {
-              "judgement": "changes",
               "position": "The job queue should hold the lock.",
-              "topic": "T1",
               "topic_name": "Where the engine takes its lock relative to the write"
             }
           ]
@@ -341,11 +201,11 @@
     {
       "tier": "assert",
       "request": {
-        "system": "You are Hearsay's assertion worker. You read one distilled document from a team's tools and write down the positions it takes: what the team proposed, decided or did, each as an answer to one question.\n\nA topic is a question the team takes positions on, phrased so that a later document about the same question would recognise it — \"where the engine takes its lock relative to the write\", not \"pull request 31\". A position is one answer to that question, in one sentence, as this document states it.\n\nYou are shown the existing topics this document may be continuing, each with a label and the position currently recorded on it. Where the document takes a position on one of them, answer with that label and judge whether this position changes or restates the current position shown, even if the words differ. Judge against the position shown, including when this document was read before. Answer \"new\" only for a question none of them asks, and omit the judgement for a new topic. Never put two positions from this document on one topic.\n\nTake at most 4 positions, and none where the document takes none: an empty list is a correct answer. Keep every position to what the document says. Never quote a credential, a token, a key or a personal email address.",
+        "system": "You are Hearsay's assertion worker. You read one distilled document from a team's tools and write down the positions it takes: what the team proposed, decided or did, each as an answer to one question.\n\nA topic is a question the team takes positions on, phrased so that a later document about the same question would recognise it — \"where the engine takes its lock relative to the write\", not \"pull request 31\". A position is one answer to that question, in one sentence, as this document states it.\n\nGive each position the question it answers as its topic name. Which existing topic a position continues, and whether it changes the position recorded there, is decided after you answer. Never take two positions on one question.\n\nTake at most 4 positions, and none where the document takes none: an empty list is a correct answer. Keep every position to what the document says. Never quote a credential, a token, a key or a personal email address.",
         "messages": [
           {
             "role": "user",
-            "text": "This is a issue document. What it concluded is classified as proposed.\n\nThe engine writes before taking its lock, which races with the job queue. The author proposes moving the lock into the job queue.\n\nQuestion: Where should the lock be taken?\n\nOutcome (proposed): Proposed: take the lock inside the job queue.\n\nExisting topics this document may be continuing:\n\nT1: Where the engine takes its lock relative to the write\nCurrent position: The job queue should hold the lock."
+            "text": "This is a commit document. What it concluded is classified as resolved.\n\nWrites down that the engine takes its lock before it writes.\n\nChange: Adds a comment on the lock order.\n\nOutcome (resolved): The lock order is documented."
           }
         ],
         "max_tokens": 4096,
@@ -358,211 +218,25 @@
             "properties": {
               "assertions": {
                 "type": "array",
-                "description": "One entry per position, at most one per topic. Empty when the document takes none.",
+                "description": "One entry per position, at most one per question. Empty when the document takes none.",
                 "maxItems": 4,
                 "items": {
                   "type": "object",
                   "properties": {
-                    "judgement": {
-                      "type": "string",
-                      "description": "For an existing topic only: changes or restates the current position shown. Omit for new topics.",
-                      "enum": [
-                        "changes",
-                        "restates"
-                      ]
-                    },
                     "position": {
                       "type": "string",
                       "description": "The position, in one sentence, as the document states it.",
                       "minLength": 1,
                       "maxLength": 1000
                     },
-                    "topic": {
-                      "type": "string",
-                      "description": "The label of the existing topic this position is on, or \"new\".",
-                      "enum": [
-                        "new",
-                        "T1"
-                      ]
-                    },
                     "topic_name": {
                       "type": "string",
-                      "description": "The question this position answers, in a line. For an existing topic, its name.",
+                      "description": "The question this position answers, in a line.",
                       "minLength": 1,
                       "maxLength": 300
                     }
                   },
                   "required": [
-                    "topic",
-                    "topic_name",
-                    "position"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "required": [
-              "assertions"
-            ],
-            "additionalProperties": false
-          }
-        }
-      },
-      "response": {
-        "json": {
-          "assertions": [
-            {
-              "judgement": "restates",
-              "position": "The lock belongs in the job queue.",
-              "topic": "T1",
-              "topic_name": "Where the engine takes its lock relative to the write"
-            }
-          ]
-        },
-        "stop_reason": "end",
-        "model": "recorded"
-      }
-    },
-    {
-      "tier": "assert",
-      "request": {
-        "system": "You are Hearsay's assertion worker. You read one distilled document from a team's tools and write down the positions it takes: what the team proposed, decided or did, each as an answer to one question.\n\nA topic is a question the team takes positions on, phrased so that a later document about the same question would recognise it — \"where the engine takes its lock relative to the write\", not \"pull request 31\". A position is one answer to that question, in one sentence, as this document states it.\n\nYou are shown the existing topics this document may be continuing, each with a label and the position currently recorded on it. Where the document takes a position on one of them, answer with that label and judge whether this position changes or restates the current position shown, even if the words differ. Judge against the position shown, including when this document was read before. Answer \"new\" only for a question none of them asks, and omit the judgement for a new topic. Never put two positions from this document on one topic.\n\nTake at most 4 positions, and none where the document takes none: an empty list is a correct answer. Keep every position to what the document says. Never quote a credential, a token, a key or a personal email address.",
-        "messages": [
-          {
-            "role": "user",
-            "text": "This is a pr document. What it concluded is classified as resolved.\n\nFixes the race the issue described by having the engine take its lock before it writes, rather than moving the lock into the job queue. Approved and merged.\n\nChange: The engine takes its lock before the write.\n\nOutcome (resolved): Merged.\n\nExisting topics this document may be continuing:\n\nT1: Where the engine takes its lock relative to the write\nCurrent position: The engine takes its own lock, before it writes."
-          }
-        ],
-        "max_tokens": 4096,
-        "schema": {
-          "name": "l2_assertions",
-          "description": "The topics and positions one document asserts.",
-          "definition": {
-            "type": "object",
-            "description": "The positions one document takes.",
-            "properties": {
-              "assertions": {
-                "type": "array",
-                "description": "One entry per position, at most one per topic. Empty when the document takes none.",
-                "maxItems": 4,
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "judgement": {
-                      "type": "string",
-                      "description": "For an existing topic only: changes or restates the current position shown. Omit for new topics.",
-                      "enum": [
-                        "changes",
-                        "restates"
-                      ]
-                    },
-                    "position": {
-                      "type": "string",
-                      "description": "The position, in one sentence, as the document states it.",
-                      "minLength": 1,
-                      "maxLength": 1000
-                    },
-                    "topic": {
-                      "type": "string",
-                      "description": "The label of the existing topic this position is on, or \"new\".",
-                      "enum": [
-                        "new",
-                        "T1"
-                      ]
-                    },
-                    "topic_name": {
-                      "type": "string",
-                      "description": "The question this position answers, in a line. For an existing topic, its name.",
-                      "minLength": 1,
-                      "maxLength": 300
-                    }
-                  },
-                  "required": [
-                    "topic",
-                    "topic_name",
-                    "position"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "required": [
-              "assertions"
-            ],
-            "additionalProperties": false
-          }
-        }
-      },
-      "response": {
-        "json": {
-          "assertions": [
-            {
-              "judgement": "restates",
-              "position": "The engine takes its own lock, before it writes.",
-              "topic": "T1",
-              "topic_name": "Where the engine takes its lock relative to the write"
-            }
-          ]
-        },
-        "stop_reason": "end",
-        "model": "recorded"
-      }
-    },
-    {
-      "tier": "assert",
-      "request": {
-        "system": "You are Hearsay's assertion worker. You read one distilled document from a team's tools and write down the positions it takes: what the team proposed, decided or did, each as an answer to one question.\n\nA topic is a question the team takes positions on, phrased so that a later document about the same question would recognise it — \"where the engine takes its lock relative to the write\", not \"pull request 31\". A position is one answer to that question, in one sentence, as this document states it.\n\nYou are shown the existing topics this document may be continuing, each with a label and the position currently recorded on it. Where the document takes a position on one of them, answer with that label and judge whether this position changes or restates the current position shown, even if the words differ. Judge against the position shown, including when this document was read before. Answer \"new\" only for a question none of them asks, and omit the judgement for a new topic. Never put two positions from this document on one topic.\n\nTake at most 4 positions, and none where the document takes none: an empty list is a correct answer. Keep every position to what the document says. Never quote a credential, a token, a key or a personal email address.",
-        "messages": [
-          {
-            "role": "user",
-            "text": "This is a commit document. What it concluded is classified as resolved.\n\nWrites down that the engine takes its lock before it writes.\n\nChange: Adds a comment on the lock order.\n\nOutcome (resolved): The lock order is documented.\n\nThere are no existing topics this document could be continuing."
-          }
-        ],
-        "max_tokens": 4096,
-        "schema": {
-          "name": "l2_assertions",
-          "description": "The topics and positions one document asserts.",
-          "definition": {
-            "type": "object",
-            "description": "The positions one document takes.",
-            "properties": {
-              "assertions": {
-                "type": "array",
-                "description": "One entry per position, at most one per topic. Empty when the document takes none.",
-                "maxItems": 4,
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "judgement": {
-                      "type": "string",
-                      "description": "For an existing topic only: changes or restates the current position shown. Omit for new topics.",
-                      "enum": [
-                        "changes",
-                        "restates"
-                      ]
-                    },
-                    "position": {
-                      "type": "string",
-                      "description": "The position, in one sentence, as the document states it.",
-                      "minLength": 1,
-                      "maxLength": 1000
-                    },
-                    "topic": {
-                      "type": "string",
-                      "description": "The label of the existing topic this position is on, or \"new\".",
-                      "enum": [
-                        "new"
-                      ]
-                    },
-                    "topic_name": {
-                      "type": "string",
-                      "description": "The question this position answers, in a line. For an existing topic, its name.",
-                      "minLength": 1,
-                      "maxLength": 300
-                    }
-                  },
-                  "required": [
-                    "topic",
                     "topic_name",
                     "position"
                   ],
@@ -582,17 +256,14 @@
           "assertions": [
             {
               "position": "Ask robin@example.com before changing the lock order.",
-              "topic": "new",
               "topic_name": "Who to ask about the lock order"
             },
             {
               "position": "A position on a topic with no name.",
-              "topic": "new",
               "topic_name": "   "
             },
             {
               "position": "   ",
-              "topic": "new",
               "topic_name": "A topic with no position"
             }
           ]
@@ -604,7 +275,7 @@
     {
       "tier": "distill",
       "request": {
-        "system": "You are Hearsay's distiller. You turn one artifact from a team's tools into one short document that a coding agent will read later, when the artifact itself is long gone from anybody's memory.\n\nWrite for someone who has to make a decision and has not read any of this. Say what the team worked out and why, not what the software does. Keep every claim to what the document in front of you says: if something is not there, leave the field empty rather than filling it in from what usually happens.\n\nNever quote a credential, a token, a key or a personal email address, even if the document contains one.\n\nThis is a tracker issue and the conversation on it.\n\n- summary: what is being asked for or reported, and where the conversation got to.\n- question: the question the issue is really asking, in one sentence. Empty if it reports rather than asks.\n- outcome: what was concluded, if anything was.\n- open_questions: what the thread leaves unanswered, one per entry, each a question.\n\noutcome_kind classifies the outcome, and it is always one of five:\n\n- resolved: a question was answered or the work was finished. A merged change, a bug someone fixed.\n- decided: the team took a decision that binds later work, whether or not it has been carried out.\n- proposed: something was put forward and nobody has agreed to it yet.\n- open: it is still being worked out, and the artifact says so.\n- none: nothing was concluded. A note, a report nobody answered, a routine change.\n\nUse none rather than guessing. An outcome you had to infer is not an outcome.",
+        "system": "You are Hearsay's distiller. You turn one artifact from a team's tools into one short document that a coding agent will read later, when the artifact itself is long gone from anybody's memory.\n\nWrite for someone who has to make a decision and has not read any of this. Say what the team worked out and why, not what the software does. Keep every claim to what the document in front of you says: if something is not there, leave the field empty rather than filling it in from what usually happens.\n\nNever quote a credential, a token, a key or a personal email address, even if the document contains one.\n\nThis is a tracker issue and the conversation on it.\n\n- summary: what is being asked for or reported, and where the conversation got to.\n- question: the question the issue is really asking, in one sentence. Empty if it reports rather than asks.\n- outcome: what was concluded, if anything was.\n- open_questions: what the thread leaves unanswered, one per entry, each a question.\n\noutcome is one sentence stating the substance of what the artifact concluded, settled or put forward, such as \"take the lock before the write\". Do not say whether anyone agreed to it or whether it was carried out; that is judged separately. Leave it empty when the artifact states nothing of the kind. An outcome you had to infer is not an outcome.",
         "messages": [
           {
             "role": "user",
@@ -631,19 +302,8 @@
               },
               "outcome": {
                 "type": "string",
-                "description": "What was concluded. Empty when nothing was.",
+                "description": "The substance of what was concluded, settled or put forward, in one sentence. Empty when nothing was.",
                 "maxLength": 1000
-              },
-              "outcome_kind": {
-                "type": "string",
-                "description": "How to classify the outcome.",
-                "enum": [
-                  "resolved",
-                  "decided",
-                  "proposed",
-                  "open",
-                  "none"
-                ]
               },
               "question": {
                 "type": "string",
@@ -658,8 +318,7 @@
               }
             },
             "required": [
-              "summary",
-              "outcome_kind"
+              "summary"
             ],
             "additionalProperties": false
           }
@@ -668,7 +327,6 @@
       "response": {
         "json": {
           "outcome": "Proposed: take the lock inside the job queue.",
-          "outcome_kind": "proposed",
           "question": "Where should the lock be taken?",
           "summary": "The engine writes before taking its lock, which races with the job queue. The author proposes moving the lock into the job queue."
         },

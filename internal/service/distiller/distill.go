@@ -61,18 +61,22 @@ type Distiller struct {
 var _ l1.Embedder = (llm.Embedder)(nil)
 
 // New builds the distiller from what the process has: the database, the model
-// tier registry and the configuration.
+// tier registry, Jev and the configuration.
 //
 // It resolves the `distill` tier here rather than per job, because a process
-// that cannot make a model call should not be running (ADR-0005): a tier the
+// that cannot make a model call should not be running: a tier the
 // configuration does not name is a startup failure, not a job that fails five
-// times an hour later.
-func New(pool *pgxpool.Pool, registry llm.Registry, cfg *config.Config, options ...Option) (*Distiller, error) {
+// times an hour later. Jev is required for the same reason: every outcome is
+// decided from its judgments.
+func New(pool *pgxpool.Pool, registry llm.Registry, judgments llm.Judgments, cfg *config.Config) (*Distiller, error) {
 	if pool == nil {
 		return nil, errors.New("the distiller needs a database")
 	}
 	if registry == nil {
 		return nil, errors.New("the distiller needs the model tier registry")
+	}
+	if judgments == nil {
+		return nil, errors.New("the distiller needs Jev: configure llm.judgments and its API key")
 	}
 	tier, err := registry.Completer(llm.TierDistill)
 	if err != nil {
@@ -86,32 +90,22 @@ func New(pool *pgxpool.Pool, registry llm.Registry, cfg *config.Config, options 
 	if err != nil {
 		return nil, err
 	}
-	d := &Distiller{
-		pool:     pool,
-		events:   l0.New(pool),
-		docs:     l1.New(pool),
-		tier:     llm.AccountCompletions(tier),
-		embedder: embedder,
-		resolver: resolver,
-		repo:     cfg.Repo,
-		timeout:  CallTimeout,
-	}
-	for _, option := range options {
-		option(d)
-	}
-	return d, nil
+	return &Distiller{
+		pool:      pool,
+		events:    l0.New(pool),
+		docs:      l1.New(pool),
+		tier:      llm.AccountCompletions(tier),
+		embedder:  embedder,
+		resolver:  resolver,
+		repo:      cfg.Repo,
+		timeout:   CallTimeout,
+		judgments: judgments,
+	}, nil
 }
-
-// Option supplies optional process dependencies without constructing clients.
-type Option func(*Distiller)
-
-// WithJudgments shares the process's optional typed capability. The global
-// configuration switch still controls whether it is consulted.
-func WithJudgments(j llm.Judgments) Option { return func(d *Distiller) { d.judgments = j } }
 
 // embedTier is the `embed` tier, or nil where the configuration names none.
 //
-// A configuration with no embed tier is the shipped one (ADR-0005 ships no
+// A configuration with no embed tier is the shipped one (Hearsay ships no
 // embedding provider), and it is not an error: documents are written without a
 // vector and search finds them by their words alone. What is an error is a tier
 // that produces vectors of the wrong width — that is a migration and a re-embed
@@ -151,7 +145,7 @@ type Result struct {
 	// their own, so the document is not left behind.
 	Superseded bool
 	// Redacted names the shapes the scrub took out of what the model wrote,
-	// sorted. It is the shapes and never the values (ADR-0008).
+	// sorted. It is the shapes and never the values.
 	Redacted []string
 	// Asserting reports that the write enqueued an `assert` job: the document
 	// changed and its outcome enters the assertion pipeline.
@@ -164,7 +158,7 @@ type Result struct {
 }
 
 // Handle is the queue handler for the `distill` kind. It is safe to run twice
-// on one job, which is what at-least-once delivery requires (ADR-0007).
+// on one job, which is what at-least-once delivery requires.
 func (d *Distiller) Handle(ctx context.Context, job queue.Job) error {
 	if !job.EnqueuedAt.IsZero() {
 		ctx = context.WithValue(ctx, queueDelayKey{}, max(int64(0), time.Since(job.EnqueuedAt).Nanoseconds()))
@@ -586,7 +580,7 @@ func (d *Distiller) distillWikiSections(ctx context.Context, result Result, root
 		if err != nil {
 			return Result{}, err
 		}
-		runs[i], sections[i] = run, run.selected
+		runs[i], sections[i] = run, run.doc
 	}
 	current, err := d.events.Current(ctx, l0.ListOptions{Filter: l0.Filter{Source: root.Source, Artifact: root.Payload.Artifact}, Limit: 1})
 	if err != nil {
@@ -595,6 +589,11 @@ func (d *Distiller) distillWikiSections(ctx context.Context, result Result, root
 	if len(current) != 1 || current[0].NativeID != root.NativeID {
 		result.Superseded = true
 		return result, nil
+	}
+	for _, run := range runs {
+		if err := stale(run); err != nil {
+			return Result{}, err
+		}
 	}
 	ids := make([]string, len(sections))
 	for i, section := range sections {
@@ -605,9 +604,8 @@ func (d *Distiller) distillWikiSections(ctx context.Context, result Result, root
 		for _, run := range runs {
 			batch = append(batch, run)
 		}
-		commitOutcomes(ctx, tx, batch...)
-		for i, run := range runs {
-			sections[i] = run.selected
+		if err := commitOutcomes(ctx, tx, batch...); err != nil {
+			return err
 		}
 
 		removed, err := deleteDerived(ctx, tx, `DELETE FROM l1_docs WHERE source = $1 AND kind = $2 AND left(source_native_id, length($3)) = $3 AND NOT (id = ANY($4))`, root.Source, l1.KindWikiSection, l1.WikiSectionPrefix(root.Payload.Artifact), ids)
@@ -678,7 +676,7 @@ func (d *Distiller) writeDocument(ctx context.Context, result Result, source, ar
 	if err != nil {
 		return Result{}, err
 	}
-	doc = run.selected
+	doc = run.doc
 	redacted := run.redacted
 	runs := []*outcomeRun{run}
 	for i := range bursts {
@@ -687,7 +685,7 @@ func (d *Distiller) writeDocument(ctx context.Context, result Result, source, ar
 			return Result{}, err
 		}
 		runs = append(runs, burstRun)
-		bursts[i] = burstRun.selected
+		bursts[i] = burstRun.doc
 	}
 
 	// The model call is the slow part, and the queue's dedupe on (kind, target)
@@ -711,17 +709,18 @@ func (d *Distiller) writeDocument(ctx context.Context, result Result, source, ar
 		result.Superseded = true
 		return result, nil
 	}
+	if err := stale(runs...); err != nil {
+		return Result{}, err
+	}
 
-	// The document and the assert job it causes are one transaction (ADR-0007):
+	// The document and the assert job it causes are one transaction:
 	// either a document whose outcome enters the assertion pipeline is stored
 	// with its job, or neither is and the retry writes both. Only a write that
 	// changed the row asks for one — a re-distillation that changed nothing has
 	// nothing new for L2 to read.
 	err = pgx.BeginFunc(ctx, d.pool, func(tx pgx.Tx) error {
-		commitOutcomes(ctx, tx, runs...)
-		doc = run.selected
-		for i := range bursts {
-			bursts[i] = runs[i+1].selected
+		if err := commitOutcomes(ctx, tx, runs...); err != nil {
+			return err
 		}
 
 		written, err := l1.New(tx).Put(ctx, doc)
@@ -911,18 +910,18 @@ func (d *Distiller) provenanceNow(ctx context.Context, source, artifact string) 
 	return doc.L0Refs, nil
 }
 
-// distil makes the baseline model call: the document's own words in, the body out.
+// distil makes the model call: the document's own words in, the body out.
 //
 // The error it returns is a log line and a `queue_job.last_error` column, so it
 // names the document, the tier and the shape that was asked for, and never a
-// word of what was sent or what came back (ADR-0008). internal/llm's own errors
+// word of what was sent or what came back. internal/llm's own errors
 // hold to the same rule.
 func (d *Distiller) distil(ctx context.Context, doc l1.Document) (l1.Body, error) {
 	call, done := context.WithTimeout(ctx, d.timeout)
 	defer done()
 
 	// The budget is left zero: the registry fills in the tier's, which is
-	// where a deployment sets it (ADR-0005).
+	// where a deployment sets it.
 	req := RequestFor(doc, 0)
 	resp, err := d.tier.Complete(call, req)
 	if err != nil {
@@ -930,18 +929,12 @@ func (d *Distiller) distil(ctx context.Context, doc l1.Document) (l1.Body, error
 	}
 
 	// The answer has already been checked against the schema by internal/llm,
-	// so this decodes a shape that is known to fit. What it cannot check is
-	// that the enum member is one this build knows, because the schema's enum
-	// and the parser are two readings of one list — hence the parse.
+	// so this decodes a shape that is known to fit.
 	var a answer
 	if err := json.Unmarshal(resp.JSON, &a); err != nil {
 		return l1.Body{}, fmt.Errorf("distilling %s: the %s answer for %s did not decode: %w", doc.ID, llm.TierDistill, req.Schema.Name, err)
 	}
-	body, err := a.body()
-	if err != nil {
-		return l1.Body{}, fmt.Errorf("distilling %s: %w", doc.ID, err)
-	}
-	return body, nil
+	return a.body(), nil
 }
 
 // distillDecision writes the document of a decision a `work` source recorded.

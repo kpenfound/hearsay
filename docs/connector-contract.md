@@ -35,9 +35,7 @@ principal and checking the scope's `ratified_by.principals`. A chat slash
 command is applied by the process that receives it — the API's Discord
 interaction adapter, or the connector runtime for a connector that receives
 commands itself ([below](#chat-commands)) — through one shared applier, with
-the same checks, under the same serial key
-([ADR-0024](adr/0024-discord-commands-are-applied-by-the-interaction-adapter.md),
-[ADR-0025](adr/0025-chat-commands-are-applied-by-the-receiving-process-through-one-applier.md)).
+the same checks, under the same serial key.
 The connector itself still interprets nothing: it parses the request, and
 the runtime records and applies it.
 Unmapped or unauthorized gestures make no L2 change. The worker enqueues an
@@ -46,7 +44,6 @@ idempotent `assert` job targeted at
 L1 assertion jobs and topic operations. The gesture record and L2 writes
 commit together. A reaction removal or command-comment deletion reverses the
 gesture under the same key. A GitHub command edit does not execute it again.
-See [ADR-0022](adr/0022-human-gestures-and-command-replies.md).
 
 The only source-write exception is an answer to a command the person issued.
 Reactions receive no reply. The API runtime's HTTP Discord interaction adapter
@@ -170,17 +167,17 @@ wherever the source has something that behaves like one.
 a connector, under source `hearsay` (`connector.SelfSource`). They are in the
 vocabulary because they are L0 events like any other. A `deletion` is not a
 tombstone: it records that an operator redacted events with `hearsay delete
---apply` (ADR-0018), and it hides nothing by its own `target` — the redacted
+--apply`, and it hides nothing by its own `target` — the redacted
 rows carry the deletion that hid them.
 
 A `command` is written under the source it was given in, by the runtime
 component that received it: a Discord slash command by the API's interaction
-adapter (ADR-0024), a chat command a connector receives by the connector
-runtime when the connector hands it over ([chat commands](#chat-commands),
-ADR-0025), and a GitHub `/hearsay` comment, which arrives with the comment
+adapter, a chat command a connector receives by the connector
+runtime when the connector hands it over ([chat commands](#chat-commands)),
+and a GitHub `/hearsay` comment, which arrives with the comment
 webhook, by the GitHub connector. Hearsay's reply to a GitHub command
 is `github.reply`, based on `command`. The distiller reads no document from
-either, and leaves both out of the conversation they hang off (ADR-0022).
+either, and leaves both out of the conversation they hang off.
 
 **Extension kinds.** A source with something genuinely different emits
 `<vendor>.<name>` — two lowercase words separated by a dot, `figma.file_comment`,
@@ -246,8 +243,7 @@ or model output. Validation refuses a missing or unknown `core`, an invalid
 commits and transcripts (and extensions based on them). Kind determines the
 root rule; a child's state is not its parent's. A state change is a content
 change, so it requires a new revision even when nothing else changes. L1
-copies the root's state into its envelope without involving the model
-([ADR-0026](adr/0026-artifacts-may-carry-one-of-five-core-states-stated-by-their-source.md)).
+copies the root's state into its envelope without involving the model.
 
 `parent`, `thread`, `part_of` and `target` reference **artifact ids**, never
 native ids: a comment hangs off an issue, not off one revision of it.
@@ -255,7 +251,7 @@ native ids: a comment hangs off an issue, not off one revision of it.
 `part_of` is part of what an observation says, like any other field: an item
 moved to another parent, or taken out of one, is a new revision, and the
 current revision's `part_of` is where the item sits now. L2 reads it for the
-tracker hierarchy ([ADR-0016](adr/0016-entity-hierarchy-sources-are-ranked-and-replace.md)).
+tracker hierarchy.
 
 `paths` is what L1 links a change to code entities by: the document references
 every entity in `code/` whose path patterns match one of them, in the
@@ -376,7 +372,7 @@ container. Satisfying an individual list uses the usual additive grants for
 `public`, `identity` and `group`, checked against the reader's base audience.
 A container with no current revisions satisfies nobody. If any container or
 any of its current lists cannot establish access, the entry grants nothing.
-During an [ADR-0013](adr/0013-acl-re-syncs-are-durable-and-driven-by-the-runtime.md) re-sync
+During an ACL re-sync
 after a repository goes private, the private group is already among those
 lists, so the rule fails closed even while public revisions remain.
 
@@ -385,8 +381,7 @@ Resolution runs once when the reader is built. A satisfied entry adds only
 audience entry never carries the `containers` array. The connector emits the
 reference, and repository access lists are **never copied at ingest**. Access
 therefore follows the listed containers' current access without reposting the
-referring artifact. See the ADR titled **An access list may defer to other
-sources' containers** (recorded with this feature).
+referring artifact.
 
 ### Validation
 
@@ -526,7 +521,7 @@ choice:
   container L0 still serves as public and owes a re-sync for each the source
   says is not. A container re-synced since its newest public artifact arrived is
   not asked about, because what that walk could not reach a second walk would
-  not reach either ([ADR-0013](adr/0013-acl-re-syncs-are-durable-and-driven-by-the-runtime.md)).
+  not reach either.
 - **Until the re-emission lands, L0 holds the old ACL.** Ingest is eventually
   consistent with the source's permissions, and it is more permissive than the
   source in the window between the change and the re-sync. A source whose
@@ -556,13 +551,11 @@ that its replays of a redacted event are dropped: re-emitting an event an
 operator deleted stores nothing, returns no error and is counted on the
 deletion record, so a backfill or a redelivery neither restores the content nor
 stalls the connector. A new revision of the artifact — a new event id — is
-admitted, the same as after a tombstone
-([ADR-0018](adr/0018-operator-deletion-redacts-l0-in-place.md)). The L1
+admitted, the same as after a tombstone. The L1
 documents built from the deleted events are re-distilled or deleted, the
 stances resting on them are superseded, and the text L2 read from the deleted
 content is redacted once it is no longer current; a tombstone gets the same
-rebuild without that redaction
-([ADR-0019](adr/0019-operator-deletion-redacts-superseded-l2-text.md)).
+rebuild without that redaction.
 `hearsay delete list` and `hearsay delete show <id>` are the record of each
 deletion and of what it rebuilt.
 
@@ -811,8 +804,7 @@ The runtime checks it as it checks any event, and then:
   through the gesture ledger (keyed by the command event, so a retry records
   nothing) or a merge through the topic ledger. Both hold the scope's `assert`
   serial key and refuse a person the scope's `ratified_by.principals` does not
-  name ([ADR-0022](adr/0022-human-gestures-and-command-replies.md),
-  [ADR-0023](adr/0023-human-gestures-are-a-ledger-every-standing-reads.md)).
+  name.
 - **returns the result**, a `CommandResult`: an `Outcome` (`pinned`,
   `already_pinned` and `merged` applied the command; every other outcome says
   why nothing changed, `unmapped`, `not_allowed`, `no_such_topic` and so on)
@@ -825,8 +817,7 @@ and the connector answers nothing. Any other error means the connector sent a
 command the contract does not allow, and it answers nothing either. The command
 is applied in the process that received it, while the request waits, and
 nothing retries it: a process that dies mid-command leaves it unapplied, and
-the person runs it again
-([ADR-0025](adr/0025-chat-commands-are-applied-by-the-receiving-process-through-one-applier.md)).
+the person runs it again.
 
 ### The source config a connector consumes
 
@@ -875,7 +866,7 @@ third-party event shapes must follow the shared contract above.
 | `/hearsay` command comment | `command` | `acme/api#12:comment:998` | `…@<updated_at>` | repository |
 | Hearsay's reply to a command | `github.reply`, base `command` | `acme/api#12:comment:999` | `…@<updated_at>` | repository |
 | Pull request | `pull_request` | `acme/api#31` | `…@<updated_at>`, or `…@<updated_at>+paths:<hash of its paths>` where it touches any | repository |
-| Review | `review` | `acme/api#31:review:77` | `…@<hash of state and body>` ([ADR-0012](adr/0012-a-github-review-is-versioned-by-a-hash-of-its-content.md)) | repository |
+| Review | `review` | `acme/api#31:review:77` | `…@<hash of state and body>` | repository |
 | Review comment | `review_comment` | `acme/api#31:comment:88` | `…@<updated_at>` | repository |
 | Commit on the default branch | `commit` | `acme/api@<sha>` | same — a commit's content does not change | repository |
 
@@ -939,8 +930,7 @@ in a repository that is no longer public.
 A review is the first case, though GitHub gives it no version: its body can be
 edited and it can be dismissed, and no field moves when either happens. Its
 content token is therefore the first 16 hex digits of the SHA-256 of its
-lower-case state, a newline, and its body
-([ADR-0012](adr/0012-a-github-review-is-versioned-by-a-hash-of-its-content.md)),
+lower-case state, a newline, and its body,
 so an edited or dismissed review is a new revision and a backfill that reads it
 after the fact does not collide with what L0 already holds. The source gives no
 time for the change, so the revision has no `edited_at` and ingest order decides.
@@ -1080,7 +1070,7 @@ message that has replies stays in Slack as a placeholder, which Slack reports
 as a change to subtype `tombstone`; that is a tombstone too. Join, leave, topic,
 name and pin messages are channel housekeeping and are not ingested.
 
-Slack is a `Streamer` over Socket Mode (ADR-0015). The connector asks
+Slack is a `Streamer` over Socket Mode. The connector asks
 `apps.connections.open` for a URL with the app-level token, reads each
 configured channel with `conversations.info` and the bot token, and refuses a
 direct-message or Slack Connect channel with `ErrStreamPermanent`. It
@@ -1208,8 +1198,7 @@ even when the old folder has left the allowlist; they contain no note text.
 The `agent` connector (`internal/connector/agent`) is a `Pusher` that agents
 post their own session events to, one event per `POST /hooks/<source id>`. It is
 not a source that Hearsay reads. The source's own signature is the agent's API
-bearer token, the one its principal names in `token_env`
-([ADR-0014](adr/0014-api-callers-use-per-principal-bearer-tokens.md)):
+bearer token, the one its principal names in `token_env`:
 `Authorization: Bearer <agent token>`. The author is the agent that token
 belongs to, `{source, kind: agent, native_id: <agent id>}`. A body whose optional
 `agent` names a different agent is refused. `on_behalf_of` names the person the
@@ -1982,6 +1971,7 @@ decision is written to L0 as:
 
 The L0 event shape is a contract other work depends on (CONTRIBUTING.md).
 Changing it — a new required field, a kind removed, a different id format — is a
-design change that needs an ADR, not an edit here. Adding an optional payload
+breaking change, called out in the pull request description, not a quiet edit
+here. Adding an optional payload
 field or a core kind is additive and needs only this document and the code
 updated together, in the same commit.

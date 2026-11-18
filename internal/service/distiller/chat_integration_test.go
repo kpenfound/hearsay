@@ -22,13 +22,9 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
+// A burst is reconciled with its thread's edits and tombstones, and asks Jev
+// nothing: the containing thread owns any conclusion, so a burst is none.
 func TestChatBurstReconcilesEditAndTombstone(t *testing.T) {
-	for _, mode := range []string{"baseline", "shadow", "qualified"} {
-		t.Run(mode, func(t *testing.T) { testChatBurstReconciliation(t, mode) })
-	}
-}
-
-func testChatBurstReconciliation(t *testing.T, mode string) {
 	// Keep exact reconciliation and provider-count assertions isolated from
 	// other packages' concurrent input-guard contention.
 	pool := newScratchPool(t)
@@ -52,6 +48,7 @@ func testChatBurstReconciliation(t *testing.T, mode string) {
 	fixtures := llm.NewFixtures()
 	seen := map[string]bool{}
 	var firstBurst l1.Document
+	burstStates := map[string]bool{}
 	for state, events := range [][]connector.Event{messages, withEdit, afterDelete} {
 		thread, err := l1.BuildChatWindow(key, events, resolver, repo)
 		if err != nil {
@@ -70,6 +67,9 @@ func testChatBurstReconciliation(t *testing.T, mode string) {
 		if state == 2 && len(bursts) != 0 {
 			t.Fatalf("tombstoned run still qualifies: %d", len(bursts))
 		}
+		for _, burst := range bursts {
+			burstStates[distiller.OutcomeRequest(burst).State] = true
+		}
 		for _, doc := range append([]l1.Document{thread}, bursts...) {
 			budget, _ := repo.LLM.Tier(llm.TierDistill)
 			req := distiller.RequestFor(doc, budget.MaxTokens)
@@ -78,7 +78,7 @@ func testChatBurstReconciliation(t *testing.T, mode string) {
 				continue
 			}
 			seen[fixtureKey] = true
-			answer := map[string]any{"summary": "Thread summary.", "outcome_kind": "none"}
+			answer := map[string]any{"summary": "Thread summary."}
 			if doc.Kind == l1.KindChatBurst {
 				answer["summary"] = "Private tangent summary."
 			}
@@ -94,17 +94,8 @@ func testChatBurstReconciliation(t *testing.T, mode string) {
 	}
 	cfg := config.Default()
 	cfg.Repo = repo
-	var capability llm.Judgments
-	var fake *llm.FakeJudgmentProvider
-	if mode != "baseline" {
-		cfg.Repo.Boost.Enabled = true
-		if mode == "qualified" {
-			cfg.Repo.Boost.Policies = map[llm.JudgmentTask]llm.AcceptancePolicy{llm.TaskOutcomeClassification: {Name: "test-only", ModelVersion: "recorded-v1", Threshold: 0.9}}
-		}
-		fake = llm.NewFakeJudgmentProvider(outcomeStep(t, "none"), outcomeStep(t, "decided"), outcomeStep(t, "none"), outcomeStep(t, "decided"), outcomeStep(t, "none"))
-		capability = outcomeCapability(t, llm.JudgmentConfig{MaxRetries: -1}, fake)
-	}
-	d, err := distiller.New(pool, registry, &cfg, distiller.WithJudgments(capability))
+	jev := newOutcomeJev(t)
+	d, err := distiller.New(pool, registry, jev.judgments(), &cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,26 +108,6 @@ func testChatBurstReconciliation(t *testing.T, mode string) {
 	burst, err := store.Get(t.Context(), firstBurst.ID)
 	if err != nil || burst.Kind != l1.KindChatBurst || !slices.Equal(burst.L0Refs, firstBurst.L0Refs) || len(burst.ACL) != 1 || !burst.ACL[0].Equal(group) || burst.Body.OutcomeKind != l1.OutcomeNone || burst.Source.URL != messages[0].Payload.URL {
 		t.Fatalf("stored burst = %+v, %v", burst, err)
-	}
-	if mode != "baseline" {
-		reader := judgmentReader()
-		reader.Audience = []connector.ACLEntry{group}
-		records, err := store.JudgmentsFor(t.Context(), reader, string(llm.TaskOutcomeClassification))
-		if err != nil {
-			t.Fatal(err)
-		}
-		found := false
-		for _, r := range records {
-			if r.Inputs.Spec.DocumentID == firstBurst.ID && r.State == "committed" && r.Label == "decided" {
-				found = true
-				if mode == "qualified" && r.FallbackReason != "thread_owns_outcome" {
-					t.Fatalf("burst classification was not constrained: %+v", r)
-				}
-			}
-		}
-		if !found {
-			t.Fatal("burst judgment was not recorded")
-		}
 	}
 	if result, err := d.Distill(t.Context(), threadID); err != nil || result.Written {
 		t.Fatalf("repeat distill = %+v, %v", result, err)
@@ -160,11 +131,15 @@ func testChatBurstReconciliation(t *testing.T, mode string) {
 	if _, err := store.Get(t.Context(), firstBurst.ID); !errors.Is(err, l1.ErrNotFound) {
 		t.Fatalf("retracted burst remains: %v", err)
 	}
-	if mode != "baseline" {
-		if fake.Calls() != 5 {
-			t.Fatalf("chat judgment calls=%d, want 5 with restart reuse", fake.Calls())
+	// One request per new thread state, none for its repeat, and none ever for
+	// a burst.
+	if jev.Calls() != 3 {
+		t.Fatalf("chat judgment calls=%d, want 3: one per thread state", jev.Calls())
+	}
+	for _, req := range jev.Requests() {
+		if burstStates[req.State] {
+			t.Fatal("a chat burst was judged")
 		}
-
 	}
 }
 
@@ -194,11 +169,9 @@ func chatDistiller(t *testing.T, pool *pgxpool.Pool, src string, docs []l1.Docum
 		t.Fatal(err)
 	}
 	budget, _ := r.LLM.Tier(llm.TierDistill)
+	jev := newOutcomeJev(t)
 	for i, doc := range docs {
-		want, err := json.Marshal(answers[i])
-		if err != nil {
-			t.Fatal(err)
-		}
+		want := jev.answer(doc, answers[i])
 		response, err := completer.Complete(t.Context(), distiller.RequestFor(doc, budget.MaxTokens))
 		var gotAnswer, wantAnswer any
 		if err == nil {
@@ -213,7 +186,7 @@ func chatDistiller(t *testing.T, pool *pgxpool.Pool, src string, docs []l1.Docum
 	}
 	cfg := config.Default()
 	cfg.Repo = r
-	d, err := distiller.New(pool, registry, &cfg)
+	d, err := distiller.New(pool, registry, jev.judgments(), &cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,10 +278,10 @@ func TestLateChatMessageKeepsWindowKeyAndDeletionRemovesMember(t *testing.T) {
 	three, _ := l1.BuildChatWindow(key, []connector.Event{late, edited}, resolver, chatRepo(src))
 	four, _ := l1.BuildChatWindow(key, []connector.Event{edited}, resolver, chatRepo(src))
 	d := chatDistiller(t, pool, src, []l1.Document{one, two, three, four}, []map[string]any{
-		{"summary": "Later message.", "outcome_kind": "none"},
-		{"summary": "Two messages.", "outcome_kind": "none"},
-		{"summary": "Two messages after an edit.", "outcome_kind": "none"},
-		{"summary": "Edited message remains.", "outcome_kind": "none"},
+		{"summary": "Later message."},
+		{"summary": "Two messages."},
+		{"summary": "Two messages after an edit."},
+		{"summary": "Edited message remains."},
 	})
 	id := l1.DocID(src, key)
 	if _, err := d.Distill(t.Context(), id); err != nil {
@@ -370,7 +343,7 @@ func TestPrivateChatWindowKeepsACLAndUnresolvedMentionOut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := chatDistiller(t, pool, src, []l1.Document{doc}, []map[string]any{{"summary": "A review was requested.", "outcome_kind": "none"}})
+	d := chatDistiller(t, pool, src, []l1.Document{doc}, []map[string]any{{"summary": "A review was requested."}})
 	if _, err := d.Distill(t.Context(), l1.DocID(src, key)); err != nil {
 		t.Fatal(err)
 	}
@@ -479,6 +452,7 @@ func TestChatRepliesDistilUnderTheMessageTheyAnswer(t *testing.T) {
 	repo := chatRepo(src)
 	resolver, _ := repo.Resolver()
 	fixtures := llm.NewFixtures()
+	jev := newOutcomeJev(t)
 	var docs []l1.Document
 	for _, head := range []connector.Event{root, edited} {
 		doc, replies, err := l1.BuildChatReplies(head, []connector.Event{answer}, resolver, repo)
@@ -487,7 +461,7 @@ func TestChatRepliesDistilUnderTheMessageTheyAnswer(t *testing.T) {
 		}
 		docs = append(docs, doc)
 		budget, _ := repo.LLM.Tier(llm.TierDistill)
-		body, _ := json.Marshal(map[string]any{"summary": "Shipping waits for the tests.", "question": head.Payload.Text, "outcome_kind": "decided", "outcome": "Ship once the tests pass."})
+		body := jev.answer(doc, map[string]any{"summary": "Shipping waits for the tests.", "question": head.Payload.Text, "outcome_kind": "decided", "outcome": "Ship once the tests pass."})
 		if err := fixtures.Add(llm.CompletionFixture{Tier: llm.TierDistill, Request: distiller.RequestFor(doc, budget.MaxTokens), Response: llm.Response{JSON: body, StopReason: llm.StopEnd}}); err != nil {
 			t.Fatal(err)
 		}
@@ -498,7 +472,7 @@ func TestChatRepliesDistilUnderTheMessageTheyAnswer(t *testing.T) {
 	}
 	cfg := config.Default()
 	cfg.Repo = repo
-	d, err := distiller.New(pool, registry, &cfg)
+	d, err := distiller.New(pool, registry, jev.judgments(), &cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -65,5 +65,7 @@ func renderEnv(sources []source, tokens []pair) ([]byte, []string) {
 	}
 	blank(EnvAnthropicAPIKey,
 		"The model tiers: an Anthropic API key, from https://console.anthropic.com/settings/keys.")
+	blank(EnvJevAPIKey,
+		"Jev, which the distiller and the assertion worker require: a TypeSafe API key, from https://typesafe.ai.")
 	return b.Bytes(), empty
 }

@@ -3,432 +3,652 @@
     {
       "example_id": "tuning-01",
       "model_version": "fixture-judge-v1",
-      "label": "restates",
+      "label": "yes",
       "confidence": 0.85
     },
     {
       "example_id": "tuning-02",
       "model_version": "fixture-judge-v1",
-      "label": "changes",
+      "label": "no",
       "confidence": 0.95
     },
     {
       "example_id": "tuning-03",
       "model_version": "fixture-judge-v1",
-      "label": "changes",
+      "label": "no",
       "confidence": 0.85
     },
     {
       "example_id": "tuning-04",
       "model_version": "fixture-judge-v1",
-      "label": "restates",
+      "label": "yes",
       "confidence": 0.95
     },
     {
-      "example_id": "tuning-05",
+      "example_id": "tuning-05-topic-retention",
       "model_version": "fixture-judge-v1",
-      "label": "topic-retention",
+      "label": "yes",
       "confidence": 0.85
     },
     {
-      "example_id": "tuning-06",
+      "example_id": "tuning-05-topic-access",
       "model_version": "fixture-judge-v1",
-      "label": "none_fit",
-      "confidence": 0.95
-    },
-    {
-      "example_id": "tuning-07",
-      "model_version": "fixture-judge-v1",
-      "confidence": 0.95,
-      "shortlist": {
-        "selected": [
-          "topic-1",
-          "topic-2",
-          "topic-3",
-          "topic-4",
-          "topic-5"
-        ],
-        "end": "capacity"
-      }
-    },
-    {
-      "example_id": "tuning-08",
-      "model_version": "fixture-judge-v1",
-      "confidence": 0.95,
-      "shortlist": {
-        "selected": [
-          "topic-6"
-        ],
-        "end": "none_fit"
-      }
-    },
-    {
-      "example_id": "tuning-09",
-      "model_version": "fixture-judge-v1",
-      "label": "proposed",
+      "label": "no",
       "confidence": 0.85
     },
     {
-      "example_id": "tuning-10",
+      "example_id": "tuning-06-topic-retention",
       "model_version": "fixture-judge-v1",
-      "label": "decided",
+      "label": "no",
       "confidence": 0.95
     },
     {
-      "example_id": "tuning-11",
+      "example_id": "tuning-09-work_finished",
       "model_version": "fixture-judge-v1",
-      "label": "resolved",
+      "label": "no",
       "confidence": 0.85
     },
     {
-      "example_id": "tuning-12",
+      "example_id": "tuning-09-binding_agreement",
       "model_version": "fixture-judge-v1",
-      "label": "open",
+      "label": "no",
+      "confidence": 0.85
+    },
+    {
+      "example_id": "tuning-09-unagreed_proposal",
+      "model_version": "fixture-judge-v1",
+      "label": "yes",
+      "confidence": 0.85
+    },
+    {
+      "example_id": "tuning-09-still_open",
+      "model_version": "fixture-judge-v1",
+      "label": "no",
+      "confidence": 0.85
+    },
+    {
+      "example_id": "tuning-10-work_finished",
+      "model_version": "fixture-judge-v1",
+      "label": "no",
       "confidence": 0.95
     },
     {
-      "example_id": "tuning-13",
+      "example_id": "tuning-10-binding_agreement",
       "model_version": "fixture-judge-v1",
-      "label": "none",
+      "label": "yes",
+      "confidence": 0.95
+    },
+    {
+      "example_id": "tuning-10-unagreed_proposal",
+      "model_version": "fixture-judge-v1",
+      "label": "no",
+      "confidence": 0.95
+    },
+    {
+      "example_id": "tuning-10-still_open",
+      "model_version": "fixture-judge-v1",
+      "label": "no",
+      "confidence": 0.95
+    },
+    {
+      "example_id": "tuning-11-work_finished",
+      "model_version": "fixture-judge-v1",
+      "label": "yes",
+      "confidence": 0.85
+    },
+    {
+      "example_id": "tuning-11-binding_agreement",
+      "model_version": "fixture-judge-v1",
+      "label": "no",
+      "confidence": 0.85
+    },
+    {
+      "example_id": "tuning-11-unagreed_proposal",
+      "model_version": "fixture-judge-v1",
+      "label": "no",
+      "confidence": 0.85
+    },
+    {
+      "example_id": "tuning-11-still_open",
+      "model_version": "fixture-judge-v1",
+      "label": "no",
+      "confidence": 0.85
+    },
+    {
+      "example_id": "tuning-12-work_finished",
+      "model_version": "fixture-judge-v1",
+      "label": "no",
+      "confidence": 0.95
+    },
+    {
+      "example_id": "tuning-12-binding_agreement",
+      "model_version": "fixture-judge-v1",
+      "label": "no",
+      "confidence": 0.95
+    },
+    {
+      "example_id": "tuning-12-unagreed_proposal",
+      "model_version": "fixture-judge-v1",
+      "label": "no",
+      "confidence": 0.95
+    },
+    {
+      "example_id": "tuning-12-still_open",
+      "model_version": "fixture-judge-v1",
+      "label": "yes",
+      "confidence": 0.95
+    },
+    {
+      "example_id": "tuning-13-work_finished",
+      "model_version": "fixture-judge-v1",
+      "label": "no",
+      "confidence": 0.85
+    },
+    {
+      "example_id": "tuning-13-binding_agreement",
+      "model_version": "fixture-judge-v1",
+      "label": "no",
+      "confidence": 0.85
+    },
+    {
+      "example_id": "tuning-13-unagreed_proposal",
+      "model_version": "fixture-judge-v1",
+      "label": "no",
+      "confidence": 0.85
+    },
+    {
+      "example_id": "tuning-13-still_open",
+      "model_version": "fixture-judge-v1",
+      "label": "no",
       "confidence": 0.85
     },
     {
       "example_id": "held_out-01",
       "model_version": "fixture-judge-v1",
-      "label": "restates",
+      "label": "yes",
       "confidence": 0.85
     },
     {
       "example_id": "held_out-02",
       "model_version": "fixture-judge-v1",
-      "label": "changes",
+      "label": "no",
       "confidence": 0.95
     },
     {
       "example_id": "held_out-03",
       "model_version": "fixture-judge-v1",
-      "label": "changes",
+      "label": "no",
       "confidence": 0.85
     },
     {
       "example_id": "held_out-04",
       "model_version": "fixture-judge-v1",
-      "label": "restates",
+      "label": "yes",
       "confidence": 0.95
     },
     {
-      "example_id": "held_out-05",
+      "example_id": "held_out-05-topic-retention",
       "model_version": "fixture-judge-v1",
-      "label": "topic-retention",
+      "label": "yes",
       "confidence": 0.85
     },
     {
-      "example_id": "held_out-06",
+      "example_id": "held_out-05-topic-access",
       "model_version": "fixture-judge-v1",
-      "label": "none_fit",
+      "label": "no",
+      "confidence": 0.85
+    },
+    {
+      "example_id": "held_out-06-topic-retention",
+      "model_version": "fixture-judge-v1",
+      "label": "no",
       "confidence": 0.95
     },
     {
-      "example_id": "held_out-07",
+      "example_id": "held_out-09-work_finished",
       "model_version": "fixture-judge-v1",
-      "confidence": 0.95,
-      "shortlist": {
-        "selected": [
-          "topic-1",
-          "topic-2",
-          "topic-3",
-          "topic-4",
-          "topic-5"
-        ],
-        "end": "capacity"
-      }
-    },
-    {
-      "example_id": "held_out-08",
-      "model_version": "fixture-judge-v1",
-      "confidence": 0.95,
-      "shortlist": {
-        "selected": [
-          "topic-6"
-        ],
-        "end": "none_fit"
-      }
-    },
-    {
-      "example_id": "held_out-09",
-      "model_version": "fixture-judge-v1",
-      "label": "proposed",
+      "label": "no",
       "confidence": 0.85
     },
     {
-      "example_id": "held_out-10",
+      "example_id": "held_out-09-binding_agreement",
       "model_version": "fixture-judge-v1",
-      "label": "decided",
+      "label": "no",
+      "confidence": 0.85
+    },
+    {
+      "example_id": "held_out-09-unagreed_proposal",
+      "model_version": "fixture-judge-v1",
+      "label": "yes",
+      "confidence": 0.85
+    },
+    {
+      "example_id": "held_out-09-still_open",
+      "model_version": "fixture-judge-v1",
+      "label": "no",
+      "confidence": 0.85
+    },
+    {
+      "example_id": "held_out-10-work_finished",
+      "model_version": "fixture-judge-v1",
+      "label": "no",
       "confidence": 0.95
     },
     {
-      "example_id": "held_out-11",
+      "example_id": "held_out-10-binding_agreement",
       "model_version": "fixture-judge-v1",
-      "label": "resolved",
-      "confidence": 0.85
-    },
-    {
-      "example_id": "held_out-12",
-      "model_version": "fixture-judge-v1",
-      "label": "open",
+      "label": "yes",
       "confidence": 0.95
     },
     {
-      "example_id": "held_out-13",
+      "example_id": "held_out-10-unagreed_proposal",
       "model_version": "fixture-judge-v1",
-      "label": "none",
+      "label": "no",
+      "confidence": 0.95
+    },
+    {
+      "example_id": "held_out-10-still_open",
+      "model_version": "fixture-judge-v1",
+      "label": "no",
+      "confidence": 0.95
+    },
+    {
+      "example_id": "held_out-11-work_finished",
+      "model_version": "fixture-judge-v1",
+      "label": "yes",
       "confidence": 0.85
     },
     {
-      "example_id": "held_out-shortlist-premature",
+      "example_id": "held_out-11-binding_agreement",
       "model_version": "fixture-judge-v1",
-      "confidence": 0.99,
-      "shortlist": {
-        "selected": [
-          "topic-1"
-        ],
-        "end": "none_fit"
-      }
+      "label": "no",
+      "confidence": 0.85
     },
     {
-      "example_id": "held_out-shortlist-correct-stop",
+      "example_id": "held_out-11-unagreed_proposal",
       "model_version": "fixture-judge-v1",
-      "confidence": 0.95,
-      "shortlist": {
-        "selected": [
-          "topic-6"
-        ],
-        "end": "none_fit"
-      }
+      "label": "no",
+      "confidence": 0.85
+    },
+    {
+      "example_id": "held_out-11-still_open",
+      "model_version": "fixture-judge-v1",
+      "label": "no",
+      "confidence": 0.85
+    },
+    {
+      "example_id": "held_out-12-work_finished",
+      "model_version": "fixture-judge-v1",
+      "label": "no",
+      "confidence": 0.95
+    },
+    {
+      "example_id": "held_out-12-binding_agreement",
+      "model_version": "fixture-judge-v1",
+      "label": "no",
+      "confidence": 0.95
+    },
+    {
+      "example_id": "held_out-12-unagreed_proposal",
+      "model_version": "fixture-judge-v1",
+      "label": "no",
+      "confidence": 0.95
+    },
+    {
+      "example_id": "held_out-12-still_open",
+      "model_version": "fixture-judge-v1",
+      "label": "yes",
+      "confidence": 0.95
+    },
+    {
+      "example_id": "held_out-13-work_finished",
+      "model_version": "fixture-judge-v1",
+      "label": "no",
+      "confidence": 0.85
+    },
+    {
+      "example_id": "held_out-13-binding_agreement",
+      "model_version": "fixture-judge-v1",
+      "label": "no",
+      "confidence": 0.85
+    },
+    {
+      "example_id": "held_out-13-unagreed_proposal",
+      "model_version": "fixture-judge-v1",
+      "label": "no",
+      "confidence": 0.85
+    },
+    {
+      "example_id": "held_out-13-still_open",
+      "model_version": "fixture-judge-v1",
+      "label": "no",
+      "confidence": 0.85
     }
   ],
   "baseline": [
     {
       "example_id": "tuning-01",
       "model_version": "recorded-generator-v1",
-      "label": "changes",
+      "label": "no",
       "confidence": null
     },
     {
       "example_id": "tuning-02",
       "model_version": "recorded-generator-v1",
-      "label": "restates",
+      "label": "yes",
       "confidence": null
     },
     {
       "example_id": "tuning-03",
       "model_version": "recorded-generator-v1",
-      "label": "restates",
+      "label": "yes",
       "confidence": null
     },
     {
       "example_id": "tuning-04",
       "model_version": "recorded-generator-v1",
-      "label": "changes",
+      "label": "no",
       "confidence": null
     },
     {
-      "example_id": "tuning-05",
+      "example_id": "tuning-05-topic-retention",
       "model_version": "recorded-generator-v1",
-      "label": "new",
+      "label": "no",
       "confidence": null
     },
     {
-      "example_id": "tuning-06",
+      "example_id": "tuning-05-topic-access",
       "model_version": "recorded-generator-v1",
-      "label": "topic-retention",
+      "label": "no",
       "confidence": null
     },
     {
-      "example_id": "tuning-07",
+      "example_id": "tuning-06-topic-retention",
       "model_version": "recorded-generator-v1",
-      "confidence": null,
-      "shortlist": {
-        "selected": [
-          "topic-2",
-          "topic-3",
-          "topic-4",
-          "topic-5",
-          "topic-6"
-        ],
-        "end": "capacity"
-      }
-    },
-    {
-      "example_id": "tuning-08",
-      "model_version": "recorded-generator-v1",
-      "confidence": null,
-      "shortlist": {
-        "selected": [
-          "topic-1",
-          "topic-2",
-          "topic-3",
-          "topic-4",
-          "topic-5"
-        ],
-        "end": "capacity"
-      }
-    },
-    {
-      "example_id": "tuning-09",
-      "model_version": "recorded-generator-v1",
-      "label": "decided",
+      "label": "yes",
       "confidence": null
     },
     {
-      "example_id": "tuning-10",
+      "example_id": "tuning-09-work_finished",
       "model_version": "recorded-generator-v1",
-      "label": "proposed",
+      "label": "no",
       "confidence": null
     },
     {
-      "example_id": "tuning-11",
+      "example_id": "tuning-09-binding_agreement",
       "model_version": "recorded-generator-v1",
-      "label": "open",
+      "label": "yes",
       "confidence": null
     },
     {
-      "example_id": "tuning-12",
+      "example_id": "tuning-09-unagreed_proposal",
       "model_version": "recorded-generator-v1",
-      "label": "none",
+      "label": "no",
       "confidence": null
     },
     {
-      "example_id": "tuning-13",
+      "example_id": "tuning-09-still_open",
       "model_version": "recorded-generator-v1",
-      "label": "decided",
+      "label": "no",
+      "confidence": null
+    },
+    {
+      "example_id": "tuning-10-work_finished",
+      "model_version": "recorded-generator-v1",
+      "label": "no",
+      "confidence": null
+    },
+    {
+      "example_id": "tuning-10-binding_agreement",
+      "model_version": "recorded-generator-v1",
+      "label": "no",
+      "confidence": null
+    },
+    {
+      "example_id": "tuning-10-unagreed_proposal",
+      "model_version": "recorded-generator-v1",
+      "label": "yes",
+      "confidence": null
+    },
+    {
+      "example_id": "tuning-10-still_open",
+      "model_version": "recorded-generator-v1",
+      "label": "no",
+      "confidence": null
+    },
+    {
+      "example_id": "tuning-11-work_finished",
+      "model_version": "recorded-generator-v1",
+      "label": "no",
+      "confidence": null
+    },
+    {
+      "example_id": "tuning-11-binding_agreement",
+      "model_version": "recorded-generator-v1",
+      "label": "no",
+      "confidence": null
+    },
+    {
+      "example_id": "tuning-11-unagreed_proposal",
+      "model_version": "recorded-generator-v1",
+      "label": "no",
+      "confidence": null
+    },
+    {
+      "example_id": "tuning-11-still_open",
+      "model_version": "recorded-generator-v1",
+      "label": "yes",
+      "confidence": null
+    },
+    {
+      "example_id": "tuning-12-work_finished",
+      "model_version": "recorded-generator-v1",
+      "label": "no",
+      "confidence": null
+    },
+    {
+      "example_id": "tuning-12-binding_agreement",
+      "model_version": "recorded-generator-v1",
+      "label": "no",
+      "confidence": null
+    },
+    {
+      "example_id": "tuning-12-unagreed_proposal",
+      "model_version": "recorded-generator-v1",
+      "label": "no",
+      "confidence": null
+    },
+    {
+      "example_id": "tuning-12-still_open",
+      "model_version": "recorded-generator-v1",
+      "label": "no",
+      "confidence": null
+    },
+    {
+      "example_id": "tuning-13-work_finished",
+      "model_version": "recorded-generator-v1",
+      "label": "no",
+      "confidence": null
+    },
+    {
+      "example_id": "tuning-13-binding_agreement",
+      "model_version": "recorded-generator-v1",
+      "label": "yes",
+      "confidence": null
+    },
+    {
+      "example_id": "tuning-13-unagreed_proposal",
+      "model_version": "recorded-generator-v1",
+      "label": "no",
+      "confidence": null
+    },
+    {
+      "example_id": "tuning-13-still_open",
+      "model_version": "recorded-generator-v1",
+      "label": "no",
       "confidence": null
     },
     {
       "example_id": "held_out-01",
       "model_version": "recorded-generator-v1",
-      "label": "changes",
+      "label": "no",
       "confidence": null
     },
     {
       "example_id": "held_out-02",
       "model_version": "recorded-generator-v1",
-      "label": "restates",
+      "label": "yes",
       "confidence": null
     },
     {
       "example_id": "held_out-03",
       "model_version": "recorded-generator-v1",
-      "label": "restates",
+      "label": "yes",
       "confidence": null
     },
     {
       "example_id": "held_out-04",
       "model_version": "recorded-generator-v1",
-      "label": "changes",
+      "label": "no",
       "confidence": null
     },
     {
-      "example_id": "held_out-05",
+      "example_id": "held_out-05-topic-retention",
       "model_version": "recorded-generator-v1",
-      "label": "new",
+      "label": "no",
       "confidence": null
     },
     {
-      "example_id": "held_out-06",
+      "example_id": "held_out-05-topic-access",
       "model_version": "recorded-generator-v1",
-      "label": "topic-retention",
+      "label": "no",
       "confidence": null
     },
     {
-      "example_id": "held_out-07",
+      "example_id": "held_out-06-topic-retention",
       "model_version": "recorded-generator-v1",
-      "confidence": null,
-      "shortlist": {
-        "selected": [
-          "topic-2",
-          "topic-3",
-          "topic-4",
-          "topic-5",
-          "topic-6"
-        ],
-        "end": "capacity"
-      }
-    },
-    {
-      "example_id": "held_out-08",
-      "model_version": "recorded-generator-v1",
-      "confidence": null,
-      "shortlist": {
-        "selected": [
-          "topic-1",
-          "topic-2",
-          "topic-3",
-          "topic-4",
-          "topic-5"
-        ],
-        "end": "capacity"
-      }
-    },
-    {
-      "example_id": "held_out-09",
-      "model_version": "recorded-generator-v1",
-      "label": "decided",
+      "label": "yes",
       "confidence": null
     },
     {
-      "example_id": "held_out-10",
+      "example_id": "held_out-09-work_finished",
       "model_version": "recorded-generator-v1",
-      "label": "proposed",
+      "label": "no",
       "confidence": null
     },
     {
-      "example_id": "held_out-11",
+      "example_id": "held_out-09-binding_agreement",
       "model_version": "recorded-generator-v1",
-      "label": "open",
+      "label": "yes",
       "confidence": null
     },
     {
-      "example_id": "held_out-12",
+      "example_id": "held_out-09-unagreed_proposal",
       "model_version": "recorded-generator-v1",
-      "label": "none",
+      "label": "no",
       "confidence": null
     },
     {
-      "example_id": "held_out-13",
+      "example_id": "held_out-09-still_open",
       "model_version": "recorded-generator-v1",
-      "label": "decided",
+      "label": "no",
       "confidence": null
     },
     {
-      "example_id": "held_out-shortlist-premature",
+      "example_id": "held_out-10-work_finished",
       "model_version": "recorded-generator-v1",
-      "confidence": null,
-      "shortlist": {
-        "selected": [
-          "topic-1",
-          "topic-2",
-          "topic-3",
-          "topic-4",
-          "topic-5"
-        ],
-        "end": "capacity"
-      }
+      "label": "no",
+      "confidence": null
     },
     {
-      "example_id": "held_out-shortlist-correct-stop",
+      "example_id": "held_out-10-binding_agreement",
       "model_version": "recorded-generator-v1",
-      "confidence": null,
-      "shortlist": {
-        "selected": [
-          "topic-1",
-          "topic-2",
-          "topic-3",
-          "topic-4",
-          "topic-5"
-        ],
-        "end": "capacity"
-      }
+      "label": "no",
+      "confidence": null
+    },
+    {
+      "example_id": "held_out-10-unagreed_proposal",
+      "model_version": "recorded-generator-v1",
+      "label": "yes",
+      "confidence": null
+    },
+    {
+      "example_id": "held_out-10-still_open",
+      "model_version": "recorded-generator-v1",
+      "label": "no",
+      "confidence": null
+    },
+    {
+      "example_id": "held_out-11-work_finished",
+      "model_version": "recorded-generator-v1",
+      "label": "no",
+      "confidence": null
+    },
+    {
+      "example_id": "held_out-11-binding_agreement",
+      "model_version": "recorded-generator-v1",
+      "label": "no",
+      "confidence": null
+    },
+    {
+      "example_id": "held_out-11-unagreed_proposal",
+      "model_version": "recorded-generator-v1",
+      "label": "no",
+      "confidence": null
+    },
+    {
+      "example_id": "held_out-11-still_open",
+      "model_version": "recorded-generator-v1",
+      "label": "yes",
+      "confidence": null
+    },
+    {
+      "example_id": "held_out-12-work_finished",
+      "model_version": "recorded-generator-v1",
+      "label": "no",
+      "confidence": null
+    },
+    {
+      "example_id": "held_out-12-binding_agreement",
+      "model_version": "recorded-generator-v1",
+      "label": "no",
+      "confidence": null
+    },
+    {
+      "example_id": "held_out-12-unagreed_proposal",
+      "model_version": "recorded-generator-v1",
+      "label": "no",
+      "confidence": null
+    },
+    {
+      "example_id": "held_out-12-still_open",
+      "model_version": "recorded-generator-v1",
+      "label": "no",
+      "confidence": null
+    },
+    {
+      "example_id": "held_out-13-work_finished",
+      "model_version": "recorded-generator-v1",
+      "label": "no",
+      "confidence": null
+    },
+    {
+      "example_id": "held_out-13-binding_agreement",
+      "model_version": "recorded-generator-v1",
+      "label": "yes",
+      "confidence": null
+    },
+    {
+      "example_id": "held_out-13-unagreed_proposal",
+      "model_version": "recorded-generator-v1",
+      "label": "no",
+      "confidence": null
+    },
+    {
+      "example_id": "held_out-13-still_open",
+      "model_version": "recorded-generator-v1",
+      "label": "no",
+      "confidence": null
     }
   ]
 }

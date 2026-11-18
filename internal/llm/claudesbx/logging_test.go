@@ -26,7 +26,7 @@ func debugLog(t *testing.T) *bytes.Buffer {
 
 // No failure puts claude's result text, which can quote the prompt or the
 // answer, in the returned error or in a log record at any level, debug
-// included (ADR-0008).
+// included.
 func TestAFailureLeaksNoResultTextToErrorsOrLogs(t *testing.T) {
 	reset := time.Now().Add(time.Hour).Truncate(time.Second)
 	for _, tt := range []struct {

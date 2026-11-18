@@ -1,5 +1,5 @@
 // Package distiller turns L0 events into L1 documents. It is a stateless,
-// parallel, retryable worker on the `distill` model tier (ADR-0005): every job
+// parallel, retryable worker on the `distill` model tier: every job
 // it runs can be run again, and re-running one for a conversation produces the
 // same document.
 //
@@ -9,13 +9,16 @@
 // bursts and documents do not: the queue debounces each document, waiting for
 // --distill-quiet without further events, capped by --distill-max-delay from
 // its first enqueue. A burst then costs one model call. Zero Quiet keeps
-// ordinary pending-job deduplication (ADR-0007). An agent's session, turn and tool
+// ordinary pending-job deduplication. An agent's session, turn and tool
 // call and next action events belong to no document and are never distilled: they are
 // provenance, not team knowledge.
 //
+// The model writes each document's body; Jev answers the outcome questions and
+// code decides the outcome from them (README.md). Both are required.
+//
 // What a document is, and what may be stored in one, is internal/l1's. What
-// this package owns is the prompts, the schema an answer has to satisfy, and
-// the loops.
+// this package owns is the prompts, the schema an answer has to satisfy, the
+// outcome questions, and the loops.
 // Health probes are served on :8082 by default; readiness checks the database
 // and schema.
 package distiller
@@ -36,7 +39,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
-// Name is the subcommand this service runs as (ADR-0003).
+// Name is the subcommand this service runs as.
 const Name = "distiller"
 
 // DefaultListen is where distiller serves health probes.
@@ -54,7 +57,7 @@ const DefaultConcurrency = 4
 // JobKind is the kind both ends of a distill job share. It is not serialized:
 // two documents have nothing to do with each other, and the ordering that does
 // matter — a burst of events on one document — is handled by the queue's
-// per-target debounce and deduplication rather than a serial key (ADR-0007).
+// per-target debounce and deduplication rather than a serial key.
 func JobKind() queue.Kind { return queue.Kind{Name: JobKindName} }
 
 // Deps are what the process builds and hands to [Run].
@@ -63,20 +66,22 @@ type Deps struct {
 	Listener net.Listener
 	// Listen is the probe address when Listener is nil; empty uses DefaultListen.
 	Listen string
-	// Pool is the database (ADR-0004). The caller owns it and closes it.
+	// Pool is the database. The caller owns it and closes it.
 	Pool *pgxpool.Pool
-	// LLM is the model tier registry (ADR-0005). The distiller uses the
+	// LLM is the model tier registry. The distiller uses the
 	// `distill` tier and resolves it at startup, so a configuration that names
 	// no `distill` tier is a startup failure rather than a job that fails an
 	// hour later.
 	//
 	// A nil registry is a process that was given no configuration at all: it
 	// starts, says there is nothing to distil, and waits to be stopped, the
-	// same as every other service without one (ADR-0009). A process with a
+	// same as every other service without one. A process with a
 	// configuration always has a registry, because the loader merges the
 	// shipped tiers in.
 	LLM llm.Registry
-	// Judgments is the optional shared capability. It never gates readiness.
+	// Judgments is Jev, which decides every document's outcome. It is
+	// required whenever LLM is set; readiness reports it without depending on
+	// it, because a job whose judgment fails is retried.
 	Judgments llm.Judgments
 	// Pump is what the feed reader is turned down to, for a deployment that
 	// wants it quieter and for a test that wants it immediate. The zero value
@@ -117,7 +122,7 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 		log.InfoContext(ctx, "distiller stopped")
 		return nil
 	}
-	distiller, err := New(deps.Pool, deps.LLM, cfg, WithJudgments(deps.Judgments))
+	distiller, err := New(deps.Pool, deps.LLM, deps.Judgments, cfg)
 	if err != nil {
 		return err
 	}

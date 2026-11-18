@@ -49,7 +49,7 @@ func (l *loader) build() Repo {
 	r.Scopes = l.buildScopes(r)
 	r.Authority = l.buildAuthority(r)
 	r.LLM = l.buildLLM()
-	r.Boost = l.buildBoost()
+	r.Judgments = l.buildJudgments()
 
 	// These two count what was written rather than what survived validation. A
 	// source whose id is malformed is not in r.Sources, and telling its author
@@ -959,7 +959,7 @@ func isRepoRelativePath(s string) bool {
 // buildLLM merges the `llm/` section onto the shipped defaults and checks what
 // it says. A tier the configuration does not name keeps its default, which is
 // why this returns a working configuration for a repository with no `llm/` at
-// all: ADR-0005 puts the shipped model in the config defaults so that bumping
+// all: the shipped model is in the config defaults so that bumping
 // it is one line.
 //
 // The exception is the embed tier, which has no default. Neither shipped adapter
@@ -971,7 +971,7 @@ func (l *loader) buildLLM() llm.Config {
 	defined := map[string]string{}
 	for _, d := range l.llm {
 		a := at{file: d.file, line: d.line, noun: "llm section", label: "llm"}
-		if len(d.v.Tiers) == 0 && d.v.Boost == nil {
+		if len(d.v.Tiers) == 0 && d.v.Judgments == nil {
 			l.bad(a, "tiers", "no model tiers are configured here: remove the section to take the defaults, or name a tier")
 			continue
 		}
@@ -1047,7 +1047,7 @@ func (l *loader) buildTier(d doc[llmDoc], name string, td llmTierDoc, cfg llm.Co
 	// A provider that cannot do what the tier needs is a configuration
 	// problem, not a runtime one: it is the same check the registry makes when
 	// a process starts, made here where it has a file and a line and runs in
-	// CI on the configuration repository (ADR-0005).
+	// CI on the configuration repository.
 	if err := llm.CanServe(provider.Name(), provider.Capabilities(), tier, tc); err != nil {
 		l.bad(a, "provider", "%s", err)
 	}

@@ -103,7 +103,7 @@ func journalRecord(t *testing.T, pool *pgxpool.Pool, id string) l1.JudgmentRecor
 	}
 	confidence := 0.9
 	attempts := int64(1)
-	return l1.JudgmentRecord{ID: id, Task: "stance_comparison", QuestionVersion: "v1", QuestionHash: "hash-of-question", Inputs: inputs, Mode: "accepted", Policy: "reviewed-policy", ModelVersion: "pinned-version", Outcome: "answer", Label: "restates", Probabilities: map[string]float64{"restates": 0.9, "changes": 0.1}, Confidence: &confidence, Attempts: &attempts}
+	return l1.JudgmentRecord{ID: id, Task: "stance.same_answer", QuestionVersion: "v1", QuestionHash: "hash-of-question", Inputs: inputs, Mode: "accepted", Policy: "reviewed-policy", ModelVersion: "pinned-version", Outcome: "answer", Label: "yes", Probabilities: map[string]float64{"yes": 0.9, "no": 0.1}, Confidence: &confidence, Attempts: &attempts}
 }
 func journalCommit(t *testing.T, pool *pgxpool.Pool, rs []l1.JudgmentRecord, obs []l1.PipelineObservation) {
 	t.Helper()
@@ -146,7 +146,7 @@ func TestJournalAttemptsAndRestart(t *testing.T) {
 	}
 	journalCommit(t, pool, []l1.JudgmentRecord{r}, nil)
 	got := lookupJournal(t, pool, r)
-	if got == nil || got.State != "committed" || got.CommittedAt == nil || got.Label != "restates" || got.ModelVersion != "pinned-version" {
+	if got == nil || got.State != "committed" || got.CommittedAt == nil || got.Label != "yes" || got.ModelVersion != "pinned-version" {
 		t.Fatalf("restart lookup = %+v", got)
 	}
 	journalCommit(t, pool, []l1.JudgmentRecord{*got}, nil)
@@ -157,7 +157,7 @@ func TestJournalAttemptsAndRestart(t *testing.T) {
 	// Changing model configuration is absent from the lookup key, and a
 	// committed record cannot be silently overwritten or reinterpreted.
 	changed := r
-	changed.Label = "changes"
+	changed.Label = "no"
 	changed.ModelVersion = "new-version"
 	tx, err := pool.Begin(t.Context())
 	if err != nil {
@@ -170,7 +170,7 @@ func TestJournalAttemptsAndRestart(t *testing.T) {
 	if err = tx.Commit(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if got = lookupJournal(t, pool, r); got == nil || got.Label != "restates" {
+	if got = lookupJournal(t, pool, r); got == nil || got.Label != "yes" {
 		t.Fatalf("record changed = %+v", got)
 	}
 }
@@ -458,7 +458,7 @@ func TestJournalAttemptBeforeFirstDocument(t *testing.T) {
 	if _, exists := inputs.DocumentRevision(); exists {
 		t.Fatal("unwritten document had a revision")
 	}
-	r := l1.JudgmentRecord{Task: "outcome_classification", QuestionVersion: "v1", QuestionHash: "hash-of-question", Mode: "shadow", Inputs: inputs}
+	r := l1.JudgmentRecord{Task: "outcome.binding_agreement", QuestionVersion: "v1", QuestionHash: "hash-of-question", Mode: "shadow", Inputs: inputs}
 	id, err := l1.New(pool).BeginJudgment(t.Context(), r)
 	if err != nil {
 		t.Fatal(err)
@@ -475,7 +475,7 @@ func TestJournalOutcomeKinds(t *testing.T) {
 		outcome, mode, label, reason string
 		attempts                     int64
 	}{
-		{"answer", "accepted", "restates", "", 1},
+		{"answer", "accepted", "yes", "", 1},
 		{"abstain", "shadow", "abstain", "", 1},
 		{"fallback", "shadow", "", "cooldown", 0},
 	} {
@@ -538,5 +538,40 @@ func TestPipelineAccountingExport(t *testing.T) {
 		if err != nil || len(rows) != 0 {
 			t.Fatalf("window/scope filter returned %+v, %v", rows, err)
 		}
+	}
+}
+
+func TestJournalBatchedAttemptsAndLookups(t *testing.T) {
+	pool := journalDB(t)
+	store := l1.New(pool)
+	question := func(id, hash string) l1.JudgmentRecord {
+		r := journalRecord(t, pool, id)
+		r.QuestionHash = hash
+		return r
+	}
+	asked := []l1.JudgmentRecord{question("", "T1"), question("", "T2"), question("", "T3")}
+	ids, err := store.BeginJudgments(t.Context(), asked)
+	if err != nil || len(ids) != 3 || ids[0] == ids[1] || ids[1] == ids[2] {
+		t.Fatalf("ids=%v err=%v", ids, err)
+	}
+	keys := []l1.JudgmentKey{{Task: "stance.same_answer", Version: "v1", QuestionHash: "T1"}, {Task: "stance.same_answer", Version: "v1", QuestionHash: "T2"}, {Task: "stance.same_answer", Version: "v1", QuestionHash: "T3"}}
+	if got, err := store.LookupJudgments(t.Context(), journalReader(), keys, asked[0].Inputs); err != nil || len(got) != 0 {
+		t.Fatalf("interrupted attempts were reusable: %v %v", got, err)
+	}
+	// Commit two of the three; only those are reusable, each under its own key.
+	for i := range asked {
+		asked[i].ID = ids[i]
+	}
+	asked[1].Label = "no"
+	journalCommit(t, pool, asked[:2], nil)
+	got, err := store.LookupJudgments(t.Context(), journalReader(), append(keys, l1.JudgmentKey{Task: "topic.same_question", Version: "v1", QuestionHash: "T1"}), asked[0].Inputs)
+	if err != nil || len(got) != 2 || got[keys[0]].ID != ids[0] || got[keys[0]].Label != "yes" || got[keys[1]].ID != ids[1] || got[keys[1]].Label != "no" {
+		t.Fatalf("lookups=%+v err=%v", got, err)
+	}
+	// One batch shares one snapshot; mixed inputs are refused.
+	other := question("", "T4")
+	other.Inputs.Hash = "different"
+	if _, err := store.BeginJudgments(t.Context(), []l1.JudgmentRecord{question("", "T5"), other}); !errors.Is(err, l1.JournalInputsChanged) {
+		t.Fatalf("mixed inputs = %v", err)
 	}
 }

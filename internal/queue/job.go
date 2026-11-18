@@ -26,8 +26,8 @@ var ErrInvalidJob = errors.New("invalid job")
 // Kind is a job kind and how the queue runs it. It is a value both ends of a
 // kind share: the service that enqueues the work and the worker that runs it
 // declare the same Kind, because the queue itself cannot tell from a row
-// whether the kind it belongs to is serialized (ADR-0007 makes that a property
-// of the kind, changed by revisiting the ADR rather than by configuration).
+// whether the kind it belongs to is serialized (that is a property of the
+// kind, changed in code rather than by configuration).
 type Kind struct {
 	// Name is the kind as it is stored and as its channel is named:
 	// `distill`, `assert`.
@@ -35,7 +35,7 @@ type Kind struct {
 
 	// Serialized makes every job of this kind carry a serial key, and two jobs
 	// sharing one key never run at the same time. It is what the assertion
-	// worker's per-scope serialization is (ADR-0007), and it costs throughput:
+	// worker's per-scope serialization is, and it costs throughput:
 	// a serialized kind claims one job per round trip.
 	Serialized bool
 }
@@ -80,7 +80,7 @@ const (
 	// retention window.
 	StateDone State = "done"
 	// StateFailed has run out of attempts. It is kept: a failed job is a
-	// visible row and a metric, not a lost event (ADR-0007).
+	// visible row and a metric, not a lost event.
 	StateFailed State = "failed"
 )
 
@@ -108,7 +108,7 @@ type Request struct {
 	Kind Kind
 
 	// TargetID is the row the job is about — an L0 event id, an L1 document
-	// id. Job payloads stay small (ADR-0007): the handler reads the row, so a
+	// id. Job payloads stay small: the handler reads the row, so a
 	// job never carries a stale copy of the thing it is about, and
 	// (Kind, TargetID) is what a duplicate enqueue collapses on.
 	TargetID string
@@ -132,7 +132,7 @@ type Request struct {
 	Debounce *Debounce
 
 	// TraceContext is the propagation carrier of the trace that enqueued the
-	// job (ADR-0008), handed back to the worker so the work joins the trace
+	// job, handed back to the worker so the work joins the trace
 	// that caused it. It carries trace ids, never job data.
 	TraceContext map[string]string
 }
@@ -150,7 +150,7 @@ const MaxIDLen = 2048
 // validID refuses what the text columns cannot store. Postgres rejects a NUL
 // byte and any invalid UTF-8 with a statement error, and a statement error
 // inside the caller's transaction aborts it — which is the one thing Enqueue
-// promises it cannot do (ADR-0007). So these are refused here, before any SQL
+// promises it cannot do. So these are refused here, before any SQL
 // runs, rather than discovered there.
 func validID(kind, field, value string) error {
 	switch {
@@ -261,7 +261,7 @@ type Job struct {
 
 // maxErrorLen bounds what a handler's error contributes to a row. A job's
 // error is written to the table and logged, so it is a message about the
-// failure and not a place to put the document that failed (ADR-0008).
+// failure and not a place to put the document that failed.
 const maxErrorLen = 2000
 
 // errorText is the message stored for a failed attempt: a handler's bytes made

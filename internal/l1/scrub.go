@@ -11,8 +11,9 @@ import (
 // `url` reference, which is the one reference id that is source text rather
 // than a structured id assembled from constrained captures and configuration.
 // L0 keeps what the source actually said — it is append-only and it is the
-// record, until an operator deletes it (ADR-0018) — but L1 is what search returns and what a bundle quotes, so a
-// credential pasted into a pull request comment stops here.
+// record, until an operator deletes it — but L1 is what search returns and what
+// a bundle quotes, so a credential pasted into a pull request comment stops
+// here.
 //
 // Two things about it are worth knowing before adding a pattern:
 //
@@ -31,7 +32,7 @@ import (
 type redaction struct {
 	// name is the shape, and the word the marker carries. It is also what
 	// [Scrub] reports, which is the only thing about a redaction that may be
-	// logged (ADR-0008).
+	// logged.
 	name string
 	re   *regexp.Regexp
 	// with is the replacement template. `${1}` and friends keep the part of the
@@ -106,7 +107,7 @@ var redactions = []redaction{{
 
 // Scrub redacts the secrets and personal data it recognises, and reports the
 // shapes it took out — never the values, which are what it exists to keep out
-// of everything downstream of L0 (ADR-0008). The shapes are sorted and
+// of everything downstream of L0. The shapes are sorted and
 // deduplicated, so they are a thing a caller can log and count.
 //
 // Scrubbing scrubbed text returns it unchanged.

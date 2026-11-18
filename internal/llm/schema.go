@@ -13,7 +13,7 @@ import (
 
 // Schema is the shape a structured answer has to take: a name, and a JSON
 // Schema object describing the JSON the caller wants back. Structured output is
-// part of the abstraction rather than the caller's problem (ADR-0005), so what
+// part of the abstraction rather than the caller's problem, so what
 // a provider is told to make this happen — a tool definition, a response
 // format, a retry on a parse failure — never reaches the caller, and the answer
 // is checked against the schema here before it is returned.
@@ -260,7 +260,7 @@ func (n *node) validate(v any, path string) error {
 	// These two say what the schema allows and what kind of thing came back,
 	// and never the value that came back. An enum on a field of a distillation
 	// schema is matched against a completion, and an error string reaches a
-	// log line and a queue job's last_error (ADR-0007, ADR-0008).
+	// log line and a queue job's last_error.
 	if n.constant != nil && !equalJSON(*n.constant, v) {
 		return fmt.Errorf("%s: want the constant %s, found %s", at(path), *n.constant, kindOf(v))
 	}

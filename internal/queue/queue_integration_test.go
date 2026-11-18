@@ -91,7 +91,7 @@ func stats(t *testing.T, client *queue.Client) queue.Stats {
 
 // A job is enqueued in the transaction that causes it, so a rollback takes the
 // job with it. That is the whole reason the queue is in the same Postgres as
-// the data (ADR-0007).
+// the data.
 func TestEnqueueRollsBackWithTheTransactionThatWroteIt(t *testing.T) {
 	kind := newKind(t, false)
 	client := newClient(t, queue.Config{Kind: kind})
@@ -567,7 +567,7 @@ func TestADebouncedUpdateNotifiesOnCommit(t *testing.T) {
 	}
 }
 
-// The property ADR-0007 will not trade, stated as behaviour rather than as a
+// The property the queue will not trade, stated as behaviour rather than as a
 // comment: an enqueue cannot be the thing that aborts the caller's
 // transaction. Invalid debounce settings and bytes that Postgres would refuse
 // mid-transaction (22021, 22P05) are rejected before SQL. The transaction
@@ -708,7 +708,7 @@ func TestConcurrentWorkersNeverClaimOneRowTwice(t *testing.T) {
 	}
 }
 
-// The acceptance criterion ADR-0007 says must be tested directly: two jobs
+// The acceptance criterion that must be tested directly: two jobs
 // sharing a serial key are never running at the same time, however many
 // workers are claiming.
 func TestConcurrentWorkersNeverRunTwoJobsOfOneSerialKey(t *testing.T) {
@@ -793,8 +793,8 @@ func TestConcurrentWorkersNeverRunTwoJobsOfOneSerialKey(t *testing.T) {
 
 // The serialized claim's *other* guard, and the one a race between two workers
 // only rarely reaches: the claim takes an advisory lock on its kind, so that
-// two claims cannot both read a snapshot in which one serial key is free
-// (ADR-0007). The window that needs is about a millisecond wide, which the
+// two claims cannot both read a snapshot in which one serial key is free. The
+// window that needs is about a millisecond wide, which the
 // test above hits by luck rather than by design — so the lock is held here by
 // the test instead, and a claim that did not take it is caught every run.
 //
@@ -1327,7 +1327,7 @@ func TestADelayedJobIsNotClaimedBeforeItIsDue(t *testing.T) {
 }
 
 // What the enqueuing side attaches to a job comes back to the worker: that is
-// how the work joins the trace that caused it (ADR-0008).
+// how the work joins the trace that caused it.
 func TestTheTraceContextReachesTheWorker(t *testing.T) {
 	kind := newKind(t, false)
 	client := newClient(t, queue.Config{Kind: kind})
@@ -1355,8 +1355,8 @@ func TestTheTraceContextReachesTheWorker(t *testing.T) {
 }
 
 // A handler's error is written to the row and logged, so it is bounded: an
-// error that carried a whole document would put the document in both
-// (ADR-0008). The cut is on a rune boundary, which Postgres would refuse if it
+// error that carried a whole document would put the document in both. The cut
+// is on a rune boundary, which Postgres would refuse if it
 // were not — text is UTF-8 and half a rune is not.
 func TestAnOversizedErrorIsStoredBoundedAndStillValidText(t *testing.T) {
 	kind := newKind(t, false)
@@ -1464,7 +1464,7 @@ func TestAnErrorHoldingBytesPostgresRefusesIsStillRecorded(t *testing.T) {
 }
 
 // The defaults are filled in when the client is built, so a service that
-// configures nothing still has the numbers ADR-0007 describes.
+// configures nothing still has the default numbers.
 func TestAClientFillsInTheDefaults(t *testing.T) {
 	client := newClient(t, queue.Config{Kind: newKind(t, false)})
 	got := client.Config()
@@ -1599,7 +1599,7 @@ func listJobs(t *testing.T, client *queue.Client, state queue.State) []queue.Job
 // A target can have a job running and another pending, because a running job
 // does not occupy the pending-target index. A retry of the running one is
 // superseded by the pending job rather than moved back to pending, unless its
-// attempts are spent (ADR-0011).
+// attempts are spent.
 func TestARetryOfATargetThatIsAlreadyPending(t *testing.T) {
 	tests := []struct {
 		name        string

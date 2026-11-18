@@ -41,7 +41,7 @@ func Open(ctx context.Context, url string) (*pgxpool.Pool, error) {
 }
 
 // Connect opens the pool and refuses a database whose schema is older than the
-// migrations this binary carries (ADR-0006): a service verifies, it does not
+// migrations this binary carries: a service verifies, it does not
 // migrate. A database newer than the binary is allowed, so that a rollout can
 // be migrated forward before every replica has been replaced.
 func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {

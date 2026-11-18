@@ -49,7 +49,7 @@ Six things to know about the runtime before changing it:
   walked one call at a time with the cursor stored in a `ResyncStore`
   (`internal/l0`'s `Resyncs`), and what is owed is recorded there before a push
   handler answers; at startup the runtime also asks about every container L0
-  still serves as public (ADR-0013). A connector starts no goroutine of its own
+  still serves as public. A connector starts no goroutine of its own
   for one, because a walk held in a process is lost to a restart.
 - **A chat command is the runtime's to record and apply, never the
   connector's.** A connector hands a parsed `Command` to its sink
@@ -57,11 +57,10 @@ Six things to know about the runtime before changing it:
   `CommandApplier` the process wired in (`internal/l2`'s `Commands`, which this
   package only names as an interface, so it imports nothing above L0), and
   returns the result for the connector to answer. A read-only source gets
-  `ErrReadOnly` before anything is written (ADR-0025).
+  `ErrReadOnly` before anything is written.
 - **Nothing reaches the sink except through a `Gate`.** The runtime builds one
   per source from the same config the allowlist is built from, so a container
   nobody configured is dropped and counted rather than written.
 
-See [docs/design.md](../../docs/design.md#architecture-and-deployment) and
-[ADR-0003](../../docs/adr/0003-one-binary-four-service-subcommands.md) for how
+See [docs/design.md](../../docs/design.md#architecture-and-deployment) for how
 `--source` selects which connectors a process hosts.

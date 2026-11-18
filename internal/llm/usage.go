@@ -8,10 +8,10 @@ import (
 
 // Usage is what one tier, provider and model has cost since the registry was
 // built. Every model call in Hearsay goes through one registry method, which is
-// what makes cost observable per tier by construction (ADR-0005).
+// what makes cost observable per tier by construction.
 //
 // It is a counter rather than a history: the per-call record is the debug log
-// line, and the metrics ADR-0008 describes are these numbers once
+// line, and the per-tier metrics are these numbers once
 // internal/telemetry has a meter to report them through.
 type Usage struct {
 	Tier     Tier

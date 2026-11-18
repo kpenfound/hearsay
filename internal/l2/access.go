@@ -15,8 +15,8 @@ import (
 // stance if that document was deleted. Reach uses the same evidence.
 //
 // The access lists a topic and a stance were written with are what the
-// document said when the worker read it. An access list re-synced since
-// (ADR-0013), a second piece of evidence, or a document retracted since is not
+// document said when the worker read it. An access list re-synced since, a
+// second piece of evidence, or a document retracted since is not
 // in them, so no read authorizes on them.
 type Access struct {
 	guards   map[string]l1.Guard

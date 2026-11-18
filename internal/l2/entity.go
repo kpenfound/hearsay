@@ -266,7 +266,7 @@ func repositories(code []config.CodeEntity) []config.SourceRef {
 
 // hierarchy sets every entity's part_of: `code/`'s where it sets any, then the
 // tracker's, then runtime work declarations, and otherwise what the entities' path patterns imply within their
-// repository (ADR-0016).
+// repository.
 func hierarchy(ctx context.Context, byID map[string]*Entity, repoOf map[string]config.SourceRef, configured, tracker, work Parents) {
 	located := make([]Located, 0, len(byID))
 	for _, id := range sortedKeys(byID) {

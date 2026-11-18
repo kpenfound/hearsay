@@ -12,23 +12,22 @@ import (
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
-// recorder is a [l1.Querier] that answers nothing and remembers what it was
+// recorder is a [l1.Querier] that answers nothing and remembers whether it was
 // asked, so that a test can tell a search that was refused before it ran from
 // one that reached the database.
 type recorder struct {
-	args []any
-	ran  bool
+	ran bool
 }
 
 var errNotADatabase = errors.New("this is not a database")
 
-func (r *recorder) Query(_ context.Context, _ string, args ...any) (pgx.Rows, error) {
-	r.args, r.ran = args, true
+func (r *recorder) Query(context.Context, string, ...any) (pgx.Rows, error) {
+	r.ran = true
 	return nil, errNotADatabase
 }
 
-func (r *recorder) QueryRow(_ context.Context, _ string, args ...any) pgx.Row {
-	r.args, r.ran = args, true
+func (r *recorder) QueryRow(context.Context, string, ...any) pgx.Row {
+	r.ran = true
 	return nil
 }
 
@@ -91,20 +90,8 @@ func TestSearchFailsClosedBeforeItRuns(t *testing.T) {
 			if !errors.Is(err, errNotADatabase) {
 				t.Fatalf("Search() = %v, want the database's own error", err)
 			}
-			if !argsHold(rec.args, `"kind":"public"`) {
-				t.Error("the statement never allows a public document")
-			}
 		})
 	}
-}
-
-func argsHold(args []any, want string) bool {
-	for _, a := range args {
-		if s, ok := a.(string); ok && strings.Contains(s, want) {
-			return true
-		}
-	}
-	return false
 }
 
 // A search with nothing to search for is a listing, and saying so is better

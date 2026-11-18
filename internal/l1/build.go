@@ -142,7 +142,7 @@ func build(in Input, kind Kind, artifact string, window bool) (Document, error) 
 // rendered into the text that is embedded, and validated. It is a value method
 // because a document is a value — the caller keeps whichever of the two it
 // wants — and it reports the shapes the scrub took out of the body, which is
-// the only thing about them that may be logged (ADR-0008).
+// the only thing about them that may be logged.
 func (d Document) WithBody(b Body) (Document, []string, error) {
 	b.Summary = trimLines(b.Summary)
 	b.Question = trimLines(b.Question)
@@ -179,8 +179,8 @@ func conversationOf(ev connector.Event) string {
 
 // control reports an event that is control traffic rather than team content:
 // a command a person gave Hearsay, such as a `/hearsay` comment on an issue,
-// or Hearsay's reply to one, which is an extension kind based on `command`
-// (ADR-0022). It hangs off the conversation it was written in and is never
+// or Hearsay's reply to one, which is an extension kind based on `command`.
+// It hangs off the conversation it was written in and is never
 // part of that conversation's document.
 func control(ev connector.Event) bool {
 	return ev.Kind == connector.KindCommand || ev.Payload.BaseKind == connector.KindCommand

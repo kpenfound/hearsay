@@ -3,9 +3,9 @@
 An open-source context platform for teams using coding agents. Hearsay ingests team communication and artifacts, distills them into layered knowledge with provenance, and serves scoped, permission-filtered context bundles to agents and humans through a small read/assert API.
 
 Status: implemented end to end: eight source types, four services, MCP/HTTP
-reads and assertions, human corrections, evaluation, Compose and Helm. Optional
-typed judgments ship without a qualified policy. Ownership views and a shipped
-embedding provider remain open. First consumer: `shed`. Generalized for any team.
+reads and assertions, human corrections, evaluation, Compose and Helm, with
+Jev's typed judgments deciding outcomes, topics and stances. Ownership views
+and a shipped embedding provider remain open. First consumer: `shed`. Generalized for any team.
 
 ## Problem
 
@@ -38,7 +38,7 @@ currently runs on full text alone.
 
 ## L0: events
 
-Every source connector writes L0 only. An event is `{id, source, native_id, kind, time, payload (JSONB), acl}`. Sources include Slack threads and messages, GitHub issues, PRs, reviews and commits, meeting transcripts from Drive, wiki pages, tracker tickets, factory and agent work updates (projects, workstreams and their updates), and agent session events (start, end, tool calls, assertions). Source gestures are also L0 events; CLI gestures go directly through the shared L2 gesture ledger with a generated event id as the idempotency key. The narrow source-reply exception belongs to runtime components, not connectors ([ADR-0022](adr/0022-human-gestures-and-command-replies.md)).
+Every source connector writes L0 only. An event is `{id, source, native_id, kind, time, payload (JSONB), acl}`. Sources include Slack threads and messages, GitHub issues, PRs, reviews and commits, meeting transcripts from Drive, wiki pages, tracker tickets, factory and agent work updates (projects, workstreams and their updates), and agent session events (start, end, tool calls, assertions). Source gestures are also L0 events; CLI gestures go directly through the shared L2 gesture ledger with a generated event id as the idempotency key. The narrow source-reply exception belongs to runtime components, not connectors.
 
 Agent activity is a first-class source. An agent's tool calls and proposals enter L0 so that later assertions can trace back to what the agent retrieved and chose.
 
@@ -88,7 +88,7 @@ Design points:
 
 ## L2: the graph
 
-The graph is readable through `traverse`, a bounded sequence of typed steps over `entity`, `topic`, `stance`, L1 `document` and `principal` nodes. Its edges and inverses are `part_of` / `has_part` (entity → entity), `topics` / `about` (entity → topic), `documents` / `scope` (entity → document), `stances` / `topic` (topic → stance), `evidence` / `cited_by` (stance → document), and `supersedes` / `superseded_by` (stance → stance). The edges without inverses are `anchors` (entity → document), `owners` (entity → principal), `author` (stance → principal) and `participants` (document → principal). Principals are terminal: they cannot be starts and have no outgoing edges. L0 is excluded. The visibility rules and bounds are recorded in [Readers traverse the L2 graph through bounded, typed steps](adr/0028-readers-traverse-the-l2-graph-through-bounded-typed-steps.md).
+The graph is readable through `traverse`, a bounded sequence of typed steps over `entity`, `topic`, `stance`, L1 `document` and `principal` nodes. Its edges and inverses are `part_of` / `has_part` (entity → entity), `topics` / `about` (entity → topic), `documents` / `scope` (entity → document), `stances` / `topic` (topic → stance), `evidence` / `cited_by` (stance → document), and `supersedes` / `superseded_by` (stance → stance). The edges without inverses are `anchors` (entity → document), `owners` (entity → principal), `author` (stance → principal) and `participants` (document → principal). Principals are terminal: they cannot be starts and have no outgoing edges. L0 is excluded.
 
 ### Entities
 
@@ -113,9 +113,8 @@ Work sources declare `work:<source>:<project>` entities of type `project` and
 runtime, named by their current artifact titles with origin `source`. Projects
 sit under their declared repositories; workstreams sit under their project.
 Deleting an artifact removes its entity and incoming edges, leaving children.
-See [A work-updates source declares entities at runtime](adr/0030-a-work-updates-source-declares-entities-at-runtime.md).
 
-`part_of` edges come from four sources, ranked: `code/` configuration over tracker hierarchy over work updates over repository structure, where a code entity is part of the nearest entity whose path patterns contain its own. For each entity the highest-ranked source that sets any parent replaces the others' parents, and an edge that would close a cycle is dropped from the lower-ranked source. People restructure the hierarchy by editing `code/`, and nothing inferred overrides it ([ADR-0016](adr/0016-entity-hierarchy-sources-are-ranked-and-replace.md)).
+`part_of` edges come from four sources, ranked: `code/` configuration over tracker hierarchy over work updates over repository structure, where a code entity is part of the nearest entity whose path patterns contain its own. For each entity the highest-ranked source that sets any parent replaces the others' parents, and an edge that would close a cycle is dropped from the lower-ranked source. People restructure the hierarchy by editing `code/`, and nothing inferred overrides it.
 
 Aliases are learned by co-occurrence (a PR touching `engine/server/` linked from a thread that says "the engine" is one vote) and confirmed or rejected by humans. CODEOWNERS and repo structure seed the initial map.
 
@@ -158,59 +157,46 @@ Durable artifacts that define a scope, as distinct from recent activity. A desig
 
 ### L2 write path
 
-Serialized per scope to avoid topic-merge races. For each new L1 doc with a qualifying `outcome_kind`, extract candidate assertions, match against existing topics using reference overlap first and embedding similarity second, then append a stance or open a topic. Topic merges and splits are cheap human actions. Wrong merges are the expected failure mode and must be one gesture to undo. Gesture jobs and topic-operation holds use the same scope's serialized `assert` key ([ADR-0020](adr/0020-topic-operations-are-a-ledger-held-on-the-scope-key.md), [ADR-0022](adr/0022-human-gestures-and-command-replies.md)).
+Serialized per scope to avoid topic-merge races. For each new L1 doc with a qualifying `outcome_kind`, extract its positions, find the candidate topics it may continue by reference overlap first, then the words the document's distillation shares with a topic's evidence, then embedding similarity where an `embed` tier is configured (full text is what a deployment without one relies on), let Jev's same-question judgments pick the topic each position continues ([Jev judgments](#jev-judgments)), then append a stance or open a topic. Topic merges and splits are cheap human actions. Wrong merges are the expected failure mode and must be one gesture to undo. Gesture jobs and topic-operation holds use the same scope's serialized `assert` key.
 
-## Optional Jev boost
+## Jev judgments
 
-[ADR-0031](adr/0031-typed-judgments-are-an-optional-write-path-capability.md)
-adds a typed judgment capability alongside ADR-0005's three model tiers.
-`llm.boost.enabled` is the single switch for stance comparison, topic matching
-and outcome classification; absent or false requires no Jev credential and makes
-zero calls. When enabled, `api_key_env` references `HEARSAY_JEV_API_KEY` by default.
-Missing credentials, outages and unusable answers preserve baseline output and
-service readiness. Workers expose disabled, healthy or degraded capability state
-through the `judgments` object in `/readyz`, with the last fallback reason.
-One instance is shared by both workers in `hearsay all`; separate processes do
-not share cooldown.
+Hearsay's pipeline decisions are Jev's (TypeSafe's System One) answers to
+atomic yes/no questions, combined in code: Jev makes judgments and code makes
+decisions. The generative tiers write all prose, positions and topic names, and
+no longer classify or match anything themselves.
 
-The boost records shadow judgments until task policies pass deliberate
-[human-reviewed evaluation and qualification](jev-evaluation.md). No qualified
-policy ships. Configure an explicit model id and bind each acceptance threshold
-to the resolved model version; upgrades never rewrite historical consumed results.
-Confidence is not validated correctness and typed output constrains shape only.
-Negation, ambiguity, proposal versus decision, domain language and adversarial
-source text remain known risks to measure on the team's own data.
+- **Outcome.** Four questions over a document's text: was work finished or a
+  question answered, did the team adopt a binding choice, is something put
+  forward that nobody has agreed to, is the matter still being worked out. The
+  first confident yes, in that order, makes the outcome resolved, decided,
+  proposed or open; with none it is none. A chat burst asks nothing: its
+  containing thread owns the conclusion.
+- **Topic.** For each extracted position, one question per candidate topic:
+  does it answer the same question? The most probable confident yes is the
+  topic it continues; with none it opens a new topic. One document never puts
+  two positions on one topic.
+- **Stance.** Against a matched topic's readable current position: does the new
+  position give the same answer? A confident yes restates it; anything else
+  changes it. A position the document's readers may not read is never shown,
+  and the stance's judgement is then unknown.
 
-Generative tiers continue to write all prose, extracted positions and topic names.
-On outcome disagreement, only a supported generative restatement can adopt the
-new label; otherwise the original label/text pair survives. Topic changes require
-a coherent comparison to the replacement's readable current position. None-fit
-never opens a new topic. Withheld previous evidence stays withheld.
+Only a confident yes counts, at the configured `llm.judgments.threshold`. Jev
+is required by the distiller and the assertion worker, which refuse to start
+without its model and key. A Jev call that fails, after its retries, fails the
+job, and the queue retries it as it would a failed model call; there is no
+second decision path. Each answer is journaled atomically with the output it
+decided, against the effective input identities it read, so a rerun over the
+same inputs reuses it and an upgrade never reinterprets a past judgment. ACLs
+and operator deletion cover the journal. Workers report Jev's health through
+the `judgments` object in `/readyz`, without becoming unready.
 
-Broader-pool shortlist qualification scores complete selected sets and their
-stopping points. A qualified terminal none-fit after a nonempty qualified prefix
-can shorten the shortlist shown to fresh generative extraction; it counts as
-adopted evidence. Premature stops that exclude human-labelled relevant candidates
-count as shortlist omissions and selection errors against operator-supplied limits.
-An empty selection or any unqualified slot retains the complete baseline shortlist.
-
-Judgments commit atomically with the output they inform, against current effective
-input identities. Any journal refusal (storage failure, timeout or changed inputs)
-restores the complete baseline document or assertion job. ACLs and operator deletion
-cover records and observations; restart reuse requires matching effective inputs.
-The assertion job shares one total optional-work budget (default 5s, configurable
-up to 30s) across every question, broader pool, replacement, optional re-extraction,
-retry and wait. It never resets per assertion. Exhaustion restores baseline output;
-optional work therefore adds at most that budget to scope-key holding, beyond
-baseline processing and queue scheduling. Outcome work has one fixed 5s document
-budget. Neither budget cancels baseline writes. Human gestures use the same key
-and continue to determine standing.
-
-Bundle assembly, search, standing, authorization, command/gesture application and
-deletion make no judgment calls. Output on those paths depends on effective data,
-principal and policy. Pipeline reports include calls, retries, additional candidate
-processing and zero-attempt fallbacks; unknown usage/cost stays unknown, and vendor
-price alone supports no savings claim.
+Bundle assembly, search, standing, authorization, command and gesture
+application and deletion make no judgment calls. Confidence is not validated
+correctness: negation, ambiguity, proposal versus decision, domain language and
+adversarial source text are risks to measure on a team's own data
+([jev-evaluation.md](jev-evaluation.md)). Pipeline reports include model calls,
+Jev requests and retries, with unknown usage and cost kept unknown.
 
 ## L3: derived views
 
@@ -315,8 +301,7 @@ entry. A reader must satisfy every distinct access list on the current L0
 revisions of every listed container. Missing containers grant nobody access;
 mixed public and private lists during a re-sync fail closed. Resolution adds
 the canonical list's key to the reader's audience on each read; repository
-permissions are never copied into work events at ingest. See
-[An access list may defer to other sources' containers](adr/0029-an-access-list-may-defer-to-other-sources-containers.md).
+permissions are never copied into work events at ingest.
 
 A work source's `document` and `decision` records (and those of its owner
 source, which records them about the same projects) are L1 documents too. A
@@ -359,9 +344,9 @@ Every bundle served is itself an L0 audit event: who asked, on whose behalf, wha
 
 L0 is append-only, but deletion is required (a pasted secret, a departed employee's data, a legal hold). Deletion writes a tombstone, then walks provenance forward. `l0_refs` on L1 and `evidence` on L2 give the full fan-out. Affected L1 docs are re-distilled without the deleted event; affected L2 objects are re-run. If a stance changes as a result, that is recorded as a supersession so nothing flips silently.
 
-A deletion at the source arrives as a tombstone and only hides what it covers. A deletion from Hearsay is an operator action, `hearsay delete --apply`, and it is the one exception to append-only: the covered L0 rows keep their id, source, artifact, kind, time and ACL, their payload content is redacted in place, and Hearsay records the deletion as its own action rather than the source's ([ADR-0018](adr/0018-operator-deletion-redacts-l0-in-place.md)).
+A deletion at the source arrives as a tombstone and only hides what it covers. A deletion from Hearsay is an operator action, `hearsay delete --apply`, and it is the one exception to append-only: the covered L0 rows keep their id, source, artifact, kind, time and ACL, their payload content is redacted in place, and Hearsay records the deletion as its own action rather than the source's.
 
-Both kinds of deletion rebuild the same way: the affected L1 documents are re-distilled or deleted, and each stance resting on them is superseded, by a withdrawal when none of its evidence is left. Only an operator deletion also takes the derived text: a stance written before it rebuilt the stance's document has its position redacted once it is superseded, and a topic whose opening document it deleted, and which no surviving document supports, has its name redacted. Ids and supersession edges stay, so `stance_history` still shows the withdrawal ([ADR-0019](adr/0019-operator-deletion-redacts-superseded-l2-text.md)). Every deletion is a durable record of what it covered and what it rebuilt; `hearsay delete list` and `hearsay delete show <id>` read it, including whether every rebuild job has finished.
+Both kinds of deletion rebuild the same way: the affected L1 documents are re-distilled or deleted, and each stance resting on them is superseded, by a withdrawal when none of its evidence is left. Only an operator deletion also takes the derived text: a stance written before it rebuilt the stance's document has its position redacted once it is superseded, and a topic whose opening document it deleted, and which no surviving document supports, has its name redacted. Ids and supersession edges stay, so `stance_history` still shows the withdrawal. Every deletion is a durable record of what it covered and what it rebuilt; `hearsay delete list` and `hearsay delete show <id>` read it, including whether every rebuild job has finished.
 
 ## Configuration
 
@@ -373,16 +358,13 @@ is what each part is for.
 - `principals/` identity mapping. `kyle` is Slack U123, GitHub kpenfound, kyle@..., and a calendar attendee. Without this, stances have no consistent author and authority cannot be checked.
 - `code/` entity seeds: CODEOWNERS import, path patterns, initial aliases.
 - `authority/` which principals and sources can produce ratified stances, per scope.
-- `llm/` which provider and model answers each of the three model tiers ([ADR-0005](adr/0005-llm-provider-abstraction-with-three-model-tiers.md)). Credentials are not here; they come from the environment.
+- `llm/` which provider and model answers each of the three model tiers. Credentials are not here; they come from the environment.
 
 Adoption dies at the config step if identity mapping and connector onboarding are not near-zero effort. Defaults should cover a GitHub-plus-Slack team with a single file.
 
-Configuration is read once, at startup: a change to it is a deploy, and every process reports the digest of what it read ([ADR-0009](adr/0009-configuration-as-a-gitops-directory.md)).
+Configuration is read once, at startup: a change to it is a deploy, and every process reports the digest of what it read.
 
 ## Architecture and deployment
-
-The implementation decisions behind this section — language, process model, storage,
-LLM tiers, migrations, queue and observability — are recorded in [`docs/adr/`](adr/).
 
 One Postgres with pgvector and full-text search holds all four layers. Vectors are an index on the L1 table, not a separate store. L2 is relational with recursive CTEs for hierarchy and supersession; it is small and shallow enough that a graph database is not warranted at the start, and the layering allows moving L2 alone later.
 
@@ -404,11 +386,11 @@ L2 will be wrong on a regular basis. Correction has to be one gesture in the too
 
 Discord and Slack reactions, chat slash commands and GitHub `/hearsay` issue or PR comments enter L0 as source events. Connectors describe their actor, target and command data, but do not interpret them, resolve principals or write L1/L2. For reactions and GitHub commands, the assertion worker follows the L0 change feed and enqueues a durable `assert` job targeted at `gesture:<source event id>` under the scope's existing serialized key. Replays collapse to the same target; the gesture record and L2 writes commit together. Removing a reaction or deleting a command reverses its gesture, subject to topic-operation undo rules. A GitHub command edit does not run a second command. The worker, or for a chat slash command the process that receives it (below), maps the source actor to a configured human principal and checks the scope's `ratified_by.principals`; unmapped or unauthorized gestures make no L2 change. Reactions on an original Discord or Slack message apply to every live stance drawn from its L1 thread or burst; GitHub ratify and demote commands apply to every live stance drawn from the issue or PR. Demotion serves a stance as `contested` until an authorized ratification or a newer stance supersedes it. Pins anchor the target's L1 document; merge uses the topic-operation ledger.
 
-Hearsay answers only commands a person explicitly issued. Reactions receive no reply. An HTTP interaction adapter in the API runtime verifies Discord requests with the configured application public key, ingests the command as L0, applies it through the gesture or topic-operation ledger under the scope's serial key, and sends an ephemeral answer with the result or refusal using the interaction token within Discord's three-second deadline; when the work takes longer it defers the ephemeral answer and edits it in once done ([ADR-0024](adr/0024-discord-commands-are-applied-by-the-interaction-adapter.md)). A connector that receives chat commands itself parses each one and hands it to the connector runtime, which records it as L0, applies it the same way and returns the result for the connector to answer ephemerally; a read-only source's commands are neither recorded, applied nor answered. Every receiving process applies a command through one shared applier, and a command whose process dies mid-command is not retried ([ADR-0025](adr/0025-chat-commands-are-applied-by-the-receiving-process-through-one-applier.md)). It uses the configured bot token to register commands, never to post channel messages. The adapter performs the L2 autocomplete read under the invoker's mapped principal; `/hearsay merge` offers only topics the invoker can read. For GitHub, the assertion worker posts one result-or-refusal reply comment per command using the configured source bot/app `secrets.token`, with issue and PR comment write permission. A durable reply record keyed by the source command event and source-comment reconciliation prevent duplicates on retry. Hearsay makes no other source writes and posts nothing unprompted ([ADR-0022](adr/0022-human-gestures-and-command-replies.md)).
+Hearsay answers only commands a person explicitly issued. Reactions receive no reply. An HTTP interaction adapter in the API runtime verifies Discord requests with the configured application public key, ingests the command as L0, applies it through the gesture or topic-operation ledger under the scope's serial key, and sends an ephemeral answer with the result or refusal using the interaction token within Discord's three-second deadline; when the work takes longer it defers the ephemeral answer and edits it in once done. A connector that receives chat commands itself parses each one and hands it to the connector runtime, which records it as L0, applies it the same way and returns the result for the connector to answer ephemerally; a read-only source's commands are neither recorded, applied nor answered. Every receiving process applies a command through one shared applier, and a command whose process dies mid-command is not retried. It uses the configured bot token to register commands, never to post channel messages. The adapter performs the L2 autocomplete read under the invoker's mapped principal; `/hearsay merge` offers only topics the invoker can read. For GitHub, the assertion worker posts one result-or-refusal reply comment per command using the configured source bot/app `secrets.token`, with issue and PR comment write permission. A durable reply record keyed by the source command event and source-comment reconciliation prevent duplicates on retry. Hearsay makes no other source writes and posts nothing unprompted.
 
 Command events and Hearsay-authored replies are control traffic, not team content: they are excluded from L1 distillation, including the webhook echo of a GitHub reply. The echo cannot become a new command.
 
-A source may opt out of all of this with `read_only: true` in its configuration, so that Hearsay never needs write access to it. It is still ingested in full, but its reactions are not gestures, its `/hearsay` comments are ordinary content and are distilled like any other comment, Hearsay registers no slash command for it and answers none, and nothing is posted to it: the write-back exception ADR-0022 makes does not apply to that source. People on a read-only source correct L2 through `hearsay gestures` and `hearsay topics` instead.
+A source may opt out of all of this with `read_only: true` in its configuration, so that Hearsay never needs write access to it. It is still ingested in full, but its reactions are not gestures, its `/hearsay` comments are ordinary content and are distilled like any other comment, Hearsay registers no slash command for it and answers none, and nothing is posted to it: the write-back exception for command answers does not apply to that source. People on a read-only source correct L2 through `hearsay gestures` and `hearsay topics` instead.
 
 ## Evaluation
 
@@ -437,4 +419,4 @@ Agent memory layers (Mem0, Zep/Graphiti, Letta, Cognee, Neo4j Agent Memory) pers
 
 ## Open questions
 
-- Entity hierarchy rules: settled by [ADR-0016](adr/0016-entity-hierarchy-sources-are-ranked-and-replace.md), and summarized under [Entities](#entities).
+- Entity hierarchy rules: settled, and summarized under [Entities](#entities).

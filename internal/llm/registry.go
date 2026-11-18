@@ -47,7 +47,7 @@ type registry struct {
 // known before a call is checked here — an unknown provider, a missing
 // credential, a provider that cannot take a system prompt or produce structured
 // output — because configuration is read once at startup and a process that
-// cannot make a model call should not be serving (ADR-0005, ADR-0009).
+// cannot make a model call should not be serving.
 //
 // A tier the configuration does not name is not built and not defaulted to
 // something else: asking for it is [ErrTierNotConfigured].
@@ -134,7 +134,7 @@ func (r *registry) build(tier Tier, tc TierConfig, p Provider) error {
 // output, so a provider without either cannot back one. The answer is the same
 // wherever it is asked: [NewRegistry] asks it when a process starts, and
 // `hearsay config validate` asks it about a file in a pull request, which is
-// where ADR-0005 wants a capability gap to surface — when configuration is
+// where a capability gap should surface — when configuration is
 // read, rather than as a degraded call in production.
 func CanServe(name string, caps Capabilities, tier Tier, tc TierConfig) error {
 	if !tier.Completion() {
@@ -261,7 +261,7 @@ func (e *embedder) Dimensions() int { return e.inner.Dimensions() }
 // Embed implements [Embedder]. The width of what comes back is checked here:
 // a vector of the wrong length is what would be written into the vector(N)
 // column as garbage, and a provider that quietly changed a model's width is
-// exactly the case ADR-0005 asks to refuse rather than absorb.
+// exactly the case to refuse rather than absorb.
 func (e *embedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
@@ -319,7 +319,7 @@ func reportedCost(u *JudgmentUsage) *float64 {
 // call runs one model call: the per-attempt timeout, the retries with backoff,
 // the wait a rate-limited provider asked for, and the token accounting. It is
 // the single place that knows how a model call behaves, which is what keeps all
-// of it out of the distiller and the assertion worker (ADR-0005).
+// of it out of the distiller and the assertion worker.
 func call[T any](ctx context.Context, t *tierClient, run func(context.Context) (T, outcome, error)) (T, error) {
 	var zero T
 	log := telemetry.Logger(ctx)

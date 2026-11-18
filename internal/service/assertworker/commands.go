@@ -54,7 +54,7 @@ type Replies map[string]Replier
 // CommandFollower puts the GitHub `/hearsay` commands L0 holds on the assert
 // queue: each command comment as written, and the tombstone of each one that
 // was deleted, as a `gesture:<event id>` job under the serial key of the scope
-// it acts on (ADR-0022). The jobs and the cursor commit together, so a restart
+// it acts on. The jobs and the cursor commit together, so a restart
 // misses nothing and a repeated enqueue collapses into the job already
 // pending. A read-only source takes no commands, and is passed over.
 type CommandFollower struct {

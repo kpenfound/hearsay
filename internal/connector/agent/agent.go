@@ -7,7 +7,7 @@
 // # Who is posting
 //
 // An agent authenticates with its own API bearer token, the one its entry in
-// `principals/` names in `token_env` (ADR-0014): `Authorization: Bearer
+// `principals/` names in `token_env`: `Authorization: Bearer
 // <token>`. The token is the whole of the agent's identity. The event's author
 // is the agent the token belongs to, never one the request names; a body whose
 // `agent` names anyone else is refused. The body also names the person the

@@ -19,18 +19,17 @@ type Corpus struct {
 	Examples   []Example `json:"examples"`
 }
 
-// Example binds a human label to immutable source evidence and a task.
+// Example binds a human yes/no label for one judgment to immutable source
+// evidence. Every task is one atomic yes/no question, so a label is yes or no.
 type Example struct {
-	ID         string           `json:"id"`
-	Group      string           `json:"group"`
-	Task       llm.JudgmentTask `json:"task"`
-	Split      string           `json:"split"`
-	Category   string           `json:"category"`
-	Sources    []CorpusSource   `json:"sources"`
-	Review     Review           `json:"review"`
-	Label      string           `json:"label,omitempty"`
-	Shortlist  *Shortlist       `json:"shortlist,omitempty"`
-	Candidates []string         `json:"candidates,omitempty"`
+	ID       string           `json:"id"`
+	Group    string           `json:"group"`
+	Task     llm.JudgmentTask `json:"task"`
+	Split    string           `json:"split"`
+	Category string           `json:"category"`
+	Sources  []CorpusSource   `json:"sources"`
+	Review   Review           `json:"review"`
+	Label    string           `json:"label"`
 }
 
 // CorpusSource is a revision-pinned, access-scoped source excerpt for review.
@@ -50,17 +49,18 @@ type Review struct {
 }
 
 // Prediction contains supplied worker output, not a request to run a provider.
-// Without a complete shortlist, a blank label or abstain is an abstention;
-// qualification uses the baseline.
+// A blank label is no answer. The baseline set is any reference predictor to
+// compare Jev with, such as a generative model's implied answer: a generated
+// "restates" is a yes to stance.same_answer, a generated decided outcome a yes
+// to outcome.binding_agreement. It may be empty.
 type Prediction struct {
-	ExampleID    string     `json:"example_id"`
-	ModelVersion string     `json:"model_version"`
-	Label        string     `json:"label,omitempty"`
-	Shortlist    *Shortlist `json:"shortlist,omitempty"`
-	Confidence   *float64   `json:"confidence"`
-	ConflictFlag *bool      `json:"conflict_flag,omitempty"`
-	ConflictReal *bool      `json:"conflict_real,omitempty"`
-	Corrected    *bool      `json:"corrected,omitempty"`
+	ExampleID    string   `json:"example_id"`
+	ModelVersion string   `json:"model_version"`
+	Label        string   `json:"label,omitempty"`
+	Confidence   *float64 `json:"confidence"`
+	ConflictFlag *bool    `json:"conflict_flag,omitempty"`
+	ConflictReal *bool    `json:"conflict_real,omitempty"`
+	Corrected    *bool    `json:"corrected,omitempty"`
 }
 
 // Predictions separates the pinned candidate from the current pipeline.
@@ -83,42 +83,12 @@ func DecodeEvaluation(r io.Reader, v any) error {
 	return nil
 }
 
-func taskClasses(task llm.JudgmentTask) []string {
-	switch task {
-	case llm.TaskStanceComparison:
-		return []string{"changes", "restates"}
-	case llm.TaskTopicMatching, llm.TaskTopicShortlist:
-		return []string{"existing", "none_fit"}
-	case llm.TaskOutcomeClassification:
-		return []string{"resolved", "decided", "proposed", "open", "none"}
-	}
-	return nil
-}
+// classes is every task's label set: each judgment is a yes/no question.
+var classes = []string{"yes", "no"}
 
-func exampleClass(e Example) string {
-	if e.Task == llm.TaskTopicShortlist {
-		if e.Shortlist.End == "none_fit" {
-			return "none_fit"
-		}
-		return "existing"
-	}
-	if e.Task == llm.TaskTopicMatching && e.Label != "none_fit" {
-		return "existing"
-	}
-	return e.Label
-}
+func validExampleLabel(e Example) bool { return e.Task.Known() && slices.Contains(classes, e.Label) }
 
-func validLabel(e Example, label string, predicted bool) bool {
-	if predicted && (label == "" || label == "abstain") {
-		return true
-	}
-	switch e.Task {
-	case llm.TaskTopicMatching:
-		return label == "none_fit" || predicted && label == "new" || slices.Contains(e.Candidates, label)
-	default:
-		return slices.Contains(taskClasses(e.Task), label)
-	}
-}
+func validPrediction(p Prediction) bool { return p.Label == "" || slices.Contains(classes, p.Label) }
 
 // Validate checks provenance and split isolation before any scoring.
 func (c Corpus) Validate() error {
@@ -139,18 +109,11 @@ func (c Corpus) Validate() error {
 			return fmt.Errorf("example %d leaks a group across splits", i)
 		}
 		groups[e.Group] = e.Split
-		if len(taskClasses(e.Task)) == 0 || !validExampleLabel(e) {
-			return fmt.Errorf("example %d requires an adjudicated task label", i)
+		if !validExampleLabel(e) {
+			return fmt.Errorf("example %d requires a known task and a yes or no label", i)
 		}
 		if e.Review.Adjudicator == "" || e.Review.Revision == "" || e.Review.Rationale == "" || len(e.Sources) == 0 {
 			return fmt.Errorf("example %d requires review and source provenance", i)
-		}
-		candidates := map[string]bool{}
-		for _, id := range e.Candidates {
-			if id == "" || id == "none_fit" || id == "new" || id == "abstain" || candidates[id] {
-				return fmt.Errorf("example %d has invalid candidate ids", i)
-			}
-			candidates[id] = true
 		}
 		for _, s := range e.Sources {
 			if s.ID == "" || s.Revision == "" || s.URI == "" || s.Text == "" || len(s.ACL) == 0 {
@@ -172,15 +135,14 @@ func predictionIndex(c Corpus, ps []Prediction) (map[string]Prediction, error) {
 	}
 	out := map[string]Prediction{}
 	for i, p := range ps {
-		e, ok := examples[p.ExampleID]
-		if !ok {
+		if _, ok := examples[p.ExampleID]; !ok {
 			return nil, fmt.Errorf("prediction %d has unknown example id", i)
 		}
 		if _, ok := out[p.ExampleID]; ok {
 			return nil, fmt.Errorf("prediction %d repeats an example", i)
 		}
-		if !validPrediction(e, p) {
-			return nil, fmt.Errorf("prediction %d has invalid task label", i)
+		if !validPrediction(p) {
+			return nil, fmt.Errorf("prediction %d has a label other than yes, no or blank", i)
 		}
 		if p.Confidence != nil && (math.IsNaN(*p.Confidence) || math.IsInf(*p.Confidence, 0) || *p.Confidence < 0 || *p.Confidence > 1) {
 			return nil, fmt.Errorf("prediction %d has invalid confidence", i)
@@ -206,21 +168,20 @@ func measure(n, d int) ErrorMeasure {
 }
 
 // JudgmentMetrics keeps each named error separate. Confusion rows are gold,
-// columns predicted; every outcome cell is present, including zero cells.
+// columns predicted ("none" where no answer was given); every cell is present.
+// What a false yes or a false no costs depends on the judgment: a false yes
+// to topic.same_question is an incorrect attachment, a false no to
+// stance.same_answer a false change.
 type JudgmentMetrics struct {
-	Examples             int                       `json:"examples"`
-	Missing              int                       `json:"missing_predictions"`
-	Errors               ErrorMeasure              `json:"errors"`
-	FalseChanges         ErrorMeasure              `json:"false_changes"`
-	MissedChanges        ErrorMeasure              `json:"missed_changes"`
-	IncorrectAttachments ErrorMeasure              `json:"incorrect_attachments"`
-	DuplicateTopics      ErrorMeasure              `json:"duplicate_topics"`
-	OutcomeConfusion     ErrorMeasure              `json:"outcome_confusion"`
-	Confusion            map[string]map[string]int `json:"confusion_matrix"`
-	MissedDecisions      ErrorMeasure              `json:"missed_decisions"`
-	ConflictPrecision    ErrorMeasure              `json:"conflict_precision"`
-	ShortlistOmissions   ErrorMeasure              `json:"shortlist_omissions"`
-	Corrections          ErrorMeasure              `json:"corrections"`
+	Examples          int                       `json:"examples"`
+	Missing           int                       `json:"missing_predictions"`
+	Unanswered        int                       `json:"unanswered"`
+	Errors            ErrorMeasure              `json:"errors"`
+	FalseYes          ErrorMeasure              `json:"false_yes"`
+	FalseNo           ErrorMeasure              `json:"false_no"`
+	Confusion         map[string]map[string]int `json:"confusion_matrix"`
+	ConflictPrecision ErrorMeasure              `json:"conflict_precision"`
+	Corrections       ErrorMeasure              `json:"corrections"`
 }
 
 // TaskComparison compares only supplied predictions against the same labels.
@@ -246,30 +207,26 @@ func CompareJudgments(c Corpus, predictions Predictions, split string) (map[llm.
 		return nil, err
 	}
 	out := map[llm.JudgmentTask]TaskComparison{}
-	for _, task := range []llm.JudgmentTask{llm.TaskStanceComparison, llm.TaskTopicMatching, llm.TaskTopicShortlist, llm.TaskOutcomeClassification} {
+	for _, task := range llm.JudgmentTasks() {
 		var es []Example
 		for _, e := range c.Examples {
 			if e.Task == task && (split == "" || e.Split == split) {
 				es = append(es, e)
 			}
 		}
-		out[task] = TaskComparison{Baseline: scoreJudgments(task, es, b), Jev: scoreJudgments(task, es, j)}
+		out[task] = TaskComparison{Baseline: scoreJudgments(es, b), Jev: scoreJudgments(es, j)}
 	}
 	return out, nil
 }
 
-func scoreJudgments(task llm.JudgmentTask, es []Example, ps map[string]Prediction) JudgmentMetrics {
+// scoreJudgments counts an unanswered prediction as an error, and as a false
+// no for a gold yes: an unanswered judgment decides nothing.
+func scoreJudgments(es []Example, ps map[string]Prediction) JudgmentMetrics {
 	m := JudgmentMetrics{Confusion: map[string]map[string]int{}}
-	if task == llm.TaskOutcomeClassification {
-		for _, gold := range taskClasses(task) {
-			m.Confusion[gold] = map[string]int{}
-			for _, label := range append(taskClasses(task), "abstain") {
-				m.Confusion[gold][label] = 0
-			}
-		}
+	for _, gold := range classes {
+		m.Confusion[gold] = map[string]int{"yes": 0, "no": 0, "none": 0}
 	}
-	var omitted, relevant int
-	var errorsN, fc, restates, mc, changes, ia, attachments, dup, existing, oc, outcomes, md, decisions, real, verdicts, corrections, reviewed int
+	var errorsN, falseYes, golds, falseNo, gnos, real, verdicts, corrections, reviewed int
 	for _, e := range es {
 		p, ok := ps[e.ID]
 		if !ok {
@@ -279,70 +236,23 @@ func scoreJudgments(task llm.JudgmentTask, es []Example, ps map[string]Predictio
 		m.Examples++
 		label := p.Label
 		if label == "" {
-			label = "abstain"
+			label = "none"
+			m.Unanswered++
 		}
-		// A generative new-topic output and none-fit both mean no existing
-		// attachment. Creation is a duplicate only when an existing candidate fits.
-		correct := label == e.Label || task == llm.TaskTopicMatching && label == "new" && e.Label == "none_fit"
-		if task == llm.TaskTopicShortlist {
-			correct = sameShortlist(e.Shortlist, p.Shortlist)
-		}
-		if !correct {
+		m.Confusion[e.Label][label]++
+		if label != e.Label {
 			errorsN++
 		}
-		switch task {
-		case llm.TaskStanceComparison:
-			if e.Label == "restates" {
-				restates++
-				if label == "changes" {
-					fc++
-				}
+		switch e.Label {
+		case "no":
+			gnos++
+			if label == "yes" {
+				falseYes++
 			}
-			if e.Label == "changes" {
-				changes++
-				if label != "changes" {
-					mc++
-				}
-			}
-		case llm.TaskTopicShortlist:
-			relevant += len(e.Shortlist.Selected)
-			for _, id := range e.Shortlist.Selected {
-				if p.Shortlist == nil || !slices.Contains(p.Shortlist.Selected, id) {
-					omitted++
-				}
-			}
-			if p.Shortlist != nil {
-				for _, id := range p.Shortlist.Selected {
-					attachments++
-					if !slices.Contains(e.Shortlist.Selected, id) {
-						ia++
-					}
-				}
-			}
-		case llm.TaskTopicMatching:
-			if label != "none_fit" && label != "new" && label != "abstain" {
-				attachments++
-				if label != e.Label {
-					ia++
-				}
-			}
-			if e.Label != "none_fit" {
-				existing++
-				if label == "new" {
-					dup++
-				}
-			}
-		case llm.TaskOutcomeClassification:
-			outcomes++
-			m.Confusion[e.Label][label]++
-			if label != e.Label {
-				oc++
-			}
-			if e.Label == "decided" || e.Label == "resolved" {
-				decisions++
-				if label != "decided" && label != "resolved" {
-					md++
-				}
+		case "yes":
+			golds++
+			if label != "yes" {
+				falseNo++
 			}
 		}
 		if p.ConflictFlag != nil && *p.ConflictFlag && p.ConflictReal != nil {
@@ -358,14 +268,9 @@ func scoreJudgments(task llm.JudgmentTask, es []Example, ps map[string]Predictio
 			}
 		}
 	}
-	m.ShortlistOmissions = measure(omitted, relevant)
 	m.Errors = measure(errorsN, m.Examples)
-	m.FalseChanges = measure(fc, restates)
-	m.MissedChanges = measure(mc, changes)
-	m.IncorrectAttachments = measure(ia, attachments)
-	m.DuplicateTopics = measure(dup, existing)
-	m.OutcomeConfusion = measure(oc, outcomes)
-	m.MissedDecisions = measure(md, decisions)
+	m.FalseYes = measure(falseYes, gnos)
+	m.FalseNo = measure(falseNo, golds)
 	m.ConflictPrecision = measure(real, verdicts)
 	m.Corrections = measure(corrections, reviewed)
 	return m

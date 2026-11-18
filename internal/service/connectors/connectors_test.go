@@ -107,7 +107,7 @@ func get(t *testing.T, addr, path string) (int, string) {
 }
 
 // The service hosts what configuration names, polls it, and serves the two
-// endpoints every service has (ADR-0008) plus the push connectors' handlers.
+// endpoints every service has plus the push connectors' handlers.
 func TestTheServiceHostsPollsAndServes(t *testing.T) {
 	src := source("fake-eng")
 	fake := connector.NewFake(src)
@@ -221,7 +221,7 @@ func TestReadyzFailsWhenASourceHasFailed(t *testing.T) {
 }
 
 // A process with no configuration hosts nothing, and says so by serving rather
-// than by exiting: that is what every other service does without one (ADR-0009).
+// than by exiting: that is what every other service does without one.
 func TestNoConfigurationHostsNothing(t *testing.T) {
 	addr, stop := run(t, &config.Config{}, connectors.Deps{
 		Sink:    &connector.Recorder{},
@@ -411,7 +411,17 @@ func TestAConnectorIsClosedAfterItsDeliveriesFinish(t *testing.T) {
 	// finish: the shutdown has to wait for it.
 	stopped := make(chan error, 1)
 	go func() { stopped <- stop() }()
-	time.Sleep(50 * time.Millisecond)
+	// Shutdown closes the listener before it waits for the handlers: once a new
+	// connection is refused, the stop is under way.
+	waitFor(t, "the listener to close", func() bool {
+		dialer := net.Dialer{Timeout: time.Second}
+		conn, err := dialer.DialContext(t.Context(), "tcp", addr)
+		if err != nil {
+			return true
+		}
+		_ = conn.Close()
+		return false
+	})
 	close(pusher.release)
 
 	if code := <-delivered; code != http.StatusAccepted {
@@ -447,7 +457,7 @@ func (b *syncBuffer) String() string {
 }
 
 // A `--source` selection is which of the configured connectors this process
-// hosts (ADR-0003).
+// hosts.
 func TestSelect(t *testing.T) {
 	configured := []connector.SourceConfig{source("github"), source("discord"), source("drive")}
 	tests := []struct {

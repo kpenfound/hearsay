@@ -48,26 +48,32 @@ func TestOutcomeJournalReusedAcrossConcurrentUnrelatedIngestion(t *testing.T) {
 		_, err := l0.New(pool).Append(t.Context(), unrelated)
 		ingested <- err
 	}()
-	fake := llm.NewFakeJudgmentProvider(outcomeStep(t, "none"))
-	j := outcomeCapability(t, llm.JudgmentConfig{MaxRetries: -1}, outcomeIngestionProvider{fake, entered, ingested})
-	d := boostedDistiller(t, pool, src, outcomeRegistry(t, false), j, false)
+	j := jevOver(t, outcomeIngestionProvider{fixtureJev(t), entered, ingested}, llm.JudgmentConfig{})
+	d := jevDistiller(t, pool, src, j)
 	id := l1.DocID(src, repo+"#12")
 	result, err := d.Distill(t.Context(), id)
 	if err != nil || !result.Written {
 		t.Fatalf("distill=%+v %v", result, err)
 	}
-	records, err := l1.New(pool).JudgmentsFor(t.Context(), judgmentReader(), string(llm.TaskOutcomeClassification))
-	if err != nil || len(records) != 1 || records[0].State != "committed" {
-		t.Fatalf("records=%+v %v", records, err)
+	records := outcomeRecords(t, pool)
+	if len(records) != 4 {
+		t.Fatalf("records=%+v", records)
+	}
+	for _, r := range records {
+		if r.State != "committed" {
+			t.Fatalf("record=%+v", r)
+		}
 	}
 	// Restart with a fresh capability and no judgment response available.
 	restartFake := llm.NewFakeJudgmentProvider()
-	restart := boostedDistiller(t, pool, src, outcomeRegistry(t, false), outcomeCapability(t, llm.JudgmentConfig{MaxRetries: -1}, restartFake), false)
+	restart := jevDistiller(t, pool, src, jevOver(t, restartFake, llm.JudgmentConfig{}))
 	result, err = restart.Distill(t.Context(), id)
 	if err != nil || result.Written || restartFake.Calls() != 0 {
 		t.Fatalf("restart=%+v %v calls=%d", result, err, restartFake.Calls())
 	}
-	assertBaselineOutcome(t, pool, id)
+	if doc, err := l1.New(pool).Get(t.Context(), id); err != nil || doc.Body.OutcomeKind != l1.OutcomeDecided {
+		t.Fatalf("outcome = %+v %v", doc.Body, err)
+	}
 	observations, err := l1.New(pool).ObservationsFor(t.Context(), judgmentReader())
 	if err != nil {
 		t.Fatal(err)
@@ -77,6 +83,6 @@ func TestOutcomeJournalReusedAcrossConcurrentUnrelatedIngestion(t *testing.T) {
 	}
 	latest := observations[len(observations)-1]
 	if latest.JudgmentRequests == nil || *latest.JudgmentRequests != 0 || latest.JudgmentAttempts == nil || *latest.JudgmentAttempts != 0 || latest.JudgmentFallbacks == nil || *latest.JudgmentFallbacks != 0 {
-		t.Fatalf("reused fallback counted again: %+v", latest)
+		t.Fatalf("reused judgments counted again: %+v", latest)
 	}
 }

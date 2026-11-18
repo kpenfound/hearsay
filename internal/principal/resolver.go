@@ -323,7 +323,7 @@ func (r *Resolver) lookup(keys []identityKey) Resolution {
 //
 // The identity it carries is source data — a display name, an email address —
 // so it is subject to the same rule as any payload and is never logged above
-// debug (ADR-0008).
+// debug.
 type Unresolved struct {
 	// Identity is the hint, as it was last seen.
 	Identity connector.Identity

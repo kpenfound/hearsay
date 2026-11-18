@@ -83,7 +83,7 @@ func commentItem(n int, id int64, body, created, updated string) map[string]any 
 // never team content; anything else is a `message`. In a read-only source a
 // `/hearsay` comment is a `message` too, what the person wrote and nothing
 // more, and a reply is still a reply. A backfill that reads the same comment
-// emits the same event (ADR-0022).
+// emits the same event.
 func TestCommentCommandsAndRepliesAreControlTraffic(t *testing.T) {
 	const at = "2026-09-24T12:00:00Z"
 	tests := []struct {

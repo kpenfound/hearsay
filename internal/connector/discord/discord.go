@@ -9,7 +9,7 @@
 // Discord's REST lists expose current messages but no deleted-message list.
 //
 // Slash commands are not the connector's. `/hearsay pin` and `/hearsay merge`
-// are answered by the API runtime's interaction adapter (ADR-0024) through
+// are answered by the API runtime's interaction adapter through
 // [App], for a source whose settings also name `application_id` and
 // `public_key` (the application's hex Ed25519 key, from the developer
 // portal). Invite the bot with the `applications.commands` OAuth2 scope as
@@ -17,7 +17,8 @@
 // API's `/discord/<source id>/interactions`. At startup the API registers the
 // commands in the guild with the bot token. It verifies every interaction
 // with the public key, records each command as an L0 `command` event, applies
-// it through the shared applier (ADR-0025), and answers it ephemerally with the interaction's own token, within Discord's
+// it through the shared applier, and answers it ephemerally with the
+// interaction's own token, within Discord's
 // three seconds or through a deferred answer it edits later. It never posts a
 // channel message. A source without the two settings takes no commands.
 //

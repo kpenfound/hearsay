@@ -26,7 +26,7 @@ func TestEveryMigrationIsWellFormed(t *testing.T) {
 		name := entry.Name()
 		t.Run(name, func(t *testing.T) {
 			if !strings.HasSuffix(name, ".sql") {
-				t.Fatalf("%q is not a .sql file; migrations are plain SQL (ADR-0006)", name)
+				t.Fatalf("%q is not a .sql file; migrations are plain SQL", name)
 			}
 			digits, description, ok := strings.Cut(strings.TrimSuffix(name, ".sql"), "_")
 			if !ok || description == "" {

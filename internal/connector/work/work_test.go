@@ -656,7 +656,9 @@ func TestMappingAndReposts(t *testing.T) {
 	}
 }
 
-func TestPrivateAccessAndDeletionLeavesChildren(t *testing.T) {
+// A project with no repositories is readable by its poster and its author,
+// and its workstreams and updates carry the same access list.
+func TestAPrivateProjectIsReadByItsPosterAndAuthor(t *testing.T) {
 	for _, author := range []string{"", "kyle", "shed", "factory"} {
 		t.Run("author "+author, func(t *testing.T) {
 			c := build(t, source())
@@ -678,12 +680,6 @@ func TestPrivateAccessAndDeletionLeavesChildren(t *testing.T) {
 					t.Errorf("wrong ACL on %s", artifact)
 				}
 			}
-			send(t, h, fixture(t, "delete"), 202)
-			if _, ok, err := s.CurrentArtifact(t.Context(), sourceID, "payments-rewrite"); ok || err != nil {
-				t.Fatal("project deletion was not applied")
-			}
-			held(t, s, "payments-rewrite#retry-policy")
-			held(t, s, "payments-rewrite#retry-policy:update:u-17")
 		})
 	}
 }
@@ -1017,6 +1013,15 @@ func TestDeletingAParentDoesNotDeleteChildren(t *testing.T) {
 			}
 			raw, _ := json.Marshal(deletion)
 			send(t, h, string(raw), 202)
+			parent := "payments-rewrite"
+			if kind == "workstream" {
+				parent = "payments-rewrite#retry-policy"
+			} else {
+				held(t, s, "payments-rewrite#retry-policy")
+			}
+			if _, ok, err := s.CurrentArtifact(t.Context(), sourceID, parent); ok || err != nil {
+				t.Fatalf("the %s deletion was not applied: held %v, %v", kind, ok, err)
+			}
 			held(t, s, "payments-rewrite#retry-policy:update:u-17")
 			held(t, s, "payments-rewrite:update:project-update")
 			n := len(s.history())

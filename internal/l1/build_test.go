@@ -334,7 +334,7 @@ func TestBuildLeavesOutAReplyThatSharesNoGrant(t *testing.T) {
 
 // A command a person gave Hearsay in the conversation, and Hearsay's reply to
 // it, are control traffic: neither is part of the document, its text, its
-// provenance or its participants (ADR-0022).
+// provenance or its participants.
 func TestBuildLeavesOutCommandsAndReplies(t *testing.T) {
 	resolver := testPrincipals(t)
 	root, children := pullRequest()

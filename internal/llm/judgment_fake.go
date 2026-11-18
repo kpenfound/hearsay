@@ -73,3 +73,25 @@ func cloneJudgmentRequest(r JudgmentRequest) JudgmentRequest {
 	}
 	return out
 }
+
+// FakeJudgments is a Jev for tests in other packages: yes answers every yes/no
+// question with the probability of yes, given the request's state and the
+// question, and the answer's confidence is the larger of the two
+// probabilities. It never calls a provider.
+func FakeJudgments(yes func(state string, q JudgmentQuestion) float64) Judgments {
+	j, _ := NewJudgments(JudgmentConfig{Model: "fake-jev"}, func(JudgmentConfig, string) JudgmentProvider { return yesNoProvider(yes) }, func(string) string { return "fake" })
+	return j
+}
+
+type yesNoProvider func(state string, q JudgmentQuestion) float64
+
+func (f yesNoProvider) Judge(_ context.Context, req JudgmentRequest) (JudgmentResponse, error) {
+	zero, cost := int64(0), float64(0)
+	out := JudgmentResponse{ModelVersion: "fake-jev", Usage: JudgmentUsage{InputTokens: &zero, OutputTokens: &zero, CostUSD: &cost}}
+	for _, q := range req.Questions {
+		p := f(req.State, q)
+		yes := p >= 0.5
+		out.Answers = append(out.Answers, JudgmentAnswer{ID: q.ID, Yes: &yes, Confidence: max(p, 1-p), Probabilities: map[string]float64{"yes": p, "no": 1 - p}})
+	}
+	return out, nil
+}

@@ -142,8 +142,7 @@ required-value refusals. No Kubernetes cluster was used.
 
 A one-off Markdown parser walk checked every rendered relative link and fragment
 in the 31 scoped Markdown files: README.md, CONTRIBUTING.md, AGENTS.md, the six
-named design/config/connector/operator/evaluation documents, the ADR index,
-the command README and all 20 package/fixture READMEs under `internal/`.
+named design/config/connector/operator/evaluation documents, the command README and all 20 package/fixture READMEs under `internal/`.
 All 233 relative links and anchors resolve, including links to directories and
 fragments in other Markdown files. Fenced examples were excluded; GitHub heading
 slugs, duplicate suffixes and explicit HTML anchors were accounted for. This
@@ -154,8 +153,7 @@ two operator guides, `deploy/compose/env.example` and Helm `values.yaml` changed
 plus this new evidence record. Reversing only the comment replacements in the
 two deployment files reproduces their original hashes: every env assignment
 and Helm value is identical. Go source, migrations, Compose manifests, Helm
-templates, chart metadata, the workflow, lockfile, accepted ADR bodies and prior
-QA records remain byte-identical. The example image assignment retains the
+templates, chart metadata, the workflow, lockfile and prior QA records remain byte-identical. The example image assignment retains the
 shape required by `compose-check`; `compose-smoke` replaces it locally.
 
 ## Not exercised

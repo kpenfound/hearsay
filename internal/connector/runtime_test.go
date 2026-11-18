@@ -1130,13 +1130,17 @@ func TestVersionedBackfillRestartsWhenConfigChanges(t *testing.T) {
 	if len(rec.Events()) != 3 {
 		t.Fatalf("rewalk emitted %d, want 3", len(rec.Events()))
 	}
+	// The same configuration again: the stored position is done for it, so
+	// health reports the walk done without a call. A runtime that walked again
+	// would report done only after emitting the history.
 	again := &versionPager{pager: &pager{Fake: pages(src)}, version: "new-config"}
 	rec = &connector.Recorder{}
-	_, stop = start(t, connector.RuntimeOptions{Sources: []connector.SourceConfig{src}, Registry: registryOf(t, map[string]connector.Connector{src.ID: again}), Sink: rec, Cursors: cursors})
+	runtime, stop := start(t, connector.RuntimeOptions{Sources: []connector.SourceConfig{src}, Registry: registryOf(t, map[string]connector.Connector{src.ID: again}), Sink: rec, Cursors: cursors})
+	waitFor(t, "the stored position to be read", func() bool { return runtime.Health(t.Context()).Sources[0].BackfillDone })
 	if err := stop(); err != nil {
 		t.Fatal(err)
 	}
-	if len(rec.Events()) != 0 {
-		t.Fatalf("same version emitted %d events", len(rec.Events()))
+	if calls := again.cursors(); len(calls) != 0 || len(rec.Events()) != 0 {
+		t.Fatalf("same version called Backfill %v and emitted %d events, want neither", calls, len(rec.Events()))
 	}
 }

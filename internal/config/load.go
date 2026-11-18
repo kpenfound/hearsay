@@ -20,7 +20,7 @@ import (
 
 // The directories of the configuration repository
 // (docs/design.md#configuration). Five of them hold what Hearsay ingests and
-// who may decide things; `llm/` holds which model backs each tier (ADR-0005),
+// who may decide things; `llm/` holds which model backs each tier,
 // which is configuration for the same reason the rest of this is — it is
 // reviewed, checked in and deployed, and changing it is not a code change.
 const (

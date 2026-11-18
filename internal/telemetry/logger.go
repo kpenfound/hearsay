@@ -1,5 +1,5 @@
 // Package telemetry builds the process logger and, later, the OpenTelemetry
-// trace and metric providers described in ADR-0008.
+// trace and metric providers.
 package telemetry
 
 import (
@@ -14,7 +14,7 @@ import (
 type loggerKey struct{}
 
 // WithLogger returns a context carrying l. Work that descends from ctx should
-// enrich the logger rather than pass fields down by hand (ADR-0008).
+// enrich the logger rather than pass fields down by hand.
 func WithLogger(ctx context.Context, l *slog.Logger) context.Context {
 	return context.WithValue(ctx, loggerKey{}, l)
 }

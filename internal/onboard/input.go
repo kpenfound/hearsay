@@ -21,6 +21,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector/drive"
 	"github.com/kpenfound/hearsay/internal/connector/github"
 	"github.com/kpenfound/hearsay/internal/connector/slack"
+	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
@@ -45,7 +46,12 @@ const (
 	EnvSlackAppToken       = "HEARSAY_SLACK_APP_TOKEN"
 	EnvSlackBotToken       = "HEARSAY_SLACK_BOT_TOKEN"
 	EnvAnthropicAPIKey     = "ANTHROPIC_API_KEY"
+	EnvJevAPIKey           = llm.DefaultJudgmentAPIKeyEnv
 )
+
+// JevModel is the Jev model a new configuration requests: the latest, whose
+// resolved version each judgment records.
+const JevModel = "jev-latest"
 
 // Input is what a person answered: who they are, and what each source should
 // ingest. A source with nothing to ingest is skipped.

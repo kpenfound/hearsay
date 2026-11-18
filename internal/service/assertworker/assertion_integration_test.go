@@ -83,7 +83,9 @@ func TestAnAssertionIsAppendedWithNoModelCall(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
-	go func() { done <- assertworker.Run(ctx, testConfig(src), assertworker.Deps{Pool: pool, LLM: registry}) }()
+	go func() {
+		done <- assertworker.Run(ctx, testConfig(src), assertworker.Deps{Pool: pool, LLM: registry, Judgments: newRuleJev().judgments(t)})
+	}()
 	graph := l2.New(pool)
 	var history []l2.Stance
 	waitFor(t, "the assertion's stance", func() bool {

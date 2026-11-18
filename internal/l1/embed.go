@@ -17,7 +17,7 @@ import (
 // written — by [Store.Embed] here, and by llm.CheckDimensions at the startup of
 // whatever process does the writing — because a model of another width means
 // re-embedding every row behind a migration, not a configuration edit
-// (ADR-0005, docs/config.md).
+// (docs/config.md).
 const EmbeddingDimensions = 1536
 
 // MaxEmbedBytes bounds how much of a document's text is embedded.
@@ -97,7 +97,7 @@ func (s *Store) Embed(ctx context.Context, e Embedder, id string) (bool, error) 
 	vectors, err := e.Embed(ctx, []string{EmbedText(text)})
 	if err != nil {
 		// The error is a log line and a queue_job.last_error column: it names
-		// the document and never a word of what was sent (ADR-0008).
+		// the document and never a word of what was sent.
 		return false, fmt.Errorf("embedding %s: %w", id, err)
 	}
 	if len(vectors) != 1 {

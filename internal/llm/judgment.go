@@ -3,8 +3,10 @@ package llm
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -65,23 +67,26 @@ type JudgmentResponse struct {
 	Usage        JudgmentUsage
 }
 
-// JudgmentFallback is a sanitized reason safe for logs and durable records.
-type JudgmentFallback string
+// JudgmentFailure is a sanitized reason safe for logs, errors and durable
+// records. It deliberately contains no provider error or answer text.
+type JudgmentFailure string
 
-// Fallback reasons deliberately contain no provider error or answer text.
+// The reasons a judgment fails.
 const (
-	JudgmentDisabled          JudgmentFallback = "disabled"
-	JudgmentMissingCredential JudgmentFallback = "missing_credential"
-	JudgmentUnavailable       JudgmentFallback = "unavailable"
-	JudgmentInvalidResponse   JudgmentFallback = "invalid_response"
-	JudgmentInvalidRequest    JudgmentFallback = "invalid_request"
-	JudgmentOversize          JudgmentFallback = "request_too_large"
-	JudgmentTimeout           JudgmentFallback = "timeout"
-	JudgmentBudgetExhausted   JudgmentFallback = "budget_exhausted"
-	JudgmentCanceled          JudgmentFallback = "canceled"
-	JudgmentRateLimited       JudgmentFallback = "rate_limited"
-	JudgmentCooldown          JudgmentFallback = "cooldown"
+	JudgmentUnavailable     JudgmentFailure = "unavailable"
+	JudgmentInvalidResponse JudgmentFailure = "invalid_response"
+	JudgmentInvalidRequest  JudgmentFailure = "invalid_request"
+	JudgmentOversize        JudgmentFailure = "request_too_large"
+	JudgmentTimeout         JudgmentFailure = "timeout"
+	JudgmentCanceled        JudgmentFailure = "canceled"
+	JudgmentRateLimited     JudgmentFailure = "rate_limited"
 )
+
+// JudgmentError is a failed judgment as the error a worker returns: the job
+// fails and the queue retries it, as for a failed model call.
+type JudgmentError struct{ Failure JudgmentFailure }
+
+func (e *JudgmentError) Error() string { return "jev: " + string(e.Failure) }
 
 // ErrJudgmentResponse marks terminal, unusable answers. It takes precedence
 // over retryable outer errors and never contributes to an outage cooldown.
@@ -90,34 +95,45 @@ var ErrJudgmentResponse = errors.New("invalid judgment response")
 // ErrJudgmentOversize marks requests refused locally by a provider adapter.
 var ErrJudgmentOversize = errors.New("judgment request exceeds provider limits")
 
-// JudgmentResult is a baseline-preserving value, never an error to a worker.
-// Attempts counts provider calls; even a zero-attempt fallback is an observation.
+// JudgmentResult is one request's outcome, with its accounting whether or not
+// it succeeded. Attempts counts provider calls. Err turns a failure into an
+// error.
 type JudgmentResult struct {
 	JudgmentResponse
-	Fallback JudgmentFallback
+	Failure  JudgmentFailure
 	Attempts int
 	Duration time.Duration
 	Wait     time.Duration
 }
 
-// JudgmentStatus is independent of baseline worker readiness.
+// Err is the result as an error: nil when it succeeded.
+func (r JudgmentResult) Err() error {
+	if r.Failure == "" {
+		return nil
+	}
+	return &JudgmentError{Failure: r.Failure}
+}
+
+// JudgmentStatus is what readiness reports about Jev. A failing Jev does not
+// fail readiness: the jobs that need it fail and are retried.
 type JudgmentStatus struct {
-	Enabled      bool             `json:"enabled"`
-	Healthy      bool             `json:"healthy"`
-	LastFallback JudgmentFallback `json:"last_fallback,omitempty"`
-	Observations uint64           `json:"observations"`
-	Attempts     uint64           `json:"attempts"`
-	Fallbacks    uint64           `json:"fallbacks"`
+	Healthy      bool            `json:"healthy"`
+	LastFailure  JudgmentFailure `json:"last_failure,omitempty"`
+	Observations uint64          `json:"observations"`
+	Attempts     uint64          `json:"attempts"`
+	Failures     uint64          `json:"failures"`
 }
 
 // Judgments is a separate typed capability, never a Completer or Embedder.
-// A caller deadline bounds all attempts and waits, including shared job budgets.
+// A caller deadline bounds all attempts and waits.
 type Judgments interface {
 	Judge(context.Context, JudgmentRequest) JudgmentResult
 	Choice(context.Context, string, JudgmentQuestion) JudgmentResult
 	Score(context.Context, string, JudgmentQuestion) JudgmentResult
 	YesNo(context.Context, string, JudgmentQuestion) JudgmentResult
 	Status() JudgmentStatus
+	// Config is the configuration it runs with, defaults applied.
+	Config() JudgmentConfig
 }
 
 // JudgmentProvider makes exactly one context-bound attempt. Providers must
@@ -126,51 +142,57 @@ type JudgmentProvider interface {
 	Judge(context.Context, JudgmentRequest) (JudgmentResponse, error)
 }
 
-// JudgmentFactory constructs the optional provider, only after enablement and
-// credential resolution. Keeping construction lazy makes disabled operation inert.
+// JudgmentFactory constructs the provider from the configuration and key.
 type JudgmentFactory func(JudgmentConfig, string) JudgmentProvider
 
 type judgments struct {
-	cfg       JudgmentConfig
-	provider  JudgmentProvider
-	mu        sync.Mutex
-	status    JudgmentStatus
-	failures  int
-	until     time.Time
-	permanent JudgmentFallback
+	cfg      JudgmentConfig
+	provider JudgmentProvider
+	mu       sync.Mutex
+	status   JudgmentStatus
 }
 
-// NewJudgments builds one shared capability. Disabled operation neither reads
-// credentials nor constructs a client. Missing credentials degrade rather than
-// failing startup. getenv is injectable; pass os.Getenv in production.
+// NewJudgments builds one shared capability. Jev is required: a configuration
+// with no model, an environment with no key, or no provider is a startup
+// failure. getenv is injectable; pass os.Getenv in production.
 func NewJudgments(cfg JudgmentConfig, factory JudgmentFactory, getenv func(string) string) (Judgments, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	j := &judgments{cfg: cfg.WithDefaults(), status: JudgmentStatus{Enabled: cfg.Enabled, Healthy: true}}
-	if !cfg.Enabled {
-		j.permanent = JudgmentDisabled
-		return j, nil
+	cfg = cfg.WithDefaults()
+	if strings.TrimSpace(cfg.Model) == "" {
+		return nil, errors.New("jev is required: set llm.judgments.model")
 	}
 	key := ""
 	if getenv != nil {
-		key = getenv(j.cfg.APIKeyEnv)
+		key = getenv(cfg.APIKeyEnv)
 	}
 	if key == "" {
-		j.permanent = JudgmentMissingCredential
-	} else if factory == nil {
-		j.permanent = JudgmentUnavailable
-	} else {
-		j.provider = factory(j.cfg, key)
-		if j.provider == nil {
-			j.permanent = JudgmentUnavailable
-		}
+		return nil, fmt.Errorf("jev is required: set %s to its API key", cfg.APIKeyEnv)
 	}
-	if j.permanent != "" {
-		j.status.Healthy = false
-		j.status.LastFallback = j.permanent
+	if factory == nil {
+		return nil, errors.New("jev is required: no provider is built into this binary")
 	}
-	return j, nil
+	provider := factory(cfg, key)
+	if provider == nil {
+		return nil, errors.New("jev is required: its provider could not be built")
+	}
+	return &judgments{cfg: cfg, provider: provider, status: JudgmentStatus{Healthy: true}}, nil
+}
+
+func (j *judgments) Config() JudgmentConfig { return j.cfg }
+
+// Unconfigured is Jev for a process started without a configuration, which
+// has nothing to judge: no source is configured, so no job asks. A call that
+// is made anyway fails as unavailable, with no provider attempt.
+func Unconfigured() Judgments {
+	return &judgments{cfg: JudgmentConfig{}.WithDefaults(), provider: unconfigured{}, status: JudgmentStatus{Healthy: true}}
+}
+
+type unconfigured struct{}
+
+func (unconfigured) Judge(context.Context, JudgmentRequest) (JudgmentResponse, error) {
+	return JudgmentResponse{}, &Error{Msg: "jev is not configured"}
 }
 
 func (j *judgments) Status() JudgmentStatus { j.mu.Lock(); defer j.mu.Unlock(); return j.status }
@@ -194,30 +216,19 @@ func (j *judgments) Judge(parent context.Context, req JudgmentRequest) (out Judg
 	out.Usage = JudgmentUsage{InputTokens: &zeroTokens, OutputTokens: &zeroTokens, CostUSD: &zeroCost}
 	start := time.Now()
 	defer func() { out.Duration = time.Since(start); j.observe(out) }()
-	if j.permanent != "" {
-		out.Fallback = j.permanent
-		return
-	}
 	if parent.Err() != nil {
-		out.Fallback = parentFallback(parent)
-		return
-	}
-	j.mu.Lock()
-	cooling := time.Now().Before(j.until)
-	j.mu.Unlock()
-	if cooling {
-		out.Fallback = JudgmentCooldown
+		out.Failure = parentFailure(parent)
 		return
 	}
 	if !ValidJudgmentRequest(req) {
-		out.Fallback = JudgmentInvalidRequest
+		out.Failure = JudgmentInvalidRequest
 		return
 	}
 	ctx, cancel := context.WithTimeout(parent, j.cfg.TotalTimeout)
 	defer cancel()
 	for attempt := 0; attempt <= j.cfg.Retries(); attempt++ {
 		if ctx.Err() != nil {
-			out.Fallback = deadlineFallback(parent)
+			out.Failure = deadlineFailure(parent)
 			return
 		}
 		ac, stop := context.WithTimeout(ctx, j.cfg.Timeout)
@@ -235,39 +246,39 @@ func (j *judgments) Judge(parent context.Context, req JudgmentRequest) (out Judg
 		// Terminal marker precedence is essential: an outer retryable error must
 		// not turn malformed answers into retries or outage observations.
 		if !usageOK || errors.Is(err, ErrJudgmentResponse) {
-			out.Fallback = JudgmentInvalidResponse
+			out.Failure = JudgmentInvalidResponse
 			return
 		}
 		if errors.Is(err, ErrJudgmentOversize) {
-			out.Fallback = JudgmentOversize
+			out.Failure = JudgmentOversize
 			return
 		}
 		if ctx.Err() != nil {
-			out.Fallback = deadlineFallback(parent)
+			out.Failure = deadlineFailure(parent)
 			return
 		}
 		if err == nil && attemptErr == nil {
 			if !ValidJudgmentResponse(req, response) {
-				out.Fallback = JudgmentInvalidResponse
+				out.Failure = JudgmentInvalidResponse
 				return
 			}
 			out.Answers = response.Answers
-			out.Fallback = ""
+			out.Failure = ""
 			return
 		}
 		retry := Retryable(err) || errors.Is(attemptErr, context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded)
-		out.Fallback = JudgmentUnavailable
+		out.Failure = JudgmentUnavailable
 		var pe *Error
 		var delay time.Duration
 		if errors.As(err, &pe) {
 			delay = pe.RetryAfter
 			if pe.Status == 429 || pe.Status == 529 {
-				out.Fallback = JudgmentRateLimited
+				out.Failure = JudgmentRateLimited
 				retry = true
 			}
 		}
 		if errors.Is(attemptErr, context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
-			out.Fallback = JudgmentTimeout
+			out.Failure = JudgmentTimeout
 		}
 		if !retry || attempt == j.cfg.Retries() {
 			return
@@ -282,7 +293,7 @@ func (j *judgments) Judge(parent context.Context, req JudgmentRequest) (out Judg
 		case <-ctx.Done():
 			timer.Stop()
 			out.Wait += time.Since(waitStart)
-			out.Fallback = deadlineFallback(parent)
+			out.Failure = deadlineFailure(parent)
 			return
 		case <-timer.C:
 			out.Wait += time.Since(waitStart)
@@ -291,18 +302,15 @@ func (j *judgments) Judge(parent context.Context, req JudgmentRequest) (out Judg
 	return
 }
 
-func parentFallback(ctx context.Context) JudgmentFallback {
+func parentFailure(ctx context.Context) JudgmentFailure {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return JudgmentBudgetExhausted
+		return JudgmentTimeout
 	}
 	return JudgmentCanceled
 }
-func deadlineFallback(parent context.Context) JudgmentFallback {
+func deadlineFailure(parent context.Context) JudgmentFailure {
 	if parent.Err() != nil {
-		return parentFallback(parent)
-	}
-	if deadline, ok := parent.Deadline(); ok && !time.Now().Before(deadline) {
-		return JudgmentBudgetExhausted
+		return parentFailure(parent)
 	}
 	return JudgmentTimeout
 }
@@ -312,27 +320,12 @@ func (j *judgments) observe(out JudgmentResult) {
 	defer j.mu.Unlock()
 	j.status.Observations++
 	j.status.Attempts += uint64(out.Attempts)
-	if out.Fallback == "" {
-		j.failures = 0
-		// Another in-flight request may have opened the cooldown. Recovery
-		// must not shorten that shared pause.
-		j.status.Healthy = !time.Now().Before(j.until)
-		j.status.LastFallback = ""
+	if out.Failure == "" {
+		j.status.Healthy, j.status.LastFailure = true, ""
 		return
 	}
-	j.status.Fallbacks++
-	j.status.LastFallback = out.Fallback
-	if out.Fallback == JudgmentDisabled {
-		return
-	}
-	j.status.Healthy = false
-	switch out.Fallback {
-	case JudgmentUnavailable, JudgmentTimeout, JudgmentRateLimited:
-		j.failures++
-		if j.failures >= j.cfg.CooldownFailures {
-			j.until = time.Now().Add(j.cfg.Cooldown)
-		}
-	}
+	j.status.Failures++
+	j.status.Healthy, j.status.LastFailure = false, out.Failure
 }
 
 // JudgmentOptions returns the labels a question's distribution must cover.
@@ -387,7 +380,7 @@ func ValidJudgmentRequest(req JudgmentRequest) bool {
 func probability(p float64) bool { return !math.IsNaN(p) && !math.IsInf(p, 0) && p >= 0 && p <= 1 }
 
 // ValidJudgmentResponse also validates injected providers; adapter validation
-// alone would let a fake or a future provider bypass the fallback contract.
+// alone would let a fake or a future provider answer with something malformed.
 func ValidJudgmentResponse(req JudgmentRequest, r JudgmentResponse) bool {
 	if r.ModelVersion == "" || len(r.ModelVersion) > 256 || len(req.Questions) != len(r.Answers) {
 		return false

@@ -136,8 +136,7 @@ func (g *Gate) emit(ctx context.Context, ev Event, retraction bool) error {
 	if !retraction && !g.allow.Allows(ev.Source, ev.Payload.Container.NativeID) {
 		g.dropped.Add(1)
 		// Debug, and ids only: a busy container that config excludes would
-		// otherwise fill the log, and payload text never goes above debug
-		// (ADR-0008).
+		// otherwise fill the log, and payload text never goes above debug.
 		telemetry.Logger(ctx).DebugContext(ctx, "event dropped: container is not in the ingest allowlist",
 			"source", ev.Source,
 			"container", ev.Payload.Container.NativeID,
@@ -235,5 +234,5 @@ func (g *Gate) RequestPoll() {
 // Dropped is how many events the gate has refused because their container is
 // not allowlisted. It is what [Runtime.Health] reports per source, which is
 // where an operator asking "why is this source quiet" reads it; a metric of it
-// is for whenever ADR-0008's meter provider is wired up.
+// is for whenever the meter provider is wired up.
 func (g *Gate) Dropped() int64 { return g.dropped.Load() }

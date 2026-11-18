@@ -36,7 +36,7 @@ func databaseFlag(fs *flag.FlagSet, cfg *config.Config) func() {
 	}
 }
 
-// runMigrate applies the embedded goose migrations (ADR-0006). It is a job that
+// runMigrate applies the embedded goose migrations. It is a job that
 // runs and exits, never something a service does on startup: four containers
 // start against one database in no particular order, so migrating is a
 // deployment step of its own.
@@ -44,7 +44,7 @@ func runMigrate(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	fs, cfg, _ := newFlagSet("migrate", stderr)
 	resolveDatabase := databaseFlag(fs, cfg)
 	// `down` destroys what the migration held, so it takes a second word from
-	// whoever runs it (ADR-0006). Recovery in production is a restore.
+	// whoever runs it. Recovery in production is a restore.
 	iKnow := fs.Bool("i-know", false, "for down: yes, roll back the last migration and lose what it held")
 	action, actionArgs, err := parseAction(fs, args, "up")
 	if err != nil {
@@ -248,8 +248,8 @@ func printStatus(ctx context.Context, migrator *db.Migrator, w io.Writer) error 
 }
 
 // migrateForDev is the one place a service command migrates rather than
-// verifying: `hearsay all` is local development only (ADR-0003), and ADR-0006
-// has it run `migrate up` for itself because a local database is nobody's
+// verifying: `hearsay all` is local development only, so it
+// runs `migrate up` for itself because a local database is nobody's
 // production. Every other command that reads the database verifies the schema
 // and refuses one that is behind.
 //

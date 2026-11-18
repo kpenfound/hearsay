@@ -1,6 +1,6 @@
 # internal/service
 
-The four processes, one subpackage each (ADR-0003):
+The four processes, one subpackage each:
 
 | Package | Subcommand | Does |
 |---|---|---|
@@ -29,16 +29,16 @@ not reimplement them. A service package should stay thin enough that the
 interesting code is testable without starting a process.
 
 All four services expose health endpoints. `connectors` and `api` also have application HTTP surfaces: a push
-connector's handler has to be reachable, the API is one, and ADR-0008 gives
-every service `/healthz` and `/readyz`. The paths under `/hooks/` are the
+connector's handler has to be reachable, the API is one, and every service has
+`/healthz` and `/readyz`. The paths under `/hooks/` are the
 connector runtime's and are mounted from it; `/v1/` and `/mcp` are the API's
 call layer, served twice; the two health endpoints are each service's own. What
 the two endpoints mean was settled in `connectors`; the API and workers share the database/schema probe:
 
 - `/healthz` is 200 while the process is up, and nothing else. It answers "is
   this container alive", so it must not depend on anything that can be slow.
-- `/readyz` is "can this process do its job": ADR-0008 makes that the database
-  reachable, its schema acceptable per ADR-0006 — one query, not a ping, because
+- `/readyz` is "can this process do its job": the database reachable, its
+  schema acceptable to this binary — one query, not a ping, because
   that is what turns the version check into a deployment that stops rather than
   one that half-works — and the credentials present, which for a connector is
   discharged at startup. It is 503 when the answer is no. Its body carries ids,
@@ -53,9 +53,9 @@ clears the cache along with the loaded configuration and grants.
 The four subcommand names are a contract with the Dagger module and the
 deployment manifests. `hearsay all` is a development convenience and is never a
 deployment target. It is built on `RunAll`, which is a `sync.WaitGroup` and
-`errors.Join` rather than the errgroup ADR-0003 names — it needs no
+`errors.Join` rather than an errgroup — it needs no
 extra concurrency dependency, and stopping on the first *return* rather than
 the first *error* is what `all` actually wants. The reasoning is on `RunAll`'s doc comment.
 
 Each subpackage describes its responsibility in its package comment. The
-distiller also has a README for segmentation and optional outcome rules.
+distiller also has a README for segmentation and outcome rules.

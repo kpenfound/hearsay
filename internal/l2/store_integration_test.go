@@ -959,3 +959,94 @@ func TestIncrementalPlacementRanksTrackerAboveWork(t *testing.T) {
 		}
 	}
 }
+
+// textDoc writes an L1 document whose distillation is text.
+func textDoc(t *testing.T, pool *pgxpool.Pool, src, native string, acl connector.ACL, text string) string {
+	t.Helper()
+	when := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)
+	doc := l1.Document{
+		ID: l1.DocID(src, native), Kind: l1.KindIssue, ArtifactClass: config.ArtifactIssue,
+		Source: l1.Source{System: src, NativeID: native},
+		L0Refs: []string{"evt:" + src + ":" + native}, Time: l1.Times{Created: when, Updated: when, LastActivity: when},
+		ACL: acl, Text: text, RawText: "raw " + native,
+		Body: l1.Body{Summary: "s", OutcomeKind: l1.OutcomeDecided},
+	}
+	if _, err := l1.New(pool).Put(t.Context(), doc); err != nil {
+		t.Fatalf("Put(%s) = %v", doc.ID, err)
+	}
+	return doc.ID
+}
+
+func TestTopicsByTextReadTheEvidenceWords(t *testing.T) {
+	pool := newPool(t)
+	store := l2.New(pool)
+	ctx := t.Context()
+	src := unique()
+	scope := src
+	private := connector.ACL{{Kind: connector.ACLIdentity, Source: src, NativeID: "u1"}}
+	at := time.Date(2026, 9, 9, 1, 0, 0, 0, time.UTC)
+
+	retries := textDoc(t, pool, src, "acme/api#1", public, "The team settled how failed webhook deliveries are retried by the ingest queue.\n\n"+
+		"Question: How should failed webhook deliveries be retried?\n\nOutcome (decided): Retry with exponential backoff, at most five attempts, then park the job in the dead letter table.")
+	staging := textDoc(t, pool, src, "acme/api#2", public, "Notes from the infra sync about where staging runs.\n\n"+
+		"Question: Where should the staging database live?\n\nOutcome (decided): Move staging to Neon; production stays on the current cluster until migration tooling is tested.")
+	hidden := textDoc(t, pool, src, "acme/api#3", private, "Webhook deliveries retried with exponential backoff, five attempts, dead letter table for parked jobs.")
+
+	open := func(native string, acl connector.ACL, evidence string) l2.Topic {
+		t.Helper()
+		topic := openTopicFrom(t, pool, scope, native, acl)
+		if _, _, err := store.AppendStance(ctx, stance(topic, evidence, "a position", 1), at); err != nil {
+			t.Fatalf("AppendStance() = %v", err)
+		}
+		return topic
+	}
+	retryTopic := open("retry-opener", public, retries)
+	stagingTopic := open("staging-opener", public, staging)
+	open("hidden-opener", private, hidden)
+
+	paraphrase := textDoc(t, pool, src, "acme/api#10", public, "An update reports a change to the webhook retry policy.\n\n"+
+		"Change: Deliveries back off exponentially and stop after five tries; parked jobs land in the dead-letter table.\n\nOutcome (resolved): The new retry policy is live.")
+	unrelated := textDoc(t, pool, src, "acme/api#11", public, "A proposal to replace webpack with vite in the frontend build.\n\n"+
+		"Question: Should the frontend build move to vite?\n\nOutcome (proposed): Switch to vite to cut cold start time, pending sign-off from the web team.")
+	labelsOnly := textDoc(t, pool, src, "acme/api#12", public, "Question: open?\n\nChange: none.\n\nOutcome (decided): proposed, resolved, decided.\n\nOpen questions:\n- question")
+
+	tests := []struct {
+		name    string
+		doc     string
+		exclude []string
+		want    []string
+	}{
+		{"a paraphrase finds the topic it continues", paraphrase, nil, []string{retryTopic.ID}},
+		{"an unrelated decision finds nothing", unrelated, nil, nil},
+		{"the words every distillation shares find nothing", labelsOnly, nil, nil},
+		{"a topic already found is not found twice", paraphrase, []string{retryTopic.ID}, nil},
+		{"the evidence itself does not count", retries, nil, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := store.TopicsByText(ctx, scope, tt.doc, public, 0.2, 3, 5, tt.exclude)
+			if err != nil {
+				t.Fatalf("TopicsByText() = %v", err)
+			}
+			ids := []string{}
+			for _, tp := range got {
+				ids = append(ids, tp.ID)
+			}
+			if strings.Join(ids, ",") != strings.Join(tt.want, ",") {
+				t.Errorf("TopicsByText() = %v, want %v", ids, tt.want)
+			}
+		})
+	}
+
+	t.Run("the nearest topic ranks first", func(t *testing.T) {
+		both := textDoc(t, pool, src, "acme/api#13", public, "Webhook deliveries retry with exponential backoff, five attempts, then the dead letter table. "+
+			"Separately, staging moves to Neon while the production cluster stays.")
+		got, err := store.TopicsByText(ctx, scope, both, public, 0.1, 3, 5, nil)
+		if err != nil {
+			t.Fatalf("TopicsByText() = %v", err)
+		}
+		if len(got) != 2 || got[0].ID != retryTopic.ID || got[1].ID != stagingTopic.ID {
+			t.Fatalf("TopicsByText() = %+v", got)
+		}
+	})
+}

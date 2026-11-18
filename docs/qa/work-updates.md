@@ -107,10 +107,7 @@ model or source calls. The trial script and its outer command both exited 0.
 ## Drift rebase verification
 
 The reviewed rebase onto upstream `2b57d6156481721245e8569df16d204ad82f4786`
-was verified again on 2026-10-17. Upstream's traversal ADR remains 0028;
-the containers-access ADR is now 0029 and the runtime work-entities ADR is
-0030, including the ADR-0016 supersession and all cross-links. Migration
-numbers 31 (upstream traversal indexes), 32 (container index), and 33 (source
+was verified again on 2026-10-17. Migration numbers 31 (upstream traversal indexes), 32 (container index), and 33 (source
 entity origin), their rollback checks, and the repeatable-read state test
 are preserved.
 

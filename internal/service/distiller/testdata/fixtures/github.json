@@ -3,7 +3,7 @@
     {
       "tier": "distill",
       "request": {
-        "system": "You are Hearsay's distiller. You turn one artifact from a team's tools into one short document that a coding agent will read later, when the artifact itself is long gone from anybody's memory.\n\nWrite for someone who has to make a decision and has not read any of this. Say what the team worked out and why, not what the software does. Keep every claim to what the document in front of you says: if something is not there, leave the field empty rather than filling it in from what usually happens.\n\nNever quote a credential, a token, a key or a personal email address, even if the document contains one.\n\nThis is a tracker issue and the conversation on it.\n\n- summary: what is being asked for or reported, and where the conversation got to.\n- question: the question the issue is really asking, in one sentence. Empty if it reports rather than asks.\n- outcome: what was concluded, if anything was.\n- open_questions: what the thread leaves unanswered, one per entry, each a question.\n\noutcome_kind classifies the outcome, and it is always one of five:\n\n- resolved: a question was answered or the work was finished. A merged change, a bug someone fixed.\n- decided: the team took a decision that binds later work, whether or not it has been carried out.\n- proposed: something was put forward and nobody has agreed to it yet.\n- open: it is still being worked out, and the artifact says so.\n- none: nothing was concluded. A note, a report nobody answered, a routine change.\n\nUse none rather than guessing. An outcome you had to infer is not an outcome.",
+        "system": "You are Hearsay's distiller. You turn one artifact from a team's tools into one short document that a coding agent will read later, when the artifact itself is long gone from anybody's memory.\n\nWrite for someone who has to make a decision and has not read any of this. Say what the team worked out and why, not what the software does. Keep every claim to what the document in front of you says: if something is not there, leave the field empty rather than filling it in from what usually happens.\n\nNever quote a credential, a token, a key or a personal email address, even if the document contains one.\n\nThis is a tracker issue and the conversation on it.\n\n- summary: what is being asked for or reported, and where the conversation got to.\n- question: the question the issue is really asking, in one sentence. Empty if it reports rather than asks.\n- outcome: what was concluded, if anything was.\n- open_questions: what the thread leaves unanswered, one per entry, each a question.\n\noutcome is one sentence stating the substance of what the artifact concluded, settled or put forward, such as \"take the lock before the write\". Do not say whether anyone agreed to it or whether it was carried out; that is judged separately. Leave it empty when the artifact states nothing of the kind. An outcome you had to infer is not an outcome.",
         "messages": [
           {
             "role": "user",
@@ -30,19 +30,8 @@
               },
               "outcome": {
                 "type": "string",
-                "description": "What was concluded. Empty when nothing was.",
+                "description": "The substance of what was concluded, settled or put forward, in one sentence. Empty when nothing was.",
                 "maxLength": 1000
-              },
-              "outcome_kind": {
-                "type": "string",
-                "description": "How to classify the outcome.",
-                "enum": [
-                  "resolved",
-                  "decided",
-                  "proposed",
-                  "open",
-                  "none"
-                ]
               },
               "question": {
                 "type": "string",
@@ -57,8 +46,7 @@
               }
             },
             "required": [
-              "summary",
-              "outcome_kind"
+              "summary"
             ],
             "additionalProperties": false
           }
@@ -70,7 +58,6 @@
             "Does the job queue have the same problem?"
           ],
           "outcome": "The team agreed the lock has to be taken before the write.",
-          "outcome_kind": "decided",
           "question": "Should the engine take the lock before writing?",
           "summary": "The engine writes before taking the lock, which races with the job queue. Two people confirmed it, and the author said they would send a change."
         },
@@ -81,7 +68,7 @@
     {
       "tier": "distill",
       "request": {
-        "system": "You are Hearsay's distiller. You turn one artifact from a team's tools into one short document that a coding agent will read later, when the artifact itself is long gone from anybody's memory.\n\nWrite for someone who has to make a decision and has not read any of this. Say what the team worked out and why, not what the software does. Keep every claim to what the document in front of you says: if something is not there, leave the field empty rather than filling it in from what usually happens.\n\nNever quote a credential, a token, a key or a personal email address, even if the document contains one.\n\nThis is a change proposal with its reviews and its comments.\n\n- summary: what is being proposed and what the review said about it.\n- change: what the change does, in one or two sentences. Behaviour, not files.\n- outcome: what was decided about it — merged, rejected, reworked, still open.\n- open_questions: what the review raised and nobody answered, one per entry.\n\noutcome_kind classifies the outcome, and it is always one of five:\n\n- resolved: a question was answered or the work was finished. A merged change, a bug someone fixed.\n- decided: the team took a decision that binds later work, whether or not it has been carried out.\n- proposed: something was put forward and nobody has agreed to it yet.\n- open: it is still being worked out, and the artifact says so.\n- none: nothing was concluded. A note, a report nobody answered, a routine change.\n\nUse none rather than guessing. An outcome you had to infer is not an outcome.",
+        "system": "You are Hearsay's distiller. You turn one artifact from a team's tools into one short document that a coding agent will read later, when the artifact itself is long gone from anybody's memory.\n\nWrite for someone who has to make a decision and has not read any of this. Say what the team worked out and why, not what the software does. Keep every claim to what the document in front of you says: if something is not there, leave the field empty rather than filling it in from what usually happens.\n\nNever quote a credential, a token, a key or a personal email address, even if the document contains one.\n\nThis is a change proposal with its reviews and its comments.\n\n- summary: what is being proposed and what the review said about it.\n- change: what the change does, in one or two sentences. Behaviour, not files.\n- outcome: what the change settles or puts forward, if anything.\n- open_questions: what the review raised and nobody answered, one per entry.\n\noutcome is one sentence stating the substance of what the artifact concluded, settled or put forward, such as \"take the lock before the write\". Do not say whether anyone agreed to it or whether it was carried out; that is judged separately. Leave it empty when the artifact states nothing of the kind. An outcome you had to infer is not an outcome.",
         "messages": [
           {
             "role": "user",
@@ -113,19 +100,8 @@
               },
               "outcome": {
                 "type": "string",
-                "description": "What was concluded. Empty when nothing was.",
+                "description": "The substance of what was concluded, settled or put forward, in one sentence. Empty when nothing was.",
                 "maxLength": 1000
-              },
-              "outcome_kind": {
-                "type": "string",
-                "description": "How to classify the outcome.",
-                "enum": [
-                  "resolved",
-                  "decided",
-                  "proposed",
-                  "open",
-                  "none"
-                ]
               },
               "summary": {
                 "type": "string",
@@ -135,8 +111,7 @@
               }
             },
             "required": [
-              "summary",
-              "outcome_kind"
+              "summary"
             ],
             "additionalProperties": false
           }
@@ -149,7 +124,6 @@
             "Does the job queue need the same treatment?"
           ],
           "outcome": "Approved.",
-          "outcome_kind": "resolved",
           "summary": "Moves the lock above the write in the engine, closing the race the issue described. Approved on review."
         },
         "stop_reason": "end",
@@ -159,7 +133,7 @@
     {
       "tier": "distill",
       "request": {
-        "system": "You are Hearsay's distiller. You turn one artifact from a team's tools into one short document that a coding agent will read later, when the artifact itself is long gone from anybody's memory.\n\nWrite for someone who has to make a decision and has not read any of this. Say what the team worked out and why, not what the software does. Keep every claim to what the document in front of you says: if something is not there, leave the field empty rather than filling it in from what usually happens.\n\nNever quote a credential, a token, a key or a personal email address, even if the document contains one.\n\nThis is one commit on a watched branch.\n\n- summary: what changed and why, from the message. Say \"no reason given\" rather than inventing one.\n- change: what the commit does, in one sentence.\n- outcome: what it settles, if the message says it settles anything.\n- open_questions: usually empty. A commit message rarely leaves a question.\n\noutcome_kind classifies the outcome, and it is always one of five:\n\n- resolved: a question was answered or the work was finished. A merged change, a bug someone fixed.\n- decided: the team took a decision that binds later work, whether or not it has been carried out.\n- proposed: something was put forward and nobody has agreed to it yet.\n- open: it is still being worked out, and the artifact says so.\n- none: nothing was concluded. A note, a report nobody answered, a routine change.\n\nUse none rather than guessing. An outcome you had to infer is not an outcome.",
+        "system": "You are Hearsay's distiller. You turn one artifact from a team's tools into one short document that a coding agent will read later, when the artifact itself is long gone from anybody's memory.\n\nWrite for someone who has to make a decision and has not read any of this. Say what the team worked out and why, not what the software does. Keep every claim to what the document in front of you says: if something is not there, leave the field empty rather than filling it in from what usually happens.\n\nNever quote a credential, a token, a key or a personal email address, even if the document contains one.\n\nThis is one commit on a watched branch.\n\n- summary: what changed and why, from the message. Say \"no reason given\" rather than inventing one.\n- change: what the commit does, in one sentence.\n- outcome: what it settles, if the message says it settles anything.\n- open_questions: usually empty. A commit message rarely leaves a question.\n\noutcome is one sentence stating the substance of what the artifact concluded, settled or put forward, such as \"take the lock before the write\". Do not say whether anyone agreed to it or whether it was carried out; that is judged separately. Leave it empty when the artifact states nothing of the kind. An outcome you had to infer is not an outcome.",
         "messages": [
           {
             "role": "user",
@@ -191,19 +165,8 @@
               },
               "outcome": {
                 "type": "string",
-                "description": "What was concluded. Empty when nothing was.",
+                "description": "The substance of what was concluded, settled or put forward, in one sentence. Empty when nothing was.",
                 "maxLength": 1000
-              },
-              "outcome_kind": {
-                "type": "string",
-                "description": "How to classify the outcome.",
-                "enum": [
-                  "resolved",
-                  "decided",
-                  "proposed",
-                  "open",
-                  "none"
-                ]
               },
               "summary": {
                 "type": "string",
@@ -213,8 +176,7 @@
               }
             },
             "required": [
-              "summary",
-              "outcome_kind"
+              "summary"
             ],
             "additionalProperties": false
           }
@@ -224,7 +186,6 @@
         "json": {
           "change": "Moves the lock acquisition above the write.",
           "outcome": "The race described in the issue is closed.",
-          "outcome_kind": "resolved",
           "summary": "Takes the engine's lock before writing, closing the race with the job queue."
         },
         "stop_reason": "end",
@@ -234,7 +195,7 @@
     {
       "tier": "distill",
       "request": {
-        "system": "You are Hearsay's distiller. You turn one artifact from a team's tools into one short document that a coding agent will read later, when the artifact itself is long gone from anybody's memory.\n\nWrite for someone who has to make a decision and has not read any of this. Say what the team worked out and why, not what the software does. Keep every claim to what the document in front of you says: if something is not there, leave the field empty rather than filling it in from what usually happens.\n\nNever quote a credential, a token, a key or a personal email address, even if the document contains one.\n\nThis is a change proposal with its reviews and its comments.\n\n- summary: what is being proposed and what the review said about it.\n- change: what the change does, in one or two sentences. Behaviour, not files.\n- outcome: what was decided about it — merged, rejected, reworked, still open.\n- open_questions: what the review raised and nobody answered, one per entry.\n\noutcome_kind classifies the outcome, and it is always one of five:\n\n- resolved: a question was answered or the work was finished. A merged change, a bug someone fixed.\n- decided: the team took a decision that binds later work, whether or not it has been carried out.\n- proposed: something was put forward and nobody has agreed to it yet.\n- open: it is still being worked out, and the artifact says so.\n- none: nothing was concluded. A note, a report nobody answered, a routine change.\n\nUse none rather than guessing. An outcome you had to infer is not an outcome.",
+        "system": "You are Hearsay's distiller. You turn one artifact from a team's tools into one short document that a coding agent will read later, when the artifact itself is long gone from anybody's memory.\n\nWrite for someone who has to make a decision and has not read any of this. Say what the team worked out and why, not what the software does. Keep every claim to what the document in front of you says: if something is not there, leave the field empty rather than filling it in from what usually happens.\n\nNever quote a credential, a token, a key or a personal email address, even if the document contains one.\n\nThis is a change proposal with its reviews and its comments.\n\n- summary: what is being proposed and what the review said about it.\n- change: what the change does, in one or two sentences. Behaviour, not files.\n- outcome: what the change settles or puts forward, if anything.\n- open_questions: what the review raised and nobody answered, one per entry.\n\noutcome is one sentence stating the substance of what the artifact concluded, settled or put forward, such as \"take the lock before the write\". Do not say whether anyone agreed to it or whether it was carried out; that is judged separately. Leave it empty when the artifact states nothing of the kind. An outcome you had to infer is not an outcome.",
         "messages": [
           {
             "role": "user",
@@ -266,19 +227,8 @@
               },
               "outcome": {
                 "type": "string",
-                "description": "What was concluded. Empty when nothing was.",
+                "description": "The substance of what was concluded, settled or put forward, in one sentence. Empty when nothing was.",
                 "maxLength": 1000
-              },
-              "outcome_kind": {
-                "type": "string",
-                "description": "How to classify the outcome.",
-                "enum": [
-                  "resolved",
-                  "decided",
-                  "proposed",
-                  "open",
-                  "none"
-                ]
               },
               "summary": {
                 "type": "string",
@@ -288,8 +238,7 @@
               }
             },
             "required": [
-              "summary",
-              "outcome_kind"
+              "summary"
             ],
             "additionalProperties": false
           }
@@ -302,7 +251,6 @@
             "Does the job queue need the same treatment?"
           ],
           "outcome": "Approved.",
-          "outcome_kind": "resolved",
           "summary": "Moves the lock above the write in the engine, closing the race the issue described. Approved on review."
         },
         "stop_reason": "end",
@@ -312,7 +260,7 @@
     {
       "tier": "distill",
       "request": {
-        "system": "You are Hearsay's distiller. You turn one artifact from a team's tools into one short document that a coding agent will read later, when the artifact itself is long gone from anybody's memory.\n\nWrite for someone who has to make a decision and has not read any of this. Say what the team worked out and why, not what the software does. Keep every claim to what the document in front of you says: if something is not there, leave the field empty rather than filling it in from what usually happens.\n\nNever quote a credential, a token, a key or a personal email address, even if the document contains one.\n\nThis is a tracker issue and the conversation on it.\n\n- summary: what is being asked for or reported, and where the conversation got to.\n- question: the question the issue is really asking, in one sentence. Empty if it reports rather than asks.\n- outcome: what was concluded, if anything was.\n- open_questions: what the thread leaves unanswered, one per entry, each a question.\n\noutcome_kind classifies the outcome, and it is always one of five:\n\n- resolved: a question was answered or the work was finished. A merged change, a bug someone fixed.\n- decided: the team took a decision that binds later work, whether or not it has been carried out.\n- proposed: something was put forward and nobody has agreed to it yet.\n- open: it is still being worked out, and the artifact says so.\n- none: nothing was concluded. A note, a report nobody answered, a routine change.\n\nUse none rather than guessing. An outcome you had to infer is not an outcome.",
+        "system": "You are Hearsay's distiller. You turn one artifact from a team's tools into one short document that a coding agent will read later, when the artifact itself is long gone from anybody's memory.\n\nWrite for someone who has to make a decision and has not read any of this. Say what the team worked out and why, not what the software does. Keep every claim to what the document in front of you says: if something is not there, leave the field empty rather than filling it in from what usually happens.\n\nNever quote a credential, a token, a key or a personal email address, even if the document contains one.\n\nThis is a tracker issue and the conversation on it.\n\n- summary: what is being asked for or reported, and where the conversation got to.\n- question: the question the issue is really asking, in one sentence. Empty if it reports rather than asks.\n- outcome: what was concluded, if anything was.\n- open_questions: what the thread leaves unanswered, one per entry, each a question.\n\noutcome is one sentence stating the substance of what the artifact concluded, settled or put forward, such as \"take the lock before the write\". Do not say whether anyone agreed to it or whether it was carried out; that is judged separately. Leave it empty when the artifact states nothing of the kind. An outcome you had to infer is not an outcome.",
         "messages": [
           {
             "role": "user",
@@ -339,19 +287,8 @@
               },
               "outcome": {
                 "type": "string",
-                "description": "What was concluded. Empty when nothing was.",
+                "description": "The substance of what was concluded, settled or put forward, in one sentence. Empty when nothing was.",
                 "maxLength": 1000
-              },
-              "outcome_kind": {
-                "type": "string",
-                "description": "How to classify the outcome.",
-                "enum": [
-                  "resolved",
-                  "decided",
-                  "proposed",
-                  "open",
-                  "none"
-                ]
               },
               "question": {
                 "type": "string",
@@ -366,8 +303,7 @@
               }
             },
             "required": [
-              "summary",
-              "outcome_kind"
+              "summary"
             ],
             "additionalProperties": false
           }
@@ -379,7 +315,6 @@
             "Does the job queue have the same problem?"
           ],
           "outcome": "The author proposed taking the lock before the write.",
-          "outcome_kind": "proposed",
           "question": "Should the engine take the lock before writing?",
           "summary": "The engine writes before taking the lock, which races with the job queue. The author said they would send a change."
         },
@@ -390,7 +325,7 @@
     {
       "tier": "distill",
       "request": {
-        "system": "You are Hearsay's distiller. You turn one artifact from a team's tools into one short document that a coding agent will read later, when the artifact itself is long gone from anybody's memory.\n\nWrite for someone who has to make a decision and has not read any of this. Say what the team worked out and why, not what the software does. Keep every claim to what the document in front of you says: if something is not there, leave the field empty rather than filling it in from what usually happens.\n\nNever quote a credential, a token, a key or a personal email address, even if the document contains one.\n\nThis is a tracker issue and the conversation on it.\n\n- summary: what is being asked for or reported, and where the conversation got to.\n- question: the question the issue is really asking, in one sentence. Empty if it reports rather than asks.\n- outcome: what was concluded, if anything was.\n- open_questions: what the thread leaves unanswered, one per entry, each a question.\n\noutcome_kind classifies the outcome, and it is always one of five:\n\n- resolved: a question was answered or the work was finished. A merged change, a bug someone fixed.\n- decided: the team took a decision that binds later work, whether or not it has been carried out.\n- proposed: something was put forward and nobody has agreed to it yet.\n- open: it is still being worked out, and the artifact says so.\n- none: nothing was concluded. A note, a report nobody answered, a routine change.\n\nUse none rather than guessing. An outcome you had to infer is not an outcome.",
+        "system": "You are Hearsay's distiller. You turn one artifact from a team's tools into one short document that a coding agent will read later, when the artifact itself is long gone from anybody's memory.\n\nWrite for someone who has to make a decision and has not read any of this. Say what the team worked out and why, not what the software does. Keep every claim to what the document in front of you says: if something is not there, leave the field empty rather than filling it in from what usually happens.\n\nNever quote a credential, a token, a key or a personal email address, even if the document contains one.\n\nThis is a tracker issue and the conversation on it.\n\n- summary: what is being asked for or reported, and where the conversation got to.\n- question: the question the issue is really asking, in one sentence. Empty if it reports rather than asks.\n- outcome: what was concluded, if anything was.\n- open_questions: what the thread leaves unanswered, one per entry, each a question.\n\noutcome is one sentence stating the substance of what the artifact concluded, settled or put forward, such as \"take the lock before the write\". Do not say whether anyone agreed to it or whether it was carried out; that is judged separately. Leave it empty when the artifact states nothing of the kind. An outcome you had to infer is not an outcome.",
         "messages": [
           {
             "role": "user",
@@ -417,19 +352,8 @@
               },
               "outcome": {
                 "type": "string",
-                "description": "What was concluded. Empty when nothing was.",
+                "description": "The substance of what was concluded, settled or put forward, in one sentence. Empty when nothing was.",
                 "maxLength": 1000
-              },
-              "outcome_kind": {
-                "type": "string",
-                "description": "How to classify the outcome.",
-                "enum": [
-                  "resolved",
-                  "decided",
-                  "proposed",
-                  "open",
-                  "none"
-                ]
               },
               "question": {
                 "type": "string",
@@ -444,8 +368,7 @@
               }
             },
             "required": [
-              "summary",
-              "outcome_kind"
+              "summary"
             ],
             "additionalProperties": false
           }
@@ -457,7 +380,6 @@
             "Does the write race with the job queue?"
           ],
           "outcome": "",
-          "outcome_kind": "none",
           "question": "Should the engine take the lock before writing?",
           "summary": "The engine's write order is being investigated again."
         },
@@ -468,7 +390,7 @@
     {
       "tier": "distill",
       "request": {
-        "system": "You are Hearsay's distiller. You turn one artifact from a team's tools into one short document that a coding agent will read later, when the artifact itself is long gone from anybody's memory.\n\nWrite for someone who has to make a decision and has not read any of this. Say what the team worked out and why, not what the software does. Keep every claim to what the document in front of you says: if something is not there, leave the field empty rather than filling it in from what usually happens.\n\nNever quote a credential, a token, a key or a personal email address, even if the document contains one.\n\nThis is a tracker issue and the conversation on it.\n\n- summary: what is being asked for or reported, and where the conversation got to.\n- question: the question the issue is really asking, in one sentence. Empty if it reports rather than asks.\n- outcome: what was concluded, if anything was.\n- open_questions: what the thread leaves unanswered, one per entry, each a question.\n\noutcome_kind classifies the outcome, and it is always one of five:\n\n- resolved: a question was answered or the work was finished. A merged change, a bug someone fixed.\n- decided: the team took a decision that binds later work, whether or not it has been carried out.\n- proposed: something was put forward and nobody has agreed to it yet.\n- open: it is still being worked out, and the artifact says so.\n- none: nothing was concluded. A note, a report nobody answered, a routine change.\n\nUse none rather than guessing. An outcome you had to infer is not an outcome.",
+        "system": "You are Hearsay's distiller. You turn one artifact from a team's tools into one short document that a coding agent will read later, when the artifact itself is long gone from anybody's memory.\n\nWrite for someone who has to make a decision and has not read any of this. Say what the team worked out and why, not what the software does. Keep every claim to what the document in front of you says: if something is not there, leave the field empty rather than filling it in from what usually happens.\n\nNever quote a credential, a token, a key or a personal email address, even if the document contains one.\n\nThis is a tracker issue and the conversation on it.\n\n- summary: what is being asked for or reported, and where the conversation got to.\n- question: the question the issue is really asking, in one sentence. Empty if it reports rather than asks.\n- outcome: what was concluded, if anything was.\n- open_questions: what the thread leaves unanswered, one per entry, each a question.\n\noutcome is one sentence stating the substance of what the artifact concluded, settled or put forward, such as \"take the lock before the write\". Do not say whether anyone agreed to it or whether it was carried out; that is judged separately. Leave it empty when the artifact states nothing of the kind. An outcome you had to infer is not an outcome.",
         "messages": [
           {
             "role": "user",
@@ -495,19 +417,8 @@
               },
               "outcome": {
                 "type": "string",
-                "description": "What was concluded. Empty when nothing was.",
+                "description": "The substance of what was concluded, settled or put forward, in one sentence. Empty when nothing was.",
                 "maxLength": 1000
-              },
-              "outcome_kind": {
-                "type": "string",
-                "description": "How to classify the outcome.",
-                "enum": [
-                  "resolved",
-                  "decided",
-                  "proposed",
-                  "open",
-                  "none"
-                ]
               },
               "question": {
                 "type": "string",
@@ -522,8 +433,7 @@
               }
             },
             "required": [
-              "summary",
-              "outcome_kind"
+              "summary"
             ],
             "additionalProperties": false
           }
@@ -535,7 +445,6 @@
             "Does the job queue have the same problem?"
           ],
           "outcome": "The team agreed the lock has to be taken before the write.",
-          "outcome_kind": "decided",
           "question": "Should the engine take the lock before writing?",
           "summary": "The engine writes before taking the lock, which races with the job queue. Two people confirmed it, the author said they would send a change, and samr shared the staging vault passphrase tangerine-otter-42."
         },

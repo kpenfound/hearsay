@@ -4,74 +4,80 @@ import (
 	"fmt"
 	"math"
 	"net/url"
-	"strings"
+	"slices"
 	"time"
 )
 
-// Optional judgment bounds are intentionally much shorter than baseline calls.
+// Jev's bounds. A call is far shorter than a generative one; a job whose
+// judgments fail errors and the queue retries it, like a failed model call.
 const (
 	DefaultJudgmentTimeout      = 2 * time.Second
 	DefaultJudgmentTotalTimeout = 5 * time.Second
-	// DefaultAssertionJobBudget bounds ALL optional work while an assertion
-	// job holds its scope key, not each assertion or integration. Workers create
-	// one context with this deadline and pass it to every judgment call.
-	DefaultAssertionJobBudget = 5 * time.Second
-	MaxAssertionJobBudget     = 30 * time.Second
-	DefaultJudgmentAPIKeyEnv  = "HEARSAY_JEV_API_KEY"
+	DefaultJudgmentAPIKeyEnv    = "HEARSAY_JEV_API_KEY"
+	// DefaultJudgmentThreshold is the confidence a yes must reach to count.
+	// Anything less, and every no, is a no.
+	DefaultJudgmentThreshold = 0.8
 	// Defaults from the September 28, 2026 model-limit snapshot. Adapters use
 	// a conservative UTF-8 byte upper bound rather than an unverified tokenizer.
 	DefaultJudgmentMaxTotalTokens         = 64000
 	DefaultJudgmentMaxStateQuestionTokens = 32000
 )
 
-// JudgmentTask scopes an acceptance threshold to exactly one question variant.
+// JudgmentTask names one atomic yes/no judgment. Callers combine judgments
+// with code into decisions: Jev makes judgments, code makes decisions.
 type JudgmentTask string
 
-// Acceptance for one task must never qualify a different question variant.
+// The judgments Hearsay asks. Every one is a yes/no question.
 const (
-	TaskStanceComparison      JudgmentTask = "stance_comparison"
-	TaskTopicMatching         JudgmentTask = "topic_matching"
-	TaskTopicShortlist        JudgmentTask = "topic_shortlist"
-	TaskOutcomeClassification JudgmentTask = "outcome_classification"
+	// TaskStanceSameAnswer: does a new position give the same answer to a
+	// topic as its current position? Yes is restates, no is changes.
+	TaskStanceSameAnswer JudgmentTask = "stance.same_answer"
+	// TaskTopicSameQuestion: does an assertion answer the same question as one
+	// candidate topic? Asked once per candidate.
+	TaskTopicSameQuestion JudgmentTask = "topic.same_question"
+	// The outcome judgments, asked together on a document's text. Code maps
+	// the first yes, in this order, to resolved, decided, proposed or open, and
+	// four noes to none.
+	TaskOutcomeWorkFinished     JudgmentTask = "outcome.work_finished"
+	TaskOutcomeBindingAgreement JudgmentTask = "outcome.binding_agreement"
+	TaskOutcomeUnagreedProposal JudgmentTask = "outcome.unagreed_proposal"
+	TaskOutcomeStillOpen        JudgmentTask = "outcome.still_open"
 )
 
-// AcceptancePolicy is emitted by deliberate evaluation. No policy is shipped.
-// Confidence constrains adoption, not authorization or demonstrated correctness.
-type AcceptancePolicy struct {
-	Name         string
-	ModelVersion string
-	Threshold    float64
+// JudgmentTasks is every task Hearsay asks, in a stable order.
+func JudgmentTasks() []JudgmentTask {
+	return []JudgmentTask{TaskStanceSameAnswer, TaskTopicSameQuestion,
+		TaskOutcomeWorkFinished, TaskOutcomeBindingAgreement, TaskOutcomeUnagreedProposal, TaskOutcomeStillOpen}
 }
 
-// Accepts binds a threshold to the exact resolved version, never to an alias.
-func (p AcceptancePolicy) Accepts(modelVersion string, confidence float64) bool {
-	return p.Name != "" && p.ModelVersion != "" && modelVersion == p.ModelVersion && probability(confidence) && confidence >= p.Threshold
-}
+// Known reports whether t is a task this build asks.
+func (t JudgmentTask) Known() bool { return slices.Contains(JudgmentTasks(), t) }
 
-// JudgmentConfig has the ONLY boost switch. Policies affect acceptance, never
-// whether any one integration runs. The zero value is disabled and inert.
+// JudgmentConfig configures Jev. The distiller and the assertion worker
+// require it: [NewJudgments] refuses a configuration with no model or no key.
 type JudgmentConfig struct {
-	Enabled      bool
-	Model        string
-	BaseURL      string
-	APIKeyEnv    string
+	Model     string
+	BaseURL   string
+	APIKeyEnv string
+	// Threshold is the confidence a yes must reach to count ([JudgmentConfig.Yes]).
+	Threshold    float64
 	Timeout      time.Duration
 	TotalTimeout time.Duration
 	// MaxRetries uses the tier convention: zero defaults to one, -1 disables.
 	MaxRetries             int
 	Backoff                time.Duration
-	Cooldown               time.Duration
-	CooldownFailures       int
-	AssertionJobBudget     time.Duration
 	MaxTotalTokens         int
 	MaxStateQuestionTokens int
-	Policies               map[JudgmentTask]AcceptancePolicy
 }
 
-// WithDefaults supplies bounded transport settings, never a model or policy.
+// WithDefaults supplies bounded transport settings and the threshold, never a
+// model.
 func (c JudgmentConfig) WithDefaults() JudgmentConfig {
 	if c.APIKeyEnv == "" {
 		c.APIKeyEnv = DefaultJudgmentAPIKeyEnv
+	}
+	if c.Threshold == 0 {
+		c.Threshold = DefaultJudgmentThreshold
 	}
 	if c.Timeout == 0 {
 		c.Timeout = DefaultJudgmentTimeout
@@ -84,15 +90,6 @@ func (c JudgmentConfig) WithDefaults() JudgmentConfig {
 	}
 	if c.Backoff == 0 {
 		c.Backoff = 100 * time.Millisecond
-	}
-	if c.Cooldown == 0 {
-		c.Cooldown = 30 * time.Second
-	}
-	if c.CooldownFailures == 0 {
-		c.CooldownFailures = 3
-	}
-	if c.AssertionJobBudget == 0 {
-		c.AssertionJobBudget = DefaultAssertionJobBudget
 	}
 	if c.MaxTotalTokens == 0 {
 		c.MaxTotalTokens = DefaultJudgmentMaxTotalTokens
@@ -111,11 +108,19 @@ func (c JudgmentConfig) Retries() int {
 	return c.MaxRetries
 }
 
-// Validate checks bounds even when disabled, without consulting credentials.
+// Yes reports whether an answer is a yes that counts: a yes whose confidence
+// reaches the threshold. Every other answer is a no.
+func (c JudgmentConfig) Yes(a JudgmentAnswer) bool {
+	return a.Yes != nil && *a.Yes && probability(a.Confidence) && a.Confidence >= c.WithDefaults().Threshold
+}
+
+// Validate checks bounds, without consulting credentials. A missing model is
+// [NewJudgments]'s refusal, not a configuration error, so a configuration only
+// the API reads need not name one.
 func (c JudgmentConfig) Validate() error {
 	c = c.WithDefaults()
-	if c.Enabled && strings.TrimSpace(c.Model) == "" {
-		return fmt.Errorf("judgment model must be explicitly configured")
+	if math.IsNaN(c.Threshold) || c.Threshold <= 0 || c.Threshold > 1 {
+		return fmt.Errorf("judgment threshold must be above 0 and at most 1")
 	}
 	if c.Timeout <= 0 || c.Timeout > 30*time.Second {
 		return fmt.Errorf("judgment timeout must be positive and at most 30s")
@@ -129,12 +134,6 @@ func (c JudgmentConfig) Validate() error {
 	if c.Backoff <= 0 || c.Backoff > 5*time.Second {
 		return fmt.Errorf("judgment backoff must be positive and at most 5s")
 	}
-	if c.Cooldown <= 0 || c.Cooldown > 5*time.Minute || c.CooldownFailures < 1 || c.CooldownFailures > 100 {
-		return fmt.Errorf("judgment cooldown must be positive and at most 5m; cooldown_failures must be between 1 and 100")
-	}
-	if c.AssertionJobBudget <= 0 || c.AssertionJobBudget > MaxAssertionJobBudget {
-		return fmt.Errorf("judgment assertion_job_budget must be positive and at most 30s")
-	}
 	if !envVarName(c.APIKeyEnv) {
 		return fmt.Errorf("judgment api_key_env must name an environment variable")
 	}
@@ -145,19 +144,6 @@ func (c JudgmentConfig) Validate() error {
 		u, err := url.Parse(c.BaseURL)
 		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 			return fmt.Errorf("judgment base_url must be an absolute http or https URL without credentials, query or fragment")
-		}
-	}
-	for task, p := range c.Policies {
-		switch task {
-		case TaskStanceComparison, TaskTopicMatching, TaskTopicShortlist, TaskOutcomeClassification:
-		default:
-			return fmt.Errorf("judgment policy has unknown task")
-		}
-		if strings.TrimSpace(p.Name) == "" || strings.TrimSpace(p.ModelVersion) == "" || p.ModelVersion == "latest" || p.ModelVersion == "auto" {
-			return fmt.Errorf("judgment policy requires a name and pinned model_version")
-		}
-		if math.IsNaN(p.Threshold) || math.IsInf(p.Threshold, 0) || p.Threshold < 0 || p.Threshold > 1 {
-			return fmt.Errorf("judgment policy threshold must be between 0 and 1")
 		}
 	}
 	return nil

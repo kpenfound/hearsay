@@ -16,15 +16,12 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/api"
 )
 
-// Reader construction now resolves deferred grants from L1, even for an
-// all-scopes reader. Only that empty grant read is permitted by this fake;
-// invalid paths must still be rejected before any traversal store read.
+// traverseReaderDB holds nothing: every query answers with no rows. Reader
+// construction reads deferred grants from it, and an invalid call must be
+// refused as a bad request rather than read as an empty result.
 type traverseReaderDB struct{ api.DB }
 
-func (traverseReaderDB) Query(_ context.Context, query string, _ ...any) (pgx.Rows, error) {
-	if !strings.Contains(query, "FROM l1_docs CROSS JOIN LATERAL jsonb_array_elements(acl)") {
-		return nil, fmt.Errorf("unexpected traversal query: %s", query)
-	}
+func (traverseReaderDB) Query(context.Context, string, ...any) (pgx.Rows, error) {
 	return traverseReaderRows{}, nil
 }
 

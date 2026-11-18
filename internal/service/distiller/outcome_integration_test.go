@@ -4,10 +4,7 @@ package distiller_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"os"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -21,152 +18,74 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
-func outcomeRegistry(t *testing.T, restatement bool, declined ...bool) llm.Registry {
+// jevDistiller is the fixture repository's distiller over a Jev of the test's.
+func jevDistiller(t *testing.T, pool *pgxpool.Pool, src string, j llm.Judgments) *distiller.Distiller {
 	t.Helper()
-	fx := loadFixtures(t)
-	if restatement {
-		path := "testdata/outcome-restatements/recorded.json"
-		if len(declined) > 0 && declined[0] {
-			path = "testdata/outcome-restatement-declined/recorded.json"
-		}
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var file llm.FixtureFile
-		if err = json.Unmarshal(raw, &file); err != nil {
-			t.Fatal(err)
-		}
-		for _, completion := range file.Completions {
-			if err = fx.Add(completion); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	registry, err := llm.NewFake(testRepo(source).LLM, fx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return registry
-}
-
-func outcomeCapability(t *testing.T, cfg llm.JudgmentConfig, provider llm.JudgmentProvider) llm.Judgments {
-	t.Helper()
-	cfg.Enabled, cfg.Model = true, "recorded-v1"
-	j, err := llm.NewJudgments(cfg, func(llm.JudgmentConfig, string) llm.JudgmentProvider { return provider }, func(string) string { return "fake-only" })
-	if err != nil {
-		t.Fatal(err)
-	}
-	return j
-}
-
-func boostedDistiller(t *testing.T, pool *pgxpool.Pool, src string, registry llm.Registry, j llm.Judgments, qualified bool) *distiller.Distiller {
-	t.Helper()
-	cfg := testConfig(src)
-	cfg.Repo.Boost.Enabled = true
-	if qualified {
-		cfg.Repo.Boost.Policies = map[llm.JudgmentTask]llm.AcceptancePolicy{llm.TaskOutcomeClassification: {Name: "test-only", ModelVersion: "recorded-v1", Threshold: 0.9}}
-	}
-	d, err := distiller.New(pool, registry, cfg, distiller.WithJudgments(j))
+	d, err := distiller.New(pool, newFakeRegistry(t), j, testConfig(src))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return d
 }
 
+// outcomeRecords is every outcome judgment's journal record, in the order the
+// outcome questions are asked.
+func outcomeRecords(t *testing.T, pool *pgxpool.Pool) []l1.JudgmentRecord {
+	t.Helper()
+	var out []l1.JudgmentRecord
+	for _, task := range []llm.JudgmentTask{llm.TaskOutcomeWorkFinished, llm.TaskOutcomeBindingAgreement, llm.TaskOutcomeUnagreedProposal, llm.TaskOutcomeStillOpen} {
+		records, err := l1.New(pool).JudgmentsFor(t.Context(), judgmentReader(), string(task))
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, records...)
+	}
+	return out
+}
+
 func judgmentReader() l1.Reader {
 	return l1.Reader{Effective: principal.Effective{Human: "reader", Grant: principal.Grant{Scopes: principal.Scopes{All: true}}}}
 }
 
-func assertBaselineOutcome(t *testing.T, pool *pgxpool.Pool, id string) l1.Stored {
+func committedJudgments(t *testing.T, pool *pgxpool.Pool) int {
 	t.Helper()
-	doc, err := l1.New(pool).Get(t.Context(), id)
-	if err != nil {
+	var n int
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM judgment_journal WHERE state='committed'`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if doc.Body.OutcomeKind != l1.OutcomeDecided || doc.Body.Outcome != answers[issueID]["outcome"] {
-		t.Fatalf("lost baseline outcome: %+v", doc.Body)
-	}
-	return doc
+	return n
 }
 
-func TestOutcomeShadowIsIdenticalToBaseline(t *testing.T) {
-	pool := newScratchPool(t)
-	src := newSource(t)
-	ingest(t, pool, fixtureEvents(src))
-	id := l1.DocID(src, repo+"#12")
-	baseline, err := newDistiller(t, pool, src).Distill(t.Context(), id)
-	if err != nil || !baseline.Asserting {
-		t.Fatalf("baseline=%+v %v", baseline, err)
-	}
-	before := assertBaselineOutcome(t, pool, id)
-	var jobsBefore int
-	if err = pool.QueryRow(t.Context(), `SELECT count(*) FROM queue_job`).Scan(&jobsBefore); err != nil {
-		t.Fatal(err)
-	}
-	fake := llm.NewFakeJudgmentProvider(outcomeStep(t, "none"))
-	j := outcomeCapability(t, llm.JudgmentConfig{MaxRetries: -1}, fake)
-	d := boostedDistiller(t, pool, src, outcomeRegistry(t, false), j, false)
-	result, err := d.Distill(t.Context(), id)
-	if err != nil || result.Written || result.Asserting {
-		t.Fatalf("shadow=%+v %v", result, err)
-	}
-	after := assertBaselineOutcome(t, pool, id)
-	if !reflect.DeepEqual(before, after) {
-		t.Fatal("shadow changed the complete L1 row")
-	}
-	var jobsAfter int
-	if err = pool.QueryRow(t.Context(), `SELECT count(*) FROM queue_job`).Scan(&jobsAfter); err != nil {
-		t.Fatal(err)
-	}
-	if jobsAfter != jobsBefore {
-		t.Fatalf("assert queue changed: %d -> %d", jobsBefore, jobsAfter)
-	}
-	records, err := l1.New(pool).JudgmentsFor(t.Context(), judgmentReader(), string(llm.TaskOutcomeClassification))
-	if err != nil || len(records) != 1 || records[0].Mode != "shadow" || records[0].Label != "none" {
-		t.Fatalf("records=%+v %v", records, err)
-	}
-	observations, err := l1.New(pool).ObservationsFor(t.Context(), judgmentReader())
-	if err != nil || len(observations) != 2 {
-		t.Fatalf("observations=%+v %v", observations, err)
-	}
-	if observations[0].Cohort != "baseline" || observations[1].Cohort != "shadow" {
-		t.Fatalf("cohorts=%+v", observations)
-	}
-	// Even installing a new acceptance policy cannot reinterpret this result.
-	restarted := boostedDistiller(t, pool, src, outcomeRegistry(t, true), j, true)
-	result, err = restarted.Distill(t.Context(), id)
-	if err != nil || result.Written || fake.Calls() != 1 {
-		t.Fatalf("restart=%+v %v calls=%d", result, err, fake.Calls())
-	}
-	assertBaselineOutcome(t, pool, id)
-}
-
-func TestQualifiedOutcomeRequiresGenerativeAgreement(t *testing.T) {
+// Jev decides the issue's outcome; the model's sentence is kept when the kind
+// states something and cleared when it is none. A restart reuses the committed
+// judgments and asks Jev nothing.
+func TestJevDecidesTheOutcome(t *testing.T) {
+	decided := answers[issueID]["outcome"].(string)
 	for _, tc := range []struct {
-		name, label      string
-		restatement      bool
-		want             l1.OutcomeKind
-		wantText, reason string
-		asserts          bool
-		declined         bool
+		label    string
+		want     l1.OutcomeKind
+		wantText string
+		asserts  bool
 	}{
-		{"coherent proposal", "proposed", true, l1.OutcomeProposed, "Taking the lock before writing was proposed.", "", true, false},
-		{"none still writes L1", "none", true, l1.OutcomeNone, "", "", false, false},
-		{"open still writes L1", "open", true, l1.OutcomeOpen, "Whether to take the lock first remains open.", "", false, false},
-		{"disagreement without restatement", "proposed", false, l1.OutcomeDecided, answers[issueID]["outcome"].(string), "restatement_failed", true, false},
-		{"generator declines classification", "proposed", true, l1.OutcomeDecided, answers[issueID]["outcome"].(string), "restatement_unsupported", true, true},
+		{"resolved", l1.OutcomeResolved, decided, true},
+		{"decided", l1.OutcomeDecided, decided, true},
+		{"proposed", l1.OutcomeProposed, decided, true},
+		{"open", l1.OutcomeOpen, decided, false},
+		{"none", l1.OutcomeNone, "", false},
+		{"uncertain", l1.OutcomeNone, "", false},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(tc.label, func(t *testing.T) {
 			pool := newScratchPool(t)
 			src := newSource(t)
 			ingest(t, pool, fixtureEvents(src))
 			id := l1.DocID(src, repo+"#12")
-			fake := llm.NewFakeJudgmentProvider(outcomeStep(t, tc.label))
-			j := outcomeCapability(t, llm.JudgmentConfig{MaxRetries: -1}, fake)
-			registry := outcomeRegistry(t, tc.restatement, tc.declined)
-			d := boostedDistiller(t, pool, src, registry, j, true)
-			result, err := d.Distill(t.Context(), id)
+			jev := fixtureJev(t)
+			for _, doc := range documentsIn(t, fixtureEvents(source)) {
+				if doc.ID == issueID {
+					jev.classify(doc, tc.label)
+				}
+			}
+			result, err := jevDistiller(t, pool, src, jev.judgments()).Distill(t.Context(), id)
 			if err != nil || !result.Written || result.Asserting != tc.asserts {
 				t.Fatalf("result=%+v %v", result, err)
 			}
@@ -175,42 +94,47 @@ func TestQualifiedOutcomeRequiresGenerativeAgreement(t *testing.T) {
 				t.Fatal(err)
 			}
 			if doc.Body.OutcomeKind != tc.want || doc.Body.Outcome != tc.wantText {
-				t.Fatalf("incoherent pair: %+v", doc.Body)
+				t.Fatalf("outcome = %s %q, want %s %q", doc.Body.OutcomeKind, doc.Body.Outcome, tc.want, tc.wantText)
 			}
-			records, err := l1.New(pool).JudgmentsFor(t.Context(), judgmentReader(), string(llm.TaskOutcomeClassification))
-			if err != nil || len(records) != 1 || records[0].FallbackReason != tc.reason {
-				t.Fatalf("records=%+v %v", records, err)
+			records := outcomeRecords(t, pool)
+			if len(records) != 4 {
+				t.Fatalf("records=%+v", records)
 			}
-			// New worker and model configuration reuse the committed decision. No
-			// second Jev call or second generative reconciliation is permitted.
-			restart := boostedDistiller(t, pool, src, outcomeRegistry(t, false), j, true)
-			result, err = restart.Distill(t.Context(), id)
-			if err != nil || result.Written || fake.Calls() != 1 {
-				t.Fatalf("restart=%+v %v calls=%d", result, err, fake.Calls())
+			for _, r := range records {
+				if r.State != "committed" || r.Mode != "accepted" || r.Policy != "threshold" || r.Outcome != "answer" || r.FallbackReason != "" {
+					t.Fatalf("record=%+v", r)
+				}
+			}
+			observations, err := l1.New(pool).ObservationsFor(t.Context(), judgmentReader())
+			if err != nil || len(observations) != 1 || observations[0].Cohort != "accepted" {
+				t.Fatalf("observations=%+v %v", observations, err)
+			}
+			// A new process with a Jev that cannot answer still writes nothing new:
+			// every judgment is committed for these inputs.
+			calls := jev.Calls()
+			mute := newOutcomeJev(t)
+			mute.failWith(errors.New("must not be asked"))
+			result, err = jevDistiller(t, pool, src, mute.judgments()).Distill(t.Context(), id)
+			if err != nil || result.Written || mute.Calls() != 0 || jev.Calls() != calls {
+				t.Fatalf("restart=%+v %v calls=%d", result, err, mute.Calls())
 			}
 		})
 	}
 }
 
-func TestOutcomeFailuresKeepBaselineAndRecordReason(t *testing.T) {
+// A judgment that fails is the job's error: nothing is written, nothing is
+// committed, and the retry asks again rather than reusing the attempt.
+func TestAFailedJudgmentFailsTheJob(t *testing.T) {
 	for _, tc := range []struct {
-		name, reason string
-		step         llm.JudgmentStep
-		cfg          llm.JudgmentConfig
-		warm         bool
+		name string
+		step llm.JudgmentStep
+		cfg  llm.JudgmentConfig
+		want llm.JudgmentFailure
 	}{
-		{name: "error", reason: "unavailable", step: llm.JudgmentStep{Error: errors.New("private provider failure")}},
-		{name: "timeout", reason: "timeout", step: llm.JudgmentStep{Delay: time.Second}, cfg: llm.JudgmentConfig{Timeout: time.Millisecond}},
-		{name: "rate limit", reason: "rate_limited", step: llm.JudgmentStep{Error: &llm.Error{Status: 429, RetryAfter: time.Hour}}},
-		{name: "invalid", reason: "invalid_response", step: llm.JudgmentStep{}},
-		{name: "cooldown", reason: "cooldown", step: llm.JudgmentStep{Error: errors.New("unavailable")}, cfg: llm.JudgmentConfig{CooldownFailures: 1}, warm: true},
-		{name: "low confidence", reason: "policy_not_met", step: func() llm.JudgmentStep { s := outcomeStep(t, "none"); s.Response.Answers[0].Confidence = 0.5; return s }()},
-		{name: "model mismatch", reason: "policy_not_met", step: func() llm.JudgmentStep {
-			s := outcomeStep(t, "none")
-			s.Response.ModelVersion = "other-version"
-			return s
-		}()},
-		{name: "document budget", reason: "budget_exhausted", step: llm.JudgmentStep{Delay: 10 * time.Second}, cfg: llm.JudgmentConfig{Timeout: 10 * time.Second, TotalTimeout: 10 * time.Second}},
+		{name: "error", step: llm.JudgmentStep{Error: errors.New("private provider failure")}, want: llm.JudgmentUnavailable},
+		{name: "timeout", step: llm.JudgmentStep{Delay: time.Second}, cfg: llm.JudgmentConfig{Timeout: time.Millisecond}, want: llm.JudgmentTimeout},
+		{name: "rate limit", step: llm.JudgmentStep{Error: &llm.Error{Status: 429, RetryAfter: time.Hour}}, want: llm.JudgmentRateLimited},
+		{name: "invalid", step: llm.JudgmentStep{}, want: llm.JudgmentInvalidResponse},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := newScratchPool(t)
@@ -218,28 +142,26 @@ func TestOutcomeFailuresKeepBaselineAndRecordReason(t *testing.T) {
 			ingest(t, pool, fixtureEvents(src))
 			id := l1.DocID(src, repo+"#12")
 			fake := llm.NewFakeJudgmentProvider(tc.step)
-			tc.cfg.MaxRetries = -1
-			j := outcomeCapability(t, tc.cfg, fake)
-			if tc.warm {
-				j.Judge(t.Context(), llm.JudgmentRequest{State: "warm", Questions: []llm.JudgmentQuestion{{ID: "warm", Question: "Warm the outage state", Kind: llm.JudgmentChoice, Options: []string{"a", "b"}}}})
+			_, err := jevDistiller(t, pool, src, jevOver(t, fake, tc.cfg)).Distill(t.Context(), id)
+			var je *llm.JudgmentError
+			if !errors.As(err, &je) || je.Failure != tc.want || strings.Contains(err.Error(), "private") {
+				t.Fatalf("Distill() = %v, want a %s judgment error", err, tc.want)
 			}
-			d := boostedDistiller(t, pool, src, outcomeRegistry(t, true), j, true)
-			started := time.Now()
-			result, err := d.Distill(t.Context(), id)
-			if err != nil || !result.Written || !result.Asserting {
-				t.Fatalf("result=%+v %v", result, err)
+			if _, err := l1.New(pool).Get(t.Context(), id); !errors.Is(err, l1.ErrNotFound) {
+				t.Fatalf("a document was written: %v", err)
 			}
-			if time.Since(started) > distiller.OutcomeWorkBudget+time.Second {
-				t.Fatal("optional work exceeded document budget")
+			if n := committedJudgments(t, pool); n != 0 {
+				t.Fatalf("committed=%d", n)
 			}
-			assertBaselineOutcome(t, pool, id)
-			records, err := l1.New(pool).JudgmentsFor(t.Context(), judgmentReader(), string(llm.TaskOutcomeClassification))
-			if err != nil || len(records) != 1 || records[0].FallbackReason != tc.reason {
-				t.Fatalf("records=%+v %v", records, err)
+			// The retry, with Jev back, asks again and writes the document.
+			jev := fixtureJev(t)
+			result, err := jevDistiller(t, pool, src, jev.judgments()).Distill(t.Context(), id)
+			if err != nil || !result.Written || jev.Calls() != 1 {
+				t.Fatalf("retry=%+v %v calls=%d", result, err, jev.Calls())
 			}
-			observations, err := l1.New(pool).ObservationsFor(t.Context(), judgmentReader())
-			if err != nil || len(observations) != 1 || observations[0].JudgmentFallbacks == nil || *observations[0].JudgmentFallbacks != 1 {
-				t.Fatalf("observations=%+v %v", observations, err)
+			doc, err := l1.New(pool).Get(t.Context(), id)
+			if err != nil || doc.Body.OutcomeKind != l1.OutcomeDecided {
+				t.Fatalf("retry wrote %+v %v", doc.Body, err)
 			}
 		})
 	}
@@ -258,14 +180,16 @@ func (p afterJudgment) Judge(ctx context.Context, req llm.JudgmentRequest) (llm.
 	return r, e
 }
 
-func TestJournalRefusalsWriteBaselineAndNeverReuseAttempt(t *testing.T) {
+// A journal that refuses the judgments refuses the write: the job fails,
+// nothing is written, and the interrupted attempt is never reused.
+func TestAJournalRefusalFailsTheJob(t *testing.T) {
 	for _, kind := range []string{"write failure", "inputs changed", "statement timeout", "observation failure"} {
 		t.Run(kind, func(t *testing.T) {
 			pool := newScratchPool(t)
 			src := newSource(t)
 			ingest(t, pool, fixtureEvents(src))
 			id := l1.DocID(src, repo+"#12")
-			fake := llm.NewFakeJudgmentProvider(outcomeStep(t, "none"))
+			jev := fixtureJev(t)
 			hook := func() {
 				var sql string
 				switch kind {
@@ -288,16 +212,15 @@ func TestJournalRefusalsWriteBaselineAndNeverReuseAttempt(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			j := outcomeCapability(t, llm.JudgmentConfig{MaxRetries: -1}, afterJudgment{fake, hook})
-			d := boostedDistiller(t, pool, src, outcomeRegistry(t, true), j, true)
-			result, err := d.Distill(t.Context(), id)
-			if err != nil || !result.Written || !result.Asserting {
-				t.Fatalf("refusal=%+v %v", result, err)
+			_, err := jevDistiller(t, pool, src, jevOver(t, afterJudgment{jev, hook}, llm.JudgmentConfig{})).Distill(t.Context(), id)
+			if err == nil {
+				t.Fatal("a refused journal did not fail the job")
 			}
-			assertBaselineOutcome(t, pool, id)
-			var committed int
-			if err = pool.QueryRow(t.Context(), `SELECT count(*) FROM judgment_journal WHERE state='committed'`).Scan(&committed); err != nil || committed != 0 {
-				t.Fatalf("committed=%d %v", committed, err)
+			if _, err := l1.New(pool).Get(t.Context(), id); !errors.Is(err, l1.ErrNotFound) {
+				t.Fatalf("a document was written: %v", err)
+			}
+			if n := committedJudgments(t, pool); n != 0 {
+				t.Fatalf("committed=%d", n)
 			}
 			if kind != "inputs changed" {
 				table := "judgment_journal"
@@ -308,14 +231,13 @@ func TestJournalRefusalsWriteBaselineAndNeverReuseAttempt(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			// Retry has no usable new recording. The interrupted attempt must never
-			// be mistaken for a committed classification.
-			restarted := boostedDistiller(t, pool, src, outcomeRegistry(t, true), outcomeCapability(t, llm.JudgmentConfig{MaxRetries: -1}, fake), true)
-			result, err = restarted.Distill(t.Context(), id)
-			if err != nil || fake.Calls() != 2 {
-				t.Fatalf("retry=%+v %v calls=%d", result, err, fake.Calls())
+			// The retry asks again: an interrupted attempt is never mistaken for
+			// a committed judgment.
+			calls := jev.Calls()
+			result, err := jevDistiller(t, pool, src, jev.judgments()).Distill(t.Context(), id)
+			if err != nil || !result.Written || jev.Calls() != calls+1 {
+				t.Fatalf("retry=%+v %v calls=%d", result, err, jev.Calls())
 			}
-			assertBaselineOutcome(t, pool, id)
 		})
 	}
 }
@@ -325,84 +247,26 @@ func TestOutcomeJudgmentDoesNotWriteSupersededAnswer(t *testing.T) {
 	src := newSource(t)
 	ingest(t, pool, fixtureEvents(src))
 	id := l1.DocID(src, repo+"#12")
-	fake := llm.NewFakeJudgmentProvider(outcomeStep(t, "none"))
-	provider := afterJudgment{fake, func() {
+	provider := afterJudgment{fixtureJev(t), func() {
 		ingest(t, pool, []connector.Event{reply(event(src, connector.KindMessage, repo+"#12:late", at(10), who(src, "u2", "samr"), "", "A newer source revision."), repo+"#12")})
 	}}
-	d := boostedDistiller(t, pool, src, outcomeRegistry(t, true), outcomeCapability(t, llm.JudgmentConfig{MaxRetries: -1}, provider), true)
-	result, err := d.Distill(t.Context(), id)
+	result, err := jevDistiller(t, pool, src, jevOver(t, provider, llm.JudgmentConfig{})).Distill(t.Context(), id)
 	if err != nil || !result.Superseded || result.Written {
 		t.Fatalf("result=%+v %v", result, err)
 	}
 	if _, err = l1.New(pool).Get(t.Context(), id); !errors.Is(err, l1.ErrNotFound) {
 		t.Fatalf("superseded row exists: %v", err)
 	}
-	var committed int
-	if err = pool.QueryRow(t.Context(), `SELECT count(*) FROM judgment_journal WHERE state='committed'`).Scan(&committed); err != nil || committed != 0 {
-		t.Fatalf("committed=%d %v", committed, err)
-	}
-}
-
-func TestOutcomeShadowFirstWriteAndDisabledDependency(t *testing.T) {
-	for _, mode := range []string{"shadow", "disabled"} {
-		t.Run(mode, func(t *testing.T) {
-			baselinePool, boostPool := newScratchPool(t), newScratchPool(t)
-			src := newSource(t)
-			for _, pool := range []*pgxpool.Pool{baselinePool, boostPool} {
-				ingest(t, pool, fixtureEvents(src))
-			}
-			id := l1.DocID(src, repo+"#12")
-			baseline, err := newDistiller(t, baselinePool, src).Distill(t.Context(), id)
-			if err != nil {
-				t.Fatal(err)
-			}
-			fake := llm.NewFakeJudgmentProvider(outcomeStep(t, "none"))
-			j := outcomeCapability(t, llm.JudgmentConfig{MaxRetries: -1}, fake)
-			cfg := testConfig(src)
-			cfg.Repo.Boost.Enabled = mode == "shadow"
-			d, err := distiller.New(boostPool, outcomeRegistry(t, false), cfg, distiller.WithJudgments(j))
-			if err != nil {
-				t.Fatal(err)
-			}
-			result, err := d.Distill(t.Context(), id)
-			if err != nil || !reflect.DeepEqual(result, baseline) {
-				t.Fatalf("result=%+v baseline=%+v %v", result, baseline, err)
-			}
-			before, err := l1.New(baselinePool).Get(t.Context(), id)
-			if err != nil {
-				t.Fatal(err)
-			}
-			after, err := l1.New(boostPool).Get(t.Context(), id)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(before.Document, after.Document) {
-				t.Fatal("boost changed baseline document")
-			}
-			if (fake.Calls() == 1) != (mode == "shadow") {
-				t.Fatalf("mode=%s calls=%d", mode, fake.Calls())
-			}
-			var baselineJobs, boostJobs int
-			for _, q := range []struct {
-				pool *pgxpool.Pool
-				n    *int
-			}{{baselinePool, &baselineJobs}, {boostPool, &boostJobs}} {
-				if err = q.pool.QueryRow(t.Context(), `SELECT count(*) FROM queue_job WHERE kind='assert'`).Scan(q.n); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if baselineJobs != boostJobs || baselineJobs != 1 {
-				t.Fatalf("assert jobs: baseline=%d boost=%d", baselineJobs, boostJobs)
-			}
-		})
+	if n := committedJudgments(t, pool); n != 0 {
+		t.Fatalf("committed=%d", n)
 	}
 }
 
 func TestOutcomeControlTrafficNeverReachesJudgments(t *testing.T) {
 	pool := newScratchPool(t)
 	src := newSource(t)
-	fake := llm.NewFakeJudgmentProvider(outcomeStep(t, "decided"))
-	d := boostedDistiller(t, pool, src, outcomeRegistry(t, false), outcomeCapability(t, llm.JudgmentConfig{MaxRetries: -1}, fake), true)
+	jev := fixtureJev(t)
+	d := jevDistiller(t, pool, src, jev.judgments())
 	for _, kind := range []connector.Kind{connector.KindCommand, "github.reply"} {
 		control := event(src, kind, string(kind), at(1), who(src, "u1", "kpenfound"), "", "CONTROL TRAFFIC MUST STAY OUT")
 		if kind == "github.reply" {
@@ -414,8 +278,8 @@ func TestOutcomeControlTrafficNeverReachesJudgments(t *testing.T) {
 			t.Fatalf("control=%+v %v", result, err)
 		}
 	}
-	if fake.Calls() != 0 {
-		t.Fatalf("control traffic made %d judgment calls", fake.Calls())
+	if jev.Calls() != 0 {
+		t.Fatalf("control traffic made %d judgment calls", jev.Calls())
 	}
 	// Control events also stay out of a substantive document's source state.
 	events := fixtureEvents(src)
@@ -431,7 +295,7 @@ func TestOutcomeControlTrafficNeverReachesJudgments(t *testing.T) {
 	if err != nil || !result.Written {
 		t.Fatalf("parent=%+v %v", result, err)
 	}
-	requests := fake.Requests()
+	requests := jev.Requests()
 	if len(requests) != 1 {
 		t.Fatalf("requests=%d", len(requests))
 	}

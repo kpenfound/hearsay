@@ -13,14 +13,14 @@ import (
 
 	// stdlib registers pgx as a database/sql driver. goose is a database/sql
 	// library, and this is the only place in Hearsay that opens one: every
-	// query outside migrations goes through pgx natively (ADR-0004).
+	// query outside migrations goes through pgx natively.
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 	"github.com/pressly/goose/v3/lock"
 )
 
 // migrationsFS is the schema, compiled into the binary. Embedding it is what
-// makes the binary and the schema it expects impossible to mismatch (ADR-0006):
+// makes the binary and the schema it expects impossible to mismatch:
 // there is no directory in the image that can drift from the code.
 //
 //go:embed migrations/*.sql
@@ -40,7 +40,7 @@ func Migrations() fs.FS {
 
 // Migrator applies the embedded migrations to one database. It is what
 // `hearsay migrate` runs and nothing else: services verify the schema with
-// [CheckSchema] and never migrate (ADR-0006).
+// [CheckSchema] and never migrate.
 type Migrator struct {
 	provider *goose.Provider
 	db       *sql.DB
@@ -64,7 +64,7 @@ func NewMigrator(ctx context.Context, url string, log *slog.Logger) (*Migrator, 
 		return nil, errors.Join(fmt.Errorf("connecting to postgres: %w", err), sqlDB.Close())
 	}
 
-	// ADR-0006 turns goose's session-level advisory lock on, which is not its
+	// Hearsay turns goose's session-level advisory lock on, which is not its
 	// default: it is what makes two `migrate up` invocations during a flaky
 	// deploy safe, because one applies and the other waits rather than both
 	// trying. The lock is held on one session, so the pool is one connection.

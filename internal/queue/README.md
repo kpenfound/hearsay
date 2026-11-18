@@ -1,6 +1,6 @@
 # internal/queue
 
-The job queue. One Postgres, no broker (ADR-0007).
+The job queue. One Postgres, no broker.
 
 **Belongs here:** enqueue (transactional, deduplicating on `(kind, target_id)`
 while a job is pending), per-target debounce and expedite, the two claim paths
@@ -12,10 +12,10 @@ belongs to the service that owns it. And no SQL against the queue tables from
 outside this package — callers use the API, or the claim invariants stop being
 enforceable.
 
-The three things ADR-0007 asks an implementer not to simplify away:
+The three things an implementer must not simplify away:
 transactional enqueue, two claim paths (batch `FOR UPDATE SKIP LOCKED` for
 unserialized kinds, `LIMIT 1` under an advisory lock for serialized ones), and
-the dedupe on enqueue. The reasons are in the ADR.
+the dedupe on enqueue.
 
 ## Using it
 
@@ -98,8 +98,7 @@ zero; the defaults are the ones the constants document.
   a key-less job on a serialized kind would pass it against every running job
   and escape serialization on the one path that exists to enforce it.
 - **A batch claim under the advisory lock still breaks the invariant.**
-  `LIMIT 1` on the serialized path is correctness, not throughput; ADR-0007
-  works through why.
+  `LIMIT 1` on the serialized path is correctness, not throughput.
 - **The serialized claim names READ COMMITTED and requires it.** Its advisory
   lock works because each statement takes its own snapshot, so the `UPDATE`
   sees what the previous holder of the lock committed. Above that level the
@@ -118,9 +117,8 @@ zero; the defaults are the ones the constants document.
   is already pending, and supersede the job (`done`, `last_error` saying so)
   rather than collide; `Reclaim` is one statement over the kind, and a single
   collision would abort it for every job. A collision the statement's snapshot
-  could not see is a 23505 it runs again for. See
-  [ADR-0011](../../docs/adr/0011-a-retry-superseded-by-a-pending-job-is-done.md).
-- **A hold is the third way a job starts running** (ADR-0020). It takes the
+  could not see is a 23505 it runs again for.
+- **A hold is the third way a job starts running**. It takes the
   claim lock, reads the jobs running on its key and inserts its own row
   already running, so no claim takes the key after it; then it waits for
   those jobs, and not for any whose lease has expired. Inserting only when the
@@ -128,7 +126,5 @@ zero; the defaults are the ones the constants document.
   reclaimed hold's target as done.
 - **The invariant is tested, not asserted.** The serialized claim's test runs
   concurrent workers over jobs sharing a key and fails if two are ever running
-  at once. Keep it that way — it is the reason ADR-0007 chose code we own over
-  a library.
-
-See [ADR-0007](../../docs/adr/0007-postgres-backed-job-queue.md).
+  at once. Keep it that way — it is the reason the queue is code we own rather
+  than a library.

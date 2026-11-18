@@ -9,7 +9,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector"
 )
 
-// Reads follow the topic ledger (ADR-0021). What the operations in force make
+// Reads follow the topic ledger. What the operations in force make
 // of a scope — which topics stand and which topic each stance is on — is the
 // ledger replayed over the rows ([ScopeState.arrange]), and every read serves
 // that: a topic merged away reads as the topic it went into, a split's topic

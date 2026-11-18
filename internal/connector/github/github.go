@@ -52,7 +52,7 @@
 // reply Hearsay posts ends with, is emitted as a [KindReply], an extension
 // kind based on `command`, whatever else it says: that is how the webhook echo
 // of a reply is never read as a command. Both are control traffic that the
-// distiller leaves out of the issue's or pull request's document (ADR-0022).
+// distiller leaves out of the issue's or pull request's document.
 // The connector only describes them. The assertion worker runs the commands,
 // and a [Replier] built from the same source configuration posts the replies;
 // the connector never writes to GitHub.
@@ -98,11 +98,11 @@
 //     `perm:private` alone for commits, which have no content token. The content
 //     token is `updated_at` — with the parent of a sub-issue and the paths of a
 //     pull request after it — except for a review, which has none and is hashed
-//     from its state and body (ADR-0012). A repository going private is
+//     from its state and body. A repository going private is
 //     re-synced: every artifact is emitted again under the private token and ACL.
 //     `repository.privatized` records the re-sync with the runtime before the
 //     delivery is answered, and the runtime walks it through [Connector.Resync],
-//     keeping the position (ADR-0013). A delivery that never arrived, or
+//     keeping the position. A delivery that never arrived, or
 //     failed, is caught by the runtime's startup check, which asks
 //     [Connector.Public] about every repository L0 still serves as public.
 //

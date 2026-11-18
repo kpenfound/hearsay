@@ -299,7 +299,7 @@ type fakeCompleter struct {
 //
 // The miss says which tier and which key, and how many messages there were —
 // and not one byte of the prompt. A prompt is L1 text on its way to a model,
-// and an error string ends up in a log line (ADR-0008).
+// and an error string ends up in a log line.
 func (c *fakeCompleter) Complete(_ context.Context, req Request) (Response, error) {
 	key := FixtureKey(c.tier, req)
 	fixture, ok := c.fixtures.completions[key]

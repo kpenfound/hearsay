@@ -1,5 +1,5 @@
 // Package jev implements TypeSafe's System One typed API, independently of
-// completion and embedding providers. Retries and cooldown belong to llm.Judgments.
+// completion and embedding providers. Retries belong to llm.Judgments.
 package jev
 
 import (

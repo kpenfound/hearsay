@@ -1,5 +1,5 @@
 // Package slack ingests the public channels of one Slack workspace through a
-// Socket Mode connection (ADR-0015): the connector dials Slack, so a
+// Socket Mode connection: the connector dials Slack, so a
 // deployment needs no public ingress and no request URL.
 //
 // A source names the workspace in settings `team` (its `T…` id) and its

@@ -26,11 +26,13 @@ package main
 // document, and that a configured principal who is neither the poster nor the
 // owner is served what an unknown scope gets and nothing by handle.
 //
-// The only thing replaced is the model provider: the distill and assert tiers'
-// `base_url` points at a local stub that answers the Anthropic Messages API
-// with a one-line summary and no stances (no credential is reachable from a
-// test, and none is needed). The stub also records every prompt, and the test
-// fails if any decision's text was sent to it: decisions take no model call.
+// The only things replaced are the model provider and Jev: the distill and
+// assert tiers' and llm.judgments' `base_url` point at a local stub that
+// answers the Anthropic Messages API with a one-line summary and no stances, and
+// Jev's System One API with a confident no to every question (no credential is
+// reachable from a test, and none is needed). The stub also records every
+// prompt and judged state, and the test fails if any decision's text was sent
+// to it: decisions take no model call and no judgment.
 //
 // Rerun it with a Postgres of your own, or inside the image's tree with Dagger
 // (CONTRIBUTING.md, "The owner/work decision path, end to end"):
@@ -71,6 +73,7 @@ import (
 )
 
 // modelStub answers the Anthropic Messages API as the distill and assert tiers
+// call it, and Jev's System One API as the distiller and the assertion worker
 // call it, and remembers what it was asked.
 type modelStub struct {
 	mu      sync.Mutex
@@ -79,6 +82,10 @@ type modelStub struct {
 }
 
 func (m *modelStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/v1/systemone" {
+		m.judge(w, r)
+		return
+	}
 	var req struct {
 		Messages []struct {
 			Content string `json:"content"`
@@ -109,7 +116,7 @@ func (m *modelStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		answer = map[string]any{"assertions": []any{}}
 	} else if _, ok := tool.InputSchema.Properties["summary"]; ok {
 		first, _, _ := strings.Cut(strings.TrimSpace(text), "\n")
-		answer = map[string]any{"summary": first, "outcome_kind": "none"}
+		answer = map[string]any{"summary": first}
 	} else {
 		http.Error(w, `{"error":{"type":"invalid_request_error","message":"the stub does not know this schema"}}`, http.StatusBadRequest)
 		return
@@ -120,6 +127,28 @@ func (m *modelStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"content": []any{map[string]any{"type": "tool_use", "id": "toolu_stub", "name": tool.Name, "input": answer}},
 		"usage":   map[string]int{"input_tokens": 1, "output_tokens": 1},
 	})
+}
+
+// judge answers every yes/no question no, confidently: nothing in these
+// documents is concluded, which is what the stub's distillation says too.
+func (m *modelStub) judge(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		State     string                     `json:"state"`
+		Questions map[string]json.RawMessage `json:"questions"`
+	}
+	if json.NewDecoder(r.Body).Decode(&req) != nil || len(req.Questions) == 0 {
+		http.Error(w, `{"error":"the stub answers System One calls only"}`, http.StatusBadRequest)
+		return
+	}
+	m.mu.Lock()
+	m.prompts = append(m.prompts, req.State)
+	m.mu.Unlock()
+	answers := map[string]any{}
+	for id := range req.Questions {
+		answers[id] = map[string]any{"type": "noul", "noul": 0.02}
+	}
+	w.Header().Set("content-type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"model": "jev-stub", "answers": answers, "usage": map[string]int{"input_tokens": 1, "output_tokens": 0}})
 }
 
 // sawText reports whether any prompt the stub received contains s.
@@ -152,7 +181,8 @@ func e2eConfig(t *testing.T, stubURL string) string {
 	tier := func(name string) string {
 		return fmt.Sprintf("    %s:\n      provider: anthropic\n      model: model-stub\n      base_url: %s\n      api_key_env: HEARSAY_E2E_MODEL_KEY\n      max_retries: -1\n", name, stubURL)
 	}
-	return text + "\nllm:\n  tiers:\n" + tier("distill") + tier("assert")
+	judgments := fmt.Sprintf("  judgments:\n    model: jev-stub\n    base_url: %s\n    api_key_env: HEARSAY_E2E_MODEL_KEY\n    max_retries: -1\n", stubURL)
+	return text + "\nllm:\n  tiers:\n" + tier("distill") + tier("assert") + judgments
 }
 
 // freeAddr is an address nothing is listening on, for a service to take.

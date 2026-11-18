@@ -56,7 +56,7 @@ func TestThreadAliasVotesFromTouchedPR(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		answer, _ := json.Marshal(map[string]any{"summary": "The engine room was discussed.", "outcome_kind": "none", "code_names": []string{"Engine Room"}})
+		answer, _ := json.Marshal(map[string]any{"summary": "The engine room was discussed.", "code_names": []string{"Engine Room"}})
 		budget, _ := cfg.Repo.LLM.Tier(llm.TierDistill)
 		if err := fixtures.Add(llm.CompletionFixture{Tier: llm.TierDistill, Request: distiller.RequestFor(doc, budget.MaxTokens), Response: llm.Response{JSON: answer, StopReason: llm.StopEnd}}); err != nil {
 			t.Fatal(err)
@@ -80,7 +80,7 @@ func TestThreadAliasVotesFromTouchedPR(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := distiller.New(pool, registry, &cfg)
+	d, err := distiller.New(pool, registry, newOutcomeJev(t).judgments(), &cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

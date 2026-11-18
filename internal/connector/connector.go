@@ -261,7 +261,7 @@ type SourceConfig struct {
 	// command is registered or answered, and nothing is posted to it. The
 	// connector ingests exactly as it does otherwise, except that a text it
 	// would have described as a command to Hearsay is ordinary content. False,
-	// the default, allows the write-back ADR-0022 describes.
+	// the default, allows Hearsay to write its command replies back.
 	ReadOnly bool
 	// Settings is the connector's own configuration, as JSON. A connector
 	// decodes it with DecodeSettings and fails construction if it cannot.

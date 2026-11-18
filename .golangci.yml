@@ -10,9 +10,9 @@ linters:
     - bodyclose # a leaked response body is a leaked connection
     - errorlint # error comparisons that break when an error is wrapped
     - misspell
-    - noctx # HTTP requests without a context (ADR-0002: context everywhere)
+    - noctx # HTTP requests without a context (context everywhere)
     - revive
-    - sloglint # ADR-0008 logging conventions
+    - sloglint # the logging conventions
   settings:
     errcheck:
       # Best-effort writes to an already-failing output stream.
@@ -41,7 +41,7 @@ linters:
       no-global: all # the logger comes from the context, never a package global
       context: scope # pass ctx to slog when one is in scope
       static-msg: true # the message identifies the event; details are attributes
-      key-naming-case: snake # ADR-0008 field names
+      key-naming-case: snake # the standard field names
   exclusions:
     generated: lax
     rules:

@@ -18,7 +18,7 @@ import (
 // Commands applies the chat slash commands a person gives Hearsay in a
 // source — `pin` and `merge` — for whichever process received them: the API's
 // Discord interaction adapter, or the connector runtime for a connector that
-// receives commands itself (ADR-0025). The command's L0 `command` event is
+// receives commands itself. The command's L0 `command` event is
 // recorded before it gets here.
 //
 // It maps the invoker's source identity to a configured human, reads as that

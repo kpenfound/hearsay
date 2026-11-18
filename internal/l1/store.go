@@ -34,7 +34,7 @@ type Store struct {
 
 // Querier is what a Store runs its statements on: a pgx pool, or a transaction
 // taken from one, so that writing a document and enqueueing the work that
-// follows from it can be one transaction (ADR-0007).
+// follows from it can be one transaction.
 type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row

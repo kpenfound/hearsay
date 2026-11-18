@@ -12,7 +12,7 @@ import (
 
 // A configuration that says nothing about models still has the two completion
 // tiers: the shipped default lives in the config defaults, so bumping a model
-// is one line and running without the section is normal (ADR-0005).
+// is one line and running without the section is normal.
 func TestLLMDefaultsWithoutTheSection(t *testing.T) {
 	repo, err := config.Load(writeFiles(t, base))
 	if err != nil {

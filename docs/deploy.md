@@ -1,8 +1,11 @@
 # Deploying Hearsay
 
-How to run Hearsay for a team: on one host with Docker Compose, or on
-Kubernetes with the Helm chart ([Kubernetes with Helm](#kubernetes-with-helm)).
-Most of this guide is about Compose. The chart deploys the same shape, and the
+How to run Hearsay for a team: on one host with Docker Compose, on one host
+as systemd user units with a hosted Postgres
+([On one host with systemd](#on-one-host-with-systemd)), or on Kubernetes with
+the Helm chart ([Kubernetes with Helm](#kubernetes-with-helm)). The systemd form
+is the one that can use the `claude-sbx` provider, which needs the host's `sbx`
+and the owner's Claude Code login. Most of this guide is about Compose. The chart deploys the same shape, and the
 sections on the image, the environment, TLS, webhooks and replicas apply to
 both.
 
@@ -16,7 +19,7 @@ The Compose files are in [`deploy/compose/`](../deploy/compose/):
 | `hearsay.service` | A systemd unit that starts and stops the whole project ([Start at boot with systemd](#start-at-boot-with-systemd)). |
 
 This is the production shape: four containers from one image, one per service,
-and never `hearsay all`, which is for development only (ADR-0003). Development
+and never `hearsay all`, which is for development only. Development
 is `dagger up`; see [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## What runs
@@ -102,7 +105,7 @@ path remains available; pin the digest that manual `publish` call prints.
 
 The Postgres image is `pgvector/pgvector:pg16` in `compose.yaml`. Pin it to a
 digest there too for production. Any pgvector build of Postgres 16 or later
-works (ADR-0004). A stock Postgres image fails the first migration, which
+works. A stock Postgres image fails the first migration, which
 creates the `vector` extension. A major-version change of Postgres is a dump
 and restore, not a tag edit.
 
@@ -162,7 +165,7 @@ principal token names; the example names may differ from your configuration.
 | `HEARSAY_DATABASE_URL` | `migrate`, all four services | **Supply**: `postgres://hearsay:<password>@postgres:5432/hearsay?sslmode=disable`, with the password percent-encoded if it needs it. |
 | The `token_env` of every human and agent | `api`, all of them; `connectors`, agents' for `agent` sources and permitted posters' for `work` sources | **Supply** one random, distinct value each (`openssl rand -hex 32`). `hearsay init` generates them. The names are the configuration's; `HEARSAY_OPERATOR_TOKEN` and `HEARSAY_ASSISTANT_TOKEN` are the example's. |
 | `ANTHROPIC_API_KEY`, or a tier's `api_key_env` | `distiller`, `assert-worker`, `api` | **Supply.** Each builds the model tiers at startup and refuses to start without the key. |
-| `HEARSAY_JEV_API_KEY`, or `llm.boost.api_key_env` | `distiller`, `assert-worker` | Optional judgment credential. Read only with `llm.boost.enabled: true`; missing/empty degrades the boost while baseline work and readiness continue. Never needed by API, connectors or migrate. |
+| `HEARSAY_JEV_API_KEY`, or `llm.judgments.api_key_env` | `distiller`, `assert-worker` | **Supply.** Jev's key; both refuse to start without it, and without `llm.judgments.model` in the configuration. Never needed by API, connectors or migrate. |
 | `HEARSAY_GITHUB_TOKEN` | `connectors`; `assert-worker` for a GitHub source that is not `read_only` or that `code/` names | **Supply** if the configuration names it. |
 | `HEARSAY_GITHUB_WEBHOOK_SECRET` | `connectors` | **Supply** if the configuration names it: the secret the webhooks sign with. |
 | `HEARSAY_DISCORD_TOKEN` | `connectors`; `api` for a Discord source with `application_id` and `public_key` that is not `read_only` | **Supply** if the configuration names it. |
@@ -195,15 +198,14 @@ run `docker compose config` in the project, holds every credential Hearsay has.
 
 ## Migrations
 
-Migrations run only in the `migrate` job, never when a service starts
-([ADR-0006](adr/0006-schema-migrations-with-goose.md)). The job runs
-`hearsay migrate up` from the image being deployed. The services depend on it
-completing successfully, so a failed migration leaves them stopped or on the
-old version, and `docker compose logs migrate` says why. Each service checks
-the schema version at startup and refuses a database that is behind its
-binary. A database ahead of the binary is accepted, which is what lets a
-rollout migrate first. Two concurrent `migrate up` runs are safe: goose's
-advisory lock makes the second wait.
+Migrations run only in the `migrate` job, never when a service starts. The job
+runs `hearsay migrate up` from the image being deployed. The services depend on
+it completing successfully, so a failed migration leaves them stopped or on the
+old version, and `docker compose logs migrate` says why. Each service checks the
+schema version at startup and refuses a database that is behind its binary. A
+database ahead of the binary is accepted, which is what lets a rollout migrate
+first. Two concurrent `migrate up` runs are safe: goose's advisory lock makes
+the second wait.
 
 `docker compose up` runs the job every time. With nothing pending it applies
 nothing and exits 0. To look without changing anything:
@@ -217,8 +219,7 @@ To roll forward in steps, which a release note may ask for, run
 image. `migrate down` refuses without `--i-know` and is for development:
 recovery in production is a restore.
 
-Back up before an upgrade. Everything Hearsay has is in the one database
-(ADR-0004):
+Back up before an upgrade. Everything Hearsay has is in the one database:
 
 ```sh
 docker compose exec -T postgres pg_dump -U hearsay -Fc hearsay > hearsay-$(date +%F).dump
@@ -235,7 +236,7 @@ docker compose exec -T postgres pg_dump -U hearsay -Fc hearsay > hearsay-$(date 
 Compose pulls the image and runs `migrate` from it. The services still running
 the old image keep running meanwhile, then are recreated on the new one. Every
 migration is written so the binary already deployed keeps working against the
-new schema (expand and contract, ADR-0006). A rollback is the old
+new schema (expand and contract). A rollback is the old
 `HEARSAY_IMAGE` and `docker compose up -d`, as long as no migration since has
 removed anything that version needs. That is why a destructive change always
 comes a release after the one that stopped using what it removes.
@@ -288,8 +289,7 @@ unit reported active; use `systemctl stop` and `start` to keep the two in step.
 
 ## TLS in front of the API
 
-The API authenticates every call with a bearer token per principal
-([ADR-0014](adr/0014-api-callers-use-per-principal-bearer-tokens.md)) and
+The API authenticates every call with a bearer token per principal and
 serves plain HTTP. Anyone who sees a request can replay the token, so the API
 is reached only through a TLS terminator. That is why `compose.yaml` publishes
 it on `127.0.0.1` and not on every interface. Put the proxy on the same host,
@@ -372,10 +372,10 @@ they are. What more than one buys differs:
 |---|---|---|
 | `api` | Yes, behind a load balancer. | Stateless. Each replica has its own bundle cache and registers the same Discord commands at startup, which is harmless. |
 | `distiller` | Yes, to distil faster. | Replicas share one position in the L0 change feed and claim `distill` jobs from the queue, and jobs for one document are deduplicated. Each replica runs 4 model calls at once, so the provider's rate limit is the ceiling, not CPU. |
-| `assert-worker` | Safe, rarely useful. | `assert` jobs are serialized per scope by the queue (ADR-0007): one scope's stances are written one at a time, whatever the replica count. More replicas help only across many busy scopes. Each replica seeds entities at startup. |
+| `assert-worker` | Safe, rarely useful. | `assert` jobs are serialized per scope by the queue: one scope's stances are written one at a time, whatever the replica count. More replicas help only across many busy scopes. Each replica seeds entities at startup. |
 | `connectors` | Not by copying it. | Two replicas hosting the same source both poll it and both hold its stream, such as a second Discord Gateway session. Appends are idempotent, so nothing is duplicated, but every call is made twice. Scale out by splitting sources instead: one container per group of sources, each started with `connectors --source <id>`, and route each source's `/hooks/<id>` to the container that hosts it. |
 | `migrate` | Never needed. | A job. A second concurrent run waits on the first. |
-| `postgres` | One. | Hearsay has one database (ADR-0004). Replication and failover are Postgres's, below Hearsay. |
+| `postgres` | One. | Hearsay has one database. Replication and failover are Postgres's, below Hearsay. |
 
 Splitting the connectors is an override that adds a service, not an edit to
 `compose.yaml`:
@@ -397,7 +397,7 @@ source ids are examples.
 
 ## Changing configuration
 
-Configuration is read once, at startup ([ADR-0009](adr/0009-configuration-as-a-gitops-directory.md)).
+Configuration is read once, at startup.
 A change is a restart, and a service that finds it invalid refuses to start
 rather than running on part of it. Roll it like a deploy:
 
@@ -451,6 +451,125 @@ Load the token from your env file into the shell first (for example,
 `set -a; . ./.env; set +a`). `operator` and `team` are the example
 configuration's. Use a principal and a scope of your own.
 
+## On one host with systemd
+
+The four services run as processes on the host, each a systemd **user** unit
+of the owner, beside a migration job, against a Postgres the host does not run.
+This is the form for the `claude-sbx` provider: each model call is a Docker
+Sandbox started with the owner's `sbx` and their stored Claude Code login, which
+a container or a service account does not have. The files are in
+[`deploy/systemd/`](../deploy/systemd/):
+
+| File | What it is |
+|---|---|
+| `hearsay@.service` | One service; the instance is the subcommand: `hearsay@api`, `hearsay@connectors`, `hearsay@distiller`, `hearsay@assert-worker`. Requires and runs after the migration job, restarts on failure. |
+| `hearsay-migrate.service` | `hearsay migrate up`, a oneshot every service start pulls in. It applies what is pending and otherwise does nothing; no service migrates for itself. |
+| `hearsay.target` | The four services as one unit to enable, start, stop and restart. |
+| `env.example` | Every variable the units read. Copied to `~/.config/hearsay/hearsay.env`, mode 0600. |
+| `config/hearsay.yaml` | An example configuration with this form's `llm` block: `claude-sbx` for `distill` and `assert`, and Jev through OpenRouter. Replace the rest with your own. |
+
+### What you supply
+
+1. **Postgres 16 or later with pgvector.** On Neon, create a project and a
+   database, and copy the connection string of the **direct** endpoint, the
+   host without `-pooler`, with `sslmode=require`. The job queue holds `LISTEN`
+   connections and the migrations take a session advisory lock; Neon's pooler
+   is PgBouncer in transaction mode, which supports neither. The first
+   migration creates the `vector` extension, which Neon's default role may do.
+   The workers keep connections open and poll, so a compute that suspends when
+   idle stays awake while Hearsay runs: count it as always on.
+2. **`sbx` and a Claude Code login stored with it** (`sbx secret set`), on the
+   host, for the owner who runs the units. Each `distill` and `assert` call
+   starts a sandbox, so a call takes seconds more than an API call, and calls
+   count against that login's subscription usage, shared with anything else it
+   runs. The distiller works on up to four documents at once
+   ([config](config.md#the-claude-sbx-provider)).
+3. **An OpenRouter API key** for Jev, in `OPENROUTER_API_KEY`. The example
+   configuration points Jev there:
+
+   ```yaml
+   llm:
+     judgments:
+       model: ~typesafe/jev-latest
+       base_url: https://openrouter.ai/api
+       api_key_env: OPENROUTER_API_KEY
+   ```
+
+   The distiller and the assertion worker decide outcomes, topics and stances
+   from Jev's answers and refuse to start without the key. Each judgment
+   records the version that answered.
+4. **The binary**, at `~/.local/bin/hearsay`, built from the release you
+   deploy:
+
+   ```sh
+   go build -trimpath -ldflags "-s -w -X github.com/kpenfound/hearsay/internal/version.version=$(git describe --tags)" \
+     -o ~/.local/bin/hearsay ./cmd/hearsay
+   ```
+
+### First start
+
+```sh
+install -d -m 0700 ~/.config/hearsay
+install -m 0600 deploy/systemd/env.example ~/.config/hearsay/hearsay.env   # then fill it in
+cp -r deploy/systemd/config ~/.config/hearsay/config                         # then make it your own
+hearsay config validate ~/.config/hearsay/config
+install -D -m 0644 -t ~/.config/systemd/user deploy/systemd/*.service deploy/systemd/hearsay.target
+systemctl --user daemon-reload
+systemctl --user enable --now hearsay.target
+loginctl enable-linger "$USER"     # start at boot, without a login session
+systemctl --user list-units 'hearsay*'
+curl -s 127.0.0.1:8081/readyz      # each source's own status
+```
+
+`enable` enables the target, and starting the target starts all four services.
+The env file binds every listener to loopback; the services run on the host,
+where the defaults would listen on every interface.
+
+Logs are in the user journal: `journalctl --user -u 'hearsay@*' -o cat | jq .`.
+
+### Changing it
+
+Configuration is read once, at startup. After changing `~/.config/hearsay`,
+validate it and restart: `systemctl --user restart hearsay.target`. To upgrade,
+install the new binary and restart the target; each service start runs the
+migration job first. Back up the database before an upgrade whose notes name a
+migration, which on Neon is a branch.
+
+### The API on the tailnet
+
+The API can join the owner's tailnet itself, as its own node, so agents on
+other machines reach it with no proxy in front. `env.example` turns it on:
+
+```sh
+HEARSAY_API_TAILNET=hearsay      # the node's name: https://hearsay.<tailnet>.ts.net
+```
+
+The API then serves the same calls (`/v1/<call>`, `/mcp`, the health probes)
+on the tailnet as on its loopback listener, which stays. It serves HTTPS on
+port 443 with the node's Tailscale certificate, or plain HTTP on port 80 when
+the tailnet does not issue certificates (enable HTTPS in its admin settings) or
+`HEARSAY_API_TAILNET_HTTP=true` asks for it. Callers still send their bearer
+tokens; the tailnet decides who can connect, never who may read.
+
+On its first start the node logs a login URL to approve, unless `TS_AUTHKEY`
+holds an auth key; later starts use its state in
+`~/.local/state/hearsay/tailnet`, which the unit keeps
+(`HEARSAY_API_TAILNET_DIR`). A tailnet failure never stops the API: it is
+logged, the loopback listener keeps serving, and the node joins again. The API
+logs `serving on the tailnet` with the URL once it does. `hearsay api` takes the
+same as `--tailnet`, `--tailnet-dir` and `--tailnet-http`.
+
+### Other ingress
+
+The same as for Compose ([TLS](#tls-in-front-of-the-api),
+[Webhook ingress](#webhook-ingress)), against the loopback listeners. Only the
+API joins the tailnet itself. A source that pushes from elsewhere on the
+tailnet needs `tailscale serve` for its hook on the connectors, and a public
+source such as GitHub needs `tailscale funnel`:
+`tailscale funnel --bg --set-path /hooks/github http://127.0.0.1:8081/hooks/github`.
+An Obsidian source reads its vault where it is on the host: `settings.root` is
+the vault's own path, and the owner already reads it.
+
 ## Kubernetes with Helm
 
 The chart is [`deploy/helm/hearsay/`](../deploy/helm/hearsay/). It is not
@@ -487,7 +606,7 @@ The chart refuses to render without three values: `image.tag`,
 value and renders no Secret. Every credential is a reference to a Secret you
 create first.
 
-1. **Postgres** 16 or later with pgvector (ADR-0004), reachable from the
+1. **Postgres** 16 or later with pgvector, reachable from the
    cluster: a managed database, or one your Postgres operator runs. The chart
    runs no database. Its migration hook runs before any other object in the
    release exists, so a database in the same release would not be there for it
@@ -546,41 +665,19 @@ example, the GitHub webhook secret goes under `connectors.secretEnv`. The chart
 sets `HEARSAY_CONFIG`, `HEARSAY_DATABASE_URL` and the listen addresses itself,
 and refuses them in any of these.
 
-### Optional Jev boost
+### Jev
 
-The single `llm.boost.enabled` switch defaults to false; it governs stance,
-topic and outcome judgments together. `distill`, `assert`, `embed` keep their
-existing roles. Supply `HEARSAY_JEV_API_KEY` (or the configured `api_key_env`)
-only to the two workers. Missing credentials, provider outage, uncertainty,
-invalid output, cooldown, deadline exhaustion and any journal refusal (storage,
-statement/lock timeout, changed inputs) retain the complete baseline output.
-Worker `/readyz` still returns 200 when database/schema health permits it;
-`judgments` reports `enabled`, `healthy`, `last_fallback`, `observations`,
-`attempts`, `fallbacks`. False enablement means disabled; enabled but unhealthy
-means degraded. Health endpoints remain unauthenticated and report no source text.
-
-Enablement is shadow-only until task policies are qualified using the
-[human-reviewed evaluation procedure](jev-evaluation.md), operator limits and
-a final held-out split. No qualified policy ships. Configure the requested model
-explicitly and pin policies to its resolved version. An upgrade never rewrites
-historical consumed decisions. Confidence is not validated correctness; typed
-output constrains shape only. Negation, ambiguous topics, proposal/decision
-confusion, domain language and adversarial source text still require local
-measurement. Vendor pricing is not evidence of pipeline savings.
-
-The assertion job's `assertion_job_budget` defaults to 5s (maximum 30s), shared
-across all assertions, broader-pool processing, replacement comparisons,
-optional re-extraction, retries and Retry-After waits. It adds at most that budget
-to baseline scope-key holding; baseline model/database time and queue scheduling
-remain separate. On exhaustion the entire baseline extraction is written and
-queued writes and human gestures proceed under the same key. Lease renewal is
-not a duration limit. Outcome work, including any supported generative restatement,
-has one fixed 5s per-document budget. One capability instance in `hearsay all`
-shares cooldown across both workers; independent service processes do not.
-
-Bundle/search, authorization, standing, command/gesture application and deletion
-have no judgment dependency. See [configuration](config.md#optional-global-judgment-boost)
-and [ADR-0031](adr/0031-typed-judgments-are-an-optional-write-path-capability.md).
+The distiller and the assertion worker decide outcomes, topics and stances
+from Jev's yes/no answers, and require it: the configuration's
+`llm.judgments` names the model, and `HEARSAY_JEV_API_KEY` (or the configured
+`api_key_env`) is supplied to those two services alone. Either refuses to start
+without them. A Jev call that fails after its retries fails the job, which the
+queue retries. Worker `/readyz` still returns 200 when database and schema
+health permit it, and its `judgments` object reports `healthy`,
+`last_failure`, `observations`, `attempts` and `failures`. Health endpoints
+remain unauthenticated and report no source text. Bundle and search,
+authorization, standing, command and gesture application and deletion never
+call Jev. See [configuration](config.md#jev-llmjudgments).
 
 For Helm, reference an existing Secret in each worker (the chart creates none):
 
@@ -610,9 +707,8 @@ pods have no `sbx` and no stored login.
 
 ### Migrations
 
-The hook Job runs `hearsay migrate up` from the image being deployed
-([ADR-0006](adr/0006-schema-migrations-with-goose.md)). It runs before
-`helm install` creates the services and before `helm upgrade` changes
+The hook Job runs `hearsay migrate up` from the image being deployed. It runs
+before `helm install` creates the services and before `helm upgrade` changes
 anything. Helm waits for it, and if it fails the install or upgrade fails with
 nothing rolled. The services check the schema at startup, as they do under
 Compose, and no service migrates for itself.
@@ -644,7 +740,7 @@ helm upgrade hearsay deploy/helm/hearsay -f values.yaml \
 
 Back up first. The hook migrates, then the Deployments roll.
 
-Configuration is read once, at startup (ADR-0009), so a change has to replace
+Configuration is read once, at startup, so a change has to replace
 the pods:
 
 - With `config.hearsayYaml` or `config.files`, every pod carries a checksum of
@@ -725,6 +821,13 @@ values files in `deploy/helm/ci/`, for install and upgrade. It holds the output
 to the shape described here and checks that the chart refuses what it must.
 It also lays each config form out the way the kubelet mounts a ConfigMap and
 runs `hearsay config validate` on it. It needs no cluster.
+
+`dagger check hearsay:systemd-check` holds `deploy/systemd` to the shape
+described here: the target wants the four instances, each runs
+`~/.local/bin/hearsay <service>` after the migration job with the env file and
+the configuration, the job is a oneshot `migrate up`, `env.example` names what
+the example configuration reads and binds every listener to loopback, and the
+image accepts that configuration. It needs no systemd.
 
 `dagger check hearsay:compose-check` validates
 `deploy/compose` with Compose's own parser and holds it to the shape described

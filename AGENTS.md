@@ -9,9 +9,7 @@ Hearsay ingests team communication, distills it into four layers that keep their
 provenance, and serves scoped context bundles to coding agents. Read
 [docs/design.md](docs/design.md) before changing anything structural — it is the
 source of truth for the product, and every work item points at a section of it.
-The implementation decisions are in [docs/adr/](docs/adr/), and an accepted ADR
-is superseded, never edited. The L0 event a connector emits, and the interface it
-implements, are specified in
+The L0 event a connector emits, and the interface it implements, are specified in
 [docs/connector-contract.md](docs/connector-contract.md); that document and
 `internal/connector` change together or not at all.
 
@@ -21,11 +19,14 @@ Dagger runs everything. The workspace is `dagger.toml`. The tests and the
 `go generate` drift check come from the reusable Go module
 (`github.com/dagger/go`) it installs from the remote source, pinned at v0.4.0
 through `dagger.lock`. Keep its version out of `dagger.toml`; refresh the pins
-with `dagger lock update`. Lint, the integration tests, the tidy,
+with `dagger lock update`. Lint, the tidy,
 image, compose and Helm checks, the binary, the image, migrations and the dev stack are `hearsay`, our own module
 in `.dagger/modules/hearsay/main.dang`, written in Dang. The lock also retains
 v0.3.1 helper resolutions; they do not select the bare Go module's release.
-`hearsay:go-test-base` hands the Go module a container with Postgres attached.
+`hearsay:go-test-base` hands the Go module a container with an already
+migrated Postgres attached, and the Go module's `goflags` setting
+(`-tags=integration -race`) makes its `test` check run the integration tests
+too: there is no separate integration check.
 Dagger Cloud runs `dagger check` on every commit. The
 [release workflow](.github/workflows/publish.yml) runs only on pushes of `v*`
 tags and calls `hearsay publish` to publish one `linux/amd64` and `linux/arm64`
@@ -46,7 +47,7 @@ pull the private package for its smoke check before that one-time step.
 | `go` | `*` | `*` | `*` | `test` |
 | `go` | `*` | `*` | | `stale` |
 | `dagger-dang-sdk` | | | | `stale` |
-| `hearsay` | | | | `compose-check`, `helm-check`, `image-check`, `integration-test`, `lint`, `tidy-check` |
+| `hearsay` | | | | `compose-check`, `helm-check`, `image-check`, `lint`, `systemd-check`, `tidy-check` |
 
 Use `dagger check -l --all --go` to expand the collections and
 `dagger check --go` to run the Go checks. Tests execute once per package;
@@ -81,7 +82,12 @@ pre-install and pre-upgrade hook Job, external Postgres, every credential a
 reference to an existing Secret), in the same guide; `hearsay:helm-check`
 lints it and holds `helm template` to that shape without a cluster. A new
 listen address the probes or Services would depend on belongs in the chart's
-reserved list in `templates/_helpers.tpl`.
+reserved list in `templates/_helpers.tpl`. The host form is `deploy/systemd`:
+the four services as the owner's systemd user units (`hearsay@<service>`,
+`hearsay-migrate`, `hearsay.target`) against an external Postgres such as
+Neon's direct endpoint, the one form where the `claude-sbx` provider works;
+`hearsay:systemd-check` holds it to its shape. A new environment variable goes
+in `deploy/systemd/env.example` too.
 
 The Go module keeps linting in separate modules; `hearsay:lint` is the lint
 gate. Its tests and generate checks use `hearsay:go-test-base`, with the extra
@@ -109,9 +115,9 @@ and read `HEARSAY_DATABASE_URL`, so a plain `go test ./...` skips them; with a
 database of your own, `go test -tags=integration ./...` runs them. Two things
 need the network once — the Go toolchain, on a machine whose Go is older than
 the release `go.mod` asks for, and the dependencies (the configuration parser
-`go.yaml.in/yaml/v3` per ADR-0009, pgx and goose per ADR-0004 and ADR-0006,
-`github.com/gorilla/websocket` for Discord and Slack connections, and
-`github.com/kpenfound/agentcore` for the `claude-sbx` provider per ADR-0032)
+`go.yaml.in/yaml/v3`, pgx and goose, `github.com/gorilla/websocket` for
+Discord and Slack connections, and `github.com/kpenfound/agentcore` for the
+`claude-sbx` provider)
 until they are in the module cache.
 
 Running a service locally:
@@ -130,7 +136,7 @@ go run ./cmd/hearsay connectors --source github --listen :8081
 None of the four services is a stub any more. Every
 service reads the configuration repository first when `--config` (or `HEARSAY_CONFIG`) names one,
 and refuses to start if it is invalid; configuration is read once, at startup,
-and a change to it is a restart (ADR-0009). The format is
+and a change to it is a restart. The format is
 [docs/config.md](docs/config.md).
 
 `hearsay init` writes a new team's single-file `hearsay.yaml` and a mode-0600
@@ -142,8 +148,8 @@ and with `HEARSAY_DISCORD_TOKEN`, `HEARSAY_SLACK_BOT_TOKEN` and
 it did not generate, and refuses to overwrite either file without `--force`.
 
 The distiller is not a stub. It reads the L0 change feed, enqueues a `distill`
-job per document, and turns each one into an L1 document with a model call
-(ADR-0005, ADR-0007), so it needs Postgres — `hearsay distiller` and
+job per document, and turns each one into an L1 document with a model call, so
+it needs Postgres — `hearsay distiller` and
 `hearsay all` refuse without a database, and with no `--config` they start and
 distil nothing, because a configuration is what says there is anything to do.
 Distillation is debounced per document by `HEARSAY_DISTILL_QUIET` (default `30s`, `0` disables), capped from the first enqueue by `HEARSAY_DISTILL_MAX_DELAY` (default `5m`) before the job becomes due.
@@ -151,8 +157,7 @@ Distillation is debounced per document by `HEARSAY_DISTILL_QUIET` (default `30s`
 The connectors service is not a stub either. It builds one connector per
 configured source through a registry the binary wires up, polls the pollers on
 their own cadence, supervises streams, drives the backfillers through a cursor it keeps in Postgres, walks the ACL
-re-syncs a container going private owes from a record it keeps there too
-(ADR-0013),
+re-syncs a container going private owes from a record it keeps there too,
 mounts the pushers' handlers under `/hooks/<source>` and answers `/healthz` (the
 process is up) and `/readyz` (the database, its schema, and what each source
 says about itself) on `--listen` (default `:8081`, and `hearsay all` takes the
@@ -180,7 +185,9 @@ The assertion worker (`hearsay assert-worker`) runs serialized `assert` jobs.
 The distiller enqueues one job, keyed by scope, in the transaction that writes
 a document whose outcome is
 decided, proposed or resolved; the worker reads it with the `assert` tier,
-matches topics by reference overlap and then embedding similarity, and appends
+matches topics by reference overlap, then the words its distillation shares
+with a topic's evidence, then embedding similarity where an `embed` tier
+exists (the shipped deployments have none), and appends
 stances in `internal/l2`. An `assert` job whose target is an L0 `assertion`
 event, which the API enqueues, is an agent's stance and is appended with no
 model call. So is one whose target is a `decision` L1 document, which the
@@ -200,8 +207,8 @@ assert job per command as written and per deletion of one, runs the command
 under the scope's key through `ApplyGesture` or `ApplyOperation`, records it in
 `github_command_replies`, and answers it with one reply comment through a
 `github.Replier` with the source's token, which needs issue and pull request
-write access. Deleting the command comment undoes it and revises the reply
-(ADR-0022). A source configured `read_only: true` opts out: its connector
+write access. Deleting the command comment undoes it and revises the reply. A
+source configured `read_only: true` opts out: its connector
 emits `/hearsay` comments as ordinary messages, the worker enqueues and runs
 nothing from it and builds no replier for it, reads none of its reactions as
 gestures, and the API registers no Discord command for it. It needs Postgres
@@ -209,15 +216,13 @@ and refuses without it.
 
 Topic merge, split and undo are `l2.Operate`: one row appended to the
 `l2_topic_operations` ledger, recorded while holding the scope's `assert` serial
-key (`queue.Client.Hold`), with no topic or stance row changed
-([ADR-0020](docs/adr/0020-topic-operations-are-a-ledger-held-on-the-scope-key.md)).
+key (`queue.Client.Hold`), with no topic or stance row changed.
 Every read and the assertion worker's matching follow the ledger: a topic
 merged away reads, and is written to, as the topic it went into, and a split's
-topic is a topic of its own that gets a row when its first new stance lands
-([ADR-0021](docs/adr/0021-reads-follow-the-topic-ledger.md)). `hearsay topics`
-and a chat `merge` (through `l2.Commands`) call `Operate`; GitHub's `/hearsay merge` runs
-inside an assert job already holding the key, and calls
-`l2.Store.ApplyOperation`, its in-transaction form.
+topic is a topic of its own that gets a row when its first new stance lands.
+`hearsay topics` and a chat `merge` (through `l2.Commands`) call `Operate`;
+GitHub's `/hearsay merge` runs inside an assert job already holding the key, and
+calls `l2.Store.ApplyOperation`, its in-transaction form.
 
 A person's ratify, demote and pin, and the undo of one, are `l2.RecordGesture`
 (or `l2.Store.ApplyGesture` inside a job already holding the key): one row in
@@ -227,8 +232,7 @@ operation is. A ratify or a demote applies to the live stances drawn from the
 documents it names and changes no stance row; `l2.Store.Assess`, and so every
 bundle and `stance_history`, serves a ratified current stance as `ratified`
 and a demoted one as `contested` until a ratification or a newer stance. A pin
-writes `l2_pins`
-([ADR-0023](docs/adr/0023-human-gestures-are-a-ledger-every-standing-reads.md)).
+writes `l2_pins`.
 The assertion worker interprets Discord and Slack reaction L0 events and their
 tombstones as gestures through this ledger. It resolves the actor and the
 containing L1 thread or burst without writing to either channel.
@@ -243,14 +247,12 @@ which is not `read_only`. It
 verifies the signature, records the command as an L0 `command` event (never
 distilled), applies it through the shared applier, and answers ephemerally
 within Discord's three seconds, deferring and editing the answer when the work
-takes longer
-([ADR-0024](docs/adr/0024-discord-commands-are-applied-by-the-interaction-adapter.md)).
+takes longer.
 Merge autocomplete offers the topics `l2.View` lets the person read — the view
 `hearsay topics` reads through.
 
 That applier is `l2.Commands`, and every process that receives a chat command
-applies it through it
-([ADR-0025](docs/adr/0025-chat-commands-are-applied-by-the-receiving-process-through-one-applier.md)).
+applies it through it.
 Given the recorded command event, the invoker's source identity, the verb
 (`pin` or `merge`) and its arguments, it maps the invoker to a configured
 human, reads through their `l2.View`, calls `RecordGesture` or `Operate`, and
@@ -266,9 +268,8 @@ answered.
 Migrations are `go run ./cmd/hearsay migrate up|status|up-to <n>|down`, or
 `dagger api call hearsay migrate --database-url=...` against a database. They are
 plain SQL in `internal/db/migrations/`, embedded with `go:embed`, applied by
-`hearsay migrate` as a deploy job and **never** at service startup — read
-[ADR-0006](docs/adr/0006-schema-migrations-with-goose.md) before writing one, and
-note that a merged migration is never edited. `down` is a development
+`hearsay migrate` as a deploy job and **never** at service startup. A merged
+migration is never edited. `down` is a development
 convenience and refuses without `--i-know`. `hearsay all` migrates for itself,
 because a local database is nobody's production; every other command that reads
 the database verifies the schema and refuses one that is behind.
@@ -281,12 +282,15 @@ The API is not a stub. It serves `get_bundle`, `resolve`, `traverse`, `stance_hi
 `get_l1`, `get_l0`, `get_session`, `search`, `watch` and `assert` as
 `POST /v1/<call>` and as MCP tools at `/mcp`,
 from one call layer whose bytes both interfaces serve verbatim, on `--listen`
-(default `:8080`; `hearsay all` takes `--api-listen`). The caller is named by
+(default `:8080`; `hearsay all` takes `--api-listen`), and also on the owner's
+tailnet when `--tailnet <hostname>` (`HEARSAY_API_TAILNET`) names an embedded
+Tailscale node (`internal/tailnet`, state in `--tailnet-dir`): HTTPS on 443
+with its certificate, or HTTP on 80, a failure logged and retried, never fatal. The caller is named by
 `Hearsay-Principal` and authenticated by a bearer token; the agent acting for
-them is named by `Hearsay-Agent` and must supply its own token (ADR-0014).
+them is named by `Hearsay-Agent` and must supply its own token.
 An agent can send `Hearsay-Session` to link bundle audits, handle audits and
 assertions to a session artifact; `get_session` follows an assertion id to that
-ordered trace (ADR-0017). Search can call the `embed` tier once to vectorize
+ordered trace. Search can call the `embed` tier once to vectorize
 its query; reads never use generative synthesis or typed judgments. The shipped
 provider catalogue has no embedding adapter, so search currently uses full text.
 Bundle audits record the ids served in each trimmed section; `get_l1`, `get_l0`, `stance_history`, `search`, `resolve` and `traverse` audit
@@ -312,9 +316,9 @@ and lists unresolved source identities, with mapping suggestions to review.
 configuration, a database and `--principal <human-id>`; it reviews learned
 entity-name candidates through that person's current evidence access.
 
-`hearsay eval judgments --corpus <json> --predictions <json> [--qualify <json>]`
-compares supplied predictions and qualifies task policies offline, with no
-database, configuration or provider call. See [docs/jev-evaluation.md](docs/jev-evaluation.md).
+`hearsay eval judgments --corpus <json> --predictions <json>` compares supplied
+Jev predictions with a labelled corpus offline, with no database,
+configuration or provider call. See [docs/jev-evaluation.md](docs/jev-evaluation.md).
 `hearsay version` prints build identity; `hearsay help` lists all subcommands.
 
 `hearsay l0 list|get <id>|count|tail` inspects the event store — what a source
@@ -366,11 +370,11 @@ redacts the covered L0 payloads in place, writes a `deletion` event under source
 `hearsay`, takes out the pins a gesture from a covered event made, and
 enqueues a `distill` job for every affected L1 document, which the
 running distiller rebuilds or removes
-([ADR-0018](docs/adr/0018-operator-deletion-redacts-l0-in-place.md), the one
+(the one
 exception to L0 being append-only). The distiller records each rebuild on the
 deletion, and the text L2 read from the deleted content — a superseded stance's
 position, a topic's name when nothing surviving supports it — is redacted in
-place ([ADR-0019](docs/adr/0019-operator-deletion-redacts-superseded-l2-text.md)).
+place.
 A gesture whose event is deleted stays in the ledger, holding only ids, and is
 out of force for every read.
 `hearsay delete list` and `hearsay delete show <id> [--json]` read the records,
@@ -378,14 +382,14 @@ with whether each rebuild is complete.
 
 ## Layout
 
-One binary, four services, layers underneath (ADR-0003).
+One binary, four services, layers underneath.
 
 | Path | Holds |
 |---|---|
 | `cmd/hearsay` | Subcommands. Flags, config, dependencies, then `Run`. Nothing else. |
 | `internal/service` | The four processes, one subpackage each. Every one exposes `Run(ctx, cfg, deps) error`. |
 | `internal/l0` … `internal/l3` | The four layers: events, documents, graph, derived views. |
-| `internal/eval` | Windowed evaluation and offline judgment comparison and qualification. |
+| `internal/eval` | Windowed evaluation and offline judgment comparison. |
 | `internal/onboard` | The first configuration `hearsay init` writes: `hearsay.yaml` and its env file. |
 | `internal/bundle` | Context bundle assembly — the primary read. |
 | `internal/connector` | The connector contract, runtime and eight shipped source adapters, including `work`. |
@@ -393,6 +397,7 @@ One binary, four services, layers underneath (ADR-0003).
 | `internal/queue` | The Postgres job queue. |
 | `internal/db` | Pool, migrations, shared query plumbing. |
 | `internal/config`, `internal/principal`, `internal/telemetry`, `internal/version` | Config, identity, logging and tracing, build identity. |
+| `internal/tailnet` | The embedded Tailscale node a service can also serve on, on the owner's tailnet. |
 
 Every directory in that table has a README saying what belongs in it and what
 does not. Read the one for the package you are about to touch; it is short, and
@@ -417,9 +422,9 @@ own README for segmentation and optional outcome rules.
   through the fake in `internal/llm` with a recorded fixture, checked in.
 - **Logging** is `log/slog`, from the context, never a package-level `slog.Info`.
   Never log L0 payloads, L1 text, prompts or completions above `debug`; log ids
-  instead. That is access control, not style (ADR-0008).
+  instead. That is access control, not style.
 - **Dependencies** are added when they carry real weight, not for convenience.
   A new one in a pull request is a thing to justify in the description.
 - **Commits** are small and say why. The subcommand names, the model tier names
-  and the `Run` signature are contracts — changing one is a breaking change and
-  needs an ADR, not a rename.
+  and the `Run` signature are contracts — changing one is a breaking change, to
+  call out in the pull request description, not a rename.

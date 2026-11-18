@@ -43,8 +43,9 @@ import (
 // tiers is a model registry for tests of the work records. Distilling a
 // document (a spec) calls the `distill` tier, and this answers it with the
 // document's own first line, so that what a read serves can be told from the
-// text that was posted; a document whose text says "We decide ..." concluded
-// that, and the `assert` tier reads it as a position on a topic of its own.
+// text that was posted; a document whose text says "We decide ..." states
+// that as its outcome, which decisionJev judges an agreement, and the
+// `assert` tier reads it as a position on a topic of its own.
 // Placing a decision calls no tier at all, which a run with fail set — every
 // completion refused, and counted — shows.
 type tiers struct {
@@ -75,16 +76,26 @@ func (r tierOf) Complete(_ context.Context, req llm.Request) (llm.Response, erro
 	var answer any
 	switch r.tier {
 	case llm.TierAssert:
-		answer = map[string]any{"assertions": []map[string]any{{"topic": "new", "topic_name": "Spec: " + decided, "position": decided}}}
+		answer = map[string]any{"assertions": []map[string]any{{"topic_name": "Spec: " + decided, "position": decided}}}
 	default:
-		answer = map[string]any{"summary": first, "outcome_kind": "none"}
+		answer = map[string]any{"summary": first}
 		if decided != "" {
-			answer = map[string]any{"summary": first, "outcome": decided, "outcome_kind": "decided"}
+			answer = map[string]any{"summary": first, "outcome": decided}
 		}
 	}
 	raw, _ := json.Marshal(answer)
 	return llm.Response{JSON: raw, StopReason: llm.StopEnd}, nil
 }
+
+// decisionJev judges a document that says "We decide" a binding agreement and
+// anything else, and every other question, a confident no: each document's
+// position opens a topic of its own.
+var decisionJev = llm.FakeJudgments(func(state string, q llm.JudgmentQuestion) float64 {
+	if q.ID == "binding_agreement" && strings.Contains(state, "We decide") {
+		return 0.95
+	}
+	return 0.02
+})
 
 // The policy docs/config.md documents for an owner/work pair, read from the
 // documentation itself so that what is tested is what is written.
@@ -183,12 +194,13 @@ func newDecisionWorld(t *testing.T, repo config.Repo, models *tiers) *decisionWo
 		wc := c.(*work.Connector)
 		w.hooks[src.ID] = wc.Handler(connector.NewGate(w.events, src.ID, wc.Describe(), connector.NewAllowlist(cfg.Repo.Sources...)))
 	}
-	if w.distiller, err = distiller.New(pool, models, &cfg); err != nil {
+	if w.distiller, err = distiller.New(pool, models, decisionJev, &cfg); err != nil {
 		t.Fatal(err)
 	}
 	if w.asserter, err = assertworker.New(pool, models, &cfg); err != nil {
 		t.Fatal(err)
 	}
+	w.asserter.WithJudgments(decisionJev)
 	w.pump = distiller.NewPump(pool, distiller.PumpOptions{})
 	if w.distills, err = queue.New(pool, queue.Config{Kind: distiller.JobKind()}); err != nil {
 		t.Fatal(err)

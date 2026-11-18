@@ -19,7 +19,7 @@ const AssertKindName = "assert"
 // two jobs on one scope never run at once, because two workers matching one
 // document each against a topic list that does not yet hold the other's topic
 // both open one, and two stances appended to one topic at once both supersede
-// the same predecessor (ADR-0007).
+// the same predecessor.
 func AssertKind() queue.Kind { return queue.Kind{Name: AssertKindName, Serialized: true} }
 
 // ScopeKey is the serial key a document's assert job runs under, and the scope

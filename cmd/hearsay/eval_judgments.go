@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -15,7 +14,6 @@ func runJudgmentEval(_ context.Context, args []string, stdout, stderr io.Writer)
 	fs, _, _ := newFlagSet("eval judgments", stderr)
 	corpusPath := fs.String("corpus", "", "source-backed, human-adjudicated corpus JSON")
 	predictionsPath := fs.String("predictions", "", "recorded Jev and baseline predictions JSON")
-	qualifyPath := fs.String("qualify", "", "operator qualification options JSON; emits a policy only on success")
 	split := fs.String("split", "held_out", "comparison split: tuning, held_out, or all")
 	fs.Bool("json", false, "JSON output (always used for judgment evaluation)")
 	words, err := parseWords(fs, args)
@@ -38,28 +36,6 @@ func runJudgmentEval(_ context.Context, args []string, stdout, stderr io.Writer)
 	}
 	if err := readEvaluationFile(*predictionsPath, &ps); err != nil {
 		return err
-	}
-	enc := json.NewEncoder(stdout)
-	enc.SetIndent("", "  ")
-	if *qualifyPath != "" {
-		if *split != "held_out" {
-			return fmt.Errorf("qualification controls its own tuning and held-out splits")
-		}
-		var o eval.QualificationOptions
-		if err := readEvaluationFile(*qualifyPath, &o); err != nil {
-			return err
-		}
-		q, err := eval.Qualify(c, ps, o)
-		if err != nil {
-			return err
-		}
-		if err := enc.Encode(q); err != nil {
-			return err
-		}
-		if q.Status != "qualified" {
-			return fmt.Errorf("qualification: %s", q.Status)
-		}
-		return nil
 	}
 	selection := *split
 	if selection == "all" {

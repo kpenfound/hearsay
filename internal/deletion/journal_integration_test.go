@@ -72,7 +72,7 @@ func testJournalDeletion(t *testing.T, topology string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	record := l1.JudgmentRecord{ID: "committed", Task: "stance_comparison", QuestionVersion: "v1", QuestionHash: "question-hash", Inputs: inputs, ModelVersion: "version", Mode: "accepted", Policy: "policy", Outcome: "answer", Label: "restates"}
+	record := l1.JudgmentRecord{ID: "committed", Task: "stance.same_answer", QuestionVersion: "v1", QuestionHash: "question-hash", Inputs: inputs, ModelVersion: "version", Mode: "accepted", Policy: "policy", Outcome: "answer", Label: "yes"}
 	attempt := record
 	attempt.ID = "interrupted"
 	if _, err = store.BeginJudgment(ctx, attempt); err != nil {

@@ -127,7 +127,7 @@ func newDistiller(t *testing.T, pool *pgxpool.Pool, src string) *distiller.Disti
 	if err != nil {
 		t.Fatalf("building the fake registry: %v", err)
 	}
-	d, err := distiller.New(pool, registry, testConfig(src))
+	d, err := distiller.New(pool, registry, fixtureJev(t).judgments(), testConfig(src))
 	if err != nil {
 		t.Fatalf("distiller.New() = %v", err)
 	}
@@ -235,7 +235,7 @@ func TestDistillingEmbedsTheDocumentItWrote(t *testing.T) {
 	docs := l1.New(pool)
 	id := l1.DocID(src, repo+"#31")
 
-	// The shipped configuration names no embed tier (ADR-0005).
+	// The shipped configuration names no embed tier.
 	result, err := newDistiller(t, pool, src).Distill(t.Context(), id)
 	if err != nil {
 		t.Fatalf("Distill(%s) = %v", id, err)
@@ -279,7 +279,7 @@ func TestDistillingEmbedsTheDocumentItWrote(t *testing.T) {
 
 // A tier whose vectors are not the width of the column stops the process at
 // startup: the fix is a migration and a re-embed of every row, not a job that
-// fails every time it runs (ADR-0005).
+// fails every time it runs.
 func TestADistillerRefusesAnEmbedTierOfTheWrongWidth(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
@@ -289,7 +289,7 @@ func TestADistillerRefusesAnEmbedTierOfTheWrongWidth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("building the fake registry: %v", err)
 	}
-	if _, err := distiller.New(pool, registry, cfg); !errors.Is(err, llm.ErrDimensions) {
+	if _, err := distiller.New(pool, registry, newOutcomeJev(t).judgments(), cfg); !errors.Is(err, llm.ErrDimensions) {
 		t.Fatalf("distiller.New() = %v, want llm.ErrDimensions", err)
 	}
 }
@@ -310,7 +310,7 @@ func embeddingDistiller(t *testing.T, pool *pgxpool.Pool, src, text string) *dis
 	if err != nil {
 		t.Fatalf("building the fake registry: %v", err)
 	}
-	d, err := distiller.New(pool, registry, cfg)
+	d, err := distiller.New(pool, registry, fixtureJev(t).judgments(), cfg)
 	if err != nil {
 		t.Fatalf("distiller.New() = %v", err)
 	}
@@ -593,9 +593,10 @@ func TestATombstoneForACommentRedistillsTheDocumentThatQuotedIt(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- distiller.Run(ctx, testConfig(src), distiller.Deps{
-			Pool: pool,
-			LLM:  registry,
-			Pump: distiller.PumpOptions{Quiet: 0, Interval: 100 * time.Millisecond, Batch: l0.MaxLimit},
+			Pool:      pool,
+			LLM:       registry,
+			Judgments: fixtureJev(t).judgments(),
+			Pump:      distiller.PumpOptions{Quiet: 0, Interval: 100 * time.Millisecond, Batch: l0.MaxLimit},
 		})
 	}()
 	defer func() {
@@ -637,15 +638,15 @@ func TestATombstoneForACommentRedistillsTheDocumentThatQuotedIt(t *testing.T) {
 	}
 	const topicName = "Where to take the engine lock"
 	const beforePosition = "Move the lock into the queue."
-	addAnswer := func(doc l1.Document, candidates []assertworker.Candidate, answer string) {
+	addAnswer := func(doc l1.Document, answer string) {
 		t.Helper()
 		if err := assertFixtures.Add(llm.CompletionFixture{Tier: llm.TierAssert,
-			Request:  assertworker.RequestFor(doc, candidates, budget.MaxTokens),
+			Request:  assertworker.RequestFor(doc, budget.MaxTokens),
 			Response: llm.Response{JSON: []byte(answer), StopReason: llm.StopEnd, Model: "recorded"}}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	addAnswer(before.Document, nil, `{"assertions":[{"topic":"new","topic_name":"`+topicName+`","position":"`+beforePosition+`"}]}`)
+	addAnswer(before.Document, `{"assertions":[{"topic_name":"`+topicName+`","position":"`+beforePosition+`"}]}`)
 	assertRegistry, err := llm.NewFake(testRepo(src).LLM, assertFixtures)
 	if err != nil {
 		t.Fatal(err)
@@ -654,6 +655,7 @@ func TestATombstoneForACommentRedistillsTheDocumentThatQuotedIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	asserter = asserter.WithJudgments(jevOver(t, assertJev{}, llm.JudgmentConfig{}))
 	if r, err := asserter.Assert(t.Context(), id, "api"); err != nil || r.StancesWritten != 1 {
 		t.Fatalf("Assert(before tombstone) = %+v, %v", r, err)
 	}
@@ -673,8 +675,7 @@ func TestATombstoneForACommentRedistillsTheDocumentThatQuotedIt(t *testing.T) {
 		t.Errorf("L0Refs = %v, want %v less the deleted comment", after.L0Refs, before.L0Refs)
 	}
 	const afterPosition = "Keep the lock in the engine."
-	addAnswer(after.Document, []assertworker.Candidate{{Name: topicName, Current: beforePosition}},
-		`{"assertions":[{"topic":"T1","topic_name":"`+topicName+`","position":"`+afterPosition+`","judgement":"changes"}]}`)
+	addAnswer(after.Document, `{"assertions":[{"topic_name":"`+topicName+`","position":"`+afterPosition+`"}]}`)
 	if r, err := asserter.Assert(t.Context(), id, "api"); err != nil || r.StancesWritten != 1 {
 		t.Fatalf("Assert(after tombstone) = %+v, %v", r, err)
 	}
@@ -687,6 +688,25 @@ func TestATombstoneForACommentRedistillsTheDocumentThatQuotedIt(t *testing.T) {
 	if err != nil || len(history) != 2 || history[1].Supersedes != history[0].ID || history[1].Position != afterPosition {
 		t.Errorf("tombstone re-read history = %+v, %v, want replacement of the document's original stance", history, err)
 	}
+}
+
+// assertJev is the fake Jev the tombstone test asserts with: every candidate
+// topic asks the same question, and no position restates another, so the
+// re-read document's position continues the topic and changes its answer.
+type assertJev struct{}
+
+func (assertJev) Judge(_ context.Context, req llm.JudgmentRequest) (llm.JudgmentResponse, error) {
+	zero, cost := int64(0), 0.0
+	out := llm.JudgmentResponse{ModelVersion: "recorded-v1", Usage: llm.JudgmentUsage{InputTokens: &zero, OutputTokens: &zero, CostUSD: &cost}}
+	for _, q := range req.Questions {
+		yes := q.ID != "same_answer"
+		p := map[string]float64{"yes": 0.96, "no": 0.04}
+		if !yes {
+			p = map[string]float64{"yes": 0.04, "no": 0.96}
+		}
+		out.Answers = append(out.Answers, llm.JudgmentAnswer{ID: q.ID, Yes: &yes, Confidence: 0.96, Probabilities: p})
+	}
+	return out, nil
 }
 
 // The pump turns the change feed into jobs: one per document, whatever a burst
@@ -765,9 +785,10 @@ func TestRunDistillsWhatArrivesAndStopsWhenCancelled(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- distiller.Run(ctx, testConfig(src), distiller.Deps{
-			Pool: pool,
-			LLM:  registry,
-			Pump: distiller.PumpOptions{Quiet: 0, Interval: 100 * time.Millisecond, Batch: l0.MaxLimit},
+			Pool:      pool,
+			LLM:       registry,
+			Judgments: fixtureJev(t).judgments(),
+			Pump:      distiller.PumpOptions{Quiet: 0, Interval: 100 * time.Millisecond, Batch: l0.MaxLimit},
 		})
 	}()
 
@@ -801,7 +822,7 @@ func TestRunDistillsWhatArrivesAndStopsWhenCancelled(t *testing.T) {
 
 // A process with no configuration has no model tiers, so there is nothing to
 // distil and nothing to distil it with. It starts and waits to be stopped,
-// which is what every other service does without a configuration (ADR-0009) —
+// which is what every other service does without a configuration —
 // and it is what makes `hearsay all` on a machine with nothing set up
 // something a person can look at.
 func TestRunWithNoConfigurationIdlesUntilItIsStopped(t *testing.T) {
@@ -972,7 +993,7 @@ func TestADistillationBuiltFromAStaleReadIsNotWritten(t *testing.T) {
 			ingest(t, pool, []connector.Event{late})
 			writeNewerDocument(t, pool, src, docID)
 		})
-	}}, testConfig(src))
+	}}, fixtureJev(t).judgments(), testConfig(src))
 	if err != nil {
 		t.Fatalf("distiller.New() = %v", err)
 	}

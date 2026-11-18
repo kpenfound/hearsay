@@ -16,7 +16,7 @@ import (
 // already deleted.
 var ErrNothingToDelete = errors.New("every selected event is already deleted")
 
-// Deletion is an operator deletion as L0 records it (ADR-0018).
+// Deletion is an operator deletion as L0 records it.
 type Deletion struct {
 	// ID is the deletion's id, `del_` and 32 hex digits.
 	ID string

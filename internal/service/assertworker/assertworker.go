@@ -1,8 +1,10 @@
 // Package assertworker turns L1 documents into L2: entities, topics, stances
-// and the edges between them. It runs on the `assert` model tier (ADR-0005) and
+// and the edges between them. It runs on the `assert` model tier, which
+// extracts a document's positions, and on Jev, whose yes/no judgments decide
+// which topic each continues and whether it changes the position there. It
 // is serialized per scope, because two workers deciding the current stance for
 // one topic at the same time is how supersession chains get corrupted. The
-// queue's serial_key is what enforces that (ADR-0007).
+// queue's serial_key is what enforces that.
 //
 // The distiller enqueues an `assert` job in the transaction that writes a
 // document whose outcome enters the pipeline, and the API one in the
@@ -17,11 +19,12 @@
 // restart. Between startups the [Follower] keeps the tracker and work hierarchy in step
 // with the L0 change feed, and the [CommandFollower] puts each GitHub
 // `/hearsay` comment command, and each deletion of one, on the queue, where
-// it is run under its scope's key and answered with one reply comment
-// (ADR-0022).
+// it is run under its scope's key and answered with one reply comment.
 //
 // What a topic and a stance are is internal/l2's. What this package owns is the
-// prompt, the schema an answer has to satisfy, and the loop.
+// prompt, the schema an answer has to satisfy, the questions Jev is asked, the
+// code that decides from its answers, and the loop. A failed model or Jev call
+// fails the job, and the queue retries it.
 // Health probes are served on :8083 by default; readiness checks the database
 // and schema.
 package assertworker
@@ -48,7 +51,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
-// Name is the subcommand this service runs as (ADR-0003).
+// Name is the subcommand this service runs as.
 const Name = "assert-worker"
 
 // DefaultListen is where assertion worker serves health probes.
@@ -62,14 +65,16 @@ type Deps struct {
 	Listener net.Listener
 	// Listen is the probe address when Listener is nil; empty uses DefaultListen.
 	Listen string
-	// Pool is the database (ADR-0004). The caller owns it and closes it.
+	// Pool is the database. The caller owns it and closes it.
 	Pool *pgxpool.Pool
-	// LLM is the model tier registry (ADR-0005). The worker uses the `assert`
+	// LLM is the model tier registry. The worker uses the `assert`
 	// tier and resolves it at startup. A nil registry is a process given no
 	// configuration: it starts, says there is nothing to assert, and waits to
 	// be stopped.
 	LLM llm.Registry
-	// Judgments is the optional shared process capability, separate from tiers.
+	// Judgments is Jev, which decides which topic each position continues
+	// and whether it changes the position there. Run refuses to start without
+	// it, unless there is no registry and so nothing to assert.
 	Judgments llm.Judgments
 	// Repos reads CODEOWNERS files and the top level of the repositories
 	// `code/` names, for seeding; the binary hands it [Repos] with a reader per
@@ -106,13 +111,14 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 		log.InfoContext(ctx, "assertion worker stopped")
 		return nil
 	}
+	if deps.Judgments == nil {
+		return errNoJev
+	}
 	asserter, err := New(deps.Pool, deps.LLM, cfg, deps.Connectors)
 	if err != nil {
 		return err
 	}
-	if deps.Judgments != nil {
-		asserter.WithJudgments(deps.Judgments)
-	}
+	asserter.WithJudgments(deps.Judgments)
 	if _, err := SeedEntities(ctx, deps.Pool, cfg.Repo, deps.Repos); err != nil {
 		return stopping(ctx, err)
 	}
@@ -235,7 +241,7 @@ func SeedEntities(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, rea
 // `assertion` event no stance was appended from, and for every GitHub command
 // whose reply is still owed, and returns how many it asked for. It is what makes a restart pick up documents written before the
 // worker was deployed and jobs that failed for good. A pending job for a
-// document collapses the enqueue (ADR-0007), so sweeping twice costs a
+// document collapses the enqueue, so sweeping twice costs a
 // statement per document and no model call.
 func Sweep(ctx context.Context, pool *pgxpool.Pool, repo config.Repo) (int, error) {
 	pending, err := l2.New(pool).Unasserted(ctx)

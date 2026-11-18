@@ -163,7 +163,7 @@ type served struct {
 // `next_action` events of the window, in the order they happened
 // ([l0.Store.Timeline]). A non-empty scope keeps the bundles and next actions
 // on that bundle scope only. An audit or next action whose payload cannot be
-// read is skipped: an operator deletion redacts it (ADR-0018).
+// read is skipped: an operator deletion redacts it.
 func SummarizeSessions(events []connector.Event, scope string) (DrillDown, ConflictFlags, NextActions) {
 	var (
 		drill   DrillDown

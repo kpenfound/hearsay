@@ -1,25 +1,23 @@
 # internal/telemetry
 
-Logging, tracing and metrics (ADR-0008).
+Logging, tracing and metrics.
 
 **Belongs here:** the `log/slog` handler construction, the logger carried in
 `context.Context`, and — when they land — the OpenTelemetry trace and metric
 providers, which are no-ops unless an OTLP endpoint is configured. Nothing is
 exported by default: Hearsay must run with no observability stack at all.
 
-**Logs go to stderr, not stdout.** ADR-0008 says stdout, and this is a
-deliberate departure from it: `hearsay version` and `hearsay help` write their
-answers to stdout, and a binary whose logs share that stream cannot be piped
-into anything. Every container runtime collects both streams, so the
-`docker compose logs` story the ADR was protecting is unaffected. The ADR is
-accepted and is not edited; the deviation is recorded here for contributors
-to the shipped Compose and Helm deployments.
+**Logs go to stderr, not stdout.** `hearsay version` and `hearsay help` write
+their answers to stdout, and a binary whose logs share that stream cannot be
+piped into anything. Every container runtime collects both streams, so
+`docker compose logs` is unaffected. This is recorded here for contributors to
+the shipped Compose and Helm deployments.
 
 **How logging works:** the process attaches a logger with `service`, `version`
 and `instance` at startup and puts it in the context. `instance` is the
 hostname, or `HEARSAY_INSTANCE` where that is set. Work that descends adds
 its own fields once with `telemetry.With(ctx, ...)`; everything below inherits
-them. Use the standard field names in ADR-0008 (`scope`, `source`, `job_kind`,
+them. Use the standard field names (`scope`, `source`, `job_kind`,
 `job_id`, `l0_id`, `l1_id`, `topic_id`, `principal`, `provider`, `tier`,
 `model`, `duration_ms`) so lines from different services join up.
 
@@ -33,5 +31,3 @@ them. Use the standard field names in ADR-0008 (`scope`, `source`, `job_kind`,
 - The scrub runs before `text` is written, not before it is logged, so logging a
   pre-scrub value at `debug` in the distiller is the specific mistake to watch
   for.
-
-See [ADR-0008](../../docs/adr/0008-observability-slog-and-opentelemetry.md).

@@ -105,7 +105,8 @@ func TestChatWindowTouchesScopeIsTheSameAfterRecovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			d, err := distiller.New(pool, registry, cfg)
+			// The recorded chat-scope-recovery answer is the team's decision.
+			d, err := distiller.New(pool, registry, newOutcomeJev(t).byDefault("decided").judgments(), cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -222,7 +223,7 @@ func TestWorkTouchesScopeIsTheSameAfterRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := distiller.New(pool, registry, cfg)
+	d, err := distiller.New(pool, registry, fixtureJev(t).judgments(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

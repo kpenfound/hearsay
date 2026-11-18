@@ -109,17 +109,12 @@ func store(t *testing.T, pool *pgxpool.Pool, src string) fixture {
 	return f
 }
 
+// newAsserter is an asserter whose Jev answers by the default rules
+// (newRuleJev): a position continues the topic its question names, and
+// restates a position only word for word.
 func newAsserter(t *testing.T, pool *pgxpool.Pool, src string, fx *llm.Fixtures) *assertworker.Asserter {
 	t.Helper()
-	registry, err := llm.NewFake(llm.Default(), fx)
-	if err != nil {
-		t.Fatalf("building the fake registry: %v", err)
-	}
-	a, err := assertworker.New(pool, registry, testConfig(src))
-	if err != nil {
-		t.Fatalf("assertworker.New() = %v", err)
-	}
-	return a
+	return newJevAsserter(t, pool, src, fx, newRuleJev())
 }
 
 func assertDoc(t *testing.T, a *assertworker.Asserter, docID, scope string) assertworker.Result {
@@ -208,21 +203,17 @@ func TestAnIssueThenAMergedPullRequestIsOneTopicWithTwoStances(t *testing.T) {
 
 // The worker offers a document only the topics, and the positions,
 // everyone who may read it may read now — decided by the documents they rest
-// on, not the access lists the topic and stance were written with. The fake
-// answers only the request recorded here, so a prompt that offered anything
-// else would fail the assertion with no fixture.
+// on, not the access lists the topic and stance were written with. What Jev is
+// shown is what was offered.
 func TestTheWorkerOffersOnlyWhatTheDocumentsReadersMayReadNow(t *testing.T) {
 	private := connector.ACL{{Kind: connector.ACLIdentity, Source: "gh", NativeID: "kyle-node"}}
-	answer := func(topic, judgement string) []byte {
-		return []byte(`{"assertions":[{"topic":"` + topic + `","topic_name":"` + topicName + `","position":"` + prPosition + `"` + judgement + `}]}`)
-	}
 	tests := []struct {
 		name string
 		// hide makes something private after the issue opened its topic.
-		hide       func(t *testing.T, pool *pgxpool.Pool, src string, topic l2.Topic)
-		candidates []assertworker.Candidate
-		response   []byte
-		opened     int
+		hide func(t *testing.T, pool *pgxpool.Pool, src string, topic l2.Topic)
+		// shown is what Jev is shown of the issue's topic, if anything.
+		shown  []shownCandidate
+		opened int
 	}{
 		{
 			name: "a topic whose opening document went private is not offered",
@@ -233,8 +224,7 @@ func TestTheWorkerOffersOnlyWhatTheDocumentsReadersMayReadNow(t *testing.T) {
 					t.Fatal(err)
 				}
 			},
-			response: answer("new", ""),
-			opened:   1,
+			opened: 1,
 		},
 		{
 			name: "a topic whose opening document was retracted is not offered",
@@ -243,8 +233,7 @@ func TestTheWorkerOffersOnlyWhatTheDocumentsReadersMayReadNow(t *testing.T) {
 					t.Fatal(err)
 				}
 			},
-			response: answer("new", ""),
-			opened:   1,
+			opened: 1,
 		},
 		{
 			name: "a position resting on a private document is not shown",
@@ -265,9 +254,8 @@ func TestTheWorkerOffersOnlyWhatTheDocumentsReadersMayReadNow(t *testing.T) {
 					t.Fatal(err)
 				}
 			},
-			candidates: []assertworker.Candidate{{Name: topicName}},
-			response:   answer("T1", `,"judgement":"changes"`),
-			opened:     0,
+			shown:  []shownCandidate{{Label: "T1", Name: topicName}},
+			opened: 0,
 		},
 	}
 	for _, tt := range tests {
@@ -276,14 +264,8 @@ func TestTheWorkerOffersOnlyWhatTheDocumentsReadersMayReadNow(t *testing.T) {
 			src := newSource(t)
 			f := store(t, pool, src)
 			scope := l2.ScopeKey(testRepo(src), src, repo, nil)
-			fx := loadFixtures(t)
-			if err := fx.Add(llm.CompletionFixture{
-				Tier: llm.TierAssert, Request: assertworker.RequestFor(prDoc(t, src), tt.candidates, assertBudget()),
-				Response: llm.Response{JSON: tt.response, StopReason: llm.StopEnd, Model: "recorded"},
-			}); err != nil {
-				t.Fatal(err)
-			}
-			a := newAsserter(t, pool, src, fx)
+			jev := newRuleJev()
+			a := newJevAsserter(t, pool, src, loadFixtures(t), jev)
 			if r := assertDoc(t, a, f.issueID, scope); r.TopicsOpened != 1 {
 				t.Fatalf("Assert(issue) = %+v, want a topic opened", r)
 			}
@@ -292,57 +274,26 @@ func TestTheWorkerOffersOnlyWhatTheDocumentsReadersMayReadNow(t *testing.T) {
 				t.Fatalf("Topics() = %+v, %v, want the issue's", topics, err)
 			}
 			tt.hide(t, pool, src, topics[0])
-			// Were the hidden topic still offered, the pull request's
-			// recorded answer would continue it and open nothing.
+			// Were the hidden topic still offered, Jev would match the pull
+			// request's position to it and nothing would open.
 			if r := assertDoc(t, a, f.prID, scope); r.TopicsOpened != tt.opened || r.StancesWritten != 1 {
 				t.Errorf("Assert(pull request) = %+v, want %d topics opened and one stance", r, tt.opened)
 			}
-			// A judgement against a position the model was not shown is no
-			// comparison, and is not recorded as one.
+			var got []shownCandidate
+			for _, req := range jev.asked("same_question") {
+				got = append(got, shown(t, req)...)
+			}
+			if !slices.Equal(got, tt.shown) {
+				t.Errorf("Jev was shown %+v, want %+v", got, tt.shown)
+			}
+			// A position Jev was not shown is compared to nothing, and the
+			// stance records no comparison.
+			if n := len(jev.asked("same_answer")); n != 0 {
+				t.Errorf("Jev was asked %d stance comparisons, want none", n)
+			}
 			written, err := l2.New(pool).StancesFrom(t.Context(), f.prID)
 			if err != nil || len(written) != 1 || written[0].Judgement != l2.JudgementUnknown {
 				t.Errorf("StancesFrom(pull request) = %+v, %v, want one stance with no judgement", written, err)
-			}
-		})
-	}
-}
-
-func TestExistingTopicRequiresJudgement(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		json string
-	}{
-		{"missing", `{"assertions":[{"topic":"T1","topic_name":"` + topicName + `","position":"` + prPosition + `"}]}`},
-		{"new topic with judgement", `{"assertions":[{"topic":"new","topic_name":"another question","position":"another answer","judgement":"changes"}]}`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool := newPool(t)
-			src := newSource(t)
-			f := store(t, pool, src)
-			fx := llm.NewFixtures()
-			issue := issueDoc(t, src)
-			if err := fx.Add(llm.CompletionFixture{
-				Tier:     llm.TierAssert,
-				Request:  assertworker.RequestFor(issue, nil, assertBudget()),
-				Response: llm.Response{JSON: []byte(`{"assertions":[{"topic":"new","topic_name":"` + topicName + `","position":"` + issuePosition + `"}]}`), StopReason: llm.StopEnd, Model: "recorded"},
-			}); err != nil {
-				t.Fatal(err)
-			}
-			pr := prDoc(t, src)
-			if err := fx.Add(llm.CompletionFixture{
-				Tier:     llm.TierAssert,
-				Request:  assertworker.RequestFor(pr, []assertworker.Candidate{{Name: topicName, Current: issuePosition}}, assertBudget()),
-				Response: llm.Response{JSON: []byte(tc.json), StopReason: llm.StopEnd, Model: "recorded"},
-			}); err != nil {
-				t.Fatal(err)
-			}
-			a := newAsserter(t, pool, src, fx)
-			assertDoc(t, a, f.issueID, src)
-			if _, err := a.Assert(t.Context(), f.prID, src); err == nil || !strings.Contains(err.Error(), "invalid judgement") {
-				t.Errorf("Assert(malformed answer) = %v, want judgement error", err)
-			}
-			if topics, err := l2.New(pool).Topics(t.Context(), src); err != nil || len(topics) != 1 {
-				t.Errorf("Topics() after rejected response = %+v, %v, want only the issue's topic", topics, err)
 			}
 		})
 	}
@@ -367,8 +318,8 @@ func TestAProposedPullRequestBecomesRatifiedWithTheSamePosition(t *testing.T) {
 	}
 	fx := loadFixtures(t)
 	if err := fx.Add(llm.CompletionFixture{
-		Tier: llm.TierAssert, Request: assertworker.RequestFor(proposed, nil, assertBudget()),
-		Response: llm.Response{JSON: []byte(`{"assertions":[{"topic":"new","topic_name":"` + topicName + `","position":"` + prPosition + `"}]}`),
+		Tier: llm.TierAssert, Request: assertworker.RequestFor(proposed, assertBudget()),
+		Response: llm.Response{JSON: []byte(`{"assertions":[{"topic_name":"` + topicName + `","position":"` + prPosition + `"}]}`),
 			StopReason: llm.StopEnd, Model: "recorded"},
 	}); err != nil {
 		t.Fatalf("recording the proposed PR reading: %v", err)
@@ -392,6 +343,9 @@ func TestAProposedPullRequestBecomesRatifiedWithTheSamePosition(t *testing.T) {
 	history, err := graph.StanceHistory(t.Context(), topics[0].ID)
 	if err != nil || len(history) != 2 {
 		t.Fatalf("StanceHistory() = %+v, %v, want both readings", history, err)
+	}
+	if history[1].Judgement != l2.JudgementRestates {
+		t.Errorf("the merged reading is judged %q, want restates", history[1].Judgement)
 	}
 	if history[0].Position != prPosition || history[0].Tier != l2.TierInferred ||
 		history[1].Position != prPosition || history[1].Tier != l2.TierRatified ||
@@ -572,29 +526,29 @@ func TestARedistilledDocumentReplacesItsOwnStance(t *testing.T) {
 	if last := after[len(after)-1]; last.ID != s3.ID {
 		t.Fatalf("the newest stated stance is %q, want the retired restatement %q", last.Position, s3.Position)
 	}
-	foundParaphrase := false
-	for _, st := range after {
-		if st.Position == uncommentedPosition {
-			foundParaphrase = true
-			if st.Judgement != l2.JudgementRestates {
-				t.Errorf("paraphrase judgement = %q, want restates", st.Judgement)
-			}
+	var s4 *l2.Stance
+	for i, st := range after {
+		if st.Position == issuePosition && st.ID != s1.ID {
+			s4 = &after[i]
 		}
 	}
-	if !foundParaphrase {
-		t.Errorf("StanceHistory() = %+v, want the paraphrase", after)
+	if s4 == nil || s4.Judgement != l2.JudgementChanges || s4.Supersedes != s3.ID {
+		t.Errorf("the reading without the comment = %+v, want the issue's proposal again, changing and superseding its restatement %s", s4, s3.ID)
 	}
 
-	// The pull request read again is shown the topic at its current stance,
-	// the merged pull request's own, not at the newest stated. Only the
-	// recording keyed on that candidate exists, so showing the retired
-	// restatement fails the call.
+	// The pull request read again is compared to the topic's current stance,
+	// the merged pull request's own, not to the newest stated: Jev is shown
+	// that position, and finds the same answer.
 	if _, err := pool.Exec(t.Context(),
 		`UPDATE l2_asserted SET distilled_at = distilled_at - interval '1 second' WHERE doc_id = $1`, f.prID); err != nil {
 		t.Fatalf("moving the recorded version: %v", err)
 	}
-	if r := assertDoc(t, a, f.prID, scope); r.Positions != 1 || r.StancesWritten != 0 {
+	jev := newRuleJev()
+	if r := assertDoc(t, newJevAsserter(t, pool, src, loadFixtures(t), jev), f.prID, scope); r.Positions != 1 || r.StancesWritten != 0 {
 		t.Errorf("Assert(the pull request again) = %+v, want its one position, already stored", r)
+	}
+	if compared := jev.asked("same_answer"); len(compared) != 1 || !strings.Contains(compared[0].State, `"Previous":"`+prPosition+`"`) {
+		t.Errorf("stance comparisons = %+v, want one against the merged pull request's position", compared)
 	}
 }
 
@@ -671,7 +625,9 @@ func TestRunReadsWhatIsEnqueuedAndWhatWasMissed(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
-	go func() { done <- assertworker.Run(ctx, testConfig(src), assertworker.Deps{Pool: pool, LLM: registry}) }()
+	go func() {
+		done <- assertworker.Run(ctx, testConfig(src), assertworker.Deps{Pool: pool, LLM: registry, Judgments: newRuleJev().judgments(t)})
+	}()
 
 	waitFor(t, "both documents to be read", func() bool {
 		topics, err := l2.New(pool).Topics(t.Context(), src)
@@ -691,6 +647,19 @@ func TestRunReadsWhatIsEnqueuedAndWhatWasMissed(t *testing.T) {
 		t.Fatal("Run() did not return within 10s of cancellation")
 	}
 	assertOneTopicTwoStances(t, pool, src)
+}
+
+// Jev is required: a worker given model tiers and no Jev does not start.
+func TestRunRefusesWithoutJev(t *testing.T) {
+	pool := newPool(t)
+	registry, err := llm.NewFake(llm.Default(), llm.NewFixtures())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = assertworker.Run(t.Context(), testConfig(newSource(t)), assertworker.Deps{Pool: pool, LLM: registry})
+	if err == nil || !strings.Contains(err.Error(), "needs Jev") {
+		t.Fatalf("Run() without Jev = %v, want a refusal", err)
+	}
 }
 
 // The distiller writes a document and its assert job together, and only for an

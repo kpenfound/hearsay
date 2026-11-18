@@ -27,13 +27,6 @@ func TestRequestForIsValidForEveryKind(t *testing.T) {
 			if err := req.Schema.Validate(); err != nil {
 				t.Fatalf("the %s schema is not one internal/llm can enforce: %v", kind, err)
 			}
-			// The five values are the design's, and the enum a model answers
-			// from is the same list the column accepts.
-			for _, outcome := range l1.OutcomeKinds {
-				if !strings.Contains(string(req.Schema.Definition), `"`+string(outcome)+`"`) {
-					t.Errorf("the %s schema does not offer the outcome kind %q", kind, outcome)
-				}
-			}
 		})
 	}
 }
@@ -55,7 +48,7 @@ func TestSchemaDeclaresOnlyTheFieldsAKindHas(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(string(tt.kind), func(t *testing.T) {
 			schema := distiller.RequestFor(l1.Document{Kind: tt.kind, RawText: "x"}, 0).Schema
-			for _, field := range append([]string{"summary", "outcome", "outcome_kind", "open_questions"}, tt.has...) {
+			for _, field := range append([]string{"summary", "outcome", "open_questions"}, tt.has...) {
 				if !strings.Contains(string(schema.Definition), `"`+field+`"`) {
 					t.Errorf("the %s schema does not ask for %q", tt.kind, field)
 				}
@@ -67,18 +60,16 @@ func TestSchemaDeclaresOnlyTheFieldsAKindHas(t *testing.T) {
 			}
 			// A field the schema does not declare is refused rather than
 			// dropped: additionalProperties is false.
-			answer := `{"summary":"a summary","outcome_kind":"none","` + tt.hasNot[0] + `":"x"}`
+			answer := `{"summary":"a summary","` + tt.hasNot[0] + `":"x"}`
 			if err := schema.ValidateJSON([]byte(answer)); err == nil {
 				t.Errorf("the %s schema accepted a %q it does not declare", tt.kind, tt.hasNot[0])
 			}
-			// And the two required fields are required.
-			for _, missing := range []string{`{"outcome_kind":"none"}`, `{"summary":"a summary"}`} {
-				if err := schema.ValidateJSON([]byte(missing)); err == nil {
-					t.Errorf("the %s schema accepted %s", tt.kind, missing)
-				}
+			// The summary is required.
+			if err := schema.ValidateJSON([]byte(`{"outcome":"x"}`)); err == nil {
+				t.Errorf("the %s schema accepted an answer with no summary", tt.kind)
 			}
-			if err := schema.ValidateJSON([]byte(`{"summary":"a summary","outcome_kind":"merged"}`)); err == nil {
-				t.Errorf("the %s schema accepted an outcome kind that is not one of the five", tt.kind)
+			if err := schema.ValidateJSON([]byte(`{"summary":"a summary"}`)); err != nil {
+				t.Errorf("the %s schema refused a summary alone: %v", tt.kind, err)
 			}
 		})
 	}

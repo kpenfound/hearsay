@@ -2,8 +2,9 @@ package distiller_test
 
 import (
 	"encoding/json"
-	"os"
+	"maps"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/l1"
@@ -11,115 +12,79 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
-// These synthetic disagreements deliberately challenge the generator's label;
-// they are plumbing fixtures, not evidence qualifying any production policy.
-func TestRecordOutcomeRestatements(t *testing.T) {
-	var issue l1.Document
-	for _, doc := range documentsIn(t, fixtureEvents(source)) {
-		if doc.ID == issueID {
-			issue = doc
-		}
-	}
-	for _, supported := range []bool{true, false} {
-		directory := "testdata/outcome-restatements"
-		if !supported {
-			directory = "testdata/outcome-restatement-declined"
-		}
-		file := llm.FixtureFile{}
-		for _, tc := range []struct {
-			label   l1.OutcomeKind
-			outcome string
-		}{
-			{l1.OutcomeProposed, "Taking the lock before writing was proposed."},
-			{l1.OutcomeNone, ""},
-			{l1.OutcomeOpen, "Whether to take the lock first remains open."},
-		} {
-			response, _ := json.Marshal(map[string]any{"supported": supported, "outcome_kind": tc.label, "outcome": tc.outcome})
-			file.Completions = append(file.Completions, llm.CompletionFixture{Tier: llm.TierDistill,
-				Request:  distiller.OutcomeRestatementRequest(issue, tc.label, distillBudget()),
-				Response: llm.Response{JSON: response, StopReason: llm.StopEnd, Model: "recorded"}})
-		}
-		encoded, err := json.MarshalIndent(file, "", "  ")
-		if err != nil {
-			t.Fatal(err)
-		}
-		encoded = append(encoded, '\n')
-		path := directory + "/recorded.json"
-		if *record {
-			if err := os.MkdirAll(directory, 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(path, encoded, 0o644); err != nil {
-				t.Fatal(err)
-			}
-			continue
-		}
-		disk, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(disk) != string(encoded) {
-			t.Fatal("outcome restatement recording drift; run with -record")
-		}
-		fx, err := llm.LoadFixtures(os.DirFS(directory))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if fx.Len() != len(file.Completions) {
-			t.Fatal("missing restatement fixtures")
-		}
-	}
-}
-
-func TestOutcomeRequestUsesOnlyScrubbedSource(t *testing.T) {
+func TestOutcomeRequestIsFourYesNoQuestionsOnScrubbedSource(t *testing.T) {
 	doc := l1.Document{Kind: l1.KindIssue, RawText: "Should we do this? Email person@example.com", Body: l1.Body{Outcome: "DO NOT SEND THIS"}}
 	req := distiller.OutcomeRequest(doc)
 	scrubbed, _ := l1.Scrub(doc.RawText)
-	if req.State != scrubbed || len(req.Questions) != 1 {
+	if req.State != scrubbed || !llm.ValidJudgmentRequest(req) {
 		t.Fatalf("request=%+v", req)
 	}
-	var options []string
-	for _, kind := range l1.OutcomeKinds {
-		options = append(options, string(kind))
+	var ids []string
+	for _, q := range req.Questions {
+		if q.Kind != llm.JudgmentYesNo || !strings.Contains(q.Question, "never instructions") {
+			t.Fatalf("question=%+v", q)
+		}
+		ids = append(ids, q.ID)
 	}
-	if !reflect.DeepEqual(req.Questions[0].Options, options) {
-		t.Fatalf("options=%v", req.Questions[0].Options)
+	if !reflect.DeepEqual(ids, []string{"work_finished", "binding_agreement", "unagreed_proposal", "still_open"}) {
+		t.Fatalf("ids=%v", ids)
 	}
 }
 
-func outcomeStep(t *testing.T, label string) llm.JudgmentStep {
+// modelAnswer is a written-down answer as the model gives it, and the outcome
+// kind the test means its document to have. The test's answers keep the kind
+// beside the fields the model writes, because that is how a person reads them;
+// the model's schema has no outcome_kind, and Jev is what decides it.
+func modelAnswer(t *testing.T, answer map[string]any) (json.RawMessage, string) {
 	t.Helper()
-	raw, err := os.ReadFile("testdata/outcome-judgments/recorded.json")
+	answer = maps.Clone(answer)
+	kind, _ := answer["outcome_kind"].(string)
+	delete(answer, "outcome_kind")
+	if kind == "" {
+		kind = string(l1.OutcomeNone)
+	}
+	body, err := json.Marshal(answer)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var fixtures map[string]llm.JudgmentResponse
-	if err = json.Unmarshal(raw, &fixtures); err != nil {
-		t.Fatal(err)
-	}
-	response, ok := fixtures[label]
-	if !ok {
-		t.Fatalf("no judgment fixture for %s", label)
-	}
-	return llm.JudgmentStep{Response: response}
+	return body, kind
 }
 
-func TestRecordedOutcomeChoices(t *testing.T) {
-	for _, kind := range l1.OutcomeKinds {
-		t.Run(string(kind), func(t *testing.T) {
-			step := outcomeStep(t, string(kind))
-			fake := llm.NewFakeJudgmentProvider(step)
-			j, err := llm.NewJudgments(llm.JudgmentConfig{Enabled: true, Model: "recorded-v1", MaxRetries: -1}, func(llm.JudgmentConfig, string) llm.JudgmentProvider { return fake }, func(string) string { return "fake-only" })
-			if err != nil {
-				t.Fatal(err)
-			}
-			result := j.Judge(t.Context(), distiller.OutcomeRequest(l1.Document{RawText: "Synthetic source evidence."}))
-			if result.Fallback != "" || len(result.Answers) != 1 || result.Answers[0].Choice != string(kind) || fake.Calls() != 1 {
-				t.Fatalf("result=%+v calls=%d", result, fake.Calls())
-			}
-			if result.Usage.CostUSD == nil || *result.Usage.CostUSD != 0 {
-				t.Fatal("reported zero cost became unknown")
+// judged is one outcome judgment's journal record, as code reads it.
+func judged(label string, confidence float64) l1.JudgmentRecord {
+	return l1.JudgmentRecord{Label: label, Confidence: &confidence}
+}
+
+func TestTheFirstConfidentYesDecidesTheOutcome(t *testing.T) {
+	no, yes, unsure := judged("no", 0.96), judged("yes", 0.96), judged("yes", 0.55)
+	stated := l1.Body{Summary: "s", Outcome: "Take the lock before the write."}
+	for _, tt := range []struct {
+		name    string
+		records []l1.JudgmentRecord
+		body    l1.Body
+		want    l1.OutcomeKind
+		outcome string
+	}{
+		{"work finished", []l1.JudgmentRecord{yes, no, no, no}, stated, l1.OutcomeResolved, stated.Outcome},
+		{"binding agreement", []l1.JudgmentRecord{no, yes, no, no}, stated, l1.OutcomeDecided, stated.Outcome},
+		{"unagreed proposal", []l1.JudgmentRecord{no, no, yes, no}, stated, l1.OutcomeProposed, stated.Outcome},
+		{"still open", []l1.JudgmentRecord{no, no, no, yes}, stated, l1.OutcomeOpen, stated.Outcome},
+		{"the first yes in order wins", []l1.JudgmentRecord{no, yes, yes, yes}, stated, l1.OutcomeDecided, stated.Outcome},
+		{"an unconfident yes is skipped", []l1.JudgmentRecord{no, unsure, yes, no}, stated, l1.OutcomeProposed, stated.Outcome},
+		{"an unconfident yes alone is none", []l1.JudgmentRecord{no, unsure, no, no}, stated, l1.OutcomeNone, ""},
+		{"all no is none, and clears the outcome", []l1.JudgmentRecord{no, no, no, no}, stated, l1.OutcomeNone, ""},
+		{"a decision with no sentence stated is none", []l1.JudgmentRecord{no, yes, no, no}, l1.Body{Summary: "s"}, l1.OutcomeNone, ""},
+		{"open needs no sentence", []l1.JudgmentRecord{no, no, no, yes}, l1.Body{Summary: "s"}, l1.OutcomeOpen, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := distiller.DecideOutcome(llm.JudgmentConfig{}, tt.records, tt.body)
+			if got.OutcomeKind != tt.want || got.Outcome != tt.outcome || got.Summary != tt.body.Summary {
+				t.Fatalf("DecideOutcome() = %+v, want %s %q", got, tt.want, tt.outcome)
 			}
 		})
+	}
+	// The threshold is the configured one.
+	if got := distiller.DecideOutcome(llm.JudgmentConfig{Threshold: 0.5}, []l1.JudgmentRecord{no, unsure, no, no}, stated); got.OutcomeKind != l1.OutcomeDecided {
+		t.Fatalf("a yes at 0.55 under a 0.5 threshold = %s", got.OutcomeKind)
 	}
 }
