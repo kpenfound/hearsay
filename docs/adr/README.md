@@ -12,7 +12,7 @@ The format, numbering and supersession rules are in [ADR-0001](0001-record-archi
 | [0002](0002-go-for-language-and-runtime.md) | Go for language and runtime | accepted; version clause superseded by [0010](0010-go-version-floor-tracks-the-current-release.md) | 2026-09-08 |
 | [0003](0003-one-binary-four-service-subcommands.md) | One binary, four service subcommands | accepted | 2026-09-08 |
 | [0004](0004-one-postgres-for-all-four-layers.md) | One Postgres for all four layers | accepted | 2026-09-08 |
-| [0005](0005-llm-provider-abstraction-with-three-model-tiers.md) | LLM provider abstraction with three model tiers | accepted; the three tiers are unchanged, but "reads have no model in the loop" no longer holds — `embed` is called on the read path too, once per search, to turn a query into a vector ([l1](../../internal/l1/README.md)) | 2026-09-08 |
+| [0005](0005-llm-provider-abstraction-with-three-model-tiers.md) | LLM provider abstraction with three model tiers | accepted; the three tiers are unchanged, but "reads have no model in the loop" no longer holds — `embed` is called on the read path too, once per search, to turn a query into a vector ([l1](../../internal/l1/README.md)); a second completion provider, `claude-sbx`, is recorded in [0032](0032-a-second-completion-provider-runs-claude-code-in-a-sandbox-per-call.md) | 2026-09-08 |
 | [0006](0006-schema-migrations-with-goose.md) | Schema migrations with goose, applied by `hearsay migrate` | accepted | 2026-09-08 |
 | [0007](0007-postgres-backed-job-queue.md) | Postgres-backed job queue with per-key serialization | accepted; at-least-once clause superseded by [0011](0011-a-retry-superseded-by-a-pending-job-is-done.md) for a retry or reclaim whose target is already pending; duplicate-pending-enqueue clause superseded by [0027](0027-distill-jobs-are-debounced-in-the-queue.md) for debounced requests only | 2026-09-08 |
 | [0008](0008-observability-slog-and-opentelemetry.md) | Observability: `log/slog` and OpenTelemetry | accepted | 2026-09-08 |
@@ -39,6 +39,7 @@ The format, numbering and supersession rules are in [ADR-0001](0001-record-archi
 | [0029](0029-an-access-list-may-defer-to-other-sources-containers.md) | An access list may defer to other sources' containers | accepted | 2026-10-16 |
 | [0030](0030-a-work-updates-source-declares-entities-at-runtime.md) | A work-updates source declares entities at runtime | accepted | 2026-10-16 |
 | [0031](0031-typed-judgments-are-an-optional-write-path-capability.md) | Typed judgments are an optional write-path capability | accepted | 2026-10-17 |
+| [0032](0032-a-second-completion-provider-runs-claude-code-in-a-sandbox-per-call.md) | A second completion provider runs Claude Code in a sandbox per call | accepted | 2026-11-18 |
 
 ## Names other work depends on
 

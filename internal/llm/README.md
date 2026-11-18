@@ -22,9 +22,31 @@ deliberately and checks it in.
 config.Repo.LLM  ->  llm.NewRegistry(cfg, providers.All())  ->  Completer / Embedder
                           |                                          |
                           |  retries, backoff, Retry-After,          |
-                          |  per-attempt timeout, token accounting   |
-                          `------------- anthropic.New() ------------'
+                          |  per-attempt timeout, token and cost     |
+                          |  accounting                              |
+                          `-- anthropic.New() / claudesbx.New() ----'
 ```
+
+Two adapters ship, both completion-only, and neither has an embedding model:
+
+- **`anthropic`** calls the Messages API with an API key. It is the shipped
+  default, and the only one the Compose and Helm deployments can use.
+- **`claudesbx`** (`claude-sbx`) answers through the owner's Claude Code login,
+  with no API key: each call is agentcore's `Runner.Complete`, one tool-free
+  `claude -p` turn in a Docker Sandbox created for that call, so ingested text
+  never reaches the owner's files
+  ([ADR-0032](../../docs/adr/0032-a-second-completion-provider-runs-claude-code-in-a-sandbox-per-call.md)).
+  It is host-only, and building a tier runs agentcore's `CheckSandbox`, which
+  fails registry construction naming the tier, the provider and `sbx` where
+  `sbx` does not answer. Its system prompt replaces the CLI's; a schema goes
+  through `--json-schema` and comes back as `structured_output`; `max_tokens`
+  is the CLI's output-token budget (`CLAUDE_CODE_MAX_OUTPUT_TOKENS`). A turn that
+  ends without a structured answer or without text is a non-retryable
+  `*llm.Error`, never an empty success, because agentcore does not say whether it
+  was truncated or refused. The subscription's usage limit is a retryable
+  `*llm.Error` with `RetryAfter` set to the time until the reset. Its package
+  comment says the rest. The user-facing description is in
+  [docs/config.md](../../docs/config.md#the-claude-sbx-provider).
 
 - **The adapter is thin.** It makes one call, translates in each direction, and
   says whether trying again could work by returning an `*llm.Error`. Everything
@@ -62,6 +84,25 @@ config.Repo.LLM  ->  llm.NewRegistry(cfg, providers.All())  ->  Completer / Embe
   order, would refuse an answer that is exactly right, permanently, because a
   schema violation is not retried. Anything new that compares JSON here uses the
   same function; the fixture key does.
+- **A provider says what it cannot take, and the registry refuses the rest.**
+  `Capabilities.NoTemperature`, `NoBaseURL` and `NoAPIKeyEnv` are checked in
+  `CanServe`, which `hearsay config validate` (`buildTier`) and `NewRegistry`
+  both call, so the two cannot disagree. Only what a configuration *sets* is
+  refused; a default never is. `claude-sbx` sets all three, so a tier of it with
+  a `temperature`, a `base_url` or an `api_key_env` is an error naming the tier
+  and the setting. `Capabilities.DefaultTimeout` is a provider's own per-attempt
+  default, applied before `withDefaults`; `claude-sbx` takes 105s, because a
+  call starts a sandbox first, and a configured `timeout` always wins.
+- **Reported cost is provider-neutral, and never derived.** A provider that
+  knows what a call cost puts it in `Response.ReportedUsage.CostUSD`, and the
+  registry adds it to `Usage.CostUSD`, per tier, provider and model, exactly as
+  reported. `Usage.CostReported` is what tells a **reported zero** (true, with a
+  `CostUSD` of 0) from **no cost reported** (false). `anthropic` reports none, so
+  its rows show `CostReported: false` and its token counts are what they were. A
+  negative, NaN or infinite figure is not a usable report and counts as none. No
+  price is ever computed from tokens. For `claude-sbx` the figure is the CLI's
+  estimate of what the call would have cost at API prices, not what a
+  subscription costs.
 - **`Embedder` is the interface ADR-0005 fixes, and it reports no tokens.**
   An adapter whose provider counts them implements `UsageEmbedder` as well, and
   the registry accounts through that; an adapter that does not is counted with
@@ -83,8 +124,9 @@ config.Repo.LLM  ->  llm.NewRegistry(cfg, providers.All())  ->  Completer / Embe
   the schema says `outcome_kind`, so it is named, and bounded to the size of an
   identifier (`boundedField`).
 - **There is no metric emission yet.** `Registry.Usage` is the read, tagged by
-  tier, provider and model, and it is where ADR-0008's metrics come from once
-  `internal/telemetry` has a meter to report through.
+  tier, provider and model, with calls, failures, tokens and any reported cost,
+  and it is where ADR-0008's metrics come from once `internal/telemetry` has a
+  meter to report through.
 - **A caller owes this package a deadline.** A provider's `Retry-After` is
   honoured as asked and is not capped, and the per-attempt timeout does not bound
   the wait between attempts, so a provider or gateway answering

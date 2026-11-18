@@ -110,7 +110,8 @@ database of your own, `go test -tags=integration ./...` runs them. Two things
 need the network once — the Go toolchain, on a machine whose Go is older than
 the release `go.mod` asks for, and the dependencies (the configuration parser
 `go.yaml.in/yaml/v3` per ADR-0009, pgx and goose per ADR-0004 and ADR-0006,
-and `github.com/gorilla/websocket` for Discord and Slack connections)
+`github.com/gorilla/websocket` for Discord and Slack connections, and
+`github.com/kpenfound/agentcore` for the `claude-sbx` provider per ADR-0032)
 until they are in the module cache.
 
 Running a service locally:
@@ -396,8 +397,8 @@ One binary, four services, layers underneath (ADR-0003).
 Every directory in that table has a README saying what belongs in it and what
 does not. Read the one for the package you are about to touch; it is short, and
 it usually names the thing you were about to do wrong. Subpackages — the four
-under `internal/service`, `internal/llm/anthropic` and `internal/llm/providers`,
-the Jev adapter and the per-source connectors — document themselves in their
+under `internal/service`, `internal/llm/anthropic`, `internal/llm/claudesbx` and
+`internal/llm/providers`, the Jev adapter and the per-source connectors — document themselves in their
 package comments and inherit the parent's README. The distiller also has its
 own README for segmentation and optional outcome rules.
 

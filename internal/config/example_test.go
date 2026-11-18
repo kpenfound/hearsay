@@ -10,6 +10,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
@@ -62,6 +63,34 @@ func TestDocsExampleLoadsBothWays(t *testing.T) {
 	}
 	if !strings.HasPrefix(fromFile.Digest, "sha256:") {
 		t.Errorf("digest = %q, want it to name the algorithm", fromFile.Digest)
+	}
+}
+
+// TestDocsClaudeSbxExampleLoads loads the claude-sbx example in docs/config.md,
+// the way a service does, and checks it comes out as it says: both completion
+// tiers on claude-sbx, with the model and budget written, and a timeout the
+// tier sets itself.
+func TestDocsClaudeSbxExampleLoads(t *testing.T) {
+	root := writeFiles(t, filesUnder(t, docExamples(t), "claude-sbx"))
+	repo, err := config.Load(filepath.Join(root, "hearsay.yaml"))
+	if err != nil {
+		t.Fatalf("Load(the claude-sbx example) = %v, want no error", err)
+	}
+	for _, tier := range llm.CompletionTiers {
+		tc, ok := repo.LLM.Tier(tier)
+		if !ok {
+			t.Fatalf("the %s tier is not configured", tier)
+		}
+		if tc.Provider != llm.ProviderClaudeSbx || tc.Model == "" {
+			t.Errorf("the %s tier = %+v, want claude-sbx and the model the example names", tier, tc)
+		}
+		if tc.Temperature != nil || tc.BaseURL != "" || tc.APIKeyEnv != "" {
+			t.Errorf("the %s tier = %+v, want none of the settings claude-sbx refuses", tier, tc)
+		}
+	}
+	distill, _ := repo.LLM.Tier(llm.TierDistill)
+	if distill.MaxTokens != 4096 {
+		t.Errorf("distill max_tokens = %d, want the 4096 the example writes", distill.MaxTokens)
 	}
 }
 

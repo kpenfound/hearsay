@@ -135,6 +135,16 @@ readable by others (`chmod -R a+rX config`). Keep secrets out of it: it is
 mounted into every service, and a configuration names environment variables,
 never their values.
 
+**The `claude-sbx` model provider is not available in these deployments.** It
+answers a tier through Claude Code in a Docker Sandbox (`sbx`) with the machine
+owner's stored login ([docs/config.md](config.md#the-claude-sbx-provider)), so it
+works only where Hearsay's processes run directly on a host that has `sbx` and
+that login. A container has neither and cannot reach a sandbox host, so neither
+the Compose stack nor the Helm chart can use it: a tier set to `claude-sbx`
+there makes `distiller`, `assert-worker` and `api` refuse to start. These
+deployments ship, and expect, the default `anthropic` provider and its
+`ANTHROPIC_API_KEY`.
+
 ## The env file
 
 `.env` sits beside `compose.yaml`. Compose reads it twice: to fill in the
@@ -594,7 +604,9 @@ Set exactly one of:
 | `config.volume` | Any volume source, such as `configMap: {name: team-config}` for a ConfigMap you manage, or a PersistentVolumeClaim. |
 
 Whichever it is, it is mounted read-only at `/etc/hearsay`. Keep secrets out of
-it, for the same reason as with Compose.
+it, for the same reason as with Compose. The `claude-sbx` provider is not
+available in the chart either (see [Configuration](#configuration) above): the
+pods have no `sbx` and no stored login.
 
 ### Migrations
 

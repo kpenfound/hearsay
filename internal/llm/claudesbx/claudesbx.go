@@ -32,6 +32,11 @@
 // No error this adapter returns carries a prompt, an answer or agentcore's
 // result text: an error string reaches a log line, and a prompt in a log line is
 // L1 text in a log line (ADR-0008).
+//
+// docs/config.md documents the provider for operators, and ADR-0032
+// (docs/adr/0032-a-second-completion-provider-runs-claude-code-in-a-sandbox-per-call.md)
+// records why it exists and what it costs: startup time on every call,
+// subscription usage limits, no temperature, and host-only.
 package claudesbx
 
 import (
