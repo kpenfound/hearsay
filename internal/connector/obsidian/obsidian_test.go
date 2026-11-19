@@ -167,6 +167,31 @@ func TestACLPermissionRevision(t *testing.T) {
 	}
 }
 
+// Vault folders are named like any other folder, spaces included; a configured
+// "Dagger Content" kept the connectors service from starting.
+func TestAFolderWithASpaceIsIngested(t *testing.T) {
+	root := t.TempDir()
+	put(t, root, "Side Projects/Hearsay.md", "# Hearsay")
+	put(t, root, "Side Projects/Deep Dive/notes.md", "# Notes")
+	src := source(root)
+	src.Containers = []string{"Side Projects"}
+	c, err := obsidian.New(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close(t.Context())
+	rec := &connector.Recorder{}
+	walk(t, c, gate(src, c, rec), "")
+	titles := []string{}
+	for _, ev := range rec.Events() {
+		titles = append(titles, ev.Payload.Title)
+	}
+	slices.Sort(titles)
+	if !slices.Equal(titles, []string{"Hearsay.md", "notes.md"}) {
+		t.Fatalf("ingested %v, want both notes under the spaced folder", titles)
+	}
+}
+
 func TestInvalidConfigurationAndPathSafety(t *testing.T) {
 	root := t.TempDir()
 	put(t, root, "Notes/a.md", "a")
@@ -185,6 +210,7 @@ func TestInvalidConfigurationAndPathSafety(t *testing.T) {
 		{"parent traversal", func(s *connector.SourceConfig) { s.Containers = []string{"../other"} }},
 		{"absolute container", func(s *connector.SourceConfig) { s.Containers = []string{"/other"} }},
 		{"wildcard", func(s *connector.SourceConfig) { s.Containers = []string{"*"} }},
+		{"control character", func(s *connector.SourceConfig) { s.Containers = []string{"Notes\tx"} }},
 		{"escaping symlink", func(s *connector.SourceConfig) { s.Containers = []string{"link"} }},
 		{"missing folder", func(s *connector.SourceConfig) { s.Containers = []string{"missing"} }},
 		{"no folders", func(s *connector.SourceConfig) { s.Containers = nil }},

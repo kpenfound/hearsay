@@ -130,7 +130,7 @@ func New(src connector.SourceConfig) (*Connector, error) {
 }
 
 func validFolder(f string) error {
-	if f == "" || f == "." || f == "*" || path.IsAbs(f) || path.Clean(f) != f || strings.Contains(f, "\\") || strings.Contains(f, "@") || strings.ContainsFunc(f, func(r rune) bool { return r <= 32 || r == 127 }) {
+	if f == "" || f == "." || f == "*" || path.IsAbs(f) || path.Clean(f) != f || strings.Contains(f, "\\") || strings.Contains(f, "@") || strings.ContainsFunc(f, func(r rune) bool { return r < 32 || r == 127 }) {
 		return errors.New("must be a clean vault-relative folder path")
 	}
 	for _, part := range strings.Split(f, "/") {

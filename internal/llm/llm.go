@@ -28,6 +28,16 @@ type Registry interface {
 	// in internal/telemetry lands, it is also where those metrics
 	// come from.
 	Usage() []Usage
+	// Close releases what the tiers' providers hold between calls, such as the
+	// sandboxes claude-sbx keeps warm, and must be called when the process is
+	// done with the registry. A completer called after Close fails.
+	Close(ctx context.Context) error
+}
+
+// Closer is a provider's client that holds something between calls. The
+// registry closes every client that is one in [Registry.Close].
+type Closer interface {
+	Close(ctx context.Context) error
 }
 
 // Completer turns a prompt into text, or into JSON satisfying a schema.

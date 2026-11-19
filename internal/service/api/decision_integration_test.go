@@ -56,6 +56,7 @@ type tiers struct {
 func (r *tiers) Completer(tier llm.Tier) (llm.Completer, error) { return tierOf{r, tier}, nil }
 func (r *tiers) Embedder() (llm.Embedder, error)                { return nil, llm.ErrTierNotConfigured }
 func (r *tiers) Usage() []llm.Usage                             { return nil }
+func (r *tiers) Close(context.Context) error                    { return nil }
 
 type tierOf struct {
 	*tiers

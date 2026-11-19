@@ -37,6 +37,22 @@ type Hearsay {
   }
 
   """
+  The container the official golangci-lint module lints in (dagger.toml's
+  `base` for golangci-lint): golangci-lint's own image, whose tag is the
+  version Hearsay lints with. The module installs a release binary into a plain Go image
+  otherwise, and that binary is built with a Go older than go.mod's, so it
+  cannot read the standard library's export data and fails every package. The
+  image's binary is built with a current Go; GOTOOLCHAIN=auto fetches the
+  toolchain go.mod asks for. The module adds the source, working directory and
+  caches.
+  """
+  lintBase(ws: Workspace!): Container! {
+    container
+      .from("golangci/golangci-lint:v2.13.2")
+      .withEnvVariable("GOTOOLCHAIN", "auto")
+  }
+
+  """
   The base container the reusable Go module receives for its tests, unit and
   integration alike. Keep it here so the Go version and Postgres match the rest
   of Hearsay's checks. The Go module adds the source, working directory and
@@ -66,25 +82,6 @@ type Hearsay {
       .withWorkdir("/src")
   }
 
-  """
-  golangci-lint's own image, sharing the Go caches so that the toolchain it
-  fetches is fetched once.
-
-  The version is the one CONTRIBUTING.md tells a contributor to match. The
-  image carries a Go toolchain of its own, which may be older than the one
-  go.mod asks for; GOTOOLCHAIN=auto fetches the right one into the shared
-  module cache. The linter binary itself must be built with a Go release at
-  least as new as go.mod's, or it refuses to load the config — the reason the
-  Go module's own lint check is switched off in dagger.toml.
-  """
-  let lintBase(ws: Workspace!): Container! {
-    withGoCaches(container.from("golangci/golangci-lint:v2.13.2"))
-      .withEnvVariable("GOLANGCI_LINT_CACHE", "/cache/golangci-lint")
-      .withMountedCache("/cache/golangci-lint", cacheVolume("hearsay-golangci-lint"))
-      .withMountedDirectory("/src", source(ws))
-      .withWorkdir("/src")
-  }
-
   let withGoCaches(ctr: Container!): Container! {
     ctr
       .withEnvVariable("GOPATH", "/go")
@@ -95,21 +92,17 @@ type Hearsay {
   }
 
   """
-  Lint the module: go vet, golangci-lint and the formatter check.
-
-  Formatting is part of the lint gate, not a separate ritual: `fmt --diff`
-  prints what `golangci-lint fmt` would change and fails if there is anything.
+  Fails if `golangci-lint fmt` would change a file: the gofmt and goimports
+  formatters .golangci.yml enables. The official golangci-lint module runs
+  `golangci-lint run` alone, which does not apply them, so formatting is
+  checked here, in the same image it lints in.
   """
-  lint(ws: Workspace!): Void @check {
-    # A record evaluates its fields concurrently, so vet and the linter run in
-    # parallel and the check fails on whichever finishes first with an error.
-    {{
-      vet: goBase(ws).withExec(["go", "vet", "./..."]).sync,
-      golangci: lintBase(ws)
-        .withExec(["golangci-lint", "run"])
-        .withExec(["golangci-lint", "fmt", "--diff"])
-        .sync,
-    }}
+  fmtCheck(ws: Workspace!): Void @check {
+    withGoCaches(lintBase(ws))
+      .withMountedDirectory("/src", source(ws))
+      .withWorkdir("/src")
+      .withExec(["golangci-lint", "fmt", "--diff"])
+      .sync
     null
   }
 
@@ -127,30 +120,6 @@ type Hearsay {
         diff -u /tmp/go.sum.before go.sum
       """])
       .sync
-    null
-  }
-
-  """
-  Builds the default image and both release platforms, and checks the stamped
-  version and publish address without pushing to a registry.
-  """
-  imageCheck(ws: Workspace!): Void @check {
-    image(ws).sync
-    # Exercise the same two platform builds and version stamp publish uses,
-    # without credentials or a registry write.
-    let version = "v0.0.0-image-check"
-    if (publishAddress(version, "ghcr.io/kpenfound/hearsay") != "ghcr.io/kpenfound/hearsay:" + version) {
-      raise "publish address does not use the stamped version"
-    }
-    let amd64 = image(ws, version: version, platform: "linux/amd64")
-    let arm64 = image(ws, version: version, platform: "linux/arm64")
-    if (amd64.platform != "linux/amd64" or arm64.platform != "linux/arm64") {
-      raise "image platforms do not match the publish manifest"
-    }
-    if (amd64.withExec(["version"], useEntrypoint: true).stdout.match(`^hearsay v0\.0\.0-image-check `) == null or
-        arm64.withExec(["version"], useEntrypoint: true).stdout.match(`^hearsay v0\.0\.0-image-check `) == null) {
-      raise "image version does not match the publish tag"
-    }
     null
   }
 

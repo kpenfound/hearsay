@@ -1419,14 +1419,16 @@ because a configuration repository is checked into git.
 `claude-sbx` answers a tier through the Claude Code the machine's owner is
 already logged in to, with no API key. Each call is one tool-free
 `claude -p` turn ([headless mode](https://code.claude.com/docs/en/headless))
-inside its own Docker Sandbox (`sbx`), so the Slack and GitHub text
+inside a Docker Sandbox (`sbx`), so the Slack and GitHub text
 being distilled never reaches the owner's files, and the sandbox's proxy supplies
-the stored login. It is chosen per tier, on `distill` and `assert`, and the
+the stored login. A tier keeps up to four sandboxes and reuses them, each call
+in a fresh directory and session of its own, so `sbx create` runs a few times
+per process rather than once per call. It is chosen per tier, on `distill` and `assert`, and the
 shipped default stays `anthropic`.
 
 <!-- example: claude-sbx/hearsay.yaml -->
 ```yaml
-# Both completion tiers answered by the owner's Claude Code, in a sandbox per call.
+# Both completion tiers answered by the owner's Claude Code, in reused sandboxes.
 sources:
   - id: github
     type: github
@@ -1472,10 +1474,17 @@ its default, as for any provider.
 - **`max_tokens` is the output-token budget.** The tier's value, or the call
   site's own where it asks for a bigger one, is handed to the sandboxed CLI as
   `CLAUDE_CODE_MAX_OUTPUT_TOKENS`. It is never refused or dropped.
-- **Timeout.** One attempt covers starting the sandbox and the turn, so the
-  default is **105s** rather than 60s, inside the two minutes the distiller and
-  the assertion worker bound a call to. It is an estimate: nobody has timed a
-  real start. A configured `timeout` always wins.
+- **Timeout.** An attempt that has to start a sandbox covers the start and the
+  turn, so the default is **105s** rather than 60s, inside the two minutes the
+  distiller and the assertion worker bound a call to. It is an estimate: nobody
+  has timed a real start. A configured `timeout` always wins.
+- **Sandboxes are reused.** Each `sbx create` asks Docker Hub for the claude
+  kit, and an account on Docker Personal is rate-limited, so a sandbox per call
+  spent the limit within an hour of a first backfill. A tier keeps up to four
+  warm (the distiller's concurrency; the assertion worker's calls are
+  serialized and use one), discards one a call broke, and removes them all
+  when the process stops. A create Docker Hub refuses for its rate limit
+  fails as a rate limit and waits ten minutes before it is tried again.
 - **Usage limits.** When the subscription's usage limit is hit, the attempt
   fails as a rate limit and is retried when the CLI says the limit resets,
   however far away that is. Only the caller's own deadline ends the wait — the

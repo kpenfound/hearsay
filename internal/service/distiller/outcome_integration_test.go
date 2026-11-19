@@ -5,6 +5,7 @@ package distiller_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -198,7 +199,8 @@ func TestAJournalRefusalFailsTheJob(t *testing.T) {
 				case "observation failure":
 					sql = `CREATE FUNCTION refuse_judgment() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected'; END $$; CREATE TRIGGER refuse BEFORE INSERT ON pipeline_observations FOR EACH ROW EXECUTE FUNCTION refuse_judgment()`
 				case "statement timeout":
-					sql = `CREATE FUNCTION refuse_judgment() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(1); RETURN NEW; END $$; CREATE TRIGGER refuse BEFORE UPDATE ON judgment_journal FOR EACH ROW EXECUTE FUNCTION refuse_judgment()`
+					// Longer than the journal's statement bound, so the write is cut off.
+					sql = fmt.Sprintf(`CREATE FUNCTION refuse_judgment() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(%g); RETURN NEW; END $$; CREATE TRIGGER refuse BEFORE UPDATE ON judgment_journal FOR EACH ROW EXECUTE FUNCTION refuse_judgment()`, l1.DefaultJournalStatementTimeout.Seconds()+1)
 				case "inputs changed":
 					sql = `UPDATE l0_events SET payload=jsonb_set(payload,'{url}','"https://example.test/source-metadata-changed"') WHERE source=$1`
 				}

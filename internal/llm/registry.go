@@ -199,6 +199,30 @@ func (r *registry) Embedder() (Embedder, error) {
 // Usage implements [Registry].
 func (r *registry) Usage() []Usage { return r.usage.snapshot() }
 
+// Close implements [Registry]: it closes every provider client that is a
+// [Closer], and reports every failure.
+func (r *registry) Close(ctx context.Context) error {
+	var errs []error
+	for tier, c := range r.completers {
+		if err := closeInner(ctx, c.(*completer).inner); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", tier, err))
+		}
+	}
+	if r.embedder != nil {
+		if err := closeInner(ctx, r.embedder.(*embedder).inner); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", TierEmbed, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func closeInner(ctx context.Context, inner any) error {
+	if closer, ok := inner.(Closer); ok {
+		return closer.Close(ctx)
+	}
+	return nil
+}
+
 // tierClient is what every tier's client shares: what it is, how it is
 // configured, and where its usage is counted.
 type tierClient struct {

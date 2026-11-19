@@ -25,3 +25,11 @@ is-module = true
 
 [modules.dagger-skill]
 source = "dagger.io/skill"
+
+[modules.golangci-lint]
+source = "dagger.io/go/golangci-lint"
+
+[modules.golangci-lint.settings]
+# golangci-lint's own image, which pins the version: the module installs
+# none into a base that already has the binary.
+base = "dag://hearsay/lint-base"

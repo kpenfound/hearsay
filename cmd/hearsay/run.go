@@ -247,10 +247,11 @@ func runDistiller(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		return stoppingEarly(ctx, err)
 	}
 	defer pool.Close()
-	registry, err := modelRegistry(ctx, cfg)
+	registry, releaseRegistry, err := modelRegistry(ctx, cfg)
 	if err != nil {
 		return err
 	}
+	defer releaseRegistry()
 	judgments, err := judgmentCapability(cfg, nil)
 	if err != nil {
 		return err
@@ -295,10 +296,11 @@ func runAssertWorker(ctx context.Context, args []string, stdout, stderr io.Write
 		return stoppingEarly(ctx, err)
 	}
 	defer pool.Close()
-	registry, err := modelRegistry(ctx, cfg)
+	registry, releaseRegistry, err := modelRegistry(ctx, cfg)
 	if err != nil {
 		return err
 	}
+	defer releaseRegistry()
 	repos, err := repoReaders(cfg.Repo, os.LookupEnv)
 	if err != nil {
 		return err
@@ -434,10 +436,11 @@ func runAPI(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 		return stoppingEarly(ctx, err)
 	}
 	defer pool.Close()
-	registry, err := modelRegistry(ctx, cfg)
+	registry, releaseRegistry, err := modelRegistry(ctx, cfg)
 	if err != nil {
 		return err
 	}
+	defer releaseRegistry()
 	apps, err := discordApps(cfg.Repo, os.LookupEnv)
 	if err != nil {
 		return err
@@ -510,13 +513,32 @@ func stoppingEarly(ctx context.Context, err error) error {
 // provider, a credential that is not in the environment — is a startup failure,
 // because configuration is read once, so a process
 // that cannot make a model call should not be serving.
-func modelRegistry(ctx context.Context, cfg *config.Config) (llm.Registry, error) {
+//
+// The release it returns closes the registry, which removes the sandboxes a
+// claude-sbx tier keeps warm; the caller defers it. It runs after the caller's
+// context is done, so it has a bound of its own.
+func modelRegistry(ctx context.Context, cfg *config.Config) (llm.Registry, func(), error) {
 	if cfg.Repo.Path == "" {
 		telemetry.Logger(ctx).WarnContext(ctx, "no configuration: no model tiers are built, pass --config")
-		return nil, nil
+		return nil, func() {}, nil
 	}
-	return llm.NewRegistry(cfg.Repo.LLM, providers.All())
+	registry, err := llm.NewRegistry(cfg.Repo.LLM, providers.All())
+	if err != nil {
+		return nil, nil, err
+	}
+	release := func() {
+		closing, cancel := context.WithTimeout(context.WithoutCancel(ctx), registryCloseTimeout)
+		defer cancel()
+		if err := registry.Close(closing); err != nil {
+			telemetry.Logger(ctx).WarnContext(ctx, "closing the model tiers", "error", err)
+		}
+	}
+	return registry, release, nil
 }
+
+// registryCloseTimeout bounds closing the model tiers at shutdown: removing a
+// handful of sandboxes, each an `sbx rm`.
+const registryCloseTimeout = 30 * time.Second
 
 // runConnectors runs the source connectors. Like the distiller it has
 // dependencies the process owns: Postgres, because a connector writes L0 and
@@ -668,10 +690,11 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 		return stoppingEarly(ctx, err)
 	}
 	defer pool.Close()
-	registry, err := modelRegistry(setup, cfg)
+	registry, releaseRegistry, err := modelRegistry(setup, cfg)
 	if err != nil {
 		return err
 	}
+	defer releaseRegistry()
 	repos, err := repoReaders(cfg.Repo, os.LookupEnv)
 	if err != nil {
 		return err

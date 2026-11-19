@@ -47,7 +47,7 @@ func newOutcomeJev(t *testing.T) *outcomeJev {
 func (o *outcomeJev) classify(doc l1.Document, label string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	o.labels[distiller.OutcomeRequest(doc).State] = label
+	o.labels[distiller.OutcomeRequest(doc, llm.JudgmentConfig{}).State] = label
 }
 
 // answer is the model's answer for doc, with the test's outcome_kind taken out

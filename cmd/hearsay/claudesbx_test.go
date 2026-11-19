@@ -101,10 +101,11 @@ func TestClaudeSbxAnswersThroughTheWholePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config.Load() = %v", err)
 	}
-	registry, err := modelRegistry(t.Context(), &config.Config{Repo: repo})
+	registry, release, err := modelRegistry(t.Context(), &config.Config{Repo: repo})
 	if err != nil {
 		t.Fatalf("modelRegistry() = %v, want a registry with no credential set and sbx answering", err)
 	}
+	defer release()
 	definition := json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string"},"topics":{"type":"array","items":{"type":"string"}}},"required":["summary","topics"],"additionalProperties":false}`)
 	for _, tier := range llm.CompletionTiers {
 		t.Run(string(tier), func(t *testing.T) {

@@ -181,7 +181,11 @@ func TestCompleteStructuredIsOneSandboxedCall(t *testing.T) {
 	tmp := filepath.Dir(t.TempDir())
 	t.Setenv("TMPDIR", tmp)
 	rig := claudesbxtest.Install(t, fixture(t, "structured_answer.jsonl"))
-	c := distill(t, llm.TierConfig{Model: "claude-test-model", MaxTokens: 1500})
+	reg, err := registry(t, map[llm.Tier]llm.TierConfig{llm.TierDistill: {Model: "claude-test-model", MaxTokens: 1500}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ := reg.Completer(llm.TierDistill)
 
 	resp, err := c.Complete(t.Context(), request(summarySchema))
 	if err != nil {
@@ -193,8 +197,8 @@ func TestCompleteStructuredIsOneSandboxedCall(t *testing.T) {
 	if resp.StopReason != llm.StopEnd {
 		t.Errorf("StopReason = %q, want %q", resp.StopReason, llm.StopEnd)
 	}
-	if rig.Runs(t) != 1 || rig.Creates(t) != 1 || rig.Removes(t) != 1 {
-		t.Errorf("runs, creates, removes = %d, %d, %d, want exactly one sandbox, created, run in and removed", rig.Runs(t), rig.Creates(t), rig.Removes(t))
+	if rig.Runs(t) != 1 || rig.Creates(t) != 1 {
+		t.Errorf("runs, creates = %d, %d, want one sandbox, created and run in", rig.Runs(t), rig.Creates(t))
 	}
 	for flag, want := range map[string]string{
 		"--model":         "claude-test-model",
@@ -221,6 +225,64 @@ func TestCompleteStructuredIsOneSandboxedCall(t *testing.T) {
 	}
 	if _, err := os.Stat(pwd); err == nil {
 		t.Errorf("working folder %s was left behind", pwd)
+	}
+	if err := reg.Close(t.Context()); err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
+	if rig.Removes(t) != 1 {
+		t.Errorf("removes after Close = %d, want the sandbox removed", rig.Removes(t))
+	}
+}
+
+// Every sandbox create asks Docker Hub for the claude kit, and a create per
+// call spent a Docker Personal account's pull limit within an hour of a first
+// backfill. A tier's calls reuse its sandbox.
+func TestCallsReuseTheTiersSandbox(t *testing.T) {
+	rig := claudesbxtest.Install(t, fixture(t, "structured_answer.jsonl"))
+	reg, err := registry(t, map[llm.Tier]llm.TierConfig{llm.TierDistill: {Model: "m"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ := reg.Completer(llm.TierDistill)
+	for i := range 3 {
+		if _, err := c.Complete(t.Context(), request(summarySchema)); err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+	}
+	if rig.Runs(t) != 3 || rig.Creates(t) != 1 || rig.Removes(t) != 0 {
+		t.Errorf("runs, creates, removes = %d, %d, %d, want three calls in one sandbox kept for the next", rig.Runs(t), rig.Creates(t), rig.Removes(t))
+	}
+	if err := reg.Close(t.Context()); err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
+	if rig.Removes(t) != 1 {
+		t.Errorf("removes after Close = %d, want 1", rig.Removes(t))
+	}
+	if _, err := c.Complete(t.Context(), request(summarySchema)); err == nil {
+		t.Error("a call after Close succeeded")
+	}
+}
+
+// Docker Hub refusing the sandbox's kit is a rate limit: retrying at once is
+// another request against it, so the call asks to be left alone.
+func TestDockerHubsPullLimitIsARateLimit(t *testing.T) {
+	rig := claudesbxtest.Install(t, fixture(t, "structured_answer.jsonl"))
+	rig.Mark(t, "rate-limit-create")
+	reg, err := registry(t, map[llm.Tier]llm.TierConfig{llm.TierDistill: {Model: "m", MaxRetries: -1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ := reg.Completer(llm.TierDistill)
+	_, err = c.Complete(t.Context(), request(summarySchema))
+	var e *llm.Error
+	if !errors.As(err, &e) {
+		t.Fatalf("Complete() = %v, want an *llm.Error", err)
+	}
+	if !e.Retryable || e.Kind != "registry_rate_limit" || e.RetryAfter != claudesbx.RegistryRateLimitWait {
+		t.Errorf("error = retryable %v, kind %q, retry after %s; want a retryable registry_rate_limit waiting %s", e.Retryable, e.Kind, e.RetryAfter, claudesbx.RegistryRateLimitWait)
+	}
+	if rig.Runs(t) != 0 {
+		t.Errorf("claude ran %d times with no sandbox", rig.Runs(t))
 	}
 }
 

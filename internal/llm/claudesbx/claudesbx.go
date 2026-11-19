@@ -2,10 +2,15 @@
 // tool-free turn inside a Docker Sandbox, behind internal/llm's [llm.Provider].
 // It is the second completion provider, and the one that needs no API key.
 //
-// Every call is agentcore's [agent.Runner.Complete]: `sbx create` of a sandbox
-// that holds one empty temporary directory and nothing else of the host, `claude
-// -p` run in it with no tools, no skills, no setting sources and no MCP server,
-// and `sbx rm` of the sandbox however the call ends. The sandbox is what keeps
+// Every call is agentcore's [agent.Completer.Complete]: `claude -p` run in a
+// sandbox that holds one empty temporary directory of its own and nothing else
+// of the host, with no tools, no skills, no setting sources and no MCP server.
+// A tier keeps up to [Sandboxes] sandboxes warm and reuses them, so `sbx
+// create` runs once per sandbox rather than once per call: each create asks
+// Docker Hub for the claude kit, and a create per call spent the account's
+// pull rate limit within an hour of a first backfill. agentcore gives each call
+// a fresh directory and session of its own, discards a sandbox a call broke, and
+// [llm.Registry.Close] removes them all. The sandbox is what keeps
 // ingested text, which is untrusted, away from the owner's files, and the
 // sandbox's proxy is what supplies the Claude Code login: Hearsay never holds,
 // reads or passes a model credential for this provider.
@@ -34,7 +39,7 @@
 // L1 text in a log line.
 //
 // docs/config.md documents the provider for operators. What it costs is
-// startup time on every call, subscription usage limits, no temperature, and
+// startup time on a tier's first calls, subscription usage limits, no temperature, and
 // host-only.
 package claudesbx
 
@@ -62,6 +67,16 @@ import (
 // attempt is reportable before the caller's own deadline. Each
 // [agent.Completion] reports its SandboxStartup, which is how to measure it.
 const DefaultTimeout = 105 * time.Second
+
+// Sandboxes is how many sandboxes one tier keeps, and so how many of its calls
+// run at once. It is the distiller's concurrency: the assertion worker's calls
+// are serialized and use one.
+const Sandboxes = 4
+
+// RegistryRateLimitWait is how long a call refused for Docker Hub's pull rate
+// limit asks to be left alone. Hub says nothing of when its window rolls, and
+// every attempt inside it is another request against the limit.
+const RegistryRateLimitWait = 10 * time.Minute
 
 // namePrefix prefixes the sandboxes this adapter creates, so that an operator
 // listing `sbx ls` can tell whose they are.
@@ -108,7 +123,7 @@ func (p *Provider) Completer(b llm.Build) (llm.Completer, error) {
 		model:     b.Config.Model,
 		maxTokens: b.Config.MaxTokens,
 		timeout:   timeout,
-		runner:    runner,
+		sandboxes: runner.NewCompleter(agent.CompleterOptions{Name: string(b.Tier), Size: Sandboxes}),
 	}, nil
 }
 
@@ -125,8 +140,11 @@ type client struct {
 	model     string
 	maxTokens int
 	timeout   time.Duration
-	runner    *agent.Runner
+	sandboxes *agent.Completer
 }
+
+// Close implements [llm.Closer]: it removes the tier's sandboxes.
+func (c *client) Close(ctx context.Context) error { return c.sandboxes.Close(ctx) }
 
 // Complete implements [llm.Completer]: one sandboxed completion, one answer.
 func (c *client) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
@@ -134,7 +152,7 @@ func (c *client) Complete(ctx context.Context, req llm.Request) (llm.Response, e
 	if err != nil {
 		return llm.Response{}, err
 	}
-	done, err := c.runner.Complete(ctx, creq)
+	done, err := c.sandboxes.Complete(ctx, creq)
 	if err != nil {
 		// What agentcore said can quote the prompt or the answer, so neither
 		// its text nor its error's is returned or logged: the log
@@ -277,6 +295,13 @@ func (c *client) failure(ctx context.Context, err error) (*llm.Error, []slog.Att
 			attrs = append(attrs, slog.Time("resets_at", limit.ResetsAt))
 		}
 		return e, attrs
+	case errors.Is(err, agent.ErrRegistryRateLimited):
+		// Docker Hub refused the sandbox's kit. Trying again at once is
+		// another request against the same limit, so the registry waits,
+		// and the caller's deadline ends the wait.
+		e := c.err("Docker Hub's pull rate limit was reached creating the sandbox", true, agent.ErrRegistryRateLimited)
+		e.Kind, e.RetryAfter = "registry_rate_limit", RegistryRateLimitWait
+		return e, classOnly("registry_rate_limit")
 	case errors.Is(err, context.DeadlineExceeded):
 		// The attempt's deadline, sandbox startup included. A fresh attempt
 		// could finish; the registry stops retrying if the caller's is gone.
@@ -324,6 +349,7 @@ func (c *client) err(msg string, retryable bool, wrapped error) *llm.Error {
 var (
 	_ llm.Provider  = (*Provider)(nil)
 	_ llm.Completer = (*client)(nil)
+	_ llm.Closer    = (*client)(nil)
 )
 
 // quiet is the logger agentcore's runner is given. It passes on only a warning

@@ -479,10 +479,10 @@ a container or a service account does not have. The files are in
    The workers keep connections open and poll, so a compute that suspends when
    idle stays awake while Hearsay runs: count it as always on.
 2. **`sbx` and a Claude Code login stored with it** (`sbx secret set`), on the
-   host, for the owner who runs the units. Each `distill` and `assert` call
-   starts a sandbox, so a call takes seconds more than an API call, and calls
-   count against that login's subscription usage, shared with anything else it
-   runs. The distiller works on up to four documents at once
+   host, for the owner who runs the units. Each tier keeps its sandboxes
+   warm and reuses them, so only a tier's first calls take the seconds a
+   sandbox start costs; calls count against that login's subscription usage,
+   shared with anything else it runs. The distiller works on up to four documents at once
    ([config](config.md#the-claude-sbx-provider)).
 3. **An OpenRouter API key** for Jev, in `OPENROUTER_API_KEY`. The example
    configuration points Jev there:

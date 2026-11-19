@@ -68,7 +68,7 @@ func TestChatBurstReconcilesEditAndTombstone(t *testing.T) {
 			t.Fatalf("tombstoned run still qualifies: %d", len(bursts))
 		}
 		for _, burst := range bursts {
-			burstStates[distiller.OutcomeRequest(burst).State] = true
+			burstStates[distiller.OutcomeRequest(burst, llm.JudgmentConfig{}).State] = true
 		}
 		for _, doc := range append([]l1.Document{thread}, bursts...) {
 			budget, _ := repo.LLM.Tier(llm.TierDistill)

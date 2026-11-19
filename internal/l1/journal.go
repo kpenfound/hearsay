@@ -247,9 +247,20 @@ const (
 func (r JournalRefusal) Error() string { return "judgment journal refused: " + string(r) }
 
 // JournalCommitOptions bounds each server statement and lock acquisition.
-// Defaults are 100ms; timeout settings are restored before returning. Use the
-// job's live context for this call.
+// Defaults are [DefaultJournalStatementTimeout] and
+// [DefaultJournalLockTimeout]; timeout settings are restored before returning.
+// Use the job's live context for this call.
 type JournalCommitOptions struct{ StatementTimeout, LockTimeout time.Duration }
+
+// The default bounds. The guard is held until the committing job's outer
+// transaction ends, which against a database across a network (Neon) is
+// several round trips, so a concurrent job waits that long for it: a bound
+// tuned for a local database refuses those jobs, and each retry repeats its
+// model calls.
+const (
+	DefaultJournalStatementTimeout = 2 * time.Second
+	DefaultJournalLockTimeout      = 5 * time.Second
+)
 
 // CommitJudgments validates the WHOLE batch under the input guard and writes
 // records and observations atomically in a nested transaction (savepoint).
@@ -273,13 +284,13 @@ func CommitJudgments(ctx context.Context, tx pgx.Tx, records []JudgmentRecord, o
 	if isolation != "read committed" {
 		return JournalInputsChanged
 	}
-	timeout := func(d time.Duration) string {
+	timeout := func(d, def time.Duration) string {
 		if d <= 0 {
-			d = 100 * time.Millisecond
+			d = def
 		}
 		return fmt.Sprintf("%dms", max(1, d.Milliseconds()))
 	}
-	if _, err = sub.Exec(ctx, `SELECT set_config('statement_timeout',$1,true), set_config('lock_timeout',$2,true)`, timeout(opts.StatementTimeout), timeout(opts.LockTimeout)); err != nil {
+	if _, err = sub.Exec(ctx, `SELECT set_config('statement_timeout',$1,true), set_config('lock_timeout',$2,true)`, timeout(opts.StatementTimeout, DefaultJournalStatementTimeout), timeout(opts.LockTimeout, DefaultJournalLockTimeout)); err != nil {
 		return journalRefusal(err)
 	}
 	if _, err = sub.Exec(ctx, `LOCK TABLE judgment_input_guard IN SHARE ROW EXCLUSIVE MODE`); err != nil {

@@ -37,7 +37,7 @@ principals:
 
 llm:
   tiers:
-    # The owner's Claude Code, one tool-free turn in a Docker Sandbox per call.
+    # The owner's Claude Code, one tool-free turn per call in reused Docker Sandboxes.
     # Host-only: it needs sbx, its daemon and a stored login on this machine.
     # The model is passed to Claude Code as written, so its aliases work.
     distill:

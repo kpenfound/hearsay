@@ -26,8 +26,9 @@ contributor who wants the commands and conventions without the reasons.
   configured. Each module under `.dagger/modules/` pins the same engine version
   in its `dagger-module.toml`.
 - [golangci-lint](https://golangci-lint.run) v2 for lint and formatting, if you
-  want to run it outside Dagger. The module pins the version it runs; match it
-  if a lint failure looks like a disagreement.
+  want to run it outside Dagger. The lint check runs the version tagged in
+  `hearsay:lint-base` (`.dagger/modules/hearsay/main.dang`); match it if a lint
+  failure looks like a disagreement.
 - Postgres 16 with [pgvector](https://github.com/pgvector/pgvector) — only if
   you want a database Dagger did not start for you.
 
@@ -41,27 +42,27 @@ it must not duplicate that commit gate with another copy of `dagger check`.
 ```sh
 dagger check                   # every check below, in parallel; this is the gate
 dagger check -l                # list them
-dagger check hearsay:lint      # run one
+dagger check --golangci-lint   # run one module's checks
 dagger check --fail-fast        # stop at the first failure instead of seeing all of them
 ```
 
-Two modules share the work. The reusable Go module,
+Two modules share the work, and the official golangci-lint module lints. The reusable Go module,
 [`github.com/dagger/go`](https://github.com/dagger/go), finds every `go.mod`
 in the workspace and owns the tests and the `go generate` drift check; it knows
 nothing about Hearsay. The remote module is pinned at v0.4.0 through
 `dagger.lock`; its source in `dagger.toml` has no version or branch. Refresh
 the lockfile with `dagger lock update`. `hearsay`, in
 `.dagger/modules/hearsay/main.dang`, is
-ours and holds everything that module could not know: lint, the tidy, image, compose and Helm checks, the binary, the image, migrations
+ours and holds everything that module could not know: the formatter, tidy, compose, Helm and systemd checks, the binary, the image, migrations
 and the dev stack.
 
 | Check | From | Does |
 |---|---|---|
 | `go:test` | Go module | tests selected by `go-module`, `go-package` and `go-test`, run once per package, with `-tags=integration -race` against a migrated pgvector Postgres |
 | `go:stale` | Go module | fails if a selected package's `go generate` would change a committed file |
-| `hearsay:lint` | hearsay | `go vet`, `golangci-lint run`, `golangci-lint fmt --diff` |
+| `golangci-lint:lint` | golangci-lint module | `golangci-lint run` with `.golangci.yml`: the `standard` linters (`govet` among them) and the enabled extras, in `hearsay:lint-base` |
+| `hearsay:fmt-check` | hearsay | `golangci-lint fmt --diff`: the `gofmt` and `goimports` formatters `.golangci.yml` enables, which `run` does not apply |
 | `hearsay:tidy-check` | hearsay | fails if `go mod tidy` would change `go.mod` or `go.sum` |
-| `hearsay:image-check` | hearsay | builds the default and two release platforms; checks the version stamp and publish address without pushing |
 | `hearsay:compose-check` | hearsay | `docker compose config` on `deploy/compose` with `env.example` filled in, held to the shape in `docs/deploy.md`; `hearsay config validate` on its example configuration; `hearsay.service` held to its shape. No Docker daemon |
 | `hearsay:helm-check` | hearsay | `helm lint --strict` and `helm template` on `deploy/helm/hearsay` with the values in `deploy/helm/ci`, held to the shape in `docs/deploy.md`; the refusals it must make; `hearsay config validate` on each config form as the kubelet mounts it. No cluster |
 | `dagger-dang-sdk:stale` | Dang SDK | fails if the SDK would regenerate anything under `.dagger` |
@@ -73,9 +74,12 @@ For example, `dagger check --go --test --go-package=internal/config` runs
 that package's tests. There are currently no Go generator directives; the staleness checks still
 verify the selected packages without running generator commands.
 
-The Go module keeps linting in separate modules. Hearsay uses `hearsay:lint`,
-which runs a golangci-lint release built with the current Go, plus `go vet`
-and the formatter check.
+The Go module keeps linting in separate modules. Hearsay installs the official
+one, `dagger.io/go/golangci-lint`; it reads `.golangci.yml` and caches the Go
+and lint caches between runs. Its `base` is `hearsay:lint-base`,
+golangci-lint's own image, whose tag pins the version: the
+release binary the module installs otherwise is built with a Go older than
+`go.mod`'s and cannot type-check against its standard library.
 
 `hearsay:go-test-base` is a Go image with a migrated Postgres bound as a
 service (`hearsay:migrated-postgres`) and `HEARSAY_DATABASE_URL` pointing at
@@ -187,9 +191,9 @@ done
 The platform calls must report `linux/amd64` and `linux/arm64`. Both version
 calls must report exactly the chosen version in the binary's existing format,
 `hearsay <tag> (commit ..., built ...)`; `v1.2.30` fails for tag `v1.2.3`.
-A missing platform or a failed version check fails the workflow.
-`hearsay:image-check` exercises the two platform builds and stamped versions
-locally during routine checks, with no registry push.
+A missing platform or a failed version check fails the workflow. No routine
+check builds the release images: they are slow to build, and the release
+workflow's smoke checks are where a broken platform or stamp shows.
 
 ### Trying a change
 

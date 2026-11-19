@@ -340,6 +340,41 @@ func TestJournalCommitClosesConcurrentChangeGap(t *testing.T) {
 	}
 }
 
+// Two distill jobs judging at once: the second waits for the first to commit
+// instead of being refused. Against Neon the first holds the guard for several
+// round trips, and every refusal re-ran the second job's model calls.
+func TestAConcurrentCommitWaitsForTheGuard(t *testing.T) {
+	pool := journalDB(t)
+	first, second := journalRecord(t, pool, "first"), journalRecord(t, pool, "second")
+	holder, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback(t.Context())
+	if err = l1.CommitJudgments(t.Context(), holder, []l1.JudgmentRecord{first}, nil, l1.JournalCommitOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	committed := make(chan error, 1)
+	go func() {
+		time.Sleep(300 * time.Millisecond) // a commit's round trips to a remote database
+		committed <- holder.Commit(context.WithoutCancel(t.Context()))
+	}()
+	tx, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(t.Context())
+	if err = l1.CommitJudgments(t.Context(), tx, []l1.JudgmentRecord{second}, nil, l1.JournalCommitOptions{}); err != nil {
+		t.Fatalf("second commit refused while the first held the guard: %v", err)
+	}
+	if err = tx.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err = <-committed; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPipelineAccountingUnknownAndZero(t *testing.T) {
 	pool := journalDB(t)
 	r := journalRecord(t, pool, "record")

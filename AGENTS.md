@@ -19,8 +19,10 @@ Dagger runs everything. The workspace is `dagger.toml`. The tests and the
 `go generate` drift check come from the reusable Go module
 (`github.com/dagger/go`) it installs from the remote source, pinned at v0.4.0
 through `dagger.lock`. Keep its version out of `dagger.toml`; refresh the pins
-with `dagger lock update`. Lint, the tidy,
-image, compose and Helm checks, the binary, the image, migrations and the dev stack are `hearsay`, our own module
+with `dagger lock update`. Lint is the official golangci-lint module
+(`dagger.io/go/golangci-lint`), which reads `.golangci.yml`, in
+golangci-lint's own image at the version `hearsay:lint-base` tags. The tidy,
+compose, Helm and systemd checks, the binary, the image, migrations and the dev stack are `hearsay`, our own module
 in `.dagger/modules/hearsay/main.dang`, written in Dang. The lock also retains
 v0.3.1 helper resolutions; they do not select the bare Go module's release.
 `hearsay:go-test-base` hands the Go module a container with an already
@@ -47,7 +49,8 @@ pull the private package for its smoke check before that one-time step.
 | `go` | `*` | `*` | `*` | `test` |
 | `go` | `*` | `*` | | `stale` |
 | `dagger-dang-sdk` | | | | `stale` |
-| `hearsay` | | | | `compose-check`, `helm-check`, `image-check`, `lint`, `systemd-check`, `tidy-check` |
+| `golangci-lint` | | | | `lint`, one per directory holding a `.golangci.yml` |
+| `hearsay` | | | | `compose-check`, `fmt-check`, `helm-check`, `systemd-check`, `tidy-check` |
 
 Use `dagger check -l --all --go` to expand the collections and
 `dagger check --go` to run the Go checks. Tests execute once per package;
@@ -89,8 +92,10 @@ Neon's direct endpoint, the one form where the `claude-sbx` provider works;
 `hearsay:systemd-check` holds it to its shape. A new environment variable goes
 in `deploy/systemd/env.example` too.
 
-The Go module keeps linting in separate modules; `hearsay:lint` is the lint
-gate. Its tests and generate checks use `hearsay:go-test-base`, with the extra
+The Go module keeps linting in separate modules; `golangci-lint` is the lint
+gate (`dagger check --golangci-lint`), run in `hearsay:lint-base`, golangci-lint's
+own image. Its `run` covers `go vet` (the `standard` linters) but not the
+formatters, so `hearsay:fmt-check` runs `golangci-lint fmt --diff`. Its tests and generate checks use `hearsay:go-test-base`, with the extra
 files configured in `dagger.toml` and the default selections covering the whole
 workspace. When changing that wiring,
 execute the checks as well as listing them: Dang type errors surface only
