@@ -1421,9 +1421,9 @@ already logged in to, with no API key. Each call is one tool-free
 `claude -p` turn ([headless mode](https://code.claude.com/docs/en/headless))
 inside a Docker Sandbox (`sbx`), so the Slack and GitHub text
 being distilled never reaches the owner's files, and the sandbox's proxy supplies
-the stored login. A tier keeps up to four sandboxes and reuses them, each call
+the stored login. A tier keeps up to four sandboxes while calls keep coming and reuses them, each call
 in a fresh directory and session of its own, so `sbx create` runs a few times
-per process rather than once per call. It is chosen per tier, on `distill` and `assert`, and the
+per burst of calls rather than once per call. It is chosen per tier, on `distill` and `assert`, and the
 shipped default stays `anthropic`.
 
 <!-- example: claude-sbx/hearsay.yaml -->
@@ -1481,9 +1481,12 @@ its default, as for any provider.
 - **Sandboxes are reused.** Each `sbx create` asks Docker Hub for the claude
   kit, and an account on Docker Personal is rate-limited, so a sandbox per call
   spent the limit within an hour of a first backfill. A tier keeps up to four
-  warm (the distiller's concurrency; the assertion worker's calls are
-  serialized and use one), discards one a call broke, and removes them all
-  when the process stops. A create Docker Hub refuses for its rate limit
+  warm, each a VM capped at 1.5 GB (about 1 GB in use), and removes one no
+  call has used for five minutes, because they share the owner's machine with
+  everything else it runs. A distiller whose
+  `distill` tier is `claude-sbx` works on four documents at once to match; the
+  assertion worker's calls are serialized and use one. A sandbox a call broke
+  is discarded, and all of them are removed when the process stops. A create Docker Hub refuses for its rate limit
   fails as a rate limit and waits ten minutes before it is tried again.
 - **Usage limits.** When the subscription's usage limit is hit, the attempt
   fails as a rate limit and is retried when the CLI says the limit resets,

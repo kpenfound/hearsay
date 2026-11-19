@@ -482,7 +482,9 @@ a container or a service account does not have. The files are in
    host, for the owner who runs the units. Each tier keeps its sandboxes
    warm and reuses them, so only a tier's first calls take the seconds a
    sandbox start costs; calls count against that login's subscription usage,
-   shared with anything else it runs. The distiller works on up to four documents at once
+   shared with anything else it runs. Each kept sandbox is a VM of about 1 GB,
+   given back after five idle minutes, and the distiller works on four
+   documents at once, one per sandbox
    ([config](config.md#the-claude-sbx-provider)).
 3. **An OpenRouter API key** for Jev, in `OPENROUTER_API_KEY`. The example
    configuration points Jev there:

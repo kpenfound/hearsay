@@ -252,6 +252,10 @@ func TestCallsReuseTheTiersSandbox(t *testing.T) {
 	if rig.Runs(t) != 3 || rig.Creates(t) != 1 || rig.Removes(t) != 0 {
 		t.Errorf("runs, creates, removes = %d, %d, %d, want three calls in one sandbox kept for the next", rig.Runs(t), rig.Creates(t), rig.Removes(t))
 	}
+	// A kept sandbox is a VM on the owner's machine: its memory is bounded.
+	if create := strings.Join(rig.Lines(t, "sbx-create.txt"), " "); !strings.Contains(create, "--memory "+claudesbx.SandboxMemory) {
+		t.Errorf("sbx create %q, want --memory %s", create, claudesbx.SandboxMemory)
+	}
 	if err := reg.Close(t.Context()); err != nil {
 		t.Fatalf("Close() = %v", err)
 	}

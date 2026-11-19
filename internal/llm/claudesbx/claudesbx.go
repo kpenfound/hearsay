@@ -5,8 +5,9 @@
 // Every call is agentcore's [agent.Completer.Complete]: `claude -p` run in a
 // sandbox that holds one empty temporary directory of its own and nothing else
 // of the host, with no tools, no skills, no setting sources and no MCP server.
-// A tier keeps up to [Sandboxes] sandboxes warm and reuses them, so `sbx
-// create` runs once per sandbox rather than once per call: each create asks
+// A tier keeps up to [Sandboxes] sandboxes warm while calls keep coming, and
+// gives back any idle for [SandboxIdleTimeout], so `sbx create` runs once per
+// sandbox per burst rather than once per call: each create asks
 // Docker Hub for the claude kit, and a create per call spent the account's
 // pull rate limit within an hour of a first backfill. agentcore gives each call
 // a fresh directory and session of its own, discards a sandbox a call broke, and
@@ -68,10 +69,22 @@ import (
 // [agent.Completion] reports its SandboxStartup, which is how to measure it.
 const DefaultTimeout = 105 * time.Second
 
-// Sandboxes is how many sandboxes one tier keeps, and so how many of its calls
-// run at once. It is the distiller's concurrency: the assertion worker's calls
-// are serialized and use one.
+// Sandboxes is how many sandboxes one tier keeps at most, and so how many of
+// its calls run at once; a process whose distill tier is claude-sbx distils
+// this many documents at once. The assertion worker's calls are serialized and
+// use one.
 const Sandboxes = 4
+
+// SandboxIdleTimeout removes a kept sandbox no call has used for this long.
+// Each is a VM holding about a gigabyte on the owner's own machine, beside
+// everything else it runs: a backlog keeps them warm, and between bursts they
+// are given back. A burst after a quiet spell creates them again, a few
+// creates rather than one per call.
+const SandboxIdleTimeout = 5 * time.Minute
+
+// SandboxMemory bounds each sandbox's VM. A tool-free turn needs Claude Code
+// and nothing else; sbx's default is half the host's memory.
+const SandboxMemory = "1536m"
 
 // RegistryRateLimitWait is how long a call refused for Docker Hub's pull rate
 // limit asks to be left alone. Hub says nothing of when its window rolls, and
@@ -123,7 +136,7 @@ func (p *Provider) Completer(b llm.Build) (llm.Completer, error) {
 		model:     b.Config.Model,
 		maxTokens: b.Config.MaxTokens,
 		timeout:   timeout,
-		sandboxes: runner.NewCompleter(agent.CompleterOptions{Name: string(b.Tier), Size: Sandboxes}),
+		sandboxes: runner.NewCompleter(agent.CompleterOptions{Name: string(b.Tier), Size: Sandboxes, SandboxMemory: SandboxMemory, IdleTimeout: SandboxIdleTimeout}),
 	}, nil
 }
 

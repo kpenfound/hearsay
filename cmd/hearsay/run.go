@@ -25,6 +25,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/llm"
+	"github.com/kpenfound/hearsay/internal/llm/claudesbx"
 	"github.com/kpenfound/hearsay/internal/llm/jev"
 	"github.com/kpenfound/hearsay/internal/llm/providers"
 	"github.com/kpenfound/hearsay/internal/principal"
@@ -256,7 +257,7 @@ func runDistiller(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	if err != nil {
 		return err
 	}
-	return distiller.Run(ctx, cfg, distiller.Deps{Pool: pool, LLM: registry, Judgments: judgments, Listen: *listen, Pump: pump})
+	return distiller.Run(ctx, cfg, distiller.Deps{Pool: pool, LLM: registry, Judgments: judgments, Listen: *listen, Pump: pump, Concurrency: distillConcurrency(cfg)})
 }
 
 // runAssertWorker runs the assertion worker. It has the distiller's
@@ -536,6 +537,16 @@ func modelRegistry(ctx context.Context, cfg *config.Config) (llm.Registry, func(
 	return registry, release, nil
 }
 
+// distillConcurrency is how many documents the distiller works on at once: as
+// many as a claude-sbx distill tier keeps sandboxes, so no job spends its
+// attempt timeout waiting for one, and the distiller's own default otherwise.
+func distillConcurrency(cfg *config.Config) int {
+	if cfg.Repo.LLM.Tiers[llm.TierDistill].Provider == llm.ProviderClaudeSbx {
+		return claudesbx.Sandboxes
+	}
+	return 0
+}
+
 // registryCloseTimeout bounds closing the model tiers at shutdown: removing a
 // handful of sandboxes, each an `sbx rm`.
 const registryCloseTimeout = 30 * time.Second
@@ -717,7 +728,7 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 			return connectors.Run(ctx, cfg, connectors.Deps{Pool: pool, Registry: connectorRegistry(cfg.Repo.Principals, cfg.Repo.Sources), Listen: *listen})
 		},
 		distiller.Name: func(ctx context.Context) error {
-			return distiller.Run(ctx, cfg, distiller.Deps{Pool: pool, LLM: registry, Judgments: judgments, Listen: *distillerListen, Pump: pump})
+			return distiller.Run(ctx, cfg, distiller.Deps{Pool: pool, LLM: registry, Judgments: judgments, Listen: *distillerListen, Pump: pump, Concurrency: distillConcurrency(cfg)})
 		},
 		assertworker.Name: func(ctx context.Context) error {
 			return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry, Judgments: judgments, Connectors: connectorRegistry(cfg.Repo.Principals, cfg.Repo.Sources), Repos: repos, Replies: replies, Listen: *assertWorkerListen})

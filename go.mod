@@ -5,7 +5,7 @@ go 1.27.1
 require (
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/jackc/pgx/v5 v5.11.0
-	github.com/kpenfound/agentcore v1.2.3
+	github.com/kpenfound/agentcore v1.2.4
 	github.com/pressly/goose/v3 v3.28.0
 	go.yaml.in/yaml/v3 v3.0.5
 	tailscale.com v1.102.5
