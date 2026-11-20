@@ -284,8 +284,35 @@ Exposed over MCP and HTTP. Deliberately small.
 |`search(scope, query)`|Hybrid retrieval over L1 (embeddings, full text, rank fusion). Returns documents, not answers|
 |`watch(scope, filter)`|Subscribe to new events on a scope once distilled. Notification only; consumers decide what to do. The per-document debounce can add up to the maximum delay before distillation becomes due, on top of worker poll and distillation time|
 |`assert(topic, position, evidence)`|Write a stance as an L0 event. Agents are principals|
+|`decide(decision_id, action, stance_id \| gesture_id)`|A person's own ratify, demote or undo of one stance, optionally carried by an agent. Writes the gesture ledger, no L0 event, and calls no model ([The `decide` call](#the-decide-call))|
 
-Ratification, pinning, and topic merges are human actions taken in the tools people already use (see Human feedback loop).
+Pinning and topic merges are human actions taken in the tools people already use (see Human feedback loop). So are ratification and demotion there; `decide` is how an agent carries a person's own ratify, demote or undo of a stance.
+
+### The `decide` call
+
+`decide` is served like every call, as `POST /v1/decide` and as the MCP tool `decide`, from the one call layer, so both interfaces list it and answer the same request with the same bytes (the HTTP body and the MCP tool result's text content).
+
+**Whose decision it is.** The decision is the human's named in `Hearsay-Principal`, authenticated with that person's bearer token. An agent named in `Hearsay-Agent`, authenticated with its own token, only *carries* it: the gesture is recorded with the human as `principal` and the agent as `carrier` (`l2_gestures.carrier`, shown by `hearsay gestures list` in its table and `--json`). The scope's `ratified_by.principals` is checked against the human, never the agent, so no agent class gains ratify or merge rights, and the steward door stays closed: a human the policy does not allow is refused even when a steward carries the request. An agent whose class writes nothing (observer) may not carry a decision; a worker or above may. A person with no agent decides for themselves and no carrier is recorded.
+
+**What it takes (first version).** `decision_id` (required, opaque, at most 256 bytes) and `action`, one of `ratify`, `demote` or `undo`; `stance_id` for ratify and demote, the id `get_bundle`, `stance_history` and `traverse` serve; `gesture_id` for undo, the number a `decide` answer or `hearsay gestures list` gives. Unknown fields are refused. Ratify and demote apply to that stance alone, which must be live, and change no stance row; the existing standing rule then serves a ratified current stance as `ratified` and a demoted one as `contested` until it is ratified or a newer stance supersedes it. Undo reverses an earlier ratify or demote whichever surface recorded it. Pins, topic merge and split and alias confirmation are not part of this call: a request for them (or any other action) is `invalid` and records nothing.
+
+**Answer.** `{"gesture_id", "action", "stance_id" | "undone_gesture_id", "recorded"}`.
+
+**Idempotency by decision id.** The gesture's event id is derived from the human, the carrier and `decision_id`, under Hearsay's own source, so two people's ids never collide and a different carrier is a different decision. After the arguments and the carrier's class are checked, a decision already recorded under that id with the same content is a *replay*: if the caller can still read and reach its target Hearsay returns the original gesture with `recorded` false and records nothing, without re-checking liveness, undoability or ratify policy, so a retried ratify whose stance has since been superseded, or a retried undo that succeeded, answers the original. A caller who has lost access to the target gets the same `not_found` as for an id that does not exist. The same id with different content is `conflict`. Anything else is a new decision, checked in order: read and reach, the human's policy, then liveness (ratify, demote) or undoability (undo), and recorded under the scope's serial key; concurrent identical requests record one gesture and exactly one answer has `recorded` true.
+
+**Refusals and reason codes.** A refusal after dispatch carries an HTTP status and a body `{"error": message, "code": reason}`, identical over MCP, with one of:
+
+|Code|Status|Meaning|
+|---|---|---|
+|`not_allowed`|403|the human may not ratify by hand in that scope, or the agent's class may not carry a decision|
+|`not_found`|404|no such stance or gesture the caller may read within their reach; nonexistent, unreadable, out-of-reach, and a replay whose target was lost, are one answer|
+|`not_live`|409|the stance is superseded, retired or withdrawn|
+|`not_undoable`|409|the gesture is already undone, is itself an undo, or is not a ratify or demote (a pin)|
+|`conflict`|409|the decision id was used for a different decision|
+|`invalid`|400|malformed arguments, an unknown field, or an unsupported action|
+|`internal`|500|an unexpected failure inside the call|
+
+A refused request records nothing. Failures every call shares and that happen before a request reaches `decide` — a missing or invalid human or agent credential, an ambiguous header, an oversized body, session and reach resolution — are not `decide` refusals: they keep their existing statuses and `{"error": message}` bodies and carry **no reason code**, so a caller tells them apart by the absence of `code`. The error bodies of every other call are unchanged.
 
 ## Access control
 
@@ -338,6 +365,8 @@ Agent classes:
 |orchestrator|multiple scopes|`assert`, subscribe|
 |steward|all ingested|ratify, merge topics (human-only by default; the class exists so the door is there, closed)|
 
+A class's rights are the agent's own. An agent that *carries* a person's decision through `decide` does not exercise them: the decision is the human's, the scope's ratify policy is checked against the human, and the agent is only recorded as the carrier. Any class that writes (worker and above) may carry; an observer may not. No class gains ratify, demote or merge authority from carrying.
+
 Every bundle served is itself an L0 audit event: who asked, on whose behalf, what scope, what was filtered.
 
 ## Deletion and provenance
@@ -385,6 +414,8 @@ Connectors are plugins. A third party ships a module that emits L0 events in the
 L2 will be wrong on a regular basis. Correction has to be one gesture in the tool the person is already in: an emoji reaction to ratify a stance, `/hearsay pin` on a thread, `/hearsay merge` on two topics, a reaction that demotes an inference. If correcting requires opening a separate UI, no one will.
 
 Discord and Slack reactions, chat slash commands and GitHub `/hearsay` issue or PR comments enter L0 as source events. Connectors describe their actor, target and command data, but do not interpret them, resolve principals or write L1/L2. For reactions and GitHub commands, the assertion worker follows the L0 change feed and enqueues a durable `assert` job targeted at `gesture:<source event id>` under the scope's existing serialized key. Replays collapse to the same target; the gesture record and L2 writes commit together. Removing a reaction or deleting a command reverses its gesture, subject to topic-operation undo rules. A GitHub command edit does not run a second command. The worker, or for a chat slash command the process that receives it (below), maps the source actor to a configured human principal and checks the scope's `ratified_by.principals`; unmapped or unauthorized gestures make no L2 change. Reactions on an original Discord or Slack message apply to every live stance drawn from its L1 thread or burst; GitHub ratify and demote commands apply to every live stance drawn from the issue or PR. Demotion serves a stance as `contested` until an authorized ratification or a newer stance supersedes it. Pins anchor the target's L1 document; merge uses the topic-operation ledger.
+
+The API's `decide` call ([The `decide` call](#the-decide-call)) is a fifth way in for ratify, demote and undo, and the one an agent can carry for a person. It names one stance by id, not documents, so it applies to that stance alone; it records through the same gesture ledger, under the same serial key and the same policy check against the human, but writes no L0 event, takes no model or Jev call, and records the human as principal and the carrying agent, if any, as the carrier. A decision is idempotent on a caller-supplied decision id (a replay returns the original gesture with `recorded` false), and refusals carry the reason codes the table above lists. Topic merge and split, alias confirmation and pins stay with the tools above in this version.
 
 Hearsay answers only commands a person explicitly issued. Reactions receive no reply. An HTTP interaction adapter in the API runtime verifies Discord requests with the configured application public key, ingests the command as L0, applies it through the gesture or topic-operation ledger under the scope's serial key, and sends an ephemeral answer with the result or refusal using the interaction token within Discord's three-second deadline; when the work takes longer it defers the ephemeral answer and edits it in once done. A connector that receives chat commands itself parses each one and hands it to the connector runtime, which records it as L0, applies it the same way and returns the result for the connector to answer ephemerally; a read-only source's commands are neither recorded, applied nor answered. Every receiving process applies a command through one shared applier, and a command whose process dies mid-command is not retried. It uses the configured bot token to register commands, never to post channel messages. The adapter performs the L2 autocomplete read under the invoker's mapped principal; `/hearsay merge` offers only topics the invoker can read. For GitHub, the assertion worker posts one result-or-refusal reply comment per command using the configured source bot/app `secrets.token`, with issue and PR comment write permission. A durable reply record keyed by the source command event and source-comment reconciliation prevent duplicates on retry. Hearsay makes no other source writes and posts nothing unprompted.
 

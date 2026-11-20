@@ -604,6 +604,19 @@ func (s *Store) GestureByEvent(ctx context.Context, event string) (Gesture, erro
 	return g, nil
 }
 
+// GestureByID returns the gesture with a ledger id, the id `hearsay gestures
+// list` shows and an undo is named by.
+func (s *Store) GestureByID(ctx context.Context, id int64) (Gesture, error) {
+	g, err := scanGesture(s.db.QueryRow(ctx, `SELECT `+gestureColumns+` FROM `+gestureFrom+` WHERE g.id = $1`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Gesture{}, fmt.Errorf("%w: no gesture %d", ErrNotFound, id)
+	}
+	if err != nil {
+		return Gesture{}, fmt.Errorf("reading gesture %d: %w", id, err)
+	}
+	return g, nil
+}
+
 // Gestures is a scope's gesture ledger, oldest first: who ratified, demoted,
 // pinned or undid what, when, and the undo that reversed each, if one has.
 // An empty scope is every scope's.

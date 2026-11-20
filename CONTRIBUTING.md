@@ -283,6 +283,13 @@ HEARSAY_DATABASE_URL=postgres://... go test -tags=integration -count=1 -v \
 runs it alone, and `dagger check` runs it with every other test, so the factory's gate holds the path on every commit. It is not run
 through `qa`, whose image carries the binary and no Go toolchain.
 
+The owner-decision call has its own: `TestDecideEndToEnd` runs `hearsay all`,
+decides a stance as the owner over HTTP and over MCP with an agent carrying
+the decision, and reads each result back through `stance_history`,
+`get_bundle`, `traverse` and `hearsay gestures list`. Rerun it with Docker
+alone through `deploy/smoke/decide-e2e.sh [evidence-dir]`, or with the
+command above and `-run TestDecideEndToEnd`.
+
 ### Changing the module
 
 The modules under `.dagger/modules/` are written in
