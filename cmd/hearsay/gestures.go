@@ -298,6 +298,7 @@ type gestureRecord struct {
 	Action    l2.GestureAction `json:"action"`
 	Scope     string           `json:"scope"`
 	Principal string           `json:"principal"`
+	Carrier   string           `json:"carrier,omitempty"`
 	At        time.Time        `json:"at"`
 	Documents []string         `json:"documents"`
 	Stances   []string         `json:"stances"`
@@ -323,19 +324,27 @@ func (v gestureView) list(ctx context.Context, w io.Writer, scope string, since 
 		if !ok {
 			continue
 		}
-		records = append(records, gestureRecord{ID: g.ID, Action: g.Action, Scope: g.Scope, Principal: g.Principal, At: g.At, Documents: g.Documents, Stances: stances, Pins: g.Pins, Undoes: g.Undoes, UndoneBy: g.UndoneBy})
+		records = append(records, gestureRecord{ID: g.ID, Action: g.Action, Scope: g.Scope, Principal: g.Principal, Carrier: g.Carrier, At: g.At, Documents: g.Documents, Stances: stances, Pins: g.Pins, Undoes: g.Undoes, UndoneBy: g.UndoneBy})
 	}
 	if asJSON {
 		return json.NewEncoder(w).Encode(records)
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tTIME\tACTION\tSCOPE\tPRINCIPAL\tUNDOES\tUNDONE_BY\tDOCUMENTS\tSTANCES\tPINS")
+	fmt.Fprintln(tw, "ID\tTIME\tACTION\tSCOPE\tPRINCIPAL\tCARRIER\tUNDOES\tUNDONE_BY\tDOCUMENTS\tSTANCES\tPINS")
 	for _, r := range records {
 		pins := make([]string, len(r.Pins))
 		for i, p := range r.Pins {
 			pins[i] = p.Scope + ":" + p.L1
 		}
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.ID, r.At.Format(time.RFC3339), r.Action, r.Scope, r.Principal, orDash(r.Undoes), orDash(r.UndoneBy), joinOrDash(r.Documents), joinOrDash(r.Stances), joinOrDash(pins))
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.ID, r.At.Format(time.RFC3339), r.Action, r.Scope, r.Principal, carrierOrDash(r.Carrier), orDash(r.Undoes), orDash(r.UndoneBy), joinOrDash(r.Documents), joinOrDash(r.Stances), joinOrDash(pins))
 	}
 	return tw.Flush()
+}
+
+// carrierOrDash is the agent that carried a gesture, or a dash where none did.
+func carrierOrDash(carrier string) string {
+	if carrier == "" {
+		return "-"
+	}
+	return carrier
 }

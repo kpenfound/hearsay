@@ -51,6 +51,33 @@ const GestureTarget = "gesture:"
 // process died holding the scope, and treats it as done.
 const GestureHoldTarget = "gesture-hold:"
 
+// ErrNotLive is a ratify or a demote of a stance that is not live: a later
+// reading of its own origin superseded it, or it is a withdrawal. It is what a
+// caller tells apart from [ErrNotFound] (no such stance) and [ErrNotAllowed].
+var ErrNotLive = errors.New("stance is not live")
+
+// ErrNotUndoable is an undo of a gesture that cannot be undone: one already
+// undone, an undo, or, where the request is limited to decisions
+// ([GestureRequest.DecisionsOnly]), a pin. It also wraps [ErrInvalid], which
+// the undo of an undone gesture or of an undo has always been, so a caller
+// that only knows ErrInvalid still refuses it; test for this kind first.
+var ErrNotUndoable = errors.New("gesture is not undoable")
+
+// ErrEventConflict is a request whose event already holds a different gesture:
+// an event is one gesture. It also wraps [ErrInvalid], which the reuse of an
+// event has always been; test for this kind first.
+var ErrEventConflict = errors.New("event already holds a different gesture")
+
+// compatError is a refusal of a kind that also is an older, broader one, which
+// callers written before the kind existed still test for.
+type compatError struct {
+	kind, broad error
+	msg         string
+}
+
+func (e compatError) Error() string   { return e.broad.Error() + ": " + e.msg }
+func (e compatError) Unwrap() []error { return []error{e.kind, e.broad} }
+
 // GestureRequest is a person's gesture, as its source's caller read it: who
 // made it, from which L0 event, and what it points at. Parsing the source's
 // reaction or command, and mapping its actor to a principal, are the caller's.
@@ -66,8 +93,21 @@ type GestureRequest struct {
 	// demote or a pin: the thread or burst holding the message they reacted
 	// to, the issue they commented on.
 	Documents []string
+	// Stance, for a ratify or a demote, names one stance instead of documents:
+	// the decision applies to that stance alone, which must be live, and not
+	// to the others drawn from the same documents. It may be a stance an agent
+	// asserted. The gesture records the stance's own evidence as its documents.
+	Stance string
+	// Carrier is the agent that carried the person's decision, recorded beside
+	// the principal and never authorized: the scope's policy is checked against
+	// the principal alone. Empty for a gesture nobody carried.
+	Carrier string
 	// Undoes is, for an undo, the event of the gesture it reverses.
 	Undoes string
+	// DecisionsOnly limits an undo to a ratify or a demote: the undo of a pin
+	// is refused as [ErrNotUndoable]. It is not part of what makes a request
+	// the same as one recorded.
+	DecisionsOnly bool
 }
 
 // Validate reports a request that is refused before anything is read.
@@ -92,6 +132,15 @@ func (r GestureRequest) Validate() error {
 	if r.Undoes != "" {
 		return fmt.Errorf("%w: a %s undoes nothing", ErrInvalid, r.Action)
 	}
+	if r.Stance != "" {
+		switch {
+		case r.Action != GestureRatify && r.Action != GestureDemote:
+			return fmt.Errorf("%w: a %s cannot name a stance", ErrInvalid, r.Action)
+		case len(r.Documents) > 0:
+			return fmt.Errorf("%w: a %s names a stance or documents, not both", ErrInvalid, r.Action)
+		}
+		return nil
+	}
 	if len(r.Documents) == 0 {
 		return fmt.Errorf("%w: a %s names no document", ErrInvalid, r.Action)
 	}
@@ -110,8 +159,14 @@ type Gesture struct {
 	Action    GestureAction
 	Scope     string
 	Principal string
+	// Carrier is the agent that carried the gesture, empty where none did.
+	Carrier string
+	// Stance is the stance a ratify or a demote named, empty where it named
+	// documents and for every other gesture. Stances is then exactly it.
+	Stance string
 	// Documents are the documents the gesture pointed at, sorted; an undo
-	// repeats those of the gesture it undoes.
+	// repeats those of the gesture it undoes, and a stance-targeted gesture
+	// holds the stance's evidence.
 	Documents []string
 	// Stances are the live stances drawn from the documents when a ratify or
 	// a demote was recorded, sorted: what it applies to, then and after. An
@@ -123,9 +178,10 @@ type Gesture struct {
 	// Undoes is the gesture an undo reverses, and UndoneBy the undo that
 	// reversed this one; zero where there is none.
 	Undoes, UndoneBy int64
-	At               time.Time
-
-	undoesEvent string
+	// UndoesEvent is the event of the gesture an undo reverses, empty for
+	// every other gesture.
+	UndoesEvent string
+	At          time.Time
 }
 
 // CheckGesturer refuses a principal whose gesture is not recorded in a scope:
@@ -149,9 +205,17 @@ func CheckGesturer(repo config.Repo, scope, id string) error {
 // transaction instead.
 //
 // A refused gesture writes nothing: an unknown or unauthorized principal
-// ([ErrNotAllowed]), documents no live stance is drawn from, or a pin of a
-// document L1 does not hold ([ErrNotFound]), documents in two scopes and other
-// malformed requests ([ErrInvalid]).
+// ([ErrNotAllowed]), documents no live stance is drawn from, a stance or a
+// gesture that does not exist, or a pin of a document L1 does not hold
+// ([ErrNotFound]), documents in two scopes and other malformed requests
+// ([ErrInvalid]). A request naming a stance that is not live is refused as
+// [ErrNotLive], and an undo of what cannot be undone as [ErrNotUndoable], both
+// only after the principal is authorized, so a refusal says nothing to someone
+// who could not have made the gesture. An event that already holds a different
+// gesture is [ErrEventConflict]; one that holds this gesture is a replay,
+// answered before liveness, undoability or the principal's authority are
+// looked at, so it returns the original even once its stance is superseded or
+// the gesture it undid is undone.
 func RecordGesture(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, req GestureRequest) (Gesture, bool, error) {
 	if err := req.Validate(); err != nil {
 		return Gesture{}, false, err
@@ -162,6 +226,11 @@ func RecordGesture(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, re
 	}
 	plan, err := store.planGesture(ctx, req)
 	if err != nil {
+		// An identical request that committed since the lookup above is a
+		// replay, not a refusal of what it did.
+		if g, found, rerr := store.recorded(ctx, req); rerr == nil && found {
+			return g, false, nil
+		}
 		return Gesture{}, false, err
 	}
 	scope, err := plan.scopeKey(repo)
@@ -170,6 +239,12 @@ func RecordGesture(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, re
 	}
 	if err := CheckGesturer(repo, scope, req.Principal); err != nil {
 		return Gesture{}, false, err
+	}
+	if plan.refusal != nil {
+		if g, found, rerr := store.recorded(ctx, req); rerr == nil && found {
+			return g, false, nil
+		}
+		return Gesture{}, false, plan.refusal
 	}
 	client, err := queue.New(pool, queue.Config{Kind: AssertKind()})
 	if err != nil {
@@ -234,6 +309,9 @@ func (s *Store) ApplyGesture(ctx context.Context, repo config.Repo, scope string
 	if err := CheckGesturer(repo, scope, req.Principal); err != nil {
 		return Gesture{}, false, err
 	}
+	if plan.refusal != nil {
+		return Gesture{}, false, plan.refusal
+	}
 	pinning := req.Action == GesturePin || plan.undoes.Action == GesturePin
 	if pinning {
 		if err := lockPins(ctx, s.db); err != nil {
@@ -241,11 +319,14 @@ func (s *Store) ApplyGesture(ctx context.Context, repo config.Repo, scope string
 		}
 	}
 	g := Gesture{
-		Event: req.Event, Action: req.Action, Scope: scope, Principal: req.Principal,
+		Event: req.Event, Action: req.Action, Scope: scope, Principal: req.Principal, Carrier: req.Carrier,
 		Documents: sortedUnique(req.Documents), Stances: plan.stances, Pins: plan.pins,
 	}
-	if req.Action == GestureUndo {
-		g.Documents, g.Undoes = plan.undoes.Documents, plan.undoes.ID
+	switch {
+	case req.Action == GestureUndo:
+		g.Documents, g.Undoes, g.UndoesEvent = plan.undoes.Documents, plan.undoes.ID, req.Undoes
+	case req.Stance != "":
+		g.Documents, g.Stance = plan.documents, req.Stance
 	}
 	if g, err = s.appendGesture(ctx, g); err != nil {
 		return Gesture{}, false, err
@@ -278,10 +359,12 @@ func (s *Store) recorded(ctx context.Context, req GestureRequest) (Gesture, bool
 	if err != nil {
 		return Gesture{}, false, err
 	}
-	same := g.Action == req.Action && g.Principal == req.Principal && g.undoesEvent == req.Undoes &&
-		(req.Action == GestureUndo || slices.Equal(g.Documents, sortedUnique(req.Documents)))
+	same := g.Action == req.Action && g.Principal == req.Principal && g.Carrier == req.Carrier &&
+		g.UndoesEvent == req.Undoes && g.Stance == req.Stance &&
+		(req.Action == GestureUndo || req.Stance != "" || slices.Equal(g.Documents, sortedUnique(req.Documents)))
 	if !same {
-		return Gesture{}, false, fmt.Errorf("%w: event %s is already gesture %d, a %s by %q", ErrInvalid, req.Event, g.ID, g.Action, g.Principal)
+		return Gesture{}, false, compatError{kind: ErrEventConflict, broad: ErrInvalid,
+			msg: fmt.Sprintf("event %s is already gesture %d, a %s by %q", req.Event, g.ID, g.Action, g.Principal)}
 	}
 	return g, true, nil
 }
@@ -297,11 +380,18 @@ type gesturePlan struct {
 	// empty for a pin, whose key is its documents'.
 	scope   string
 	stances []string
-	pins    []Pin
+	// documents are the evidence of the one stance a stance-targeted gesture
+	// names.
+	documents []string
+	pins      []Pin
 	// keys are the pinned documents' source and container, from which a
 	// pin's serial key is computed ([ScopeKey]).
 	keys   []pinScope
 	undoes Gesture
+	// refusal is why the gesture cannot be recorded though it names something
+	// that exists: a stance that is not live, a gesture that cannot be undone.
+	// It is reported once the principal is authorized.
+	refusal error
 }
 
 // scopeKey is the serial key the gesture is recorded under. Documents to pin
@@ -328,18 +418,28 @@ func (s *Store) planGesture(ctx context.Context, req GestureRequest) (gesturePla
 			return gesturePlan{}, fmt.Errorf("%w: no gesture was recorded from event %s", ErrNotFound, req.Undoes)
 		case err != nil:
 			return gesturePlan{}, err
-		case g.Action == GestureUndo:
-			return gesturePlan{}, fmt.Errorf("%w: gesture %d is an undo, and an undo is not undone: make the gesture again", ErrInvalid, g.ID)
-		case g.UndoneBy != 0:
-			return gesturePlan{}, fmt.Errorf("%w: gesture %d is already undone, by gesture %d", ErrInvalid, g.ID, g.UndoneBy)
 		}
 		pins := make([]Pin, len(g.Pins))
 		for i, p := range g.Pins {
 			pins[i] = Pin{Scope: p.Scope, L1: p.L1}
 		}
-		return gesturePlan{scope: g.Scope, stances: g.Stances, pins: pins, undoes: g}, nil
+		plan := gesturePlan{scope: g.Scope, stances: g.Stances, pins: pins, undoes: g}
+		switch {
+		case g.Action == GestureUndo:
+			plan.refusal = compatError{kind: ErrNotUndoable, broad: ErrInvalid,
+				msg: fmt.Sprintf("gesture %d is an undo, and an undo is not undone: make the gesture again", g.ID)}
+		case g.UndoneBy != 0:
+			plan.refusal = compatError{kind: ErrNotUndoable, broad: ErrInvalid,
+				msg: fmt.Sprintf("gesture %d is already undone, by gesture %d", g.ID, g.UndoneBy)}
+		case g.Action == GesturePin && req.DecisionsOnly:
+			plan.refusal = fmt.Errorf("%w: gesture %d is a pin, not a ratify or a demote", ErrNotUndoable, g.ID)
+		}
+		return plan, nil
 	case GesturePin:
 		return s.planPin(ctx, sortedUnique(req.Documents))
+	}
+	if req.Stance != "" {
+		return s.planStance(ctx, req.Stance)
 	}
 	return s.planStances(ctx, sortedUnique(req.Documents))
 }
@@ -375,6 +475,33 @@ ORDER BY s.id`, docs)
 	}
 	if len(plan.stances) == 0 {
 		return gesturePlan{}, fmt.Errorf("%w: no live stance is drawn from %v", ErrNotFound, docs)
+	}
+	return plan, nil
+}
+
+// planStance reads the one stance a ratify or a demote names: its topic's
+// scope and its evidence, which the gesture records as its documents. A stance
+// an agent asserted is allowed, since a person names it. One that is not live
+// plans, and carries the refusal to report once the principal is authorized.
+func (s *Store) planStance(ctx context.Context, id string) (gesturePlan, error) {
+	var scope string
+	var evidence []string
+	var withdrawn, retired bool
+	err := s.db.QueryRow(ctx, `
+SELECT t.scope, s.evidence, s.withdrawn, `+RetiredSQL+`
+FROM l2_stances s JOIN l2_topics t ON t.id = s.topic_id WHERE s.id = $1`, id).Scan(&scope, &evidence, &withdrawn, &retired)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return gesturePlan{}, fmt.Errorf("%w: stance %s", ErrNotFound, id)
+	}
+	if err != nil {
+		return gesturePlan{}, fmt.Errorf("reading stance %s: %w", id, err)
+	}
+	plan := gesturePlan{scope: scope, stances: []string{id}, documents: sortedUnique(evidence)}
+	switch {
+	case withdrawn:
+		plan.refusal = fmt.Errorf("%w: stance %s is withdrawn", ErrNotLive, id)
+	case retired:
+		plan.refusal = fmt.Errorf("%w: stance %s is superseded by a later reading of its own origin", ErrNotLive, id)
 	}
 	return plan, nil
 }
@@ -438,9 +565,10 @@ func (s *Store) appendGesture(ctx context.Context, g Gesture) (Gesture, error) {
 		undoes = &g.Undoes
 	}
 	err = s.db.QueryRow(ctx, `
-INSERT INTO l2_gestures (event, action, scope, principal, documents, stances, pins, undoes)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id, created_at`, g.Event, string(g.Action), g.Scope, g.Principal, orEmpty(g.Documents), orEmpty(g.Stances), pins, undoes).Scan(&g.ID, &g.At)
+INSERT INTO l2_gestures (event, action, scope, principal, carrier, target_stance, documents, stances, pins, undoes)
+VALUES ($1, $2, $3, $4, nullif($5, ''), nullif($6, ''), $7, $8, $9, $10)
+RETURNING id, created_at`, g.Event, string(g.Action), g.Scope, g.Principal, g.Carrier, g.Stance,
+		orEmpty(g.Documents), orEmpty(g.Stances), pins, undoes).Scan(&g.ID, &g.At)
 	if err != nil {
 		return Gesture{}, fmt.Errorf("recording a %s in scope %q: %w", g.Action, g.Scope, err)
 	}
@@ -459,7 +587,7 @@ RETURNING id, created_at`, g.Event, string(g.Action), g.Scope, g.Principal, orEm
 const gestureInForceSQL = `(NOT EXISTS (SELECT 1 FROM l2_gestures x WHERE x.undoes = g.id)
   AND NOT EXISTS (SELECT 1 FROM l0_events e WHERE e.id = g.event AND e.deletion IS NOT NULL))`
 
-const gestureColumns = `g.id, g.event, g.action, g.scope, g.principal, g.documents, g.stances, g.pins,
+const gestureColumns = `g.id, g.event, g.action, g.scope, g.principal, coalesce(g.carrier, ''), coalesce(g.target_stance, ''), g.documents, g.stances, g.pins,
     coalesce(g.undoes, 0), coalesce(v.event, ''), coalesce(u.id, 0), g.created_at`
 
 const gestureFrom = `l2_gestures g LEFT JOIN l2_gestures u ON u.undoes = g.id LEFT JOIN l2_gestures v ON v.id = g.undoes`
@@ -504,8 +632,8 @@ func scanGesture(row scanner) (Gesture, error) {
 	var g Gesture
 	var action string
 	var pins []byte
-	if err := row.Scan(&g.ID, &g.Event, &action, &g.Scope, &g.Principal, &g.Documents, &g.Stances, &pins,
-		&g.Undoes, &g.undoesEvent, &g.UndoneBy, &g.At); err != nil {
+	if err := row.Scan(&g.ID, &g.Event, &action, &g.Scope, &g.Principal, &g.Carrier, &g.Stance, &g.Documents, &g.Stances, &pins,
+		&g.Undoes, &g.UndoesEvent, &g.UndoneBy, &g.At); err != nil {
 		return Gesture{}, err
 	}
 	g.Action = GestureAction(action)

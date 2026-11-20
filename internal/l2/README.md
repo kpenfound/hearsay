@@ -76,6 +76,17 @@ text that is no longer current (below).
   ratified, or contested until a ratification or a newer current stance. An
   undo is another row; a gesture whose event an operator deletion deleted is
   out of force. Who may gesture is [CheckGesturer], the operators' rule.
+  A ratify or a demote may instead name one stance
+  ([GestureRequest.Stance]): it applies to that stance alone, which must be
+  live, and records the stance's evidence as its documents. Any gesture may
+  record the agent that carried it ([GestureRequest.Carrier]), which is never
+  authorized: the policy is checked against the principal. A request whose
+  event is already recorded is answered before liveness, undoability or policy
+  are read: the same content returns the original and says it was not newly
+  recorded, other content is [ErrEventConflict]. Refusals are told apart:
+  [ErrNotAllowed], [ErrNotFound], [ErrNotLive], [ErrNotUndoable],
+  [ErrEventConflict] and [ErrInvalid]; the last two the old undo and event
+  refusals also wrap, so test the specific kind first.
 - **Chat commands are applied here, for whichever process received them**
   ([Commands]).
   It maps the invoker to a configured human, reads through their [View], and
