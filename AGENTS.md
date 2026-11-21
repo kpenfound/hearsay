@@ -64,6 +64,7 @@ dagger api functions      # the modules; `dagger api call hearsay <fn>` runs one
 dagger api call hearsay qa --script '...'     # run a test plan in the shipped image, Postgres beside it
 dagger api call hearsay compose-smoke         # run deploy/compose in a Docker daemon of its own
 deploy/smoke/work-records-e2e.sh              # owner/work decision path in a running `hearsay all`, Docker alone
+deploy/smoke/decide-e2e.sh                    # the `decide` call over HTTP and MCP in a running `hearsay all`, Docker alone
 dagger settings go        # the Go module's settings
 dagger lock update        # refresh the lockfile's module and image pins
 ```
@@ -236,8 +237,18 @@ records nothing, recorded under the same serial key and authorized as an
 operation is. A ratify or a demote applies to the live stances drawn from the
 documents it names and changes no stance row; `l2.Store.Assess`, and so every
 bundle and `stance_history`, serves a ratified current stance as `ratified`
-and a demoted one as `contested` until a ratification or a newer stance. A pin
-writes `l2_pins`.
+and a demoted one as `contested` until a ratification or a newer stance. A
+ratify or demote may instead name one stance (`GestureRequest.Stance`, from the
+API's `decide`): it must be live (`ErrNotLive` otherwise), applies to that
+stance alone and records the stance's evidence as its documents. Any gesture
+may record the agent that carried it (`Carrier`, never authorized: the policy is
+checked against the principal), which `hearsay gestures list` shows as a
+carrier column and `carrier` field, and which reactions, chat and GitHub
+commands and the CLI never set. A request whose event is already recorded is
+answered before liveness, undoability or policy are looked at: the same gesture
+is a replay (`recorded` false), another is `ErrEventConflict`; `ErrNotUndoable`
+is an undo of an undone gesture or of an undo, or, limited by `DecisionsOnly`,
+of a pin. A pin writes `l2_pins`.
 The assertion worker interprets Discord and Slack reaction L0 events and their
 tombstones as gestures through this ledger. It resolves the actor and the
 containing L1 thread or burst without writing to either channel.
@@ -284,7 +295,7 @@ environment variable: a URL on a command line puts its password in the process
 list.
 
 The API is not a stub. It serves `get_bundle`, `resolve`, `traverse`, `stance_history`,
-`get_l1`, `get_l0`, `get_session`, `search`, `watch` and `assert` as
+`get_l1`, `get_l0`, `get_session`, `search`, `watch`, `assert` and `decide` as
 `POST /v1/<call>` and as MCP tools at `/mcp`,
 from one call layer whose bytes both interfaces serve verbatim, on `--listen`
 (default `:8080`; `hearsay all` takes `--api-listen`), and also on the owner's
@@ -308,7 +319,34 @@ event under source `hearsay`. `assert` is an agent's write: only an agent of
 class `worker` or
 above may call it, and it writes an L0 `assertion` event under source `hearsay`
 and enqueues the `assert` job that appends its stance under the topic's scope,
-with no model call. `watch` is a long poll with an opaque cursor over the L0
+with no model call.
+`decide` is a person's own ratify, demote or undo of one stance
+(`internal/service/api/decide.go`): `decision_id`, `action` (`ratify`, `demote`
+or `undo`) and a `stance_id` (ratify, demote) or a `gesture_id` (undo); unknown
+fields are refused, and pins, merges, splits and alias decisions are not part
+of it. The decision is the human's in `Hearsay-Principal`: the scope's
+`ratified_by.principals` is checked against that person, never against the
+agent, and an agent in `Hearsay-Agent` only carries it, recorded as the
+gesture's `carrier` beside the `principal`. Any agent class that may write
+(worker and above) may carry; an observer is refused, and no class gains
+ratify or merge rights. It records through `l2.RecordGesture` under the scope's
+serial key, writes no L0 event and calls no model. The gesture's event id is
+derived from the human, the carrier and the decision id, so the request is
+idempotent: a decision already recorded under it with the same content, whose
+target the caller can still read and reach, is answered with the original
+gesture and `recorded` false without re-checking liveness, undoability or
+policy (a target the caller lost is the same `not_found` as one that does not
+exist); different content under it is `conflict`; otherwise read and reach, then
+policy, then liveness or undoability are checked and one gesture is recorded
+(`recorded` true). The answer is `{gesture_id, action, stance_id |
+undone_gesture_id, recorded}`. A refusal made by the call carries a status and
+`{error, code}` with `code` one of `not_allowed`, `not_found` (nonexistent,
+unreadable and out of reach alike), `not_live`, `not_undoable`, `conflict`,
+`invalid` or `internal`, and records nothing. Failures shared by every call
+before it is dispatched — a missing or invalid human or agent credential, an
+oversized body, session and reach resolution — keep their statuses and
+code-less `{error}` bodies, so the absence of `code` tells them apart, and the
+bodies of every other call are unchanged. `watch` is a long poll with an opaque cursor over the L0
 change feed: it returns the events on a scope once they are distilled, as
 handles with no content, and waits up to 25 seconds when there are none; a
 person or an agent of class `orchestrator` or above may call it. The bundle is
@@ -345,7 +383,9 @@ requires `--config` and `--principal <human-id>`. Writes also accept
 gesture id, and use the shared L2 gesture ledger and scope authority. Hidden
 targets and ledger records read as missing. `list [--scope] [--since
 <RFC3339>] [--json]` filters the ledger by the person's current reach and
-evidence access. Topic merge is in `hearsay topics merge`.
+evidence access. The list shows each gesture's carrier (an agent that carried
+the person's decision through the API's `decide`), a dash or absent for none.
+Topic merge is in `hearsay topics merge`.
 
 `hearsay eval [--since <RFC3339>] [--until <RFC3339>] [--scope <id>] [--json]`
 needs `--config`, because standing is computed under the configured authority,

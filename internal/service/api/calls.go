@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/bundle"
 	"github.com/kpenfound/hearsay/internal/config"
@@ -56,9 +57,14 @@ const (
 // Error is a call that did not succeed, with the HTTP status it is served as and
 // a message that is a fixed sentence or names only what the caller sent: it
 // never carries an error from Postgres, a model or a source.
+//
+// Code is a stable machine-readable reason beside the message. Only a call that
+// documents its refusals sets one (`decide`); the failures every call shares,
+// and every other call's, have none and are served without a `code` field.
 type Error struct {
 	Status  int
 	Message string
+	Code    string
 }
 
 func (e *Error) Error() string { return e.Message }
@@ -75,7 +81,8 @@ var errInternal = &Error{Status: http.StatusInternalServerError, Message: "the c
 func ErrorBody(e *Error) []byte {
 	body, _ := json.Marshal(struct {
 		Error string `json:"error"`
-	}{e.Message})
+		Code  string `json:"code,omitempty"`
+	}{e.Message, e.Code})
 	return body
 }
 
@@ -97,7 +104,13 @@ type Calls struct {
 	events *l0.Store
 	graph  *l2.Store
 	// reach is what a caller's reach is read from: the graph, but for a test.
-	reach          principal.Graph
+	reach principal.Graph
+	// pool and repo are what `decide` records a gesture with: the ledger takes a
+	// pool, to hold the scope's serial key, and the configuration, for the
+	// scope's ratify policy. A call layer over anything but a pool has no pool,
+	// and `decide` then fails as an internal error.
+	pool           *pgxpool.Pool
+	repo           config.Repo
 	authority      config.Authority
 	assembler      *bundle.Assembler
 	cache          *bundleCache
@@ -143,8 +156,11 @@ func NewCalls(q DB, repo config.Repo, embedder l1.Embedder) (*Calls, error) {
 		}
 	}
 	graph := l2.New(q)
+	pool, _ := q.(*pgxpool.Pool)
 	return &Calls{
 		db:             q,
+		pool:           pool,
+		repo:           repo,
 		docs:           l1.New(q),
 		events:         l0.New(q),
 		graph:          graph,
@@ -198,6 +214,7 @@ var calls = []call{
 		schema(`{"scope":{"type":"string","description":"the entity id to watch"},"filter":{"type":"object","properties":{"kinds":{"type":"array","items":{"type":"string"}},"sources":{"type":"array","items":{"type":"string"}}},"additionalProperties":false,"description":"only these event kinds and sources; an empty list is every one"},"after":{"type":"string","description":"the cursor the previous watch returned"}}`, "scope")}, watch},
 	{Tool{"assert", "Propose a position on an existing topic, citing the L1 documents it rests on. Only an agent of class worker or above may; the stance is appended by the assertion worker, ranks as class agent and does not ratify on its own under the default authority policy. Returns the id of the L0 assertion event; repeating a request returns the same id and writes nothing more.",
 		schema(`{"topic":{"type":"string","description":"an existing topic id, from a bundle's topic_id"},"position":{"type":"string","description":"the position, at most 2000 bytes"},"evidence":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":32,"description":"L1 document ids the position rests on; the caller must be able to read every one"}}`, "topic", "position", "evidence")}, assertStance},
+	{decideTool, decide},
 }
 
 func schema(properties string, required ...string) json.RawMessage {

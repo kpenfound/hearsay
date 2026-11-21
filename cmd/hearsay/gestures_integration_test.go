@@ -165,4 +165,60 @@ func TestGesturesCommand(t *testing.T) {
 	if err != nil || len(pins) != 0 {
 		t.Fatalf("pins after unpin = %+v, %v", pins, err)
 	}
+
+	// A decision an agent carried lists its carrier, in the table and in JSON;
+	// every gesture recorded without one lists none.
+	repo, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	topic := l2.TopicID("api", visible, 0, visible)
+	stanceID := l2.StanceID(topic, visible, "yes", when, l2.TierInferred)
+	carried, _, err := l2.RecordGesture(ctx, pool, repo, l2.GestureRequest{
+		Event: connector.EventID("hearsay", "carried-"+topic), Principal: "kyle", Carrier: "bot", Action: l2.GestureDemote, Stance: stanceID,
+	})
+	if err != nil || carried.Carrier != "bot" {
+		t.Fatalf("carried demote = %+v, %v", carried, err)
+	}
+	listed, err = call("sam", "list", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw []map[string]any
+	if err := json.Unmarshal([]byte(listed), &raw); err != nil {
+		t.Fatal(err)
+	}
+	carriers := 0
+	for _, r := range raw {
+		carrier, has := r["carrier"]
+		if r["id"] == float64(carried.ID) {
+			if carrier != "bot" || r["principal"] != "kyle" {
+				t.Errorf("carried gesture = %+v, want principal kyle and carrier bot", r)
+			}
+			carriers++
+		} else if has {
+			t.Errorf("gesture %v lists carrier %v, want none", r["id"], carrier)
+		}
+	}
+	if carriers != 1 {
+		t.Fatalf("the carried gesture is listed %d times in %s", carriers, listed)
+	}
+	table, err := call("sam", "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(table), "\n")
+	if f := strings.Fields(lines[0]); len(f) < 6 || f[4] != "PRINCIPAL" || f[5] != "CARRIER" {
+		t.Fatalf("table header = %q, want a CARRIER column after PRINCIPAL", lines[0])
+	}
+	for _, line := range lines[1:] {
+		f := strings.Fields(line)
+		want := "-"
+		if f[0] == strconv.FormatInt(carried.ID, 10) {
+			want = "bot"
+		}
+		if f[5] != want {
+			t.Errorf("row %q: carrier column %q, want %q", line, f[5], want)
+		}
+	}
 }

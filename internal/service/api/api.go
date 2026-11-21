@@ -1,7 +1,8 @@
-// Package api serves the read and assert API over MCP and HTTP: bundle
-// assembly, the handles a consumer follows, `watch`, the audit trail, and
-// `assert`, the one write a call makes, through which an agent proposes a
-// stance as an L0 `assertion` event. Reads are structured lookups, and nothing here asks a
+// Package api serves the read, assert and decide API over MCP and HTTP: bundle
+// assembly, the handles a consumer follows, `watch`, the audit trail, `assert`,
+// through which an agent proposes a stance as an L0 `assertion` event, and
+// `decide`, through which a person (with an agent carrying it, if one does)
+// ratifies, demotes or undoes a stance in the gesture ledger. Reads are structured lookups, and nothing here asks a
 // model to generate anything: the one model call a read makes is `search` embedding the
 // query it was given, on the `embed` tier (internal/l1).
 //
@@ -14,6 +15,10 @@
 // Both interfaces authenticate the person named in [PrincipalHeader] with a
 // bearer token. When [AgentHeader] names an agent, that agent's token is also
 // required. Authentication precedes the shared call layer.
+// Failures of authentication, request size, session and reach resolution happen
+// before a call is dispatched and are the same for every call: a status and a
+// `{"error": message}` body with no reason code. Only `decide` documents its
+// own refusals, with a `code` beside the message ([Error.Code]).
 // An authenticated agent may name its session in [SessionHeader]; the call
 // layer links audits and assertions to its artifact.
 //
