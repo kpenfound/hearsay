@@ -56,17 +56,18 @@ type Hearsay {
   The base container the reusable Go module receives for its tests, unit and
   integration alike. Keep it here so the Go version and Postgres match the rest
   of Hearsay's checks. The Go module adds the source, working directory and
-  caches; it expects Alpine because it builds its helper binaries there.
+  caches. It is Debian (trixie), not Alpine, so what the Go module builds in
+  it links against glibc, like the binary and image it ships.
 
   The Postgres it binds is migrated before it accepts a connection
-  (migratedPostgres), so a test needs no setup of its own. gcc and the musl
+  (migratedPostgres), so a test needs no setup of its own. gcc and the libc
   headers are for the race detector, which needs cgo; dagger.toml's goflags
   turns it on with the `integration` tag.
   """
   goTestBase(ws: Workspace!): Container! {
     container
-      .from("golang:" + goVersion(ws) + "-alpine")
-      .withExec(["apk", "add", "--no-cache", "gcc", "musl-dev"])
+      .from("golang:" + goVersion(ws) + "-trixie")
+      .withExec(["sh", "-c", "apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev && rm -rf /var/lib/apt/lists/*"])
       .withEnvVariable("CGO_ENABLED", "1")
       .withServiceBinding("postgres", migratedPostgres(ws))
       .withEnvVariable("HEARSAY_DATABASE_URL", databaseUrl)

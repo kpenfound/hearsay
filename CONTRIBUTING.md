@@ -330,7 +330,7 @@ stricter vet or lint lands somewhere it can be read:
 1. Edit the `go` directive in `go.mod`. That is the only place a person writes
    the version: `hearsay` reads it for every Go container.
 2. Resolve the new `golang:<the go directive>` and
-   `golang:<the go directive>-alpine` images by executing the build and Go
+   `golang:<the go directive>-trixie` images by executing the build and Go
    checks, then inspect the generated entries in `dagger.lock`. Updating
    existing pins alone does not prove the new images were resolved. Do not
    hand-prune or delete/regenerate the lockfile to remove retained entries.
