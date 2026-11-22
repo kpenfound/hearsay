@@ -22,7 +22,7 @@ through `dagger.lock`. Keep its version out of `dagger.toml`; refresh the pins
 with `dagger lock update`. Lint is the official golangci-lint module
 (`dagger.io/go/golangci-lint`), which reads `.golangci.yml`, in
 golangci-lint's own image at the version `hearsay:lint-base` tags. The tidy,
-compose, Helm and systemd checks, the binary, the image, migrations and the dev stack are `hearsay`, our own module
+compose and Helm checks, the binary, the image, migrations and the dev stack are `hearsay`, our own module
 in `.dagger/modules/hearsay/main.dang`, written in Dang. The lock also retains
 v0.3.1 helper resolutions; they do not select the bare Go module's release.
 `hearsay:go-test-base` hands the Go module a container with an already
@@ -50,7 +50,7 @@ pull the private package for its smoke check before that one-time step.
 | `go` | `*` | `*` | | `stale` |
 | `dagger-dang-sdk` | | | | `stale` |
 | `golangci-lint` | | | | `lint`, one per directory holding a `.golangci.yml` |
-| `hearsay` | | | | `compose-check`, `fmt-check`, `helm-check`, `systemd-check`, `tidy-check` |
+| `hearsay` | | | | `compose-check`, `fmt-check`, `helm-check`, `tidy-check` |
 
 Use `dagger check -l --all --go` to expand the collections and
 `dagger check --go` to run the Go checks. Tests execute once per package;
@@ -86,12 +86,8 @@ pre-install and pre-upgrade hook Job, external Postgres, every credential a
 reference to an existing Secret), in the same guide; `hearsay:helm-check`
 lints it and holds `helm template` to that shape without a cluster. A new
 listen address the probes or Services would depend on belongs in the chart's
-reserved list in `templates/_helpers.tpl`. The host form is `deploy/systemd`:
-the four services as the owner's systemd user units (`hearsay@<service>`,
-`hearsay-migrate`, `hearsay.target`) against an external Postgres such as
-Neon's direct endpoint, the one form where the `claude-sbx` provider works;
-`hearsay:systemd-check` holds it to its shape. A new environment variable goes
-in `deploy/systemd/env.example` too.
+reserved list in `templates/_helpers.tpl`. The lab's host deployment lives in the Apiary repository; this repository
+ships no host units.
 
 The Go module keeps linting in separate modules; `golangci-lint` is the lint
 gate (`dagger check --golangci-lint`), run in `hearsay:lint-base`, golangci-lint's
