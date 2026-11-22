@@ -53,7 +53,7 @@ nothing about Hearsay. The remote module is pinned at v0.4.0 through
 `dagger.lock`; its source in `dagger.toml` has no version or branch. Refresh
 the lockfile with `dagger lock update`. `hearsay`, in
 `.dagger/modules/hearsay/main.dang`, is
-ours and holds everything that module could not know: the formatter, tidy, compose, Helm and systemd checks, the binary, the image, migrations
+ours and holds everything that module could not know: the formatter, tidy, compose and Helm checks, the binary, the image, migrations
 and the dev stack.
 
 | Check | From | Does |

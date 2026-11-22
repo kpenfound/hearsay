@@ -1456,10 +1456,11 @@ its default, as for any provider.
 - **Host-only.** The process needs the `sbx` CLI and its daemon, and a Claude
   Code login stored with it (`sbx secret set`), on the machine it runs on. The
   Compose and Helm deployments do not have either, so `claude-sbx` is not
-  available there; the systemd deployment, whose services are the owner's
-  user units on the host, is the one that has them
-  ([deploy.md](deploy.md#on-one-host-with-systemd)). `distiller`, `assert-worker`, `api`
-  and `all` check that `sbx` answers when they build their tiers, and refuse to
+  available there. It needs Hearsay's processes to run directly on a host; the
+  lab runs Hearsay that way from the Apiary repository, and the project ships no
+  units for it (see
+  [the note in deploy.md](deploy.md#the-claude-sbx-provider-on-a-host)).
+  `distiller`, `assert-worker`, `api` and `all` check that `sbx` answers when they build their tiers, and refuse to
   start naming the tier, the provider and `sbx` when it does not.
   `hearsay config validate` never runs that check, so a configuration
   repository's CI needs no `sbx`. No credential variable is read: not
