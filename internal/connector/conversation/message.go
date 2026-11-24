@@ -227,38 +227,54 @@ func same(a, b connector.Event) (bool, error) {
 }
 
 // store writes a checked request from agent: the one place the source's events
-// reach L0, and so the place to refuse one that may not be stored. It writes
-// nothing when the artifact's current revision already says it, and returns the
-// event the artifact now stands at.
+// reach L0, and so the place to refuse one that may not be stored. The
+// artifact is held still while it runs, so that a message deleted before the
+// post, or while it waits, is never written again, and a deletion that
+// follows sees what the post wrote. It writes nothing when the artifact's
+// current revision already says it, and returns the event the artifact now
+// stands at.
 func (c *Connector) store(ctx context.Context, sink connector.Sink, agent string, req Request) (connector.Event, Outcome, error) {
-	reader, ok := sink.(connector.ArtifactReader)
+	serializer, ok := sink.(connector.ArtifactSerializer)
 	if !ok {
-		return connector.Event{}, "", errors.New("the sink cannot read the current revision of a message")
+		return connector.Event{}, "", errors.New("the sink cannot hold a message still while it is written")
 	}
 	artifact := Artifact(req.Conversation, req.Exchange, req.Role)
-	current, held, err := reader.CurrentArtifact(ctx, c.source, artifact)
-	if err != nil {
-		return connector.Event{}, "", fmt.Errorf("reading %s: %w", artifact, err)
-	}
-	previous := ""
-	if held {
-		previous = current.NativeID
-	}
-	ev, err := c.event(agent, req, previous)
-	if err != nil {
-		return connector.Event{}, "", err
-	}
-	if held {
-		unchanged, err := same(current, ev)
+	var (
+		stored  connector.Event
+		outcome Outcome
+	)
+	err := serializer.SerializeArtifact(ctx, c.source, artifact, func(ctx context.Context, held connector.LockedArtifact) error {
+		if held.Deleted() {
+			return ErrDeleted
+		}
+		current, ok := held.Current()
+		previous := ""
+		if ok {
+			previous = current.NativeID
+		}
+		ev, err := c.event(agent, req, previous)
 		if err != nil {
-			return connector.Event{}, "", err
+			return err
 		}
-		if unchanged {
-			return current, Unchanged, nil
+		stored = ev
+		if ok {
+			unchanged, err := same(current, ev)
+			if err != nil {
+				return err
+			}
+			if unchanged {
+				stored, outcome = current, Unchanged
+				return nil
+			}
 		}
+		if err := held.Emit(ctx, ev); err != nil {
+			return err
+		}
+		outcome = Stored
+		return nil
+	})
+	if err != nil {
+		return stored, "", err
 	}
-	if err := sink.Emit(ctx, ev); err != nil {
-		return ev, "", err
-	}
-	return ev, Stored, nil
+	return stored, outcome, nil
 }

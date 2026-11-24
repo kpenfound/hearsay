@@ -304,7 +304,7 @@ environment variable: a URL on a command line puts its password in the process
 list.
 
 The API is not a stub. It serves `get_bundle`, `resolve`, `traverse`, `stance_history`,
-`get_l1`, `get_l0`, `get_session`, `search`, `watch`, `assert`, `decide` and `coverage` as
+`get_l1`, `get_l0`, `get_session`, `search`, `watch`, `assert`, `decide`, `coverage` and `delete` as
 `POST /v1/<call>` and as MCP tools at `/mcp`,
 from one call layer whose bytes both interfaces serve verbatim, on `--listen`
 (default `:8080`; `hearsay all` takes `--api-listen`), and also on the owner's
@@ -381,7 +381,33 @@ unreadable and out of reach alike), `not_live`, `not_undoable`, `conflict`,
 before it is dispatched — a missing or invalid human or agent credential, an
 oversized body, session and reach resolution — keep their statuses and
 code-less `{error}` bodies, so the absence of `code` tells them apart, and the
-bodies of every other call are unchanged. `watch` is a long poll with an opaque cursor over the L0
+bodies of every other call are unchanged. `delete` is the owner's "forget that" for a `conversation` source
+(`internal/service/api/delete.go`): `event_ids` (1 to 100) and an
+`idempotency_id` (at most 256 bytes), unknown fields refused. The person in
+`Hearsay-Principal` must be the configured owner of the source holding every
+event named, calling directly or with that source's allowed agent carrying the
+request (recorded as the deletion's carrier; an observer may not carry). Any
+revision's id names the whole message, and `deletion.ApplyRequest` redacts every
+revision of each named message in one transaction: one deletion record, one
+`deletion` event, the pins and gestures resting on the events taken out, and a
+`distill` job queued per affected document, with no model call. The
+authorization is checked again inside that transaction, so a request is
+applied whole or not at all, and an event that does not exist, is in another
+source or is in another person's conversation refuses the whole request with the
+one `not_found` answer and records nothing. The deletion id is derived from the
+human, the carrier and the idempotency id (`del_` and 128 bits), so a retry,
+concurrent or after a lost answer, finds the one record and is answered with the
+original deletion; the same id for another request is `conflict`. The answer is
+`{deletion_id, deleted, kept}` with `kept` always `["ids", "times", "kinds"]`,
+the residue that keeps a re-sent copy deleted. Refusals are `{error, code}` with
+`invalid_request`, `not_allowed`, `not_found`, `conflict` or `internal`, as
+`decide`'s are. The conversation source is closed against a deleted message:
+its writes and the deletion take one per-artifact lock
+(`l0.Store.SerializeArtifact`, `connector.ArtifactSerializer`), so a re-post of
+a deleted message, same or changed text, writes nothing and is answered `410`
+`{"code":"deleted","status":"deleted"}`, and a post overlapping the deletion
+leaves no readable revision. No other source is affected.
+`watch` is a long poll with an opaque cursor over the L0
 change feed: it returns the events on a scope once they are distilled, as
 handles with no content, and waits up to 25 seconds when there are none; a
 person or an agent of class `orchestrator` or above may call it. The bundle is

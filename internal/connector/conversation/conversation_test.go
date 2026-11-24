@@ -336,30 +336,44 @@ func TestARequestIsRefused(t *testing.T) {
 	})
 }
 
-// A message the store refuses to take back is answered 410 and a failure of the
-// store is answered 500 without its reason; neither writes.
+// A message the store refuses to take back is answered 410, whether the post
+// repeats its words or changes them, and a failure of the store is answered 500
+// without its reason; neither writes.
 func TestTheStoreDecidesWhatAMessageIsAnsweredWith(t *testing.T) {
+	changed := strings.Replace(ownerWords, "Postgres", "SQLite", 1)
 	tests := []struct {
 		name string
-		err  error
-		want int
+		prep func(*connector.Recorder)
 		body string
+		want int
+		resp string
 	}{
-		{"a deleted message", conversation.ErrDeleted, http.StatusGone, `"code":"deleted","status":"deleted"`},
-		{"a failing store", errors.New("connection refused at 10.0.0.9"), http.StatusInternalServerError, `"code":"internal"`},
+		{"a deleted message, reposted", func(r *connector.Recorder) { r.MarkDeleted(sourceID, "c-1/x-1:owner") }, ownerWords, http.StatusGone, `"code":"deleted","status":"deleted"`},
+		{"a deleted message, with changed text", func(r *connector.Recorder) { r.MarkDeleted(sourceID, "c-1/x-1:owner") }, changed, http.StatusGone, `"code":"deleted","status":"deleted"`},
+		{"a failing store", func(r *connector.Recorder) { r.Err = errors.New("connection refused at 10.0.0.9") }, ownerWords, http.StatusInternalServerError, `"code":"internal"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			srv, rec := server(t, source())
-			rec.Err = tt.err
-			code, body := post(t, srv.URL, env["KERN_TOKEN"], ownerWords)
-			if code != tt.want || !strings.Contains(body, tt.body) || strings.Contains(body, "10.0.0.9") {
-				t.Errorf("POST = %d %s, want %d containing %s and no cause", code, body, tt.want, tt.body)
+			tt.prep(rec)
+			code, body := post(t, srv.URL, env["KERN_TOKEN"], tt.body)
+			if code != tt.want || !strings.Contains(body, tt.resp) || strings.Contains(body, "10.0.0.9") {
+				t.Errorf("POST = %d %s, want %d containing %s and no cause", code, body, tt.want, tt.resp)
 			}
 			if n := len(rec.Events()); n != 0 {
 				t.Errorf("emitted %d events", n)
 			}
 		})
+	}
+}
+
+// Deleting one message leaves the others of the exchange, and of the
+// conversation, as they were.
+func TestADeletedMessageClosesOnlyItself(t *testing.T) {
+	srv, rec := server(t, source())
+	rec.MarkDeleted(sourceID, "c-1/x-1:owner")
+	if code, body := post(t, srv.URL, env["KERN_TOKEN"], answer); code != http.StatusAccepted {
+		t.Errorf("POST of the answer = %d %s, want 202: only the owner's words were deleted", code, body)
 	}
 }
 

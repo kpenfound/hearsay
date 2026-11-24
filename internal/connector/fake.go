@@ -297,9 +297,12 @@ type Recorder struct {
 	// connector does when the store is failing.
 	Err error
 
-	mu     sync.Mutex
-	events []Event
-	at     []time.Time
+	// serial is held for the whole of a [Recorder.SerializeArtifact].
+	serial  sync.Mutex
+	deleted map[string]bool
+	mu      sync.Mutex
+	events  []Event
+	at      []time.Time
 }
 
 // Emit implements [Sink]. An event emitted before is recorded again, where L0
@@ -408,6 +411,43 @@ func (r *Recorder) Exposed(_ context.Context, source string) ([]Exposure, error)
 	slices.SortFunc(out, func(a, b Exposure) int { return strings.Compare(a.Container, b.Container) })
 	return out, nil
 }
+
+// MarkDeleted records that an operator deleted the artifact, as a store does,
+// so that [Recorder.SerializeArtifact] reports it deleted.
+func (r *Recorder) MarkDeleted(source, artifact string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.deleted == nil {
+		r.deleted = map[string]bool{}
+	}
+	r.deleted[source+"\x00"+artifact] = true
+}
+
+// SerializeArtifact implements [ArtifactSerializer] for connector tests: one
+// call at a time holds the recorder.
+func (r *Recorder) SerializeArtifact(ctx context.Context, source, artifact string, fn func(context.Context, LockedArtifact) error) error {
+	r.serial.Lock()
+	defer r.serial.Unlock()
+	current, held, err := r.CurrentArtifact(ctx, source, artifact)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	deleted := r.deleted[source+"\x00"+artifact]
+	r.mu.Unlock()
+	return fn(ctx, recorded{r, current, held, deleted})
+}
+
+type recorded struct {
+	r       *Recorder
+	current Event
+	held    bool
+	deleted bool
+}
+
+func (a recorded) Current() (Event, bool)                   { return a.current, a.held }
+func (a recorded) Deleted() bool                            { return a.deleted }
+func (a recorded) Emit(ctx context.Context, ev Event) error { return a.r.Emit(ctx, ev) }
 
 // Events returns a copy of what has been emitted, oldest first.
 func (r *Recorder) Events() []Event {

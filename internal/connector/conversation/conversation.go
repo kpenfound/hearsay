@@ -86,6 +86,21 @@ type Settings struct {
 	Agents []string `json:"agents"`
 }
 
+// OwnerOf reads who a conversation source belongs to and which agents may post
+// to it, from its configuration and with none of the checks [New] makes. It is
+// for a caller that must tell whose messages a source holds, as the API's
+// `delete` does; a source whose settings cannot be read has no owner.
+func OwnerOf(src connector.SourceConfig) (owner string, agents []string, ok bool) {
+	if src.Type != Type {
+		return "", nil, false
+	}
+	var settings Settings
+	if err := src.DecodeSettings(&settings); err != nil || settings.Owner == "" {
+		return "", nil, false
+	}
+	return settings.Owner, settings.Agents, true
+}
+
 // Connector accepts the messages of one person's conversation.
 type Connector struct {
 	source string

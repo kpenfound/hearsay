@@ -216,6 +216,7 @@ var calls = []call{
 		schema(`{"topic":{"type":"string","description":"an existing topic id, from a bundle's topic_id"},"position":{"type":"string","description":"the position, at most 2000 bytes"},"evidence":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":32,"description":"L1 document ids the position rests on; the caller must be able to read every one"}}`, "topic", "position", "evidence")}, assertStance},
 	{decideTool, decide},
 	{coverageTool, coverage},
+	{deleteTool, deleteEvents},
 }
 
 func schema(properties string, required ...string) json.RawMessage {

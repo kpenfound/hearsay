@@ -167,7 +167,8 @@ wherever the source has something that behaves like one.
 a connector, under source `hearsay` (`connector.SelfSource`). They are in the
 vocabulary because they are L0 events like any other. A `deletion` is not a
 tombstone: it records that an operator redacted events with `hearsay delete
---apply`, and it hides nothing by its own `target` — the redacted
+--apply`, or that a conversation source's owner did with the API's `delete`
+call, and it hides nothing by its own `target` — the redacted
 rows carry the deletion that hid them.
 
 A `command` is written under the source it was given in, by the runtime
@@ -552,7 +553,9 @@ that its replays of a redacted event are dropped: re-emitting an event an
 operator deleted stores nothing, returns no error and is counted on the
 deletion record, so a backfill or a redelivery neither restores the content nor
 stalls the connector. A new revision of the artifact — a new event id — is
-admitted, the same as after a tombstone. The L1
+admitted, the same as after a tombstone, with one exception: the
+[conversation source](#conversation-kern) is closed against a message once it is
+deleted, so a message stays deleted. The L1
 documents built from the deleted events are re-distilled or deleted, the
 stances resting on them are superseded, and the text L2 read from the deleted
 content is redacted once it is no longer current; a tombstone gets the same
@@ -2035,6 +2038,23 @@ one over again. This is why the source is not the agent session source, which is
 not distilled and answers 409 to a rewritten key.
 Every write goes through one function in the connector, which is where a refusal
 to take a message back belongs.
+
+**Deleted messages stay deleted.** The owner of the source can delete messages
+with the API's `delete` call (docs/design.md, [The `delete` call](design.md#the-delete-call)),
+which redacts every revision of each message named and records one deletion. A
+message so deleted is closed to the source: a post of it, with the same text or
+changed text, writes nothing and is answered `410` with `{"code": "deleted",
+"status": "deleted"}`. The artifact is the message, so only that message is
+closed; the other role of the exchange and every other exchange are not. This is
+the one place the contract departs from admitting a new revision after an
+operator deletion, and it holds for a post that overlaps the deletion: the
+source's sink serializes each artifact's write with its deletion, so the
+deleted-check and the write are one step under one lock. A post that gets the
+artifact first is redacted by the deletion that follows it, and one that gets it
+second finds it deleted, so once both have finished no readable revision of the
+artifact exists. The check is on the artifact's deleted rows, which keep their
+ids, times and kinds, so it holds however many revisions were posted. The agent
+session source and every other source are not closed this way.
 
 **Responses.** Each refusal has a JSON body `{"error": "...", "code": "..."}`
 and writes nothing.

@@ -287,6 +287,7 @@ Exposed over MCP and HTTP. Deliberately small.
 |`assert(topic, position, evidence)`|Write a stance as an L0 event. Agents are principals|
 |`decide(decision_id, action, stance_id \| gesture_id)`|A person's own ratify, demote or undo of one stance, optionally carried by an agent. Writes the gesture ledger, no L0 event, and calls no model ([The `decide` call](#the-decide-call))|
 |`coverage(event_ids)`|Whether Hearsay covers each of up to 100 conversation message events: `pending`, `covered` with the ids of the current documents citing it, or `excluded`. Decided from the published distillation record, the current documents and deletions; holds no state and calls no model ([The `coverage` call](#the-coverage-call))|
+|`delete(event_ids, idempotency_id)`|The configured owner of a conversation source deletes messages of it, directly or with that source's agent carrying the request. Every revision of each named message is redacted through the operator deletion, under one deletion record and one `deletion` event, atomically and idempotently. Calls no model ([The `delete` call](#the-delete-call))|
 
 Pinning and topic merges are human actions taken in the tools people already use (see Human feedback loop). So are ratification and demotion there; `decide` is how an agent carries a person's own ratify, demote or undo of a stance.
 
@@ -342,6 +343,36 @@ It is filtered like every read. A message is readable when the access lists of i
 |`internal`|500|an unexpected failure inside the call|
 
 A refused request records nothing. Failures every call shares and that happen before a request reaches `decide` — a missing or invalid human or agent credential, an ambiguous header, an oversized body, session and reach resolution — are not `decide` refusals: they keep their existing statuses and `{"error": message}` bodies and carry **no reason code**, so a caller tells them apart by the absence of `code`. The error bodies of every other call are unchanged.
+
+### The `delete` call
+
+`delete` is served like every call, as `POST /v1/delete` and as the MCP tool `delete`, from the one call layer. It is the owner's "forget that" for a `conversation` source, and it reaches nothing else.
+
+**Who may call it.** The person in `Hearsay-Principal` must be the configured owner of the conversation source that holds every event named. They may call directly, or with an agent in `Hearsay-Agent` that the source allows to post carrying the request; the agent is recorded as the deletion's carrier, never authorized as a person, and an agent whose class writes nothing (observer) may not carry. No other source type, and no other person's conversation, is reachable.
+
+**What it takes.** `event_ids` (1 to 100 L0 event ids) and `idempotency_id` (required, opaque, at most 256 bytes). Unknown fields are refused. Any revision's id names the whole message: the artifact is `<conversation>/<exchange>:<role>`, and the owner's words and the answer of one exchange are separate artifacts, so deleting one touches no other.
+
+**What it does.** It is `internal/deletion`'s operator deletion over the named artifacts, applied as one request in one transaction: every revision of each artifact has its payload redacted in place, one deletion record and one `deletion` event under source `hearsay` are written, pins and gestures resting on the events are taken out as an operator deletion does, and a `distill` job is queued for every affected document, which the running distiller rebuilds or removes. The L2 text read from the deleted content is redacted by the existing rebuild once it is no longer current. No model is called.
+
+**One request, one outcome.** Authorization of every named event is checked again inside the transaction that deletes, so a request is applied whole or not at all: a failure after some artifacts are processed leaves none of them redacted and no deletion record. A request naming an event that does not exist, one in a source that is not a conversation source the caller owns, or one in another person's conversation is refused with the one `not_found` answer, whichever it is, and writes nothing, including for the events the caller does own.
+
+**Idempotency.** The deletion's id is derived from the human, the carrier and the `idempotency_id` (`del_` and 128 bits of a hash), the way `decide` derives a gesture id, and the deletion record is keyed by it. Repeating the request, sequentially, concurrently or after the answer was lost, finds the record and answers the original deletion with nothing new written; concurrent first requests race to one record. The same id with a different set of events or a different carrier is `conflict`.
+
+**The answer.** `{deletion_id, deleted, kept}`: the deletion record's id, the ids of every event redacted, and `kept`, which is always `["ids", "times", "kinds"]`: the residue that stays so that a re-sent copy of the message stays deleted. A request whose messages an earlier deletion had already redacted records nothing more and answers that deletion with an empty `deleted`.
+
+**Refusals** carry `{error, code}` with a status, and record nothing:
+
+|Code|Status|When|
+|---|---|---|
+|`invalid_request`|400|malformed arguments, an unknown field, no or over 100 event ids, a blank or over-long id or idempotency id|
+|`not_allowed`|403|the agent's class may not carry a request|
+|`not_found`|404|any named event is nonexistent, outside the caller's own conversation sources, or another person's|
+|`conflict`|409|the idempotency id was used for a different request|
+|`internal`|500|an unexpected failure inside the call|
+
+Failures every call shares before it is dispatched keep their statuses and code-less bodies, as they do for `decide`.
+
+**A deleted message stays deleted.** The conversation source serializes each write of an artifact with the deletion of it, under one per-artifact lock taken inside the transaction that checks whether the artifact was deleted and writes the revision. A post of a deleted message, with the same or changed text, writes nothing and is answered `410` with `{"code": "deleted", "status": "deleted"}` ([docs/connector-contract.md](connector-contract.md#conversation-kern)); a post that overlaps a deletion either lands first and is redacted by it, or finds the artifact deleted. Once both have finished no readable revision of the artifact exists. Every other source keeps the connector contract's rule that a new revision after an operator deletion is admitted.
 
 ## Access control
 
@@ -404,7 +435,7 @@ L0 is append-only, but deletion is required (a pasted secret, a departed employe
 
 A deletion at the source arrives as a tombstone and only hides what it covers. A deletion from Hearsay is an operator action, `hearsay delete --apply`, and it is the one exception to append-only: the covered L0 rows keep their id, source, artifact, kind, time and ACL, their payload content is redacted in place, and Hearsay records the deletion as its own action rather than the source's.
 
-Both kinds of deletion rebuild the same way: the affected L1 documents are re-distilled or deleted, and each stance resting on them is superseded, by a withdrawal when none of its evidence is left. Only an operator deletion also takes the derived text: a stance written before it rebuilt the stance's document has its position redacted once it is superseded, and a topic whose opening document it deleted, and which no surviving document supports, has its name redacted. Ids and supersession edges stay, so `stance_history` still shows the withdrawal. Every deletion is a durable record of what it covered and what it rebuilt; `hearsay delete list` and `hearsay delete show <id>` read it, including whether every rebuild job has finished.
+Both kinds of deletion rebuild the same way: the affected L1 documents are re-distilled or deleted, and each stance resting on them is superseded, by a withdrawal when none of its evidence is left. Only an operator deletion also takes the derived text: a stance written before it rebuilt the stance's document has its position redacted once it is superseded, and a topic whose opening document it deleted, and which no surviving document supports, has its name redacted. Ids and supersession edges stay, so `stance_history` still shows the withdrawal. The owner of a conversation source can also delete its messages through the API's `delete` call ([The `delete` call](#the-delete-call)), which is the same operator deletion applied to the artifacts a request names, and closes the source against them. Every deletion is a durable record of what it covered and what it rebuilt; `hearsay delete list` and `hearsay delete show <id>` read it, including whether every rebuild job has finished.
 
 ## Configuration
 
