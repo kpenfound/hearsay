@@ -631,6 +631,7 @@ owner's words and the agent's answer of an exchange are two requests.
 [The connector contract](connector-contract.md#conversation-kern) has the
 request, its responses and the stored event.
 
+<!-- example: conversation/hearsay.yaml -->
 ```yaml
 sources:
   - id: kern
@@ -639,23 +640,25 @@ sources:
     settings:
       owner: kyle            # required: one configured human principal
       agents: [kern]         # required: the agent principals allowed to post
-```
 
-```yaml
-# principals/people.yaml
-- id: kyle
-  kind: human
-  identities:
-    - source: kern
-      native_id: kyle
-- id: kern
-  kind: agent
-  class: worker
-  token_env: KERN_TOKEN
-  scopes: ["*"]      # required of every agent
-  identities:
-    - source: kern
-      native_id: kern
+principals:
+  - id: kyle
+    kind: human
+    identities:
+      - source: kern
+        native_id: kyle
+  - id: kern
+    kind: agent
+    class: worker
+    token_env: HEARSAY_KERN_TOKEN
+    scopes: ["*"]            # required of every agent
+    identities:
+      - source: kern
+        native_id: kern
+
+scopes:
+  - id: memory
+    sources: [kern]
 ```
 
 | Setting | |

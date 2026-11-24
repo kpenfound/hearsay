@@ -65,6 +65,7 @@ dagger api call hearsay qa --script '...'     # run a test plan in the shipped i
 dagger api call hearsay compose-smoke         # run deploy/compose in a Docker daemon of its own
 deploy/smoke/work-records-e2e.sh              # owner/work decision path in a running `hearsay all`, Docker alone
 deploy/smoke/decide-e2e.sh                    # the `decide` call over HTTP and MCP in a running `hearsay all`, Docker alone
+deploy/smoke/conversation-memory-e2e.sh      # Kern's conversation as memory (hook, coverage, search, owner-only reads, delete) in a running `hearsay all`, Docker alone
 dagger settings go        # the Go module's settings
 dagger lock update        # refresh the lockfile's module and image pins
 ```
@@ -184,10 +185,17 @@ channels over Socket Mode), Drive (`internal/connector/drive`), Obsidian
 (`internal/connector/tracker`, which a team's own sender pushes tickets and
 comments to in a documented shape, authenticated by a bearer token) and the
 agent session source (`internal/connector/agent`, which agents push their own
-session events to, authenticated by their API tokens), and the work updates
+session events to, authenticated by their API tokens), the work updates
 source (`internal/connector/work`, where factories and agents push projects,
 workstreams, updates, documents and decisions with their principal tokens, and
-whose owner source records the documents and decisions only) ship. Their package comments
+whose owner source records the documents and decisions only) and the
+conversation source (`internal/connector/conversation`, where an allowed agent,
+Kern, posts one message of a person's conversation per request to
+`/hooks/<source id>` with its own API token; its settings name one owner, a
+configured human, and the agents allowed to post, every event's access list
+names the owner alone, a changed rendering is a new revision, an identical
+re-post writes nothing, and a post of a message the owner deleted is answered
+`410` `deleted` and writes nothing) ship. Their package comments
 document settings and deployment constraints. An unregistered type is a startup failure.
 
 The distiller and assertion worker expose `/healthz` and `/readyz` on
@@ -498,7 +506,7 @@ One binary, four services, layers underneath.
 | `internal/eval` | Windowed evaluation and offline judgment comparison. |
 | `internal/onboard` | The first configuration `hearsay init` writes: `hearsay.yaml` and its env file. |
 | `internal/bundle` | Context bundle assembly — the primary read. |
-| `internal/connector` | The connector contract, runtime and eight shipped source adapters, including `work`. |
+| `internal/connector` | The connector contract, runtime and nine shipped source adapters, including `work` and `conversation`. |
 | `internal/llm` | Provider abstraction, the `distill`/`assert`/`embed` tiers and optional typed judgments. |
 | `internal/queue` | The Postgres job queue. |
 | `internal/db` | Pool, migrations, shared query plumbing. |

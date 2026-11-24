@@ -290,6 +290,23 @@ the decision, and reads each result back through `stance_history`,
 alone through `deploy/smoke/decide-e2e.sh [evidence-dir]`, or with the
 command above and `-run TestDecideEndToEnd`.
 
+Kern's conversation as memory has its own: `TestConversationMemoryEndToEnd`
+runs `hearsay all` on the conversation source docs/config.md documents, with a
+second human, an agent that acts for them and a public ticket in the same scope
+and topic. It posts a multi-topic conversation to `/hooks/<source id>` as the
+agent allowed to post, polls `coverage` from `pending` to `covered`, finds the
+conversation through `search` with `since` and `until` by a word only its
+distilled summary holds, and reads the owner's stance through `get_bundle`,
+`traverse` and `stance_history`. It reads the same scope as the second human
+and as their agent (`search`, `get_l0`, `get_l1`, `get_bundle`, `traverse`,
+`stance_history`, `coverage`, `watch`) and finds the ticket and none of the
+conversation. It then `delete`s the decision's exchange, sees it `excluded` and
+its words gone from every read once the distiller has rebuilt, and re-posts it
+twice to see nothing written. The model provider and Jev are a local stub that
+answers from what it is shown, so no real model is called. Rerun it with Docker
+alone through `deploy/smoke/conversation-memory-e2e.sh [evidence-dir]`, or with the
+command above and `-run TestConversationMemoryEndToEnd`.
+
 ### Changing the module
 
 The modules under `.dagger/modules/` are written in
