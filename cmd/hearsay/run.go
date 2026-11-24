@@ -15,6 +15,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/agent"
+	"github.com/kpenfound/hearsay/internal/connector/conversation"
 	"github.com/kpenfound/hearsay/internal/connector/discord"
 	"github.com/kpenfound/hearsay/internal/connector/drive"
 	"github.com/kpenfound/hearsay/internal/connector/github"
@@ -617,7 +618,7 @@ func checkListen(addr string) error {
 // wiring rather than from whatever happened to be linked in
 // (docs/connector-contract.md).
 //
-// It holds the GitHub, Discord, Slack, Drive, Obsidian, generic tracker,
+// It holds the GitHub, Discord, Slack, Drive, Obsidian, generic tracker, conversation,
 // agent session and work updates connectors. Any other type, or a source whose
 // connector rejects its config, is a startup failure. Agent and work factories
 // receive principals for token authentication; work also receives every
@@ -636,6 +637,7 @@ func connectorRegistry(principals []principal.Principal, sources []connector.Sou
 	_ = registry.Register(obsidian.Type, obsidian.Factory)
 	_ = registry.Register(tracker.Type, tracker.Factory)
 	_ = registry.Register(agent.Type, agent.NewFactory(principals, os.LookupEnv))
+	_ = registry.Register(conversation.Type, conversation.NewFactory(principals, os.LookupEnv))
 	sourceIDs := make([]string, 0, len(sources))
 	for _, source := range sources {
 		sourceIDs = append(sourceIDs, source.ID)

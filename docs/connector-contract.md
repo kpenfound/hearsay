@@ -179,7 +179,8 @@ webhook, by the GitHub connector. Hearsay's reply to a GitHub command
 is `github.reply`, based on `command`. The distiller reads no document from
 either, and leaves both out of the conversation they hang off.
 
-**Extension kinds.** A source with something genuinely different emits
+**Extension kinds.** (The conversation source's `conversation.message`, based on
+`message`, is one: see [Conversation](#conversation-kern).) A source with something genuinely different emits
 `<vendor>.<name>` — two lowercase words separated by a dot, `figma.file_comment`,
 `jira.sprint_change`. The vendor prefix keeps two connectors from meaning
 different things by the same word. An extension kind **must** set
@@ -853,7 +854,7 @@ production, and assert on what the recorder received.
 Written before the connectors, and checked on paper against the GitHub (v0.2.0),
 Discord (v0.3.0), Drive (v0.4.0) and Obsidian (v0.4.0) work. Slack and the
 generic tracker (v0.10.0) were written with their connectors, which is the check
-of source-to-L0 mapping. Agent sessions and work updates also ship. A new source
+of source-to-L0 mapping. Agent sessions, the conversation source and work updates also ship. A new source
 needs its factory registered in the binary, with any optional gesture capability;
 third-party event shapes must follow the shared contract above.
 
@@ -1966,6 +1967,145 @@ decision is written to L0 as:
   ]
 }
 ```
+
+### Conversation (Kern)
+
+| Artifact | kind | artifact id | native_id | container |
+|---|---|---|---|---|
+| The owner's words | `conversation.message`, base `message` | `<conversation>/<exchange>:owner` | `<artifact>@<content hash>` | stream `<owner id>` |
+| The agent's answer | `conversation.message`, base `message` | `<conversation>/<exchange>:assistant` | `<artifact>@<content hash>` | stream `<owner id>` |
+
+The `conversation` connector (`internal/connector/conversation`) is a `Pusher`
+for a person's conversation with their agent. The agent posts it, one message
+per `POST /hooks/<source id>`; Hearsay never fetches anything for it. The
+source's settings name exactly one owner, a configured human, and the agents
+allowed to post ([config](config.md#conversation-source)). The agent
+authenticates with its own API bearer token, the one its principal names in
+`token_env`: `Authorization: Bearer <agent token>`.
+
+An exchange is two messages, one request each. The owner's words are authored by
+the owner, `{source, kind: user, native_id: <owner id>}`. The agent's answer is
+authored by the agent whose token posted it, `{source, kind: agent, native_id:
+<agent id>}`. Each is its own artifact, named by the conversation id, the
+exchange id and the role, so deleting one exchange never touches another's text.
+Both carry the conversation id as `payload.thread`, and `time` is when the words
+were said (the request's `time`). Conversation and exchange ids are 1 to 128
+bytes of letters, digits, `-`, `_` and `.`. They cannot contain `/`, `:` or `@`,
+which separate the parts of an artifact id and its revision.
+
+**Kind and routing.** The kind is the extension kind `conversation.message`,
+with `base_kind` `message`. The container is the owner's stream, `{kind: stream,
+native_id: <owner id>}`, never a `channel`, so neither the chat-thread nor the
+chat-burst path distils these messages: both read messages from a channel. The
+source's `containers` are the owner's id or `*`. The distiller recognises a
+conversation's messages by the source's type and this kind, and gathers the
+current messages that share a `thread`. That is the one marker the distiller
+needs.
+
+**Access.** Every event's ACL is one `identity` entry, the owner, in this source,
+and nothing else. The posting agent is not on it: it reads the messages only as
+an agent acting for the owner. The owner and each allowed agent list an identity
+in this source whose `native_id` is their principal id, so that authorship
+resolves and the owner can read what they said.
+
+**Request.** One JSON object per request. Unknown fields are refused.
+
+| Field | Type | |
+|---|---|---|
+| `owner` | string | required; the owner's principal id, which must be the source's |
+| `conversation` | string | required; the event's `thread` |
+| `exchange` | string | required |
+| `role` | string | required; `owner` or `assistant` |
+| `time` | RFC 3339 string | required; when the words were said |
+| `text` | string | required, not blank |
+| `interrupted` | bool | optional; only with `role: owner` |
+
+An exchange that never completed is posted as the owner's words alone with
+`interrupted: true`. The mark is stored as `payload.native.interrupted` and
+absent otherwise.
+
+**Revisions.** Each post is a revision of its artifact whose token is a hash of
+the words, `time`, the mark, the author, the ACL and the revision it follows.
+Posting the artifact's current content again writes nothing and answers the
+current revision's id. Changed text, or any other change to the content, is a
+new revision that becomes the current one, and is never a conflict: voice mode
+rewrites a rendering after the turn, and the last post is the one L0 serves.
+Words that come back after another revision are a new revision, not the first
+one over again. This is why the source is not the agent session source, which is
+not distilled and answers 409 to a rewritten key.
+Every write goes through one function in the connector, which is where a refusal
+to take a message back belongs.
+
+**Responses.** Each refusal has a JSON body `{"error": "...", "code": "..."}`
+and writes nothing.
+
+| Status | Body | When |
+|---|---|---|
+| 202 | `{"event_id": "<id>", "status": "stored"}` | a new message, or a new revision, was written |
+| 202 | `{"event_id": "<id>", "status": "unchanged"}` | the current revision already says this; nothing was written |
+| 400 | `code: invalid_request` | a malformed body, an unknown field, a missing or invalid field, `interrupted` on `assistant` |
+| 401 | `code: unauthorized` | no bearer token, or one that is not an agent's |
+| 403 | `code: forbidden` | an agent the source does not allow, or an `owner` other than the configured one |
+| 405 | `code: method_not_allowed` | anything but POST |
+| 410 | `{"code": "deleted", "status": "deleted"}` | the message was deleted through the owner deletion call, which closes the source against it; nothing is written, whether the text is the same or changed |
+| 413 | `code: too_large` | the body exceeds the push limit |
+
+Authentication and the agent's permission are decided before the body is read,
+so a disallowed agent is refused 403 whatever it sent.
+
+The owner's words and the answer of one exchange:
+
+```http
+POST /hooks/kern
+Authorization: Bearer <kern's token>
+Content-Type: application/json
+
+{"owner": "kyle", "conversation": "c-1", "exchange": "x-1", "role": "owner",
+ "time": "2026-11-02T09:00:00Z", "text": "Let's use Postgres for the queue."}
+```
+
+```json
+{"owner": "kyle", "conversation": "c-1", "exchange": "x-1", "role": "assistant",
+ "time": "2026-11-02T09:00:07Z", "text": "Postgres it is. I'll note the decision."}
+```
+
+An interrupted exchange, the owner's words alone:
+
+```json
+{"owner": "kyle", "conversation": "c-1", "exchange": "x-2", "role": "owner", "interrupted": true,
+ "time": "2026-11-02T09:05:00Z", "text": "And for the retry policy, I think we should"}
+```
+
+The first is answered `202 {"event_id": "evt:kern:c-1/x-1:owner@3f1c0a9d52b7e418", "status": "stored"}`
+and stored as:
+
+```json
+{
+  "id": "evt:kern:c-1/x-1:owner@3f1c0a9d52b7e418",
+  "source": "kern",
+  "native_id": "c-1/x-1:owner@3f1c0a9d52b7e418",
+  "kind": "conversation.message",
+  "time": "2026-11-02T09:00:00Z",
+  "payload": {
+    "artifact": "c-1/x-1:owner",
+    "base_kind": "message",
+    "container": {"kind": "stream", "native_id": "kyle"},
+    "text": "Let's use Postgres for the queue.",
+    "author": {"source": "kern", "kind": "user", "native_id": "kyle"},
+    "thread": "c-1",
+    "revision": {"token": "3f1c0a9d52b7e418"},
+    "native": {"conversation": "c-1", "exchange": "x-1", "role": "owner"}
+  },
+  "acl": [
+    {"kind": "identity", "source": "kern", "native_id": "kyle"}
+  ]
+}
+```
+
+The interrupted message's `native` is `{"conversation": "c-1", "exchange": "x-2",
+"role": "owner", "interrupted": true}`. The answer is the same with artifact
+`c-1/x-1:assistant`, `time` `2026-11-02T09:00:07Z`, the text of the answer and
+author `{"source": "kern", "kind": "agent", "native_id": "kern"}`.
 
 ## Changing this contract
 
