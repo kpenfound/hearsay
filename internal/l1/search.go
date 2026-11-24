@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kpenfound/hearsay/internal/connector"
 )
@@ -68,6 +69,27 @@ type SearchOptions struct {
 	// Limit is how many documents to return, defaulting to
 	// [DefaultSearchLimit] and capped at [MaxSearchLimit].
 	Limit int
+	// Since and Until are the window, as RFC 3339 timestamps, and each is
+	// optional. A document is in the window when it was created before Until
+	// and was last active at or after Since: its activity overlaps the window.
+	// A timestamp that does not parse, or a Since later than Until, is
+	// [ErrInvalidSearch]. The window narrows the documents both halves rank,
+	// like the scope and the access list, so it is applied before ranking.
+	Since string
+	Until string
+}
+
+// SearchResult is what a search found and whether it stopped short of
+// everything that matched.
+type SearchResult struct {
+	// Hits are the documents, best first, at most the limit.
+	Hits []Hit
+	// Truncated is true when more documents matched than Hits holds: either
+	// the two halves together found more than the limit, or a half had a
+	// document ranked past [SearchCandidates], which the fusion never saw.
+	// It counts only documents the reader may read, because the filter runs
+	// inside both halves; a document they may not read changes nothing here.
+	Truncated bool
 }
 
 // Hit is one document a search found, with where each half of the search found
@@ -98,21 +120,39 @@ type Hit struct {
 // same reason a view would not do: each has to rank what is left after it, and
 // the planner is free to use whichever index the predicate offers.
 //
-// The six substitutions, in order: the query's placeholder, the filter (used
-// twice), the query vector's placeholder (twice), the fusion constant (twice),
-// the candidate cutoff (twice) and the limit.
+// searchDocument is the text the full-text half matches: the team's own words,
+// then the distilled summary and outcome. It is the expression
+// l1_docs_search_fts_idx is built over (migration 41), spelled the same way so
+// the planner can use the index, and it names the `english` configuration, never
+// the session's default. A document is one text here, so a word in more than
+// one part of it is still one match.
+const searchDocument = `(to_tsvector('english', raw_text)
+        || to_tsvector('english', coalesce(body ->> 'summary', ''))
+        || to_tsvector('english', coalesce(body ->> 'outcome', '')))`
+
+// The substitutions, in order: the query's placeholder, the filter (used
+// twice), the query vector's placeholder (twice), the fusion constant
+// (twice), the candidate cutoff (four times) and the limit.
+//
+// The fused count is taken before the limit applies, and `beyond` asks each half
+// whether a document ranked past the cutoff exists, so the statement reports
+// truncation without returning an extra row.
 const searchSQL = `
 WITH matched AS (
     SELECT id, row_number() OVER (
-        ORDER BY ts_rank_cd(to_tsvector('english', raw_text), tsq.q) DESC, id
+        ORDER BY ts_rank_cd(` + searchDocument + `, tsq.q) DESC, id
     ) AS rank
     FROM l1_docs, websearch_to_tsquery('english', %[1]s) AS tsq(q)
-    WHERE %[2]s AND to_tsvector('english', raw_text) @@ tsq.q
+    WHERE %[2]s AND ` + searchDocument + ` @@ tsq.q
 ),
 near AS (
     SELECT id, row_number() OVER (ORDER BY embedding <=> %[3]s::text::vector, id) AS rank
     FROM l1_docs
     WHERE %[2]s AND %[3]s::text IS NOT NULL AND embedding IS NOT NULL
+),
+beyond AS (
+    SELECT EXISTS (SELECT 1 FROM matched WHERE rank > %[5]s)
+        OR EXISTS (SELECT 1 FROM near WHERE rank > %[5]s) AS beyond
 ),
 fused AS (
     SELECT coalesce(m.id, n.id) AS doc_id,
@@ -122,15 +162,18 @@ fused AS (
     FROM (SELECT id, rank FROM matched WHERE rank <= %[5]s) m
     FULL JOIN (SELECT id, rank FROM near WHERE rank <= %[5]s) n ON m.id = n.id
 )
-SELECT ` + docColumns + `, fused.score, fused.text_rank, fused.vector_rank
+SELECT ` + docColumns + `, fused.score, fused.text_rank, fused.vector_rank,
+       count(*) OVER () AS fused_total, (SELECT beyond FROM beyond) AS beyond
 FROM l1_docs JOIN fused ON l1_docs.id = fused.doc_id
 ORDER BY fused.score DESC, last_activity_at DESC, l1_docs.id
 LIMIT %[6]s`
 
 // Search is hybrid retrieval over the document table: similarity over the
-// embedding of `text` and full text over `raw_text`, each ranked over the
-// documents this reader may see, fused by reciprocal rank
-// (docs/design.md#read-and-assert-api). It returns documents, not answers.
+// embedding of `text` and full text over `raw_text` and the distilled summary
+// and outcome, each ranked over the documents this reader may see and in the
+// window, fused by reciprocal rank (docs/design.md#read-and-assert-api). It
+// returns documents, not answers, and says whether it stopped short of
+// everything that matched ([SearchResult.Truncated]).
 //
 // It is the one place a query becomes a ranking, so it is also the one place
 // that embeds a query: [SearchOptions.Embedder] is called once, with the query,
@@ -143,14 +186,24 @@ LIMIT %[6]s`
 // public is public, so somebody who satisfies no access-list entry of their own
 // still reads every public document in the scopes they hold, which is what an
 // access list saying `public` means (docs/design.md#access-control).
-func (s *Store) Search(ctx context.Context, reader Reader, opts SearchOptions) ([]Hit, error) {
+func (s *Store) Search(ctx context.Context, reader Reader, opts SearchOptions) (SearchResult, error) {
 	if strings.TrimSpace(opts.Query) == "" {
-		return nil, fmt.Errorf("%w: there is nothing to search for", ErrInvalidSearch)
+		return SearchResult{}, fmt.Errorf("%w: there is nothing to search for", ErrInvalidSearch)
+	}
+	since, until, err := searchWindow(opts.Since, opts.Until)
+	if err != nil {
+		return SearchResult{}, err
 	}
 	q := &query{}
 	filter, ok := reader.predicate(q, opts.Scope)
 	if !ok {
-		return []Hit{}, nil
+		return SearchResult{Hits: []Hit{}}, nil
+	}
+	if since != nil {
+		filter += " AND last_activity_at >= " + q.placeholder(*since) + "::timestamptz"
+	}
+	if until != nil {
+		filter += " AND created_at < " + q.placeholder(*until) + "::timestamptz"
 	}
 
 	// The query is embedded before the statement is built, so that a tier that
@@ -159,7 +212,7 @@ func (s *Store) Search(ctx context.Context, reader Reader, opts SearchOptions) (
 	// tell.
 	vector, err := embedQuery(ctx, opts.Embedder, opts.Query)
 	if err != nil {
-		return nil, err
+		return SearchResult{}, err
 	}
 
 	sql := fmt.Sprintf(searchSQL,
@@ -172,28 +225,59 @@ func (s *Store) Search(ctx context.Context, reader Reader, opts SearchOptions) (
 	)
 	rows, err := s.db.Query(ctx, sql, q.args...)
 	if err != nil {
-		return nil, fmt.Errorf("searching documents: %w", err)
+		return SearchResult{}, fmt.Errorf("searching documents: %w", err)
 	}
 	defer rows.Close()
 
-	hits := []Hit{}
+	result := SearchResult{Hits: []Hit{}}
 	for rows.Next() {
 		var (
-			d   docScan
-			hit Hit
+			d      docScan
+			hit    Hit
+			total  int
+			beyond bool
 		)
-		if err := rows.Scan(append(d.dests(), &hit.Score, &hit.TextRank, &hit.VectorRank)...); err != nil {
-			return nil, fmt.Errorf("searching documents: %w", err)
+		if err := rows.Scan(append(d.dests(), &hit.Score, &hit.TextRank, &hit.VectorRank, &total, &beyond)...); err != nil {
+			return SearchResult{}, fmt.Errorf("searching documents: %w", err)
 		}
 		if hit.Stored, err = d.done(); err != nil {
-			return nil, fmt.Errorf("searching documents: %w", err)
+			return SearchResult{}, fmt.Errorf("searching documents: %w", err)
 		}
-		hits = append(hits, hit)
+		result.Hits = append(result.Hits, hit)
+		result.Truncated = beyond || total > SearchLimit(opts.Limit)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("searching documents: %w", err)
+		return SearchResult{}, fmt.Errorf("searching documents: %w", err)
 	}
-	return hits, nil
+	return result, nil
+}
+
+// searchWindow parses the window's two ends, each nil when it was not asked
+// for. It refuses a timestamp that is not RFC 3339 and a window that ends
+// before it begins; an empty window (the two equal) is a window.
+func searchWindow(since, until string) (*time.Time, *time.Time, error) {
+	parse := func(name, value string) (*time.Time, error) {
+		if value == "" {
+			return nil, nil
+		}
+		t, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s is not an RFC 3339 timestamp", ErrInvalidSearch, name)
+		}
+		return &t, nil
+	}
+	from, err := parse("since", since)
+	if err != nil {
+		return nil, nil, err
+	}
+	to, err := parse("until", until)
+	if err != nil {
+		return nil, nil, err
+	}
+	if from != nil && to != nil && from.After(*to) {
+		return nil, nil, fmt.Errorf("%w: since is later than until", ErrInvalidSearch)
+	}
+	return from, to, nil
 }
 
 // SearchLimit is how many documents a search with this limit actually returns:

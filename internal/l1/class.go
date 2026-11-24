@@ -28,6 +28,11 @@ func ClassFor(kind Kind, root connector.Event) (config.ArtifactClass, error) {
 		return config.ArtifactPullRequest, nil
 	case KindMeetingSegment:
 		return config.ArtifactMeeting, nil
+	case KindConversationSegment:
+		// A person's private conversation with their agent is said to one
+		// listener, as a direct message is, and it ranks with one: below every
+		// document a team wrote down on purpose, above what an agent asserted.
+		return config.ArtifactDM, nil
 	case KindWikiSection:
 		return config.ArtifactSpec, nil
 	case KindDecision:

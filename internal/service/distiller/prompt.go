@@ -3,6 +3,7 @@ package distiller
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/llm"
@@ -57,6 +58,15 @@ var kindPrompts = map[l1.Kind]string{
 - summary: preserve the discussion and reasoning on this topic alone.
 - outcome: only a decision, resolution, or proposal explicitly made in these lines. Empty when these lines conclude nothing.
 - open_questions: questions left unanswered in these lines.
+
+Do not import an outcome from another topic.`,
+	l1.KindConversationSegment: `This is one topic of a conversation between a person (the owner) and their assistant (Kern). Each numbered line is one message, labelled Owner, Owner (interrupted) for words the owner left unfinished, or Kern.
+
+- summary: what was discussed on this topic, including what Kern answered, for someone who has not read it.
+- question: the main question the owner asked, if one was asked. Empty otherwise.
+- outcome: only what the OWNER's own lines decide, resolve or propose, as one sentence. Kern's lines are context, never the source of an outcome: something only Kern recommended, decided or concluded is not an outcome, even if the owner did not object. Empty when the owner's lines conclude nothing.
+- outcome_lines: the numbers of the Owner lines the outcome rests on. Empty when the outcome is empty. Never cite a Kern line.
+- open_questions: questions this topic leaves unanswered, one per entry.
 
 Do not import an outcome from another topic.`,
 	l1.KindWikiSection: `This is one section of a document or wiki page. The markdown heading and body are source text, including any frontmatter, tags, and wikilinks.
@@ -116,6 +126,8 @@ type answer struct {
 	OpenQuestions []string `json:"open_questions,omitempty"`
 	Change        string   `json:"change,omitempty"`
 	CodeNames     []string `json:"code_names,omitempty"`
+	// OutcomeLines are the lines of a conversation segment its outcome rests on.
+	OutcomeLines []int `json:"outcome_lines,omitempty"`
 }
 
 // body turns an answer into the document body. Its outcome kind is unset:
@@ -141,6 +153,8 @@ const (
 	maxChange   = 1000
 	maxOpen     = 8
 	maxOpenLen  = 400
+	// maxOutcomeLines bounds the lines one outcome cites.
+	maxOutcomeLines = 16
 )
 
 // schemaFor is the shape a kind's answer has to take. The per-kind fields are
@@ -168,6 +182,18 @@ func schemaFor(kind l1.Kind) *llm.Schema {
 		},
 	}
 	switch kind {
+	case l1.KindConversationSegment:
+		properties["question"] = schemaNode{
+			Type:        "string",
+			Description: "The main question the owner asked, in one sentence. Empty when none was asked.",
+			MaxLength:   maxQuestion,
+		}
+		properties["outcome_lines"] = schemaNode{
+			Type:        "array",
+			Description: "The numbers of the Owner lines the outcome rests on. Empty when there is no outcome.",
+			MaxItems:    maxOutcomeLines,
+			Items:       &schemaNode{Type: "integer"},
+		}
 	case l1.KindIssue, l1.KindChatThread:
 		properties["question"] = schemaNode{
 			Type:        "string",
@@ -247,6 +273,9 @@ func RequestFor(doc l1.Document, budget int) llm.Request {
 // scrubbed of secrets and personal data, truncated to what this package sends.
 func promptFor(doc l1.Document) string {
 	text := doc.RawText
+	if doc.Kind == l1.KindConversationSegment {
+		text = numbered(text)
+	}
 	if len(text) <= MaxPromptBytes {
 		return text
 	}
@@ -257,6 +286,16 @@ func promptFor(doc l1.Document) string {
 		cut--
 	}
 	return text[:cut] + truncated
+}
+
+// numbered is a conversation segment's lines as the model reads them, each with
+// its number, which is what an outcome cites.
+func numbered(raw string) string {
+	lines := strings.Split(raw, "\n")
+	for i, line := range lines {
+		lines[i] = fmt.Sprintf("%d. %s", i+1, line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // utf8ValidCut reports whether cutting the string here lands between runes.

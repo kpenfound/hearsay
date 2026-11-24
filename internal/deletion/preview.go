@@ -20,18 +20,36 @@ import (
 // principal or source:native-id (source:@handle for a handle-only identity).
 type Selector struct {
 	Event, ArtifactSource, ArtifactID, Author string
+	// Call is set on the selector a deletion made through the API's `delete`
+	// records, which names several artifacts under one request. It is a
+	// record of what was asked, not something the walk selects by.
+	Call *Call `json:",omitempty"`
+}
+
+// Call is the API request a deletion answered.
+type Call struct {
+	// Events are the event ids the caller named, sorted. Each names its whole
+	// artifact.
+	Events []string `json:"events"`
+	// IdempotencyID is the caller's id for the request.
+	IdempotencyID string `json:"idempotency_id"`
+	// Carrier is the agent that carried the request, when one did.
+	Carrier string `json:"carrier,omitempty"`
 }
 
 // Preview is the complete forward walk. All slices are sorted and non-nil.
 type Preview struct {
-	Selector        Selector `json:"selector"`
-	Reason          string   `json:"reason"`
-	Events          []string `json:"events"`
-	Documents       []string `json:"documents"`
-	Stances         []string `json:"stances"`
-	Topics          []string `json:"topics"`
-	AliasCandidates []string `json:"alias_candidates"`
-	Pins            []string `json:"pins"`
+	Selector Selector `json:"selector"`
+	// Selectors is every selector of a deletion that took several, and absent
+	// for one that took one.
+	Selectors       []Selector `json:"selectors,omitempty"`
+	Reason          string     `json:"reason"`
+	Events          []string   `json:"events"`
+	Documents       []string   `json:"documents"`
+	Stances         []string   `json:"stances"`
+	Topics          []string   `json:"topics"`
+	AliasCandidates []string   `json:"alias_candidates"`
+	Pins            []string   `json:"pins"`
 	// Gestures are the gestures in force the events made, in ledger order:
 	// deleting their events takes them out of force.
 	Gestures []int64 `json:"gestures"`
@@ -59,7 +77,7 @@ func Walk(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, sel Selecto
 		return p, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	return walk(ctx, tx, repo, sel, reason)
+	return walk(ctx, tx, repo, []Selector{sel}, reason)
 }
 
 func emptyPreview(sel Selector, reason string) Preview {
@@ -95,48 +113,76 @@ func check(sel Selector, reason string) error {
 	return nil
 }
 
-func walk(ctx context.Context, tx pgx.Tx, repo config.Repo, sel Selector, reason string) (Preview, error) {
-	p := emptyPreview(sel, reason)
+// queryer is what a selection reads through: a transaction, or a connection
+// outside one.
+type queryer interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// walk is the forward walk of everything the selectors select.
+func walk(ctx context.Context, tx pgx.Tx, repo config.Repo, sels []Selector, reason string) (Preview, error) {
+	p := emptyPreview(sels[0], reason)
+	if len(sels) > 1 {
+		p.Selectors = sels
+	}
+	for _, sel := range sels {
+		ids, err := selectEvents(ctx, tx, repo, sel)
+		if err != nil {
+			return p, err
+		}
+		p.Events = append(p.Events, ids...)
+	}
+	return forward(ctx, tx, p)
+}
+
+// selectEvents is the L0 events a selector names, sorted.
+func selectEvents(ctx context.Context, q queryer, repo config.Repo, sel Selector) ([]string, error) {
 	var (
 		rows pgx.Rows
 		err  error
+		ids  []string
 	)
 	switch {
 	case sel.Event != "":
-		rows, err = tx.Query(ctx, `SELECT id FROM l0_events WHERE id=$1 ORDER BY id`, sel.Event)
+		rows, err = q.Query(ctx, `SELECT id FROM l0_events WHERE id=$1 ORDER BY id`, sel.Event)
 	case sel.ArtifactSource != "":
-		rows, err = tx.Query(ctx, `SELECT id FROM l0_events WHERE source=$1 AND artifact=$2 ORDER BY id`, sel.ArtifactSource, sel.ArtifactID)
+		rows, err = q.Query(ctx, `SELECT id FROM l0_events WHERE source=$1 AND artifact=$2 ORDER BY id`, sel.ArtifactSource, sel.ArtifactID)
 	default:
 		identities, e := expandAuthor(repo, sel.Author)
 		if e != nil {
-			return p, e
+			return nil, e
 		}
 		for _, id := range identities {
 			var found pgx.Rows
 			if id.NativeID != "" {
-				found, err = tx.Query(ctx, `SELECT id FROM l0_events WHERE payload->'author'->>'source'=$1 AND payload->'author'->>'native_id'=$2 ORDER BY id`, id.Source, id.NativeID)
+				found, err = q.Query(ctx, `SELECT id FROM l0_events WHERE payload->'author'->>'source'=$1 AND payload->'author'->>'native_id'=$2 ORDER BY id`, id.Source, id.NativeID)
 			} else {
-				found, err = tx.Query(ctx, `SELECT id FROM l0_events WHERE payload->'author'->>'source'=$1 AND lower(payload->'author'->>'handle')=$2 ORDER BY id`, id.Source, principal.FoldHandle(id.Handle))
+				found, err = q.Query(ctx, `SELECT id FROM l0_events WHERE payload->'author'->>'source'=$1 AND lower(payload->'author'->>'handle')=$2 ORDER BY id`, id.Source, principal.FoldHandle(id.Handle))
 			}
 			if err != nil {
-				return p, err
+				return nil, err
 			}
-			ids, e := readIDs(found)
+			found2, e := readIDs(found)
 			if e != nil {
-				return p, e
+				return nil, e
 			}
-			p.Events = append(p.Events, ids...)
+			ids = append(ids, found2...)
 		}
 	}
 	if rows != nil {
 		if err != nil {
-			return p, err
+			return nil, err
 		}
-		p.Events, err = readIDs(rows)
-		if err != nil {
-			return p, err
+		if ids, err = readIDs(rows); err != nil {
+			return nil, err
 		}
 	}
+	return ids, nil
+}
+
+// forward walks provenance forward from p.Events.
+func forward(ctx context.Context, tx pgx.Tx, p Preview) (Preview, error) {
+	var err error
 	p.Events = unique(p.Events)
 	if len(p.Events) == 0 {
 		return p, fmt.Errorf("selector matches no L0 events")

@@ -622,6 +622,68 @@ resolve, list that identity on the principal:
 The distiller does not distil these events. They record what an agent did,
 and they are not team knowledge.
 
+### Conversation source
+
+A person's conversation with their agent (Kern), which the agent posts to
+Hearsay one message at a time. Hearsay does not fetch anything for it. Each
+message is one `POST /hooks/<source id>` on the connectors service, and the
+owner's words and the agent's answer of an exchange are two requests.
+[The connector contract](connector-contract.md#conversation-kern) has the
+request, its responses and the stored event.
+
+<!-- example: conversation/hearsay.yaml -->
+```yaml
+sources:
+  - id: kern
+    type: conversation
+    containers: [kyle]       # the owner's id, or "*"
+    settings:
+      owner: kyle            # required: one configured human principal
+      agents: [kern]         # required: the agent principals allowed to post
+
+principals:
+  - id: kyle
+    kind: human
+    identities:
+      - source: kern
+        native_id: kyle
+  - id: kern
+    kind: agent
+    class: worker
+    token_env: HEARSAY_KERN_TOKEN
+    scopes: ["*"]            # required of every agent
+    identities:
+      - source: kern
+        native_id: kern
+
+scopes:
+  - id: memory
+    sources: [kern]
+```
+
+| Setting | |
+|---|---|
+| `owner` | The principal id of the one human whose conversation this is. It must be a configured `human`. Every event the source stores has an access list naming this person alone, so nobody else, and no agent acting for anybody else, reads the conversation or what is distilled from it. |
+| `agents` | The agent principals allowed to post. Each must be a configured `agent` with a `token_env`, no two sharing a token. |
+
+The source takes no `secrets` and adds no environment variable of its own. An
+agent authenticates with the API token its principal names in `token_env`, sent
+as `Authorization: Bearer <token>`, and the events are authored by that agent.
+The connectors service refuses to start if a listed agent's variable is unset
+or empty, if two allowed agents share a token, or if a setting is not one of the
+two above. An agent that holds a token but is not in `agents` is answered 403
+rather than 401.
+
+`containers` is the owner's id or `*`: the only container is the owner's
+stream, so any other id is a startup failure. The owner and every allowed
+agent must list an identity `{source: <source id>, native_id: <principal id>}`
+as above. That mapping resolves an event's author to its principal and is what
+lets the owner read their own events, so the service refuses to start without
+it.
+
+The messages are distilled as a conversation, per `thread`, not as chat. The
+posting agent reads them only as an agent acting for the owner.
+
 ### Work updates source
 
 Factories and agents post projects, workstreams and updates to this source.
@@ -1214,7 +1276,7 @@ and an open one are the same kind of thing with very different weight.
 | `pull_request` | A change proposal that was not merged, and the reviews on it. |
 | `commit` | A commit on a watched branch. |
 | `chat_thread` | A thread or burst in an ingested channel. |
-| `dm` | A direct message. DMs are not ingested unless a person lists the container. |
+| `dm` | A direct message. DMs are not ingested unless a person lists the container. A person's conversation with their agent is one too: a `conversation` source's documents are `dm`, so a policy ranks or ratifies them with the class a private conversation already has. |
 | `agent` | An agent turn, or a stance an agent wrote through `assert`. |
 
 The distiller assigns a class to every L1 document it produces, from the
@@ -1222,7 +1284,7 @@ document's kind and the state of the artifact behind it: `pr` is `merged_pr`
 when it merged and `pull_request` otherwise, `meeting_segment` is `meeting`,
 `wiki_section` is `spec`, `decision` is `decision`, `issue` is `issue`, `commit` is `commit`,
 `chat_thread` and `chat_burst` are `chat_thread` unless the container is a
-direct-message container, and `agent_turn` is `agent`. That is a contract on L1,
+direct-message container, `conversation_segment` is `dm`, and `agent_turn` is `agent`. That is a contract on L1,
 written here because authority is what needs it.
 
 ### The built-in default

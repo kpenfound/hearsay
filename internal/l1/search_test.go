@@ -31,6 +31,10 @@ func (r *recorder) QueryRow(context.Context, string, ...any) pgx.Row {
 	return nil
 }
 
+// searchHits is a search's documents, for the tests that do not care whether it
+// was truncated.
+func searchHits(r l1.SearchResult, err error) ([]l1.Hit, error) { return r.Hits, err }
+
 func readerFor(human string, scopes principal.Scopes) l1.Reader {
 	return l1.Reader{Effective: principal.Effective{Human: human, Grant: principal.Grant{Scopes: scopes}}}
 }
@@ -74,10 +78,10 @@ func TestSearchFailsClosedBeforeItRuns(t *testing.T) {
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
 			var rec recorder
-			hits, err := l1.New(&rec).Search(t.Context(), tc.reader, l1.SearchOptions{
+			hits, err := searchHits(l1.New(&rec).Search(t.Context(), tc.reader, l1.SearchOptions{
 				Query: "the engine schema",
 				Scope: tc.scope,
-			})
+			}))
 			if rec.ran != tc.want {
 				t.Fatalf("the database was asked: %v, want %v", rec.ran, tc.want)
 			}
@@ -99,7 +103,7 @@ func TestSearchFailsClosedBeforeItRuns(t *testing.T) {
 func TestSearchRefusesAnEmptyQuery(t *testing.T) {
 	for _, query := range []string{"", "   ", "\n\t"} {
 		var rec recorder
-		_, err := l1.New(&rec).Search(t.Context(), readerFor("kyle", principal.AllScopes()), l1.SearchOptions{Query: query})
+		_, err := searchHits(l1.New(&rec).Search(t.Context(), readerFor("kyle", principal.AllScopes()), l1.SearchOptions{Query: query}))
 		if !errors.Is(err, l1.ErrInvalidSearch) {
 			t.Errorf("Search(%q) = %v, want l1.ErrInvalidSearch", query, err)
 		}

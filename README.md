@@ -10,7 +10,7 @@ humans through a small read and assert API. It is the thing an agent asks
 instead: chat apps, CLIs and trackers become interfaces to it rather than the
 place context lives.
 
-Status: implemented end to end: eight source types, four services, MCP/HTTP
+Status: implemented end to end: nine source types, four services, MCP/HTTP
 bundles and assertions, human corrections, evaluation, Compose and Helm.
 Ownership views and a shipped embedding provider remain open. The distiller
 and the assertion worker decide from Jev's typed judgments, and require it.
@@ -41,6 +41,7 @@ flowchart LR
         Tracker["Generic tracker"]
         Sessions["Agent sessions"]
         Work["Work updates"]
+        Conversation["Conversation"]
     end
 
     subgraph services["Four services, one binary"]
@@ -62,7 +63,7 @@ flowchart LR
         Human["Humans, via chat apps and CLIs"]
     end
 
-    GH & Discord & Slack & Drive & Obsidian & Tracker & Sessions & Work --> C
+    GH & Discord & Slack & Drive & Obsidian & Tracker & Sessions & Work & Conversation --> C
     C --> L0
     L0 --> D --> L1
     L1 --> A --> L2
@@ -76,7 +77,9 @@ flowchart LR
 GitHub, Discord and Slack (public channels) connectors ship, along with Drive
 backfill and change sync, Obsidian vault backfill and polling, a generic tracker
 source that accepts tickets and comments, an agent session source, and the `work`
-source for factories and agents to post projects, workstreams and updates. Slack
+source for factories and agents to post projects, workstreams and updates, and a
+conversation source an agent posts a person's conversation to, one message at a time,
+kept readable by that person alone. Slack
 reactions and `/hearsay` commands support gestures in public channels.
 
 ## Quick start
@@ -114,7 +117,7 @@ has been ingested, `hearsay distiller` turns those events into L1 documents, and
 `hearsay assert-worker` turns the documents that decided, proposed or resolved
 something into L2 topics and stances, and appends the stances agents write
 through the API's `assert` call.
-`hearsay connectors` hosts, polls and backfills the eight source types above as
+`hearsay connectors` hosts, polls and backfills the nine source types above as
 the configuration specifies. A source of an unregistered type is a startup
 failure. See [configuration](docs/config.md#sources) for each source's settings.
 

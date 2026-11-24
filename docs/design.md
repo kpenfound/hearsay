@@ -2,7 +2,7 @@
 
 An open-source context platform for teams using coding agents. Hearsay ingests team communication and artifacts, distills them into layered knowledge with provenance, and serves scoped, permission-filtered context bundles to agents and humans through a small read/assert API.
 
-Status: implemented end to end: eight source types, four services, MCP/HTTP
+Status: implemented end to end: nine source types, four services, MCP/HTTP
 reads and assertions, human corrections, evaluation, Compose and Helm, with
 Jev's typed judgments deciding outcomes, topics and stances. Ownership views
 and a shipped embedding provider remain open. First consumer: `shed`. Generalized for any team.
@@ -38,7 +38,9 @@ currently runs on full text alone.
 
 ## L0: events
 
-Every source connector writes L0 only. An event is `{id, source, native_id, kind, time, payload (JSONB), acl}`. Sources include Slack threads and messages, GitHub issues, PRs, reviews and commits, meeting transcripts from Drive, wiki pages, tracker tickets, factory and agent work updates (projects, workstreams and their updates), and agent session events (start, end, tool calls, assertions). Source gestures are also L0 events; CLI gestures go directly through the shared L2 gesture ledger with a generated event id as the idempotency key. The narrow source-reply exception belongs to runtime components, not connectors.
+Every source connector writes L0 only. An event is `{id, source, native_id, kind, time, payload (JSONB), acl}`. Sources include Slack threads and messages, GitHub issues, PRs, reviews and commits, meeting transcripts from Drive, wiki pages, tracker tickets, factory and agent work updates (projects, workstreams and their updates), agent session events (start, end, tool calls, assertions), and a person's conversation with their agent. Source gestures are also L0 events; CLI gestures go directly through the shared L2 gesture ledger with a generated event id as the idempotency key. The narrow source-reply exception belongs to runtime components, not connectors.
+
+A person's conversation with their agent (Kern) is the `conversation` source, a push connector: an agent the source allows posts one message per `POST /hooks/<source id>` with its own API bearer token, and the source's settings name exactly one owner, a configured human, and those agents. Each message is one event and its own artifact (`<conversation>/<exchange>:<role>`), so the owner's words (authored by the owner) and the agent's answer (authored by the agent) of an exchange never share text, and the conversation id is the event's `thread`. Every event's access list names the owner alone: no other person, and no agent acting for another person, reads a message or anything derived from it, whether a document, a stance, a position, an edge, a bundle or a stance history, even on a topic that also holds evidence they may read; the posting agent reads it only as an agent acting for the owner. A message posted again with the content the artifact's current revision holds writes nothing and answers the same event id; changed text (voice rewriting a rendering) is a new revision that becomes current, never a conflict; the owner's words may be posted alone, marked interrupted, and the mark is kept on the event and shown in the document that quotes it. A post from an agent the source does not allow, one naming another owner, an unknown field or a malformed body is refused with a 4xx status and writes nothing, and a post of a message the owner has deleted writes nothing and is answered `410` `deleted` ([The `delete` call](#the-delete-call)). The messages are distilled per conversation, as a transcript is ([L1](#l1-distilled-documents)), and which of them a distillation has covered is what [`coverage`](#the-coverage-call) answers. The request and the stored event are in [the connector contract](connector-contract.md#conversation-kern), the settings in [configuration](config.md#conversation-source).
 
 Agent activity is a first-class source. An agent's tool calls and proposals enter L0 so that later assertions can trace back to what the agent retrieved and chose.
 
@@ -50,7 +52,7 @@ A common envelope plus a per-kind body. Every L1 doc is one row in one table.
 
 ```yaml
 id: l1:discord:thread:123456789012345678
-kind: chat_thread | chat_burst | meeting_segment | pr | issue | commit | wiki_section | decision | agent_turn
+kind: chat_thread | chat_burst | meeting_segment | conversation_segment | pr | issue | commit | wiki_section | decision | agent_turn
 artifact_class: merged_pr | spec | meeting | issue | pull_request | commit | chat_thread | dm | agent
 state: { core: proposed | started | blocked | completed | abandoned, native: ... } # optional, stated by source
 source: { system, native_id, url }
@@ -65,7 +67,7 @@ references:                           # typed, extracted deterministically
   - { type: l1, id: l1:meeting:... }
 acl: [...]                            # inherited from source at ingest, re-synced on change
 text: ...                             # embedded
-raw_text: ...                         # full-text index only, never embedded
+raw_text: ...                         # full-text indexed (with body.summary and outcome), never embedded
 embedding: ...
 
 body:
@@ -81,6 +83,7 @@ Design points:
 - `references` come from link parsing, @-mention resolution, known system names, and the paths a change touches matched against code entities' path patterns (most specific entity first), not from the LLM. The paths stay in L0; a document keeps the entities, not the files. They are the join key for L2 topic matching and cost nothing to recompute.
 - `outcome_kind` is the L2 trigger. Only docs marked `decided`, `proposed`, or `resolved` enter the assertion pipeline.
 - Meetings are segmented per topic. One meeting produces several `meeting_segment` L1 docs, each with one `outcome`. The segmentation call selects numbered transcript line ranges; repeated ranges for one topic combine into one document. Stable topic labels anchor IDs across edits. Each segment carries its transcript event provenance, inherited ACL and attendee roles, while typed references are extracted from that topic’s source lines without model output. Removed topics are retracted when the transcript changes or disappears.
+- A person's conversation with their agent (a `conversation` source) is segmented the same way. Its current messages share a `thread`, are ordered by when they were said, and are numbered as speaker-labelled lines (`Owner`, `Owner (interrupted)`, `Kern`). One segmentation call returns topic ranges; each topic becomes one `conversation_segment` L1 doc, and a topic that resumes later joins its earlier document. Each segment's `l0_refs` are exactly the message events whose lines it quotes, so a greeting no topic takes is cited by none. Its class is `dm`, and its ACL is the owner's alone, folded from its events. Only the owner's own words can become the owner's stance: the outcome sentence is kept only where it cites Owner lines, Jev judges the outcome over the owner's lines with the agent's as context, and the assertion worker reads a stance's position from that sentence alone, so something only Kern decided asserts nothing. One transaction reconciles the conversation's segments and records which message revisions the distillation read; that record is what says a message was processed, because job state and documents cannot.
 - A markdown document is partitioned at headings, including nested headings. The material before the first heading (or the whole page without headings) is an intro section. Each section is independently distilled as `wiki_section`; unchanged sections may retain provenance to an earlier L0 revision that contains the same text. A changed source ACL refreshes every current section.
 - Chat conversations also emit bursts (single-author runs that pass rarity and length gates) so tangent facts survive summarization.
 - A secrets and PII scrub runs before `text` is written.
@@ -281,12 +284,41 @@ Exposed over MCP and HTTP. Deliberately small.
 |`stance_history(topic)`|Full record for a topic|
 |`get_l1(id)`, `get_l0(id)`|Follow a pointer|
 |`get_session(assertion)`|Follow an assertion event to its ordered agent-session trace and audits|
-|`search(scope, query)`|Hybrid retrieval over L1 (embeddings, full text, rank fusion). Returns documents, not answers|
+|`search(scope, query, limit?, since?, until?)`|Hybrid retrieval over L1 (embeddings, full text, rank fusion). Full text matches a document's `raw_text` and its distilled summary and outcome, so a distillation is found with no `embed` tier. `since` and `until` (RFC 3339) keep the documents created before `until` and last active at or after `since`; a malformed timestamp or `since` later than `until` is refused as invalid (400, code `invalid_request`). Returns documents, not answers, and `truncated`. See [Search](#search)|
 |`watch(scope, filter)`|Subscribe to new events on a scope once distilled. Notification only; consumers decide what to do. The per-document debounce can add up to the maximum delay before distillation becomes due, on top of worker poll and distillation time|
 |`assert(topic, position, evidence)`|Write a stance as an L0 event. Agents are principals|
 |`decide(decision_id, action, stance_id \| gesture_id)`|A person's own ratify, demote or undo of one stance, optionally carried by an agent. Writes the gesture ledger, no L0 event, and calls no model ([The `decide` call](#the-decide-call))|
+|`coverage(event_ids)`|Whether Hearsay covers each of up to 100 conversation message events: `pending`, `covered` with the ids of the current documents citing it, or `excluded`. Decided from the published distillation record, the current documents and deletions; holds no state and calls no model ([The `coverage` call](#the-coverage-call))|
+|`delete(event_ids, idempotency_id)`|The configured owner of a conversation source deletes messages of it, directly or with that source's agent carrying the request. Every revision of each named message is redacted through the operator deletion, under one deletion record and one `deletion` event, atomically and idempotently. Calls no model ([The `delete` call](#the-delete-call))|
 
 Pinning and topic merges are human actions taken in the tools people already use (see Human feedback loop). So are ratification and demotion there; `decide` is how an agent carries a person's own ratify, demote or undo of a stance.
+
+### Search
+
+Search ranks two halves over the documents the caller may read, then fuses them by reciprocal rank. The access-list, scope and `since`/`until` filters are inside both halves, so a document the caller may not read, or outside the window, never takes a rank and never changes what the response says about itself.
+
+- **Full text** runs under the named `english` configuration over `raw_text` followed by the body's `summary` and `outcome`, one text per document, indexed by one expression index. Both the index and every query name `english`. Words the team wrote and words the distiller wrote both match, which is what lets a deployment with no `embed` tier find a distillation.
+- **Similarity** runs over the embedding of `text` where an `embed` tier exists, and is off without one. This is the only model call a search makes.
+- **The window** is optional at either end. A document is in it when `created < until` and `last_activity >= since`. The two timestamps are RFC 3339; Hearsay applies the window it is given and reads no dates out of the query.
+- **`truncated`** is always present in the response. It is `true` when more documents matched than the response returned, or when either half had a document ranked beyond its candidate cutoff (`SearchCandidates`, 200 per half), which fusion never saw. It is `false` when everything that matched was returned. It is computed in the same statement, without returning extra rows.
+
+The response keeps `documents`, each document with its `score`, and adds `truncated`.
+
+### The `coverage` call
+
+`coverage` is served like every call, as `POST /v1/coverage` and as the MCP tool `coverage`, so both interfaces answer the same request with the same bytes. It takes `event_ids`, 1 to 100 L0 event ids; an empty list, more than 100, an empty id, an unknown field or a malformed body is refused with 400 and code `invalid_request`. It answers `{"results": [{"event_id", "state", "documents"?}]}`: one result per requested id, in request order, the id as it was asked. `documents` is present, sorted and non-empty, only when the state is `covered`.
+
+It answers for the messages of a conversation source (a `conversation.message` event), with exactly one state each:
+
+- **`pending`**: the message is held and no published distillation of its conversation has read its *current revision*. That is the time before the distiller has consumed it from the change feed, while an attempt that failed or was stopped by a restart has not been followed by a successful one, after the message was rewritten while documents built from its older revision remain, and for a message that arrived while an attempt ran and so is not among what that attempt read.
+- **`covered`**: the published distillation that read its current revision quotes it in at least one current document the caller may read. `documents` are those documents: the current L1 documents whose `l0_refs` cite it.
+- **`excluded`**: Hearsay will not cover it. It was deleted (every revision of its artifact is redacted, or the artifact was retracted); or the published distillation that read its current revision quotes it in no document the caller may read, including when that distillation produced no document; or the id does not name a message, does not exist or is one the caller may not read. The last two are the same answer, byte for byte but for the id echoed back, as everywhere in Hearsay's reads: an excluded result has no other field, so nothing tells a caller which ids exist.
+
+An id superseded by a newer revision of its artifact is answered for the artifact's current revision, the one L0 reads as current, so a rewrite's older id and its newer one answer alike. A message is never `covered` or `excluded` on the strength of a distillation that did not include its current revision: the record names the event id of every revision a distillation read, an event id names one revision, and a rewritten or newly arrived message is not among them until a distillation that read it is published ([the distiller README](../internal/service/distiller/README.md)).
+
+The state is decided from three reads in one snapshot (a read-only repeatable-read transaction): L0's current revision of the artifact and its access list, the completion record the distiller publishes with a conversation's documents (`l1_conversation_distillations`, `l1.Store.ConversationDistillationsReading`), and the current documents whose `l0_refs` cite the revision (`l1.Store.Holders`, over the `l1_docs_l0_refs_idx` index). It never reads job state or a clock, so a queued, running or failed job cannot move an answer, and nothing in it waits on timing.
+
+It is filtered like every read. A message is readable when the access lists of its current revision and of the revision asked for both allow the caller (a conversation source's lists name the owner alone, so a second human and an agent acting for them read nothing of it); a document that cites it counts only if the caller's access list and reach allow it, so a caller whose reach holds none of its documents' entities reads the message as `excluded`. A message with no document yet has no entities to judge reach by, so it is as readable as its access lists say. `coverage` holds no state between calls, writes nothing, and makes no model call, which is why Kern can poll it.
 
 ### The `decide` call
 
@@ -313,6 +345,36 @@ Pinning and topic merges are human actions taken in the tools people already use
 |`internal`|500|an unexpected failure inside the call|
 
 A refused request records nothing. Failures every call shares and that happen before a request reaches `decide` — a missing or invalid human or agent credential, an ambiguous header, an oversized body, session and reach resolution — are not `decide` refusals: they keep their existing statuses and `{"error": message}` bodies and carry **no reason code**, so a caller tells them apart by the absence of `code`. The error bodies of every other call are unchanged.
+
+### The `delete` call
+
+`delete` is served like every call, as `POST /v1/delete` and as the MCP tool `delete`, from the one call layer. It is the owner's "forget that" for a `conversation` source, and it reaches nothing else.
+
+**Who may call it.** The person in `Hearsay-Principal` must be the configured owner of the conversation source that holds every event named. They may call directly, or with an agent in `Hearsay-Agent` that the source allows to post carrying the request; the agent is recorded as the deletion's carrier, never authorized as a person, and an agent whose class writes nothing (observer) may not carry. No other source type, and no other person's conversation, is reachable.
+
+**What it takes.** `event_ids` (1 to 100 L0 event ids) and `idempotency_id` (required, opaque, at most 256 bytes). Unknown fields are refused. Any revision's id names the whole message: the artifact is `<conversation>/<exchange>:<role>`, and the owner's words and the answer of one exchange are separate artifacts, so deleting one touches no other.
+
+**What it does.** It is `internal/deletion`'s operator deletion over the named artifacts, applied as one request in one transaction: every revision of each artifact has its payload redacted in place, one deletion record and one `deletion` event under source `hearsay` are written, pins and gestures resting on the events are taken out as an operator deletion does, and a `distill` job is queued for every affected document, which the running distiller rebuilds or removes. The L2 text read from the deleted content is redacted by the existing rebuild once it is no longer current. No model is called.
+
+**One request, one outcome.** Authorization of every named event is checked again inside the transaction that deletes, so a request is applied whole or not at all: a failure after some artifacts are processed leaves none of them redacted and no deletion record. A request naming an event that does not exist, one in a source that is not a conversation source the caller owns, or one in another person's conversation is refused with the one `not_found` answer, whichever it is, and writes nothing, including for the events the caller does own.
+
+**Idempotency.** The deletion's id is derived from the human, the carrier and the `idempotency_id` (`del_` and 128 bits of a hash), the way `decide` derives a gesture id, and the deletion record is keyed by it. Repeating the request, sequentially, concurrently or after the answer was lost, finds the record and answers the original deletion with nothing new written; concurrent first requests race to one record. The same id with a different set of events or a different carrier is `conflict`.
+
+**The answer.** `{deletion_id, deleted, kept}`: the deletion record's id, the ids of every event redacted, and `kept`, which is always `["ids", "times", "kinds"]`: the residue that stays so that a re-sent copy of the message stays deleted. A request whose messages an earlier deletion had already redacted records nothing more and answers that deletion with an empty `deleted`.
+
+**Refusals** carry `{error, code}` with a status, and record nothing:
+
+|Code|Status|When|
+|---|---|---|
+|`invalid_request`|400|malformed arguments, an unknown field, no or over 100 event ids, a blank or over-long id or idempotency id|
+|`not_allowed`|403|the agent's class may not carry a request|
+|`not_found`|404|any named event is nonexistent, outside the caller's own conversation sources, or another person's|
+|`conflict`|409|the idempotency id was used for a different request|
+|`internal`|500|an unexpected failure inside the call|
+
+Failures every call shares before it is dispatched keep their statuses and code-less bodies, as they do for `decide`.
+
+**A deleted message stays deleted.** The conversation source serializes each write of an artifact with the deletion of it, under one per-artifact lock taken inside the transaction that checks whether the artifact was deleted and writes the revision. A post of a deleted message, with the same or changed text, writes nothing and is answered `410` with `{"code": "deleted", "status": "deleted"}` ([docs/connector-contract.md](connector-contract.md#conversation-kern)); a post that overlaps a deletion either lands first and is redacted by it, or finds the artifact deleted. Once both have finished no readable revision of the artifact exists. Every other source keeps the connector contract's rule that a new revision after an operator deletion is admitted.
 
 ## Access control
 
@@ -375,7 +437,7 @@ L0 is append-only, but deletion is required (a pasted secret, a departed employe
 
 A deletion at the source arrives as a tombstone and only hides what it covers. A deletion from Hearsay is an operator action, `hearsay delete --apply`, and it is the one exception to append-only: the covered L0 rows keep their id, source, artifact, kind, time and ACL, their payload content is redacted in place, and Hearsay records the deletion as its own action rather than the source's.
 
-Both kinds of deletion rebuild the same way: the affected L1 documents are re-distilled or deleted, and each stance resting on them is superseded, by a withdrawal when none of its evidence is left. Only an operator deletion also takes the derived text: a stance written before it rebuilt the stance's document has its position redacted once it is superseded, and a topic whose opening document it deleted, and which no surviving document supports, has its name redacted. Ids and supersession edges stay, so `stance_history` still shows the withdrawal. Every deletion is a durable record of what it covered and what it rebuilt; `hearsay delete list` and `hearsay delete show <id>` read it, including whether every rebuild job has finished.
+Both kinds of deletion rebuild the same way: the affected L1 documents are re-distilled or deleted, and each stance resting on them is superseded, by a withdrawal when none of its evidence is left. Only an operator deletion also takes the derived text: a stance written before it rebuilt the stance's document has its position redacted once it is superseded, and a topic whose opening document it deleted, and which no surviving document supports, has its name redacted. Ids and supersession edges stay, so `stance_history` still shows the withdrawal. The owner of a conversation source can also delete its messages through the API's `delete` call ([The `delete` call](#the-delete-call)), which is the same operator deletion applied to the artifacts a request names, and closes the source against them. Every deletion is a durable record of what it covered and what it rebuilt; `hearsay delete list` and `hearsay delete show <id>` read it, including whether every rebuild job has finished.
 
 ## Configuration
 

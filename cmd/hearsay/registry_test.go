@@ -53,6 +53,13 @@ func TestConnectorRegistry(t *testing.T) {
 			src:  connector.SourceConfig{ID: "sessions", Type: "agent", Containers: []string{"*"}},
 		},
 		{
+			name: "conversation is registered",
+			src: connector.SourceConfig{
+				ID: "kern", Type: "conversation", Containers: []string{"kyle"},
+				Settings: json.RawMessage(`{"owner":"kyle","agents":["shed"]}`),
+			},
+		},
+		{
 			name: "work is registered",
 			src:  connector.SourceConfig{ID: "projects", Type: "work", Containers: []string{"*"}},
 		},
@@ -62,12 +69,12 @@ func TestConnectorRegistry(t *testing.T) {
 			wantUnknown: true,
 		},
 	}
-	// The agent session connector reads its agents' tokens from the
-	// environment when it is built.
+	// The agent session and conversation connectors read their agents' tokens
+	// from the environment when they are built.
 	t.Setenv("HEARSAY_TEST_SHED_TOKEN", "shed-token")
 	principals := []principal.Principal{
-		{ID: "kyle", Kind: principal.KindHuman},
-		{ID: "shed", Kind: principal.KindAgent, Class: principal.ClassWorker, TokenEnv: "HEARSAY_TEST_SHED_TOKEN"},
+		{ID: "kyle", Kind: principal.KindHuman, Identities: []principal.Identity{{Source: "kern", NativeID: "kyle"}}},
+		{ID: "shed", Kind: principal.KindAgent, Class: principal.ClassWorker, TokenEnv: "HEARSAY_TEST_SHED_TOKEN", Identities: []principal.Identity{{Source: "kern", NativeID: "shed"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

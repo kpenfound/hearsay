@@ -108,6 +108,27 @@ type ArtifactReader interface {
 	CurrentArtifacts(ctx context.Context, source string) ([]Event, error)
 }
 
+// ArtifactSerializer is a sink that can hold one artifact still while a
+// connector reads it and writes its next revision: nothing else writes the
+// artifact, and no operator deletion of it commits, between the read and the
+// write. A connector that must refuse a revision on what the artifact already
+// holds — the conversation source, which never takes a deleted message back —
+// does so inside fn, so the refusal and the write are one step.
+type ArtifactSerializer interface {
+	SerializeArtifact(ctx context.Context, source, artifact string, fn func(context.Context, LockedArtifact) error) error
+}
+
+// LockedArtifact is one artifact as [ArtifactSerializer] holds it.
+type LockedArtifact interface {
+	// Current is the artifact's current visible revision, if it has one.
+	Current() (Event, bool)
+	// Deleted reports that an operator deleted a revision of the artifact.
+	Deleted() bool
+	// Emit writes an event of the artifact, as [Sink.Emit] does. It is
+	// committed with fn, and not before.
+	Emit(ctx context.Context, ev Event) error
+}
+
 // RetractionReader provides the event identity of the latest retraction so a
 // returning artifact can receive a fresh revision even with unchanged source
 // content and revision tokens.

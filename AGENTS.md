@@ -65,6 +65,7 @@ dagger api call hearsay qa --script '...'     # run a test plan in the shipped i
 dagger api call hearsay compose-smoke         # run deploy/compose in a Docker daemon of its own
 deploy/smoke/work-records-e2e.sh              # owner/work decision path in a running `hearsay all`, Docker alone
 deploy/smoke/decide-e2e.sh                    # the `decide` call over HTTP and MCP in a running `hearsay all`, Docker alone
+deploy/smoke/conversation-memory-e2e.sh      # Kern's conversation as memory (hook, coverage, search, owner-only reads, delete) in a running `hearsay all`, Docker alone
 dagger settings go        # the Go module's settings
 dagger lock update        # refresh the lockfile's module and image pins
 ```
@@ -156,6 +157,19 @@ it needs Postgres — `hearsay distiller` and
 distil nothing, because a configuration is what says there is anything to do.
 Distillation is debounced per document by `HEARSAY_DISTILL_QUIET` (default `30s`, `0` disables), capped from the first enqueue by `HEARSAY_DISTILL_MAX_DELAY` (default `5m`) before the job becomes due.
 
+A `conversation` source's messages share a `thread` and are distilled the way
+a transcript is: one segmentation call over the conversation's numbered,
+speaker-labelled lines, one `conversation_segment` document per topic with the
+owner-only access list, and the L0 refs of exactly the messages it quotes.
+The transaction that reconciles those documents also publishes the
+conversation's completion record (`l1_conversation_distillations`, read through
+`l1.Store.ConversationDistillationsReading`): the exact message revisions the
+attempt read, even when no document resulted. An attempt whose inputs changed
+while it ran, or that failed, publishes nothing and the conversation is
+distilled again. Only the owner's lines can become a stance: the outcome
+sentence a stance takes its position from must cite Owner lines alone
+(`internal/service/distiller/conversation.go`). See the distiller README.
+
 The connectors service is not a stub either. It builds one connector per
 configured source through a registry the binary wires up, polls the pollers on
 their own cadence, supervises streams, drives the backfillers through a cursor it keeps in Postgres, walks the ACL
@@ -171,10 +185,17 @@ channels over Socket Mode), Drive (`internal/connector/drive`), Obsidian
 (`internal/connector/tracker`, which a team's own sender pushes tickets and
 comments to in a documented shape, authenticated by a bearer token) and the
 agent session source (`internal/connector/agent`, which agents push their own
-session events to, authenticated by their API tokens), and the work updates
+session events to, authenticated by their API tokens), the work updates
 source (`internal/connector/work`, where factories and agents push projects,
 workstreams, updates, documents and decisions with their principal tokens, and
-whose owner source records the documents and decisions only) ship. Their package comments
+whose owner source records the documents and decisions only) and the
+conversation source (`internal/connector/conversation`, where an allowed agent,
+Kern, posts one message of a person's conversation per request to
+`/hooks/<source id>` with its own API token; its settings name one owner, a
+configured human, and the agents allowed to post, every event's access list
+names the owner alone, a changed rendering is a new revision, an identical
+re-post writes nothing, and a post of a message the owner deleted is answered
+`410` `deleted` and writes nothing) ship. Their package comments
 document settings and deployment constraints. An unregistered type is a startup failure.
 
 The distiller and assertion worker expose `/healthz` and `/readyz` on
@@ -291,7 +312,7 @@ environment variable: a URL on a command line puts its password in the process
 list.
 
 The API is not a stub. It serves `get_bundle`, `resolve`, `traverse`, `stance_history`,
-`get_l1`, `get_l0`, `get_session`, `search`, `watch`, `assert` and `decide` as
+`get_l1`, `get_l0`, `get_session`, `search`, `watch`, `assert`, `decide`, `coverage` and `delete` as
 `POST /v1/<call>` and as MCP tools at `/mcp`,
 from one call layer whose bytes both interfaces serve verbatim, on `--listen`
 (default `:8080`; `hearsay all` takes `--api-listen`), and also on the owner's
@@ -302,9 +323,21 @@ with its certificate, or HTTP on 80, a failure logged and retried, never fatal. 
 them is named by `Hearsay-Agent` and must supply its own token.
 An agent can send `Hearsay-Session` to link bundle audits, handle audits and
 assertions to a session artifact; `get_session` follows an assertion id to that
-ordered trace. Search can call the `embed` tier once to vectorize
-its query; reads never use generative synthesis or typed judgments. The shipped
-provider catalogue has no embedding adapter, so search currently uses full text.
+ordered trace. Search's full-text half matches a document's `raw_text` and its
+distilled summary and outcome under the named `english` configuration (one
+expression index, migration 41), and it can call the `embed` tier once to
+vectorize its query; reads never use generative synthesis or typed judgments.
+The shipped provider catalogue has no embedding adapter, so search currently
+uses full text. `search` takes optional `since` and `until` (RFC 3339) and
+keeps documents created before `until` and last active at or after `since`
+(`l1.SearchOptions.Since`/`Until`); a malformed timestamp or `since` after
+`until` is `l1.ErrInvalidSearch` at the store and a 400 with code
+`invalid_request` at the API. Its answer is `{documents, truncated}`
+(`l1.SearchResult` at the store): `truncated` is true when more documents
+matched than were returned or a half had a document ranked past
+`l1.SearchCandidates`, and the access-list, scope and window filters run
+inside both halves, so a document the caller may not read changes neither the
+results nor `truncated`.
 Bundle audits record the ids served in each trimmed section; `get_l1`, `get_l0`, `stance_history`, `search`, `resolve` and `traverse` audit
 successful handles and refused attempts only when a session is named. Audits
 contain ids, never query text or content.
@@ -316,6 +349,20 @@ class `worker` or
 above may call it, and it writes an L0 `assertion` event under source `hearsay`
 and enqueues the `assert` job that appends its stance under the topic's scope,
 with no model call.
+`coverage` (`internal/service/api/coverage.go`, `l1.Store.Coverage`) takes 1 to 100
+event ids (otherwise 400, code `invalid_request`) and answers, in request order,
+one of `pending`, `covered` (with the ids of the current documents whose L0 refs
+cite it, filtered by the caller's access lists and reach) or `excluded` for each.
+It decides from the completion record the distiller publishes with a
+conversation's documents, the current documents' L0 refs and what L0 says is
+current or deleted, in one read-only snapshot, never from job state or timing: a
+message is `covered` or `excluded` only by a distillation that read its current
+revision's event id and is `pending` otherwise (not yet consumed, a failed or
+stopped attempt, a rewrite or new message since). An id superseded by a newer
+revision is answered for the current one; a deleted message, one the published
+distillation quoted nowhere, a nonexistent id and an id the caller may not read
+are `excluded`, the last two with the same answer. It holds no state and makes
+no model call. See docs/design.md's `coverage` section.
 `decide` is a person's own ratify, demote or undo of one stance
 (`internal/service/api/decide.go`): `decision_id`, `action` (`ratify`, `demote`
 or `undo`) and a `stance_id` (ratify, demote) or a `gesture_id` (undo); unknown
@@ -342,7 +389,33 @@ unreadable and out of reach alike), `not_live`, `not_undoable`, `conflict`,
 before it is dispatched — a missing or invalid human or agent credential, an
 oversized body, session and reach resolution — keep their statuses and
 code-less `{error}` bodies, so the absence of `code` tells them apart, and the
-bodies of every other call are unchanged. `watch` is a long poll with an opaque cursor over the L0
+bodies of every other call are unchanged. `delete` is the owner's "forget that" for a `conversation` source
+(`internal/service/api/delete.go`): `event_ids` (1 to 100) and an
+`idempotency_id` (at most 256 bytes), unknown fields refused. The person in
+`Hearsay-Principal` must be the configured owner of the source holding every
+event named, calling directly or with that source's allowed agent carrying the
+request (recorded as the deletion's carrier; an observer may not carry). Any
+revision's id names the whole message, and `deletion.ApplyRequest` redacts every
+revision of each named message in one transaction: one deletion record, one
+`deletion` event, the pins and gestures resting on the events taken out, and a
+`distill` job queued per affected document, with no model call. The
+authorization is checked again inside that transaction, so a request is
+applied whole or not at all, and an event that does not exist, is in another
+source or is in another person's conversation refuses the whole request with the
+one `not_found` answer and records nothing. The deletion id is derived from the
+human, the carrier and the idempotency id (`del_` and 128 bits), so a retry,
+concurrent or after a lost answer, finds the one record and is answered with the
+original deletion; the same id for another request is `conflict`. The answer is
+`{deletion_id, deleted, kept}` with `kept` always `["ids", "times", "kinds"]`,
+the residue that keeps a re-sent copy deleted. Refusals are `{error, code}` with
+`invalid_request`, `not_allowed`, `not_found`, `conflict` or `internal`, as
+`decide`'s are. The conversation source is closed against a deleted message:
+its writes and the deletion take one per-artifact lock
+(`l0.Store.SerializeArtifact`, `connector.ArtifactSerializer`), so a re-post of
+a deleted message, same or changed text, writes nothing and is answered `410`
+`{"code":"deleted","status":"deleted"}`, and a post overlapping the deletion
+leaves no readable revision. No other source is affected.
+`watch` is a long poll with an opaque cursor over the L0
 change feed: it returns the events on a scope once they are distilled, as
 handles with no content, and waits up to 25 seconds when there are none; a
 person or an agent of class `orchestrator` or above may call it. The bundle is
@@ -433,7 +506,7 @@ One binary, four services, layers underneath.
 | `internal/eval` | Windowed evaluation and offline judgment comparison. |
 | `internal/onboard` | The first configuration `hearsay init` writes: `hearsay.yaml` and its env file. |
 | `internal/bundle` | Context bundle assembly — the primary read. |
-| `internal/connector` | The connector contract, runtime and eight shipped source adapters, including `work`. |
+| `internal/connector` | The connector contract, runtime and nine shipped source adapters, including `work` and `conversation`. |
 | `internal/llm` | Provider abstraction, the `distill`/`assert`/`embed` tiers and optional typed judgments. |
 | `internal/queue` | The Postgres job queue. |
 | `internal/db` | Pool, migrations, shared query plumbing. |

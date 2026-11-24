@@ -1,0 +1,246 @@
+{
+  "note": "Synthetic. Two interleaved topics, a greeting no topic takes, and an interrupted exchange. Segments are the recorded segmentation answer; answers are the recorded distill answers by topic label; judgments are what Jev answered the outcome questions, by topic label.",
+  "conversation": "c-queue",
+  "messages": [
+    {
+      "exchange": "x-0",
+      "role": "owner",
+      "at": "2026-11-02T09:00:00Z",
+      "text": "Good morning!"
+    },
+    {
+      "exchange": "x-0",
+      "role": "assistant",
+      "at": "2026-11-02T09:00:04Z",
+      "text": "Good morning. What are we working on?"
+    },
+    {
+      "exchange": "x-1",
+      "role": "owner",
+      "at": "2026-11-02T09:01:00Z",
+      "text": "Which database should the job queue use?"
+    },
+    {
+      "exchange": "x-1",
+      "role": "assistant",
+      "at": "2026-11-02T09:01:12Z",
+      "text": "Postgres keeps it simple: one fewer service to run, and the queue can share transactions with the data."
+    },
+    {
+      "exchange": "x-2",
+      "role": "owner",
+      "at": "2026-11-02T09:03:00Z",
+      "text": "Separately, how many times should we retry a failed request?"
+    },
+    {
+      "exchange": "x-2",
+      "role": "assistant",
+      "at": "2026-11-02T09:03:15Z",
+      "text": "Three attempts with backoff is the usual cap."
+    },
+    {
+      "exchange": "x-3",
+      "role": "owner",
+      "at": "2026-11-02T09:05:00Z",
+      "text": "Back to the queue: use Postgres for the job queue. That is decided."
+    },
+    {
+      "exchange": "x-3",
+      "role": "assistant",
+      "at": "2026-11-02T09:05:09Z",
+      "text": "Noted: Postgres for the job queue."
+    },
+    {
+      "exchange": "x-4",
+      "role": "owner",
+      "interrupted": true,
+      "at": "2026-11-02T09:07:00Z",
+      "text": "For the retry cap I think we should"
+    }
+  ],
+  "states": {
+    "base": {
+      "segments": [
+        {
+          "topic": "Queue database",
+          "start": 3,
+          "end": 4
+        },
+        {
+          "topic": "Retry cap",
+          "start": 5,
+          "end": 6
+        },
+        {
+          "topic": "Queue database",
+          "start": 7,
+          "end": 8
+        },
+        {
+          "topic": "Retry cap",
+          "start": 9,
+          "end": 9
+        }
+      ],
+      "answers": {
+        "queue database": {
+          "summary": "The owner asked which database the job queue should use. Kern suggested Postgres for its simplicity, and the owner then settled on it.",
+          "question": "Which database should the job queue use?",
+          "outcome": "The job queue uses Postgres.",
+          "outcome_lines": [
+            3
+          ],
+          "open_questions": []
+        },
+        "retry cap": {
+          "summary": "The owner asked how many times to retry a failed request. Kern said three attempts with backoff is usual, and the owner began a thought and was interrupted.",
+          "question": "How many times should a failed request be retried?",
+          "outcome": "",
+          "outcome_lines": [],
+          "open_questions": [
+            "What retry cap does the owner want?"
+          ]
+        }
+      },
+      "judgments": {
+        "queue database": "decided",
+        "retry cap": "open"
+      }
+    },
+    "reworded": {
+      "edit": {
+        "x-2:assistant": "Three attempts with exponential backoff is the usual cap."
+      },
+      "segments": [
+        {
+          "topic": "Queue database",
+          "start": 3,
+          "end": 4
+        },
+        {
+          "topic": "Retry cap",
+          "start": 5,
+          "end": 6
+        },
+        {
+          "topic": "Queue database",
+          "start": 7,
+          "end": 8
+        },
+        {
+          "topic": "Retry cap",
+          "start": 9,
+          "end": 9
+        }
+      ],
+      "answers": {
+        "retry cap": {
+          "summary": "The owner asked how many times to retry a failed request. Kern said three attempts with exponential backoff is usual, and the owner began a thought and was interrupted.",
+          "question": "How many times should a failed request be retried?",
+          "outcome": "",
+          "outcome_lines": [],
+          "open_questions": [
+            "What retry cap does the owner want?"
+          ]
+        }
+      },
+      "judgments": {
+        "retry cap": "open"
+      }
+    },
+    "retry-gone": {
+      "segments": [
+        {
+          "topic": "Queue database",
+          "start": 3,
+          "end": 4
+        },
+        {
+          "topic": "Queue database",
+          "start": 7,
+          "end": 8
+        }
+      ],
+      "edit": {
+        "x-2:assistant": "Three attempts with exponential backoff is the usual cap."
+      },
+      "note": "From the reworded conversation: the model no longer finds the retry topic."
+    },
+    "nothing": {
+      "segments": []
+    },
+    "arrived": {
+      "add": [
+        {
+          "exchange": "x-5",
+          "role": "owner",
+          "at": "2026-11-02T09:09:00Z",
+          "text": "That is all for now, thanks."
+        }
+      ],
+      "segments": [
+        {
+          "topic": "Queue database",
+          "start": 3,
+          "end": 4
+        },
+        {
+          "topic": "Retry cap",
+          "start": 5,
+          "end": 6
+        },
+        {
+          "topic": "Queue database",
+          "start": 7,
+          "end": 8
+        },
+        {
+          "topic": "Retry cap",
+          "start": 9,
+          "end": 9
+        }
+      ]
+    },
+    "after-deleting-the-answer": {
+      "drop": [
+        "x-1:assistant"
+      ],
+      "segments": [
+        {
+          "topic": "Queue database",
+          "start": 3,
+          "end": 3
+        },
+        {
+          "topic": "Retry cap",
+          "start": 4,
+          "end": 5
+        },
+        {
+          "topic": "Queue database",
+          "start": 6,
+          "end": 7
+        },
+        {
+          "topic": "Retry cap",
+          "start": 8,
+          "end": 8
+        }
+      ],
+      "answers": {
+        "queue database": {
+          "summary": "The owner asked which database the job queue should use, then settled on Postgres.",
+          "question": "Which database should the job queue use?",
+          "outcome": "The job queue uses Postgres.",
+          "outcome_lines": [
+            2
+          ],
+          "open_questions": []
+        }
+      },
+      "judgments": {
+        "queue database": "decided"
+      }
+    }
+  }
+}

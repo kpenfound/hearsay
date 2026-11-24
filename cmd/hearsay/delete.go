@@ -139,6 +139,9 @@ func printIDs(w io.Writer, name string, ids []string) {
 }
 
 func selectorLabel(s deletion.Selector) string {
+	if s.Call != nil {
+		return fmt.Sprintf("delete call %q (%d events named)", s.Call.IdempotencyID, len(s.Call.Events))
+	}
 	if s.Event != "" {
 		return "event " + s.Event
 	}

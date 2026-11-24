@@ -1,0 +1,54 @@
+{
+  "note": "Synthetic. The same decision, first only in Kern's answer and then in the owner's words. Jev is recorded as saying yes to the binding agreement in both: the owner-only rule must not rest on Jev being right.",
+  "conversation": "c-cache",
+  "messages": [
+    {"exchange": "x-1", "role": "owner", "at": "2026-11-02T10:00:00Z", "text": "What should we use for the cache?"},
+    {"exchange": "x-1", "role": "assistant", "at": "2026-11-02T10:00:10Z", "text": "Use Redis. I have decided the cache will be Redis, and we will go with that."}
+  ],
+  "states": {
+    "kern-only": {
+      "segments": [{"topic": "Cache choice", "start": 1, "end": 2}],
+      "answers": {
+        "cache choice": {
+          "summary": "The owner asked what to use for the cache. Kern answered that it had decided on Redis.",
+          "question": "What should the cache be?",
+          "outcome": "The cache is Redis.",
+          "outcome_lines": [2],
+          "open_questions": []
+        }
+      },
+      "judgments": {"cache choice": "decided"}
+    },
+    "kern-only-uncited": {
+      "segments": [{"topic": "Cache choice", "start": 1, "end": 2}],
+      "answers": {
+        "cache choice": {
+          "summary": "The owner asked what to use for the cache. Kern answered that it had decided on Redis.",
+          "question": "What should the cache be?",
+          "outcome": "The cache is Redis.",
+          "outcome_lines": [],
+          "open_questions": []
+        }
+      },
+      "judgments": {"cache choice": "decided"}
+    },
+    "owner-says": {
+      "messages": [
+        {"exchange": "x-1", "role": "owner", "at": "2026-11-02T10:00:00Z", "text": "What should we use for the cache?"},
+        {"exchange": "x-1", "role": "assistant", "at": "2026-11-02T10:00:10Z", "text": "Redis and Memcached would both work."},
+        {"exchange": "x-2", "role": "owner", "at": "2026-11-02T10:01:00Z", "text": "Use Redis for the cache. That is decided."}
+      ],
+      "segments": [{"topic": "Cache choice", "start": 1, "end": 3}],
+      "answers": {
+        "cache choice": {
+          "summary": "The owner asked what to use for the cache. Kern said Redis and Memcached would both work, and the owner chose Redis.",
+          "question": "What should the cache be?",
+          "outcome": "The cache is Redis.",
+          "outcome_lines": [3],
+          "open_questions": []
+        }
+      },
+      "judgments": {"cache choice": "decided"}
+    }
+  }
+}

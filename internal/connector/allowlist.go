@@ -124,14 +124,24 @@ func (g *Gate) Retract(ctx context.Context, ev Event) error {
 }
 
 func (g *Gate) emit(ctx context.Context, ev Event, retraction bool) error {
-	if ev.Source != g.source {
-		return fmt.Errorf("%w: source %q, connector is configured for %q", ErrForeignSource, ev.Source, g.source)
-	}
-	if err := ev.Validate(); err != nil {
+	ev, ok, err := g.admit(ctx, ev, retraction)
+	if err != nil || !ok {
 		return err
 	}
+	return g.sink.Emit(ctx, ev)
+}
+
+// admit is what the gate checks of an event before it reaches the sink: it
+// returns the event with its id stamped, and false for one the allowlist drops.
+func (g *Gate) admit(ctx context.Context, ev Event, retraction bool) (Event, bool, error) {
+	if ev.Source != g.source {
+		return ev, false, fmt.Errorf("%w: source %q, connector is configured for %q", ErrForeignSource, ev.Source, g.source)
+	}
+	if err := ev.Validate(); err != nil {
+		return ev, false, err
+	}
 	if !g.kinds[ev.Kind] {
-		return fmt.Errorf("%w: %q", ErrUndeclaredKind, ev.Kind)
+		return ev, false, fmt.Errorf("%w: %q", ErrUndeclaredKind, ev.Kind)
 	}
 	if !retraction && !g.allow.Allows(ev.Source, ev.Payload.Container.NativeID) {
 		g.dropped.Add(1)
@@ -142,11 +152,39 @@ func (g *Gate) emit(ctx context.Context, ev Event, retraction bool) error {
 			"container", ev.Payload.Container.NativeID,
 			"native_id", ev.NativeID,
 		)
-		return nil
+		return ev, false, nil
 	}
-
 	ev.ID = EventID(ev.Source, ev.NativeID)
-	return g.sink.Emit(ctx, ev)
+	return ev, true, nil
+}
+
+// SerializeArtifact implements [ArtifactSerializer] for this gate's source:
+// what fn emits passes the gate's checks like any other event.
+func (g *Gate) SerializeArtifact(ctx context.Context, source, artifact string, fn func(context.Context, LockedArtifact) error) error {
+	if source != g.source {
+		return ErrForeignSource
+	}
+	s, ok := g.sink.(ArtifactSerializer)
+	if !ok {
+		return errors.New("sink cannot serialize an artifact")
+	}
+	return s.SerializeArtifact(ctx, source, artifact, func(ctx context.Context, a LockedArtifact) error {
+		return fn(ctx, gated{g, a})
+	})
+}
+
+// gated is a locked artifact whose writes go through the gate.
+type gated struct {
+	gate *Gate
+	LockedArtifact
+}
+
+func (a gated) Emit(ctx context.Context, ev Event) error {
+	ev, ok, err := a.gate.admit(ctx, ev, false)
+	if err != nil || !ok {
+		return err
+	}
+	return a.LockedArtifact.Emit(ctx, ev)
 }
 
 // Documents reads the durable inventory through the underlying L0 sink.
