@@ -65,7 +65,7 @@ func RequestFor(doc l1.Document, budget int) llm.Request {
 
 func promptFor(doc l1.Document) string {
 	return fmt.Sprintf("This is a %s document. What it concluded is classified as %s.\n\n", doc.Kind, doc.Body.OutcomeKind) +
-		strings.TrimSpace(doc.Text)
+		strings.TrimSpace(doc.StanceText())
 }
 
 // answer is the JSON the model returns, already checked against schemaFor.

@@ -150,6 +150,9 @@ type Result struct {
 	// Asserting reports that the write enqueued an `assert` job: the document
 	// changed and its outcome enters the assertion pipeline.
 	Asserting bool
+	// Recorded reports that the conversation's completion record changed: it
+	// names message revisions, or documents, that the one before did not.
+	Recorded bool
 	// Embedded reports that the document was given the vector its text asks
 	// for. It is false where there is no embed tier configured, and where the
 	// document already had one — which is the ordinary outcome, because a
@@ -220,6 +223,11 @@ func (d *Distiller) Distill(ctx context.Context, docID string) (Result, error) {
 		return Result{}, err
 	}
 	result := Result{DocID: docID}
+	if thread, ok := l1.ParseConversationSegmentKey(artifact); ok {
+		// A job for one topic of a conversation, which is what an operator
+		// deletion queues, rebuilds the whole conversation.
+		return d.distillConversation(ctx, result, source, thread)
+	}
 	if container, start, ok := l1.ParseChatWindowKey(artifact); ok {
 		return d.distillChatWindow(ctx, result, source, artifact, container, start)
 	}
@@ -232,6 +240,11 @@ func (d *Distiller) Distill(ctx context.Context, docID string) (Result, error) {
 		return Result{}, fmt.Errorf("reading %s: %w", docID, err)
 	}
 	if len(roots) == 0 {
+		if conversation, err := d.isConversation(ctx, source, artifact); err != nil {
+			return Result{}, err
+		} else if conversation {
+			return d.distillConversation(ctx, result, source, artifact)
+		}
 		// Either the artifact was retracted at the source — a tombstone hides
 		// its earlier revisions — or nothing was ever ingested under this id. A
 		// document derived from nothing is not a document, and leaving one
@@ -917,6 +930,12 @@ func (d *Distiller) provenanceNow(ctx context.Context, source, artifact string) 
 // word of what was sent or what came back. internal/llm's own errors
 // hold to the same rule.
 func (d *Distiller) distil(ctx context.Context, doc l1.Document) (l1.Body, error) {
+	a, err := d.distilAnswer(ctx, doc)
+	return a.body(), err
+}
+
+// distilAnswer is the model's answer for one document, as it decoded.
+func (d *Distiller) distilAnswer(ctx context.Context, doc l1.Document) (answer, error) {
 	call, done := context.WithTimeout(ctx, d.timeout)
 	defer done()
 
@@ -925,16 +944,16 @@ func (d *Distiller) distil(ctx context.Context, doc l1.Document) (l1.Body, error
 	req := RequestFor(doc, 0)
 	resp, err := d.tier.Complete(call, req)
 	if err != nil {
-		return l1.Body{}, fmt.Errorf("distilling %s: %w", doc.ID, err)
+		return answer{}, fmt.Errorf("distilling %s: %w", doc.ID, err)
 	}
 
 	// The answer has already been checked against the schema by internal/llm,
 	// so this decodes a shape that is known to fit.
 	var a answer
 	if err := json.Unmarshal(resp.JSON, &a); err != nil {
-		return l1.Body{}, fmt.Errorf("distilling %s: the %s answer for %s did not decode: %w", doc.ID, llm.TierDistill, req.Schema.Name, err)
+		return answer{}, fmt.Errorf("distilling %s: the %s answer for %s did not decode: %w", doc.ID, llm.TierDistill, req.Schema.Name, err)
 	}
-	return a.body(), nil
+	return a, nil
 }
 
 // distillDecision writes the document of a decision a `work` source recorded.

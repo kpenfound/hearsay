@@ -35,6 +35,70 @@ reconciles the set, so failed model calls leave the previous set intact. The
 recorded, synthetic transcript and topic boundaries in `testdata/meetings/`
 can be edited for prompt iteration without exposing real meeting content.
 
+# Conversation topics
+
+A `conversation` source's messages (`conversation.message`, thread = Kern's
+conversation id) are distilled as the transcript is, but from many events. The
+pump already enqueues one job per conversation: a message's target is the
+document id of its thread, so a burst of messages costs one job under the
+usual debounce. A job for a conversation reads the current message revisions
+that share the thread, orders them by when they were said (then artifact id),
+and numbers them as one line each, `Owner`, `Owner (interrupted)` or `Kern`,
+with the words on one line. A segmentation call returns numbered ranges and
+topic labels; code selects the original lines. Ranges with one label become one
+`conversation_segment` document, whose id is anchored to the normalized label,
+so a topic that resumes later is one document and a rename is a new one. Each
+document's L0 references are the message events whose lines it quotes and no
+others, its ACL is folded from them (the owner alone), its class is `dm`, and
+the interrupted mark is in the line that quotes it. A message no range takes
+is cited by none. Documents whose lines did not change are not asked of the
+model again and write no row.
+
+A job for one of a conversation's topics, which is what an operator deletion
+queues, rebuilds the whole conversation, because a deleted message can sit in
+several topics and moves where the others begin.
+
+**Only the owner's own words become the owner's stance.** The rule lives in
+`conversation.go` and nowhere else. A line is the owner's only if the source
+marked it the owner's role *and* authored it as the owner; anything else is
+Kern's. The distill call cites, in `outcome_lines`, the Owner lines its outcome
+sentence rests on; the sentence is dropped unless it cites at least one and
+every one it cites is an Owner line (`ownerOutcome`). A document with no
+outcome sentence is never decided, proposed or resolved, so it enters no
+assertion, whatever Jev answers. Jev judges the outcome over the owner's lines,
+with Kern's lines apart as context its questions say never count
+(`ownerView`). The assertion worker reads a stance's position from
+`l1.Document.StanceText`, which for a conversation segment is the outcome
+sentence alone, not the summary, which also describes what Kern said. The L2
+reads already authorize a stance on every piece of its evidence, so the stance
+is the owner's alone in a topic that also holds evidence others may read.
+
+**Completion record.** One transaction publishes a conversation: it reads the
+inputs again, and only if they are still the revisions the attempt read it
+commits the judgments, removes the topics that no longer exist, writes the
+documents and writes the record, `l1_conversation_distillations`: the event id
+of every message revision read (an event id names one revision) and the
+documents produced, which is none when the segmentation selected nothing. A
+failed or stopped attempt writes nothing. An attempt whose inputs changed under
+it (a message rewritten, or one that arrived) writes nothing either, because
+documents built from the old read are not what the newer messages say and a
+record would name revisions no document was built from, and it enqueues
+another job so the newer message is distilled afterwards. Publishing the same
+inputs and documents again changes no row.
+
+The record is how a message is known to have been processed; job state and
+documents cannot say so, because the queue records no inputs and a segmentation
+that quoted nothing leaves nothing behind. Read it through `l1.Store`:
+`ConversationDistillationsReading(ctx, eventIDs)` answers, for each event id a
+published distillation read, that distillation (`Inputs`, `Documents`), and
+leaves out an id none read, which is `pending`: not yet distilled, rewritten
+since, or not a message. `ConversationDistillationOf(ctx, source, thread)` reads
+one conversation's. A message is `covered` or `excluded` only by a distillation
+that read its current revision's event id (`ConversationDistillation.Read`);
+whether a document of it quotes the message is the current documents' L0
+references. A conversation too long for one segmentation prompt fails its job
+and records nothing, so its messages stay `pending`.
+
 # Outcome judgments
 
 Jev decides every document's outcome, and the distiller needs it: `New` and

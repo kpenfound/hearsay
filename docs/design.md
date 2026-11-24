@@ -50,7 +50,7 @@ A common envelope plus a per-kind body. Every L1 doc is one row in one table.
 
 ```yaml
 id: l1:discord:thread:123456789012345678
-kind: chat_thread | chat_burst | meeting_segment | pr | issue | commit | wiki_section | decision | agent_turn
+kind: chat_thread | chat_burst | meeting_segment | conversation_segment | pr | issue | commit | wiki_section | decision | agent_turn
 artifact_class: merged_pr | spec | meeting | issue | pull_request | commit | chat_thread | dm | agent
 state: { core: proposed | started | blocked | completed | abandoned, native: ... } # optional, stated by source
 source: { system, native_id, url }
@@ -81,6 +81,7 @@ Design points:
 - `references` come from link parsing, @-mention resolution, known system names, and the paths a change touches matched against code entities' path patterns (most specific entity first), not from the LLM. The paths stay in L0; a document keeps the entities, not the files. They are the join key for L2 topic matching and cost nothing to recompute.
 - `outcome_kind` is the L2 trigger. Only docs marked `decided`, `proposed`, or `resolved` enter the assertion pipeline.
 - Meetings are segmented per topic. One meeting produces several `meeting_segment` L1 docs, each with one `outcome`. The segmentation call selects numbered transcript line ranges; repeated ranges for one topic combine into one document. Stable topic labels anchor IDs across edits. Each segment carries its transcript event provenance, inherited ACL and attendee roles, while typed references are extracted from that topic’s source lines without model output. Removed topics are retracted when the transcript changes or disappears.
+- A person's conversation with their agent (a `conversation` source) is segmented the same way. Its current messages share a `thread`, are ordered by when they were said, and are numbered as speaker-labelled lines (`Owner`, `Owner (interrupted)`, `Kern`). One segmentation call returns topic ranges; each topic becomes one `conversation_segment` L1 doc, and a topic that resumes later joins its earlier document. Each segment's `l0_refs` are exactly the message events whose lines it quotes, so a greeting no topic takes is cited by none. Its class is `dm`, and its ACL is the owner's alone, folded from its events. Only the owner's own words can become the owner's stance: the outcome sentence is kept only where it cites Owner lines, Jev judges the outcome over the owner's lines with the agent's as context, and the assertion worker reads a stance's position from that sentence alone, so something only Kern decided asserts nothing. One transaction reconciles the conversation's segments and records which message revisions the distillation read; that record is what says a message was processed, because job state and documents cannot.
 - A markdown document is partitioned at headings, including nested headings. The material before the first heading (or the whole page without headings) is an intro section. Each section is independently distilled as `wiki_section`; unchanged sections may retain provenance to an earlier L0 revision that contains the same text. A changed source ACL refreshes every current section.
 - Chat conversations also emit bursts (single-author runs that pass rarity and length gates) so tangent facts survive summarization.
 - A secrets and PII scrub runs before `text` is written.

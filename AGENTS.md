@@ -156,6 +156,19 @@ it needs Postgres — `hearsay distiller` and
 distil nothing, because a configuration is what says there is anything to do.
 Distillation is debounced per document by `HEARSAY_DISTILL_QUIET` (default `30s`, `0` disables), capped from the first enqueue by `HEARSAY_DISTILL_MAX_DELAY` (default `5m`) before the job becomes due.
 
+A `conversation` source's messages share a `thread` and are distilled the way
+a transcript is: one segmentation call over the conversation's numbered,
+speaker-labelled lines, one `conversation_segment` document per topic with the
+owner-only access list, and the L0 refs of exactly the messages it quotes.
+The transaction that reconciles those documents also publishes the
+conversation's completion record (`l1_conversation_distillations`, read through
+`l1.Store.ConversationDistillationsReading`): the exact message revisions the
+attempt read, even when no document resulted. An attempt whose inputs changed
+while it ran, or that failed, publishes nothing and the conversation is
+distilled again. Only the owner's lines can become a stance: the outcome
+sentence a stance takes its position from must cite Owner lines alone
+(`internal/service/distiller/conversation.go`). See the distiller README.
+
 The connectors service is not a stub either. It builds one connector per
 configured source through a registry the binary wires up, polls the pollers on
 their own cadence, supervises streams, drives the backfillers through a cursor it keeps in Postgres, walks the ACL

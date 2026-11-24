@@ -1273,7 +1273,7 @@ and an open one are the same kind of thing with very different weight.
 | `pull_request` | A change proposal that was not merged, and the reviews on it. |
 | `commit` | A commit on a watched branch. |
 | `chat_thread` | A thread or burst in an ingested channel. |
-| `dm` | A direct message. DMs are not ingested unless a person lists the container. |
+| `dm` | A direct message. DMs are not ingested unless a person lists the container. A person's conversation with their agent is one too: a `conversation` source's documents are `dm`, so a policy ranks or ratifies them with the class a private conversation already has. |
 | `agent` | An agent turn, or a stance an agent wrote through `assert`. |
 
 The distiller assigns a class to every L1 document it produces, from the
@@ -1281,7 +1281,7 @@ document's kind and the state of the artifact behind it: `pr` is `merged_pr`
 when it merged and `pull_request` otherwise, `meeting_segment` is `meeting`,
 `wiki_section` is `spec`, `decision` is `decision`, `issue` is `issue`, `commit` is `commit`,
 `chat_thread` and `chat_burst` are `chat_thread` unless the container is a
-direct-message container, and `agent_turn` is `agent`. That is a contract on L1,
+direct-message container, `conversation_segment` is `dm`, and `agent_turn` is `agent`. That is a contract on L1,
 written here because authority is what needs it.
 
 ### The built-in default

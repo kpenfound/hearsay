@@ -61,6 +61,11 @@ const (
 	// KindDecision is one structured decision a `work` source recorded. It is
 	// built from the record's fields with no model call ([BuildDecision]).
 	KindDecision Kind = "decision"
+	// KindConversationSegment is one topic in a person's conversation with
+	// their agent: the quoted lines of the owner and the agent, from many L0
+	// message events. Its stances come from the owner's lines alone
+	// ([Document.StanceText]).
+	KindConversationSegment Kind = "conversation_segment"
 )
 
 // rootKinds maps the L0 kind of an artifact that makes a document of its own to
@@ -78,13 +83,13 @@ var rootKinds = map[connector.Kind]Kind{
 // Kinds is every document kind this build produces, in the order they are
 // documented.
 func Kinds() []Kind {
-	return []Kind{KindIssue, KindPR, KindCommit, KindChatThread, KindChatBurst, KindMeetingSegment, KindWikiSection, KindDecision}
+	return []Kind{KindIssue, KindPR, KindCommit, KindChatThread, KindChatBurst, KindMeetingSegment, KindWikiSection, KindDecision, KindConversationSegment}
 }
 
 // Valid reports whether k is a kind this build produces.
 func (k Kind) Valid() bool {
 	switch k {
-	case KindIssue, KindPR, KindCommit, KindChatThread, KindChatBurst, KindMeetingSegment, KindWikiSection, KindDecision:
+	case KindIssue, KindPR, KindCommit, KindChatThread, KindChatBurst, KindMeetingSegment, KindWikiSection, KindDecision, KindConversationSegment:
 		return true
 	}
 	return false
