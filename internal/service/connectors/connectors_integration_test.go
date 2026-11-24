@@ -119,6 +119,13 @@ func TestTheServiceIngestsIntoL0AndKeepsItsPosition(t *testing.T) {
 	if got, want := artifactsIn(t, store, id), []string{"h1", "h2", "m1", "p1"}; !slices.Equal(got, want) {
 		t.Errorf("L0 holds %v, want the polled, backfilled and pushed artifacts %v", got, want)
 	}
+	// The backfill saves its position after the last page's events reach L0, so
+	// the position is final a moment after L0 holds everything. Stopping before
+	// that would cancel the save.
+	waitFor(t, "the backfill to store its final position", func() bool {
+		state, err := cursors.Load(t.Context(), id)
+		return err == nil && state.Done && state.Events == 2
+	})
 	if err := stop(); err != nil {
 		t.Fatalf("Run() = %v, want nil", err)
 	}
