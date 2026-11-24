@@ -205,8 +205,8 @@ var calls = []call{
 		schema(`{"id":{"type":"string"}}`, "id")}, getL0},
 	{Tool{"get_session", "Follow an assertion event id to the agent session and its ordered events, bundle audits and handle audits.",
 		schema(`{"assertion":{"type":"string"}}`, "assertion")}, getSession},
-	{Tool{"search", "Hybrid retrieval over L1: full text and embeddings, fused by rank. Returns documents, not answers.",
-		schema(`{"query":{"type":"string"},"scope":{"type":"string","description":"an entity id to search within"},"limit":{"type":"integer"}}`, "query")}, search},
+	{Tool{"search", "Hybrid retrieval over L1: full text over each document's own words and its distilled summary and outcome, and embeddings where an embed tier exists, fused by rank. Optional since and until (RFC 3339) keep documents created before until and last active at or after since; a malformed or inverted window is refused. Returns documents, not answers, and truncated: true when more documents matched than were returned or a half reached its candidate cutoff.",
+		schema(`{"query":{"type":"string"},"scope":{"type":"string","description":"an entity id to search within"},"limit":{"type":"integer"},"since":{"type":"string","description":"RFC 3339: only documents last active at or after this time"},"until":{"type":"string","description":"RFC 3339: only documents created before this time"}}`, "query")}, search},
 	{Tool{"traverse", "Traverse typed graph edges, returning ids plus one line per node. Follows the topic ledger and is access-filtered at every hop. Continue with get_bundle for an entity briefing, stance_history for a topic's positions and provenance, or get_l1 for a document. Principals are terminal; L0 is excluded.",
 		schema(`{"start":{"type":"array","minItems":1,"maxItems":10,"items":{"type":"object","properties":{"type":{"type":"string","enum":["entity","topic","stance","document"]},"id":{"type":"string"}},"required":["type","id"],"additionalProperties":false}},"steps":{"type":"array","minItems":1,"maxItems":4,"items":{"type":"object","properties":{"edge":{"type":"string","enum":["part_of","has_part","topics","about","documents","scope","anchors","owners","stances","topic","evidence","cited_by","supersedes","superseded_by","author","participants"]},"depth":{"type":"string","description":"n or m..n, default 1; at most 6 on part_of, has_part, supersedes, superseded_by"},"where":{"type":"object","description":"Target filters: entity type/state; document kind/class/state/since; topic tier/since; stance current/since. since is RFC3339; current is boolean; other values are strings."}},"required":["edge"],"additionalProperties":false}},"limit":{"type":"integer","minimum":1,"maximum":200,"default":50}}`, "start", "steps")}, traverse},
 
@@ -528,9 +528,7 @@ func (c *Calls) auditHandle(ctx context.Context, caller Caller, reader l1.Reader
 		record.TargetIDs = []string{args.Topic}
 		record.ReturnedIDs = []string{result.(History).ID}
 	case "search":
-		for _, hit := range result.(struct {
-			Documents []SearchHit `json:"documents"`
-		}).Documents {
+		for _, hit := range result.(SearchResult).Documents {
 			record.ReturnedIDs = append(record.ReturnedIDs, hit.ID)
 		}
 	case "traverse":
@@ -917,11 +915,25 @@ type SearchHit struct {
 	Score float64 `json:"score"`
 }
 
+// SearchResult is what `search` returns: the documents, best first, and whether
+// more documents matched than they hold.
+type SearchResult struct {
+	Documents []SearchHit `json:"documents"`
+	Truncated bool        `json:"truncated"`
+}
+
+// ReasonInvalidRequest is the code of a request refused for what it asks, where
+// a call documents one: a search window that does not parse or ends before it
+// begins.
+const ReasonInvalidRequest = "invalid_request"
+
 func search(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json.RawMessage) (any, error) {
 	var args struct {
 		Query string `json:"query"`
 		Scope string `json:"scope"`
 		Limit int    `json:"limit"`
+		Since string `json:"since"`
+		Until string `json:"until"`
 	}
 	if err := decode(raw, &args); err != nil {
 		return nil, err
@@ -937,14 +949,18 @@ func search(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json.
 		// Use the ordinary empty search path, including argument validation.
 		reader.Effective.Grant.Scopes = principal.SomeScopes()
 	}
-	hits, err := c.docs.Search(ctx, reader, l1.SearchOptions{Query: args.Query, Scope: args.Scope, Limit: args.Limit, Embedder: c.embedder})
+	found, err := c.docs.Search(ctx, reader, l1.SearchOptions{
+		Query: args.Query, Scope: args.Scope, Limit: args.Limit, Embedder: c.embedder,
+		Since: args.Since, Until: args.Until,
+	})
+	if errors.Is(err, l1.ErrInvalidSearch) {
+		return nil, refusal(http.StatusBadRequest, ReasonInvalidRequest, err.Error())
+	}
 	if err != nil {
 		return nil, err
 	}
-	out := struct {
-		Documents []SearchHit `json:"documents"`
-	}{Documents: make([]SearchHit, len(hits))}
-	for i, h := range hits {
+	out := SearchResult{Documents: make([]SearchHit, len(found.Hits)), Truncated: found.Truncated}
+	for i, h := range found.Hits {
 		out.Documents[i] = SearchHit{Document: visibleDocumentEntities(h.Document, hidden), Score: h.Score}
 	}
 	return out, nil

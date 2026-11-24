@@ -56,7 +56,7 @@ read path asks a model to generate anything.
 - **`text` is embedded, `raw_text` is not.** `text` is the distillation — the
   model's words, nothing else — because a vector over one document about one
   thing is what a similarity search is for. `raw_text` is the team's own words,
-  for the full-text index. A vector is a function of the text it was made from,
+  for the full-text index, which also covers the body's summary and outcome. A vector is a function of the text it was made from,
   so [Store.Put] clears the embedding whenever it writes different `text`: what
   needs embedding is what has no vector, which is also every document in a
   deployment that has configured no `embed` tier.
@@ -99,15 +99,19 @@ read path asks a model to generate anything.
   neither of them anything: refusing it costs somebody a document they may read,
   and taking it would hand them one they may not.
 - **Search filters before it ranks.** Both halves — similarity over the
-  embedding, Postgres full text over `raw_text` — rank the documents the caller
-  may read, and the two rankings are fused by reciprocal rank. Filtering
+  embedding, Postgres full text over `raw_text` and the body's summary and
+  outcome — rank the documents the caller may read and that fall in the
+  `since`/`until` window, and the two rankings are fused by reciprocal rank.
+  [SearchResult.Truncated] says whether the fusion saw everything that matched
+  and the answer held it. Filtering
   afterwards would let a document the caller may not read push one they may out
   of the candidates, which is a leak nothing downstream can see
   (docs/design.md#access-control). [ReaderFor] is the one place a caller's
   grants are derived from the identity mapping, so two callers cannot disagree
   about what somebody may read.
 - **The text search configuration is named, every time.** `english`, in the
-  index and in every query. `default_text_search_config` is a session setting
+  index and in every query, which spell the same expression
+  (`searchDocument`) so the planner can use the index. `default_text_search_config` is a session setting
   nothing here pins, and an index built under one and queried under another
   matches nothing at all.
 - **There is deliberately no ANN index on the embedding.** An approximate index

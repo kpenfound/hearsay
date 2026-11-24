@@ -117,11 +117,11 @@ func TestSearchFusesWhatEachHalfFinds(t *testing.T) {
 	embed(t, store, both, unitVector(0))
 	embed(t, store, neither, unitVector(1))
 
-	hits, err := store.Search(t.Context(), reader(testScope(src)), l1.SearchOptions{
+	hits, err := searchHits(store.Search(t.Context(), reader(testScope(src)), l1.SearchOptions{
 		Query:    query,
 		Scope:    testScope(src),
 		Embedder: queryEmbedder(t, query, unitVector(0)),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Search() = %v, want no error", err)
 	}
@@ -155,7 +155,7 @@ func TestSearchFusesWhatEachHalfFinds(t *testing.T) {
 
 	// With no embed tier the search is its full-text half alone, which is what
 	// a deployment that has configured none gets.
-	hits, err = store.Search(t.Context(), reader(testScope(src)), l1.SearchOptions{Query: query, Scope: testScope(src)})
+	hits, err = searchHits(store.Search(t.Context(), reader(testScope(src)), l1.SearchOptions{Query: query, Scope: testScope(src)}))
 	if err != nil {
 		t.Fatalf("Search(no embed tier) = %v, want no error", err)
 	}
@@ -202,7 +202,7 @@ func TestSearchNeverReturnsADocumentTheReaderMayNotRead(t *testing.T) {
 	embed(t, store, public, unitVector(1))
 
 	opts := l1.SearchOptions{Query: query, Scope: testScope(src), Embedder: queryEmbedder(t, query, unitVector(0))}
-	hits, err := store.Search(t.Context(), reader(testScope(src)), opts)
+	hits, err := searchHits(store.Search(t.Context(), reader(testScope(src)), opts))
 	if err != nil {
 		t.Fatalf("Search() = %v, want no error", err)
 	}
@@ -219,7 +219,7 @@ func TestSearchNeverReturnsADocumentTheReaderMayNotRead(t *testing.T) {
 	// and the source's own label for it is decoration, so a caller holding the
 	// same grant under another name holds the same grant.
 	group.Label = "what somebody else calls the api team"
-	hits, err = store.Search(t.Context(), reader(testScope(src), group), opts)
+	hits, err = searchHits(store.Search(t.Context(), reader(testScope(src), group), opts))
 	if err != nil {
 		t.Fatalf("Search(a member) = %v, want no error", err)
 	}
@@ -273,7 +273,7 @@ func TestSearchMatchesTheGrantsTheMappingGives(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReaderFor() = %v", err)
 	}
-	hits, err := store.Search(t.Context(), who, l1.SearchOptions{Query: "the flyway cutover", Scope: testScope(src)})
+	hits, err := searchHits(store.Search(t.Context(), who, l1.SearchOptions{Query: "the flyway cutover", Scope: testScope(src)}))
 	if err != nil {
 		t.Fatalf("Search() = %v, want no error", err)
 	}
@@ -333,7 +333,7 @@ func TestSearchFiltersByScope(t *testing.T) {
 		want:  []string{elsewhere.ID},
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
-			hits, err := store.Search(t.Context(), tc.reader, l1.SearchOptions{Query: "flyway cutover", Scope: tc.scope})
+			hits, err := searchHits(store.Search(t.Context(), tc.reader, l1.SearchOptions{Query: "flyway cutover", Scope: tc.scope}))
 			if err != nil {
 				t.Fatalf("Search() = %v, want no error", err)
 			}

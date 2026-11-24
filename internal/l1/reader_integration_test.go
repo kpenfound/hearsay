@@ -109,7 +109,7 @@ func TestReaderResolvesAllContainerAccessLists(t *testing.T) {
 			if found != tt.want {
 				t.Fatalf("resolved grant present = %v, want %v", found, tt.want)
 			}
-			hits, err := docs.Search(t.Context(), r, l1.SearchOptions{Query: "accessproof", Scope: testScope(src)})
+			hits, err := searchHits(docs.Search(t.Context(), r, l1.SearchOptions{Query: "accessproof", Scope: testScope(src)}))
 			if err != nil {
 				t.Fatal(err)
 			}

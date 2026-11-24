@@ -82,7 +82,7 @@ func TestStateRoundTripsAndMovesWatermark(t *testing.T) {
 			if err != nil || len(readable) != 1 {
 				t.Fatalf("ListFor = %v, %v", readable, err)
 			}
-			hits, err := store.Search(t.Context(), r, l1.SearchOptions{Query: "what was said"})
+			hits, err := searchHits(store.Search(t.Context(), r, l1.SearchOptions{Query: "what was said"}))
 			if err != nil {
 				t.Fatal(err)
 			}

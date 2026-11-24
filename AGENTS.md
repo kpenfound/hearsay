@@ -302,9 +302,21 @@ with its certificate, or HTTP on 80, a failure logged and retried, never fatal. 
 them is named by `Hearsay-Agent` and must supply its own token.
 An agent can send `Hearsay-Session` to link bundle audits, handle audits and
 assertions to a session artifact; `get_session` follows an assertion id to that
-ordered trace. Search can call the `embed` tier once to vectorize
-its query; reads never use generative synthesis or typed judgments. The shipped
-provider catalogue has no embedding adapter, so search currently uses full text.
+ordered trace. Search's full-text half matches a document's `raw_text` and its
+distilled summary and outcome under the named `english` configuration (one
+expression index, migration 41), and it can call the `embed` tier once to
+vectorize its query; reads never use generative synthesis or typed judgments.
+The shipped provider catalogue has no embedding adapter, so search currently
+uses full text. `search` takes optional `since` and `until` (RFC 3339) and
+keeps documents created before `until` and last active at or after `since`
+(`l1.SearchOptions.Since`/`Until`); a malformed timestamp or `since` after
+`until` is `l1.ErrInvalidSearch` at the store and a 400 with code
+`invalid_request` at the API. Its answer is `{documents, truncated}`
+(`l1.SearchResult` at the store): `truncated` is true when more documents
+matched than were returned or a half had a document ranked past
+`l1.SearchCandidates`, and the access-list, scope and window filters run
+inside both halves, so a document the caller may not read changes neither the
+results nor `truncated`.
 Bundle audits record the ids served in each trimmed section; `get_l1`, `get_l0`, `stance_history`, `search`, `resolve` and `traverse` audit
 successful handles and refused attempts only when a session is named. Audits
 contain ids, never query text or content.

@@ -65,7 +65,7 @@ references:                           # typed, extracted deterministically
   - { type: l1, id: l1:meeting:... }
 acl: [...]                            # inherited from source at ingest, re-synced on change
 text: ...                             # embedded
-raw_text: ...                         # full-text index only, never embedded
+raw_text: ...                         # full-text indexed (with body.summary and outcome), never embedded
 embedding: ...
 
 body:
@@ -281,12 +281,23 @@ Exposed over MCP and HTTP. Deliberately small.
 |`stance_history(topic)`|Full record for a topic|
 |`get_l1(id)`, `get_l0(id)`|Follow a pointer|
 |`get_session(assertion)`|Follow an assertion event to its ordered agent-session trace and audits|
-|`search(scope, query)`|Hybrid retrieval over L1 (embeddings, full text, rank fusion). Returns documents, not answers|
+|`search(scope, query, limit?, since?, until?)`|Hybrid retrieval over L1 (embeddings, full text, rank fusion). Full text matches a document's `raw_text` and its distilled summary and outcome, so a distillation is found with no `embed` tier. `since` and `until` (RFC 3339) keep the documents created before `until` and last active at or after `since`; a malformed timestamp or `since` later than `until` is refused as invalid (400, code `invalid_request`). Returns documents, not answers, and `truncated`. See [Search](#search)|
 |`watch(scope, filter)`|Subscribe to new events on a scope once distilled. Notification only; consumers decide what to do. The per-document debounce can add up to the maximum delay before distillation becomes due, on top of worker poll and distillation time|
 |`assert(topic, position, evidence)`|Write a stance as an L0 event. Agents are principals|
 |`decide(decision_id, action, stance_id \| gesture_id)`|A person's own ratify, demote or undo of one stance, optionally carried by an agent. Writes the gesture ledger, no L0 event, and calls no model ([The `decide` call](#the-decide-call))|
 
 Pinning and topic merges are human actions taken in the tools people already use (see Human feedback loop). So are ratification and demotion there; `decide` is how an agent carries a person's own ratify, demote or undo of a stance.
+
+### Search
+
+Search ranks two halves over the documents the caller may read, then fuses them by reciprocal rank. The access-list, scope and `since`/`until` filters are inside both halves, so a document the caller may not read, or outside the window, never takes a rank and never changes what the response says about itself.
+
+- **Full text** runs under the named `english` configuration over `raw_text` followed by the body's `summary` and `outcome`, one text per document, indexed by one expression index. Both the index and every query name `english`. Words the team wrote and words the distiller wrote both match, which is what lets a deployment with no `embed` tier find a distillation.
+- **Similarity** runs over the embedding of `text` where an `embed` tier exists, and is off without one. This is the only model call a search makes.
+- **The window** is optional at either end. A document is in it when `created < until` and `last_activity >= since`. The two timestamps are RFC 3339; Hearsay applies the window it is given and reads no dates out of the query.
+- **`truncated`** is always present in the response. It is `true` when more documents matched than the response returned, or when either half had a document ranked beyond its candidate cutoff (`SearchCandidates`, 200 per half), which fusion never saw. It is `false` when everything that matched was returned. It is computed in the same statement, without returning extra rows.
+
+The response keeps `documents`, each document with its `score`, and adds `truncated`.
 
 ### The `decide` call
 
