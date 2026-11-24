@@ -215,6 +215,7 @@ var calls = []call{
 	{Tool{"assert", "Propose a position on an existing topic, citing the L1 documents it rests on. Only an agent of class worker or above may; the stance is appended by the assertion worker, ranks as class agent and does not ratify on its own under the default authority policy. Returns the id of the L0 assertion event; repeating a request returns the same id and writes nothing more.",
 		schema(`{"topic":{"type":"string","description":"an existing topic id, from a bundle's topic_id"},"position":{"type":"string","description":"the position, at most 2000 bytes"},"evidence":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":32,"description":"L1 document ids the position rests on; the caller must be able to read every one"}}`, "topic", "position", "evidence")}, assertStance},
 	{decideTool, decide},
+	{coverageTool, coverage},
 }
 
 func schema(properties string, required ...string) json.RawMessage {

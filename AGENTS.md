@@ -304,7 +304,7 @@ environment variable: a URL on a command line puts its password in the process
 list.
 
 The API is not a stub. It serves `get_bundle`, `resolve`, `traverse`, `stance_history`,
-`get_l1`, `get_l0`, `get_session`, `search`, `watch`, `assert` and `decide` as
+`get_l1`, `get_l0`, `get_session`, `search`, `watch`, `assert`, `decide` and `coverage` as
 `POST /v1/<call>` and as MCP tools at `/mcp`,
 from one call layer whose bytes both interfaces serve verbatim, on `--listen`
 (default `:8080`; `hearsay all` takes `--api-listen`), and also on the owner's
@@ -341,6 +341,20 @@ class `worker` or
 above may call it, and it writes an L0 `assertion` event under source `hearsay`
 and enqueues the `assert` job that appends its stance under the topic's scope,
 with no model call.
+`coverage` (`internal/service/api/coverage.go`, `l1.Store.Coverage`) takes 1 to 100
+event ids (otherwise 400, code `invalid_request`) and answers, in request order,
+one of `pending`, `covered` (with the ids of the current documents whose L0 refs
+cite it, filtered by the caller's access lists and reach) or `excluded` for each.
+It decides from the completion record the distiller publishes with a
+conversation's documents, the current documents' L0 refs and what L0 says is
+current or deleted, in one read-only snapshot, never from job state or timing: a
+message is `covered` or `excluded` only by a distillation that read its current
+revision's event id and is `pending` otherwise (not yet consumed, a failed or
+stopped attempt, a rewrite or new message since). An id superseded by a newer
+revision is answered for the current one; a deleted message, one the published
+distillation quoted nowhere, a nonexistent id and an id the caller may not read
+are `excluded`, the last two with the same answer. It holds no state and makes
+no model call. See docs/design.md's `coverage` section.
 `decide` is a person's own ratify, demote or undo of one stance
 (`internal/service/api/decide.go`): `decision_id`, `action` (`ratify`, `demote`
 or `undo`) and a `stance_id` (ratify, demote) or a `gesture_id` (undo); unknown

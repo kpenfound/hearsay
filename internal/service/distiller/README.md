@@ -93,10 +93,11 @@ that quoted nothing leaves nothing behind. Read it through `l1.Store`:
 published distillation read, that distillation (`Inputs`, `Documents`), and
 leaves out an id none read, which is `pending`: not yet distilled, rewritten
 since, or not a message. `ConversationDistillationOf(ctx, source, thread)` reads
-one conversation's. A message is `covered` or `excluded` only by a distillation
-that read its current revision's event id (`ConversationDistillation.Read`);
-whether a document of it quotes the message is the current documents' L0
-references. A conversation too long for one segmentation prompt fails its job
+one conversation's. The API's `coverage` call (`l1.Store.Coverage`) consumes
+it, with the current documents' L0 refs and L0's deletions. A message is
+`covered` or `excluded` only by a distillation that read its current revision's
+event id (`ConversationDistillation.Read`); whether a document of it quotes the
+message is the current documents' L0 references. A conversation too long for one segmentation prompt fails its job
 and records nothing, so its messages stay `pending`.
 
 # Outcome judgments

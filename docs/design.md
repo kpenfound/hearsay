@@ -286,6 +286,7 @@ Exposed over MCP and HTTP. Deliberately small.
 |`watch(scope, filter)`|Subscribe to new events on a scope once distilled. Notification only; consumers decide what to do. The per-document debounce can add up to the maximum delay before distillation becomes due, on top of worker poll and distillation time|
 |`assert(topic, position, evidence)`|Write a stance as an L0 event. Agents are principals|
 |`decide(decision_id, action, stance_id \| gesture_id)`|A person's own ratify, demote or undo of one stance, optionally carried by an agent. Writes the gesture ledger, no L0 event, and calls no model ([The `decide` call](#the-decide-call))|
+|`coverage(event_ids)`|Whether Hearsay covers each of up to 100 conversation message events: `pending`, `covered` with the ids of the current documents citing it, or `excluded`. Decided from the published distillation record, the current documents and deletions; holds no state and calls no model ([The `coverage` call](#the-coverage-call))|
 
 Pinning and topic merges are human actions taken in the tools people already use (see Human feedback loop). So are ratification and demotion there; `decide` is how an agent carries a person's own ratify, demote or undo of a stance.
 
@@ -299,6 +300,22 @@ Search ranks two halves over the documents the caller may read, then fuses them 
 - **`truncated`** is always present in the response. It is `true` when more documents matched than the response returned, or when either half had a document ranked beyond its candidate cutoff (`SearchCandidates`, 200 per half), which fusion never saw. It is `false` when everything that matched was returned. It is computed in the same statement, without returning extra rows.
 
 The response keeps `documents`, each document with its `score`, and adds `truncated`.
+
+### The `coverage` call
+
+`coverage` is served like every call, as `POST /v1/coverage` and as the MCP tool `coverage`, so both interfaces answer the same request with the same bytes. It takes `event_ids`, 1 to 100 L0 event ids; an empty list, more than 100, an empty id, an unknown field or a malformed body is refused with 400 and code `invalid_request`. It answers `{"results": [{"event_id", "state", "documents"?}]}`: one result per requested id, in request order, the id as it was asked. `documents` is present, sorted and non-empty, only when the state is `covered`.
+
+It answers for the messages of a conversation source (a `conversation.message` event), with exactly one state each:
+
+- **`pending`**: the message is held and no published distillation of its conversation has read its *current revision*. That is the time before the distiller has consumed it from the change feed, while an attempt that failed or was stopped by a restart has not been followed by a successful one, after the message was rewritten while documents built from its older revision remain, and for a message that arrived while an attempt ran and so is not among what that attempt read.
+- **`covered`**: the published distillation that read its current revision quotes it in at least one current document the caller may read. `documents` are those documents: the current L1 documents whose `l0_refs` cite it.
+- **`excluded`**: Hearsay will not cover it. It was deleted (every revision of its artifact is redacted, or the artifact was retracted); or the published distillation that read its current revision quotes it in no document the caller may read, including when that distillation produced no document; or the id does not name a message, does not exist or is one the caller may not read. The last two are the same answer, byte for byte but for the id echoed back, as everywhere in Hearsay's reads: an excluded result has no other field, so nothing tells a caller which ids exist.
+
+An id superseded by a newer revision of its artifact is answered for the artifact's current revision, the one L0 reads as current, so a rewrite's older id and its newer one answer alike. A message is never `covered` or `excluded` on the strength of a distillation that did not include its current revision: the record names the event id of every revision a distillation read, an event id names one revision, and a rewritten or newly arrived message is not among them until a distillation that read it is published ([the distiller README](../internal/service/distiller/README.md)).
+
+The state is decided from three reads in one snapshot (a read-only repeatable-read transaction): L0's current revision of the artifact and its access list, the completion record the distiller publishes with a conversation's documents (`l1_conversation_distillations`, `l1.Store.ConversationDistillationsReading`), and the current documents whose `l0_refs` cite the revision (`l1.Store.Holders`, over the `l1_docs_l0_refs_idx` index). It never reads job state or a clock, so a queued, running or failed job cannot move an answer, and nothing in it waits on timing.
+
+It is filtered like every read. A message is readable when the access lists of its current revision and of the revision asked for both allow the caller (a conversation source's lists name the owner alone, so a second human and an agent acting for them read nothing of it); a document that cites it counts only if the caller's access list and reach allow it, so a caller whose reach holds none of its documents' entities reads the message as `excluded`. A message with no document yet has no entities to judge reach by, so it is as readable as its access lists say. `coverage` holds no state between calls, writes nothing, and makes no model call, which is why Kern can poll it.
 
 ### The `decide` call
 

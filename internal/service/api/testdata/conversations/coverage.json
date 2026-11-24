@@ -1,0 +1,37 @@
+{
+  "conversation": "c-coverage",
+  "messages": [
+    {"exchange": "x-1", "role": "owner", "at": "2026-11-02T10:00:00Z", "text": "Hello Kern."},
+    {"exchange": "x-1", "role": "assistant", "at": "2026-11-02T10:00:05Z", "text": "Hello. What can I do for you?"},
+    {"exchange": "x-2", "role": "owner", "at": "2026-11-02T10:01:00Z", "text": "What should we use for the cache?"},
+    {"exchange": "x-2", "role": "assistant", "at": "2026-11-02T10:01:10Z", "text": "Redis and Memcached would both work."},
+    {"exchange": "x-3", "role": "owner", "at": "2026-11-02T10:02:00Z", "text": "Use Redis for the cache. That is decided."},
+    {"exchange": "x-4", "role": "owner", "at": "2026-11-02T10:03:00Z", "text": "Separately, when is the staging deploy?"},
+    {"exchange": "x-4", "role": "assistant", "at": "2026-11-02T10:03:10Z", "text": "The staging deploy is on Friday."}
+  ],
+  "states": {
+    "base": {
+      "segments": [
+        {"topic": "Cache choice", "start": 3, "end": 5},
+        {"topic": "Staging deploy", "start": 6, "end": 7}
+      ]
+    },
+    "nothing": {
+      "segments": []
+    },
+    "rewrite": {
+      "edit": {"x-3:owner": "Use Redis for the cache, with a one hour expiry. That is decided."},
+      "segments": [
+        {"topic": "Cache choice", "start": 3, "end": 5},
+        {"topic": "Staging deploy", "start": 6, "end": 7}
+      ]
+    },
+    "late": {
+      "add": [{"exchange": "x-5", "role": "owner", "at": "2026-11-02T10:04:00Z", "text": "And the deploy needs a freeze on Thursday."}],
+      "segments": [
+        {"topic": "Cache choice", "start": 3, "end": 5},
+        {"topic": "Staging deploy", "start": 6, "end": 8}
+      ]
+    }
+  }
+}
