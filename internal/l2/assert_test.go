@@ -94,7 +94,7 @@ func TestJoinKeys(t *testing.T) {
 func TestTrackerItems(t *testing.T) {
 	d := doc(l1.KindPR, "acme/api#31", l1.OutcomeResolved,
 		l1.Reference{Type: l1.RefIssue, ID: "acme/api#12"},
-		l1.Reference{Type: l1.RefTrackerItem, ID: "acme/web#3"}, // no tracker maps acme/web
+		l1.Reference{Type: l1.RefTrackerItem, ID: "acme/web#3"},
 		l1.Reference{Type: l1.RefCommit, ID: "acme/api@abc"})
 	var got []string
 	for _, e := range l2.TrackerItems(scopedRepo(), d) {
@@ -108,14 +108,13 @@ func TestTrackerItems(t *testing.T) {
 		t.Errorf("TrackerItems() = %q, want %q", got, want)
 	}
 
-	// The same repository in another source is another tracker.
 	d.Source.System = "github-other"
 	if got := l2.TrackerItems(scopedRepo(), d); len(got) != 0 {
 		t.Errorf("TrackerItems(from another source) = %+v, want none", got)
 	}
 }
 
-func TestIDsAreDerivedFromEveryPart(t *testing.T) {
+func TestTopicIDIsDerivedFromEveryPart(t *testing.T) {
 	base := l2.TopicID("api", "l1:s:a", 0, "name")
 	if again := l2.TopicID("api", "l1:s:a", 0, "name"); again != base {
 		t.Errorf("TopicID is not stable: %q then %q", base, again)
@@ -125,22 +124,33 @@ func TestIDsAreDerivedFromEveryPart(t *testing.T) {
 		l2.TopicID("api", "l1:s:b", 0, "name"),
 		l2.TopicID("api", "l1:s:a", 1, "name"),
 		l2.TopicID("api", "l1:s:a", 0, "other"),
-		l2.TopicID("ap", "il1:s:a", 0, "name"), // parts cannot run into each other
+		l2.TopicID("ap", "il1:s:a", 0, "name"),
 	} {
 		if other == base {
 			t.Errorf("TopicID collided for different parts: %q", other)
 		}
 	}
+}
+
+func TestStanceIDDistinguishesPositionsDocumentsVersionsAndTiers(t *testing.T) {
 	at := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)
-	if l2.StanceID("t", "d", "p", at, l2.TierInferred) == l2.StanceID("t", "d", "q", at, l2.TierInferred) ||
-		l2.StanceID("t", "d", "p", at, l2.TierInferred) == l2.StanceID("t", "e", "p", at, l2.TierInferred) {
-		t.Error("StanceID collided for different parts")
+	base := l2.StanceID("t", "d", "p", at, l2.TierInferred)
+	for name, other := range map[string]string{
+		"position": l2.StanceID("t", "d", "q", at, l2.TierInferred),
+		"document": l2.StanceID("t", "e", "p", at, l2.TierInferred),
+		"version":  l2.StanceID("t", "d", "p", at.Add(time.Second), l2.TierInferred),
+		"tier":     l2.StanceID("t", "d", "p", at, l2.TierRatified),
+	} {
+		if other == base {
+			t.Errorf("StanceID collided for another %s", name)
+		}
 	}
-	baseStance := l2.StanceID("t", "d", "p", at, l2.TierInferred)
-	if baseStance == l2.StanceID("t", "d", "p", at.Add(time.Second), l2.TierInferred) ||
-		baseStance == l2.StanceID("t", "d", "p", at, l2.TierRatified) ||
-		baseStance != l2.StanceID("t", "d", "p", at.In(time.FixedZone("offset", 3600)), l2.TierInferred) {
-		t.Error("StanceID must distinguish versions and tiers, but not time zones")
+}
+
+func TestStanceIDIgnoresTimeZones(t *testing.T) {
+	at := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)
+	if l2.StanceID("t", "d", "p", at, l2.TierInferred) != l2.StanceID("t", "d", "p", at.In(time.FixedZone("offset", 3600)), l2.TierInferred) {
+		t.Error("StanceID differs between zones of one instant")
 	}
 }
 
@@ -201,10 +211,6 @@ func TestScopeKeyTouches(t *testing.T) {
 	}
 }
 
-// A work source's owner source is keyed as the work source it names, so the two
-// sources of a pair place their records of a project under one key whatever
-// scopes cover either of them; a source that is not an owner source is keyed as
-// itself.
 func TestScopeKeyOfAPair(t *testing.T) {
 	sources := []connector.SourceConfig{
 		{ID: "projects", Type: "work"},
@@ -242,7 +248,7 @@ func TestScopeKeyOfAPair(t *testing.T) {
 	}
 }
 
-func TestDecisionEntityAndKey(t *testing.T) {
+func TestDecisionEntityIsTheWorkstreamOrTheProject(t *testing.T) {
 	d := l1.Decision{ID: "d", WorkSource: "projects", Project: "p1", Workstream: "w1"}
 	if got := l2.DecisionEntity(d); got != "work:projects:p1#w1" {
 		t.Errorf("DecisionEntity = %q", got)
@@ -251,6 +257,9 @@ func TestDecisionEntityAndKey(t *testing.T) {
 	if got := l2.DecisionEntity(d); got != "work:projects:p1" {
 		t.Errorf("DecisionEntity = %q", got)
 	}
+}
+
+func TestDecisionTopicIDIsStablePerDocument(t *testing.T) {
 	first, again := l2.DecisionTopicID("l1:projects:a"), l2.DecisionTopicID("l1:projects:a")
 	if first != again {
 		t.Errorf("a decision topic's id must be stable: %q then %q", first, again)

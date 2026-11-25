@@ -7,17 +7,12 @@ import (
 	"slices"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
-	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 )
 
-// stanceFixture is two topics in one scope, each standing at a stance drawn
-// from the same thread, so a gesture on one of them shows whether it reached
-// the other.
 type stanceFixture struct {
 	scope, thread string
 	lock, queue   l2.Topic
@@ -38,9 +33,6 @@ func stanceGesture(event, who string, action l2.GestureAction, stance string) l2
 	return l2.GestureRequest{Event: event, Principal: who, Action: action, Stance: stance}
 }
 
-// A stance-targeted ratify or demote applies to that stance alone, records the
-// principal and the agent that carried it, and records its evidence as the
-// documents. Another live stance drawn from the same documents keeps its tier.
 func TestAStanceGestureAppliesToTheNamedStanceAlone(t *testing.T) {
 	pool := newPool(t)
 	store := l2.New(pool)
@@ -83,7 +75,6 @@ func TestAStanceGestureAppliesToTheNamedStanceAlone(t *testing.T) {
 		}
 	}
 
-	// An undo of a stance-targeted gesture puts the stance back.
 	undo := gesture(t, pool, repo, l2.GestureRequest{Event: gestureEvent(), Principal: "kyle", Action: l2.GestureUndo, Undoes: d.Event, DecisionsOnly: true, Carrier: "bot"})
 	if undo.Carrier != "bot" || !slices.Equal(undo.Stances, []string{f.onQ.ID}) || undo.UndoesEvent != d.Event {
 		t.Errorf("the undo = %+v", undo)
@@ -93,7 +84,6 @@ func TestAStanceGestureAppliesToTheNamedStanceAlone(t *testing.T) {
 	}
 }
 
-// A stance an agent asserted may be named, though a document gesture skips it.
 func TestAStanceGestureMayNameAnAssertedStance(t *testing.T) {
 	pool := newPool(t)
 	store := l2.New(pool)
@@ -114,9 +104,6 @@ func TestAStanceGestureMayNameAnAssertedStance(t *testing.T) {
 	}
 }
 
-// A stance that is not live is refused as such, apart from not found and not
-// allowed, and nothing is recorded. The policy is checked first, so someone who
-// may not decide learns nothing of the stance.
 func TestAStanceGestureRefusesWhatIsNotLive(t *testing.T) {
 	pool := newPool(t)
 	store := l2.New(pool)
@@ -129,10 +116,9 @@ func TestAStanceGestureRefusesWhatIsNotLive(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE l2_stances SET withdrawn = true WHERE id = $1`, withdrawn.ID); err != nil {
 		t.Fatal(err)
 	}
-	// A stance whose own document was read again is retired.
-	reread := addStance(t, store, f.queue, f.thread, "one queue per team", 5)
-	_ = reread
+	addStance(t, store, f.queue, f.thread, "one queue per team", 5)
 	only := loadRepo(t, "scope: \"*\"\nratified_by:\n  principals: [kyle]\n")
+	carrierNamed := loadRepo(t, "scope: \"*\"\nratified_by:\n  principals: [kyle, bot]\n")
 
 	for _, tt := range []struct {
 		name  string
@@ -146,6 +132,7 @@ func TestAStanceGestureRefusesWhatIsNotLive(t *testing.T) {
 		{"a withdrawn stance", repo, stanceGesture("", "kyle", l2.GestureRatify, withdrawn.ID), l2.ErrNotLive, []error{l2.ErrNotFound, l2.ErrNotAllowed}},
 		{"no such stance", repo, stanceGesture("", "kyle", l2.GestureRatify, "stance:nobody"), l2.ErrNotFound, []error{l2.ErrNotLive, l2.ErrNotAllowed}},
 		{"a human the scope does not allow, with a carrier", only, withCarrier(stanceGesture("", "sam", l2.GestureRatify, f.onLock.ID)), l2.ErrNotAllowed, []error{l2.ErrNotLive, l2.ErrNotFound}},
+		{"a human the scope does not allow, carried by an agent the scope names", carrierNamed, withCarrier(stanceGesture("", "sam", l2.GestureRatify, f.onLock.ID)), l2.ErrNotAllowed, []error{l2.ErrNotLive, l2.ErrNotFound}},
 		{"a human the scope does not allow, with none", only, stanceGesture("", "sam", l2.GestureRatify, f.onLock.ID), l2.ErrNotAllowed, []error{l2.ErrNotLive, l2.ErrNotFound}},
 		{"a human the scope does not allow, on a stance not live", only, stanceGesture("", "sam", l2.GestureRatify, retired.ID), l2.ErrNotAllowed, []error{l2.ErrNotLive, l2.ErrNotFound}},
 		{"an agent as the principal", repo, stanceGesture("", "bot", l2.GestureRatify, f.onLock.ID), l2.ErrNotAllowed, []error{l2.ErrNotLive}},
@@ -174,9 +161,6 @@ func withCarrier(r l2.GestureRequest) l2.GestureRequest {
 	return r
 }
 
-// Repeating a request returns its gesture and records nothing, after the
-// stance was superseded and after an undo that succeeded; the same event with
-// other content is a conflict.
 func TestAStanceGestureIsIdempotentOnItsEvent(t *testing.T) {
 	pool := newPool(t)
 	store := l2.New(pool)
@@ -186,7 +170,7 @@ func TestAStanceGestureIsIdempotentOnItsEvent(t *testing.T) {
 
 	req := withCarrier(stanceGesture(gestureEvent(), "kyle", l2.GestureRatify, f.onLock.ID))
 	g := gesture(t, pool, repo, req)
-	addStance(t, store, f.lock, f.thread, "the lock moves to the broker", 3) // supersedes it.
+	addStance(t, store, f.lock, f.thread, "the lock moves to the broker", 3)
 	again, recorded, err := l2.RecordGesture(ctx, pool, repo, req)
 	if err != nil || recorded || again.ID != g.ID {
 		t.Fatalf("the replay after supersession = %+v, %v, recorded %v; want gesture %d back", again, err, recorded, g.ID)
@@ -195,7 +179,6 @@ func TestAStanceGestureIsIdempotentOnItsEvent(t *testing.T) {
 		t.Errorf("a new ratify of the superseded stance = %v, want ErrNotLive", err)
 	}
 
-	// The replay is answered whatever the principal's authority is now.
 	only := loadRepo(t, "scope: \"*\"\nratified_by:\n  principals: [sam]\n")
 	if again, recorded, err := l2.RecordGesture(ctx, pool, only, req); err != nil || recorded || again.ID != g.ID {
 		t.Errorf("the replay under a changed policy = %+v, %v, recorded %v", again, err, recorded)
@@ -225,8 +208,6 @@ func TestAStanceGestureIsIdempotentOnItsEvent(t *testing.T) {
 		}
 	}
 
-	// A retried undo that succeeded returns the undo, though the gesture it
-	// undid is now undone, which would refuse a new one.
 	undoReq := l2.GestureRequest{Event: gestureEvent(), Principal: "kyle", Action: l2.GestureUndo, Undoes: req.Event, DecisionsOnly: true, Carrier: "bot"}
 	undo := gesture(t, pool, repo, undoReq)
 	again, recorded, err = l2.RecordGesture(ctx, pool, repo, undoReq)
@@ -244,7 +225,6 @@ func TestAStanceGestureIsIdempotentOnItsEvent(t *testing.T) {
 	}
 }
 
-// Concurrent identical requests record one gesture, and one reports it new.
 func TestIdenticalStanceGesturesRecordOnce(t *testing.T) {
 	pool := newPool(t)
 	store := l2.New(pool)
@@ -283,8 +263,6 @@ func TestIdenticalStanceGesturesRecordOnce(t *testing.T) {
 	}
 }
 
-// An undo of an undone gesture, of an undo, or, limited to decisions, of a pin
-// is refused as not undoable, and nothing is recorded.
 func TestUndoRefusesWhatCannotBeUndone(t *testing.T) {
 	pool := newPool(t)
 	store := l2.New(pool)
@@ -292,16 +270,10 @@ func TestUndoRefusesWhatCannotBeUndone(t *testing.T) {
 	ctx := t.Context()
 	f := newStanceFixture(t, store)
 	src := "s" + unique()
-	when := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)
-	doc := l1.Document{
-		ID: l1.DocID(src, "n"), Kind: l1.KindIssue, ArtifactClass: config.ArtifactIssue,
-		Source: l1.Source{System: src, NativeID: "n"}, Scope: []string{"code:acme/" + src},
-		L0Refs: []string{connector.EventID(src, "n")}, Time: l1.Times{Created: when, Updated: when, LastActivity: when},
-		ACL: public, Text: "t", RawText: "r", Body: l1.Body{Summary: "s", OutcomeKind: l1.OutcomeDecided},
-	}
-	if _, err := l1.New(pool).Put(ctx, doc); err != nil {
-		t.Fatal(err)
-	}
+	doc := issueDoc(src, "n")
+	doc.Scope, doc.L0Refs = []string{"code:acme/" + src}, []string{connector.EventID(src, "n")}
+	doc.Text, doc.RawText = "t", "r"
+	storeDoc(t, pool, doc)
 
 	ratify := gesture(t, pool, repo, stanceGesture(gestureEvent(), "kyle", l2.GestureRatify, f.onLock.ID))
 	undo := gesture(t, pool, repo, l2.GestureRequest{Event: gestureEvent(), Principal: "kyle", Action: l2.GestureUndo, Undoes: ratify.Event, DecisionsOnly: true})
@@ -328,7 +300,6 @@ func TestUndoRefusesWhatCannotBeUndone(t *testing.T) {
 	if n := len(ledger(t, store, "")); n != total {
 		t.Errorf("the ledger grew from %d to %d", total, n)
 	}
-	// Unrestricted, a pin is undone as it always was.
 	if g := gesture(t, pool, repo, l2.GestureRequest{Event: gestureEvent(), Principal: "kyle", Action: l2.GestureUndo, Undoes: pin.Event}); g.Undoes != pin.ID {
 		t.Errorf("the undo of a pin = %+v", g)
 	}

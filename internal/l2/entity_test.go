@@ -16,12 +16,10 @@ import (
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
-// fakeRepos is a repository reader over fixed content.
 type fakeRepos struct {
-	files map[string]string   // "<project>:<path>"
-	top   map[string][]string // project
-	err   error
-	// unsupported are the sources the reader cannot read at all.
+	files       map[string]string
+	top         map[string][]string
+	err         error
 	unsupported []string
 	reads       []string
 }
@@ -66,7 +64,6 @@ func seedRepo() config.Repo {
 	}
 }
 
-// entitySummary is what a seeding case compares.
 type entitySummary struct {
 	id     string
 	typ    l2.EntityType
@@ -120,19 +117,12 @@ func TestSeedFromARepository(t *testing.T) {
 		t.Fatalf("Seed() = %v", err)
 	}
 	want := []entitySummary{
-		// The project and the directories nobody configured, from the layout;
-		// not the dot-directory, and not `engine`, which is configured.
 		{"code:acme/api", l2.TypeProject, l2.OriginRepoStructure, nil, nil, nil},
 		{"code:acme/api:cmd", l2.TypeModule, l2.OriginRepoStructure, nil, []string{"code:acme/api"}, []string{"cmd/**"}},
 		{"code:acme/api:docs", l2.TypeModule, l2.OriginRepoStructure, nil, []string{"code:acme/api"}, []string{"docs/**"}},
-		// Owners from the CODEOWNERS file the entity names, for it and its
-		// descendants, resolved to principals; a login nobody mapped is left
-		// out, and configured owners stand.
 		{"code:acme/api:engine", l2.TypeModule, l2.OriginConfig, []string{"kyle"}, []string{"code:acme/api"}, []string{"engine/**"}},
 		{"code:acme/api:engine/client", l2.TypeModule, l2.OriginConfig, []string{"robin"}, []string{"code:acme/api:engine"}, []string{"engine/client/**"}},
 		{"code:acme/api:engine/server", l2.TypeService, l2.OriginConfig, []string{"sam"}, []string{"code:acme/api:engine"}, []string{"engine/server/**"}},
-		// Not under the entity that names the file, so not seeded from it; and
-		// under no other entity's patterns, so part of the repository's project.
 		{"code:acme/api:queue", l2.TypeModule, l2.OriginConfig, nil, []string{"code:acme/api"}, []string{"internal/queue/**"}},
 	}
 	if s := summarize(got); !sameSummaries(s, want) {
@@ -141,18 +131,31 @@ func TestSeedFromARepository(t *testing.T) {
 	if !slices.Equal(reader.reads, []string{"acme/api:.github/CODEOWNERS"}) {
 		t.Errorf("Seed() read %q, want the one CODEOWNERS file configuration names", reader.reads)
 	}
+}
 
+func TestSeedIsRepeatable(t *testing.T) {
+	reader := &fakeRepos{
+		files: map[string]string{"acme/api:.github/CODEOWNERS": codeowners},
+		top:   map[string][]string{"acme/api": {"engine", "cmd", ".github", "docs/"}},
+	}
+	first, err := l2.Seed(t.Context(), seedRepo(), reader, nil)
+	if err != nil {
+		t.Fatalf("Seed() = %v", err)
+	}
 	again, err := l2.Seed(t.Context(), seedRepo(), reader, nil)
-	if err != nil || !sameSummaries(summarize(again), summarize(got)) {
+	if err != nil || !sameSummaries(summarize(again), summarize(first)) {
 		t.Errorf("Seed() a second time = %+v, %v, want the same entities", summarize(again), err)
 	}
 }
 
-func TestSeedFailsWhenTheRepositoryCannotBeRead(t *testing.T) {
+func TestSeedFailsWhenTheRepositoryCannotBeListed(t *testing.T) {
 	boom := errors.New("rate limited")
 	if _, err := l2.Seed(t.Context(), seedRepo(), &fakeRepos{err: boom}, nil); !errors.Is(err, boom) {
 		t.Errorf("Seed() = %v, want the reader's error", err)
 	}
+}
+
+func TestSeedFailsWhenTheCodeOwnersFileCannotBeRead(t *testing.T) {
 	unreadable := &fakeRepos{top: map[string][]string{"acme/api": {"engine"}}}
 	denied := errors.New("403 Forbidden")
 	if _, err := l2.Seed(t.Context(), seedRepo(), &readErr{unreadable, denied}, nil); !errors.Is(err, denied) {
@@ -160,8 +163,6 @@ func TestSeedFailsWhenTheRepositoryCannotBeRead(t *testing.T) {
 	}
 }
 
-// readErr is a reader whose files cannot be read, for a reason other than
-// their not being there.
 type readErr struct {
 	*fakeRepos
 	err error
@@ -171,7 +172,6 @@ func (r *readErr) ReadFile(context.Context, config.SourceRef, string) ([]byte, e
 	return nil, r.err
 }
 
-// seedLog is a context whose log lines land in the returned buffer.
 func seedLog(t *testing.T) (context.Context, *bytes.Buffer) {
 	var out bytes.Buffer
 	return telemetry.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&out, nil))), &out
@@ -184,7 +184,6 @@ func TestSeedSkipsAMissingCodeOwnersFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Seed() with the CODEOWNERS file missing = %v, want it skipped", err)
 	}
-	// The layout is still imported; the owners are configuration's alone.
 	want := []entitySummary{
 		{"code:acme/api", l2.TypeProject, l2.OriginRepoStructure, nil, nil, nil},
 		{"code:acme/api:cmd", l2.TypeModule, l2.OriginRepoStructure, nil, []string{"code:acme/api"}, []string{"cmd/**"}},
@@ -222,36 +221,33 @@ func TestSeedSkipsARepositoryNoReaderSupports(t *testing.T) {
 	}
 }
 
-// Seeding ranks the hierarchy's sources. `code/`'s part_of stands
-// where it sets any; everywhere else an entity is part of the nearest entity
-// its path patterns lie under, configured or seeded from the layout; and the
-// derived edge that would close a cycle with configuration is dropped.
-func TestSeedDerivesTheHierarchyFromPathPatterns(t *testing.T) {
+func hierarchyRepo() config.Repo {
 	api := config.SourceRef{Source: "github-acme", Project: "acme/api"}
-	repo := config.Repo{Code: []config.CodeEntity{
+	return config.Repo{Code: []config.CodeEntity{
 		{ID: "code:acme/api:engine", Type: config.TypeModule, PathPatterns: []string{"engine/**"}, Repo: api},
 		{ID: "code:acme/api:engine/server/write", Type: config.TypeModule,
 			PathPatterns: []string{"engine/server/write/**"}, Repo: api},
 		{ID: "code:acme/api:engine/server", Type: config.TypeService, PathPatterns: []string{"engine/server/**"}, Repo: api},
-		// Configured: replaces, not joins, the engine the patterns imply.
 		{ID: "code:acme/api:engine/client", Type: config.TypeModule,
 			PathPatterns: []string{"engine/client/**"}, PartOf: []string{"code:acme/api:queue"}, Repo: api},
 		{ID: "code:acme/api:queue", Type: config.TypeModule, PathPatterns: []string{"internal/queue/**"}, Repo: api},
-		// Under a directory nobody configured.
 		{ID: "code:acme/api:lib/x", Type: config.TypeModule, PathPatterns: []string{"lib/x/**"}, Repo: api},
-		// A person put tools under tools/gen; the patterns say the opposite.
 		{ID: "code:acme/api:tools", Type: config.TypeModule,
 			PathPatterns: []string{"tools/**"}, PartOf: []string{"code:acme/api:tools/gen"}, Repo: api},
 		{ID: "code:acme/api:tools/gen", Type: config.TypeModule, PathPatterns: []string{"tools/gen/**"}, Repo: api},
 	}}
-	parents := func(entities []l2.Entity) map[string][]string {
-		out := map[string][]string{}
-		for _, e := range entities {
-			out[e.ID] = e.PartOf
-		}
-		return out
-	}
+}
 
+func partOfByID(entities []l2.Entity) map[string][]string {
+	out := map[string][]string{}
+	for _, e := range entities {
+		out[e.ID] = e.PartOf
+	}
+	return out
+}
+
+func TestSeedDerivesTheHierarchyFromPathPatterns(t *testing.T) {
+	repo := hierarchyRepo()
 	ctx, log := seedLog(t)
 	got, err := l2.Seed(ctx, repo, &fakeRepos{top: map[string][]string{"acme/api": {"engine", "lib", "tools", "internal"}}}, nil)
 	if err != nil {
@@ -270,16 +266,16 @@ func TestSeedDerivesTheHierarchyFromPathPatterns(t *testing.T) {
 		"code:acme/api:tools":               {"code:acme/api:tools/gen"},
 		"code:acme/api:tools/gen":           nil,
 	}
-	if p := parents(got); fmt.Sprint(p) != fmt.Sprint(want) {
+	if p := partOfByID(got); fmt.Sprint(p) != fmt.Sprint(want) {
 		t.Errorf("Seed() part_of =\n%v\nwant\n%v", p, want)
 	}
 	if d := droppedIn(t, log.String()); fmt.Sprint(d) != fmt.Sprint([]dropped{{"code:acme/api:tools/gen", "code:acme/api:tools", "repo_structure"}}) {
 		t.Errorf("logged dropped edges %v, want tools/gen's edge to tools", d)
 	}
+}
 
-	// Nesting reads patterns, not the repository: without a reader there is no
-	// project or layout, and the configured entities nest all the same.
-	alone, err := l2.Seed(t.Context(), repo, nil, nil)
+func TestSeedDerivesTheHierarchyFromPathPatternsWithoutAReader(t *testing.T) {
+	alone, err := l2.Seed(t.Context(), hierarchyRepo(), nil, nil)
 	if err != nil {
 		t.Fatalf("Seed() = %v", err)
 	}
@@ -293,7 +289,7 @@ func TestSeedDerivesTheHierarchyFromPathPatterns(t *testing.T) {
 		"code:acme/api:tools":               {"code:acme/api:tools/gen"},
 		"code:acme/api:tools/gen":           nil,
 	}
-	if p := parents(alone); fmt.Sprint(p) != fmt.Sprint(wantAlone) {
+	if p := partOfByID(alone); fmt.Sprint(p) != fmt.Sprint(wantAlone) {
 		t.Errorf("Seed() without a reader part_of =\n%v\nwant\n%v", p, wantAlone)
 	}
 }

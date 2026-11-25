@@ -7,12 +7,8 @@ import (
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
-// The store is what a principal's reach is read from.
 var _ principal.Graph = (*Store)(nil)
 
-// descendantsSQL walks `part_of` down from the ids given. The walk is a UNION,
-// so a cycle ends it rather than looping, and the ids given are kept whether
-// the table holds them or not.
 const descendantsSQL = `
 WITH RECURSIVE down(id) AS (
     SELECT unnest($1::text[])
@@ -34,9 +30,6 @@ func (s *Store) Descendants(ctx context.Context, ids []string) ([]string, error)
 	return out, nil
 }
 
-// linkedCodeSQL is the code entities pull requests about one of the ids touch:
-// the `system` references L1 lists on a pull request's document, which are the
-// code entities its paths fall under and the ones its text names.
 const linkedCodeSQL = `
 SELECT DISTINCT ref->>'id'
 FROM l1_docs d, jsonb_array_elements(d.refs) AS ref

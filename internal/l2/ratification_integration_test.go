@@ -12,12 +12,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/l2"
 )
 
-// Ratifications replays each topic's standing over what was recorded when:
-// the clock starts the first time a topic stands unratified and stops the
-// first time it stands ratified after that, by a person's gesture in force
-// then or by evidence the policy ratifies on its own. Every time in the test
-// is set on the rows, so the replay reads the recorded times and not the order
-// the rows happened to be written in.
 func TestRatificationsReplayStandingOverTheRecordedTimes(t *testing.T) {
 	pool := scratchPool(t)
 	store := l2.New(pool)
@@ -28,20 +22,11 @@ func TestRatificationsReplayStandingOverTheRecordedTimes(t *testing.T) {
 
 	putPR := func(native string, class config.ArtifactClass) string {
 		t.Helper()
-		doc := l1.Document{
-			ID: l1.DocID("github", native), Kind: l1.KindPR, ArtifactClass: class,
-			Source: l1.Source{System: "github", NativeID: native},
-			L0Refs: []string{"evt:github:" + native}, Time: l1.Times{Created: base, Updated: base, LastActivity: base},
-			ACL: public, Text: "text of " + native, RawText: "raw " + native,
-			Body: l1.Body{Summary: "s", OutcomeKind: l1.OutcomeDecided},
-		}
-		if _, err := l1.New(pool).Put(ctx, doc); err != nil {
-			t.Fatalf("Put(%s) = %v", doc.ID, err)
-		}
-		return doc.ID
+		doc := issueDoc("github", native)
+		doc.Kind, doc.ArtifactClass = l1.KindPR, class
+		doc.Time = l1.Times{Created: base, Updated: base, LastActivity: base}
+		return storeDoc(t, pool, doc)
 	}
-	// written appends a stance stated at hour stated, and records it as
-	// written at hour h.
 	written := func(topic l2.Topic, doc, position string, stated, h int) l2.Stance {
 		t.Helper()
 		st := addStance(t, store, topic, doc, position, stated)
@@ -50,8 +35,6 @@ func TestRatificationsReplayStandingOverTheRecordedTimes(t *testing.T) {
 		}
 		return st
 	}
-	// read records that the assertion worker read a document's current
-	// version at hour h.
 	read := func(doc string, h int) {
 		t.Helper()
 		if err := store.MarkAsserted(ctx, doc, hour(h), 1); err != nil {
@@ -61,7 +44,6 @@ func TestRatificationsReplayStandingOverTheRecordedTimes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// gestured records a gesture as made at hour h and returns its event.
 	gestured := func(req l2.GestureRequest, h int) string {
 		t.Helper()
 		req.Event, req.Principal = gestureEvent(), "kyle"
@@ -82,32 +64,22 @@ func TestRatificationsReplayStandingOverTheRecordedTimes(t *testing.T) {
 	}
 	chat := func() string { return "l1:discord:" + unique() }
 
-	// Ratified by hand at hour 10, ten hours after its stance was written.
 	byHand := namedTopic(t, store, "eng", "by hand")
 	byHandDoc := chat()
 	written(byHand, byHandDoc, "the queue takes the lock", 1, 0)
 	ratify(byHandDoc, 10)
 
-	// A ratification stands from when it was made, whatever an undo later
-	// did; the ratification made again after the undo is not the first.
 	undone := namedTopic(t, store, "eng", "ratified then undone")
 	undoneDoc := chat()
 	written(undone, undoneDoc, "retry forever", 1, 1)
 	undo(ratify(undoneDoc, 2), 3)
 	ratify(undoneDoc, 5)
 
-	// Ratified by evidence: a merged pull request's stance written at hour 4
-	// outranks the chat thread's and ratifies on its own. Nothing recorded
-	// reading the pull request, so its class counts throughout; what keeps it
-	// from ratifying the topic at hour 0 is that its stance was not written.
 	byEvidence := namedTopic(t, store, "eng", "by evidence")
 	written(byEvidence, chat(), "ship it on friday", 1, 0)
 	merged := putPR("acme/api#1", config.ArtifactMergedPR)
 	written(byEvidence, merged, "ship it on monday", 2, 4)
 
-	// A pull request read open at hour 0 and read again merged at hour 6:
-	// until the merged version was read, the stance rested on the open one,
-	// and a merge since does not ratify it back then.
 	reread := namedTopic(t, store, "eng", "read again merged")
 	pr := putPR("acme/api#2", config.ArtifactPullRequest)
 	read(pr, 0)
@@ -116,15 +88,12 @@ func TestRatificationsReplayStandingOverTheRecordedTimes(t *testing.T) {
 	read(pr, 6)
 	written(reread, pr, "drop the cache", 2, 6)
 
-	// Ratified on arrival by a merged pull request, demoted at hour 3 and the
-	// demotion undone at hour 5: the clock runs from the demotion to the undo.
 	demoted := namedTopic(t, store, "eng", "demoted")
 	landed := putPR("acme/api#3", config.ArtifactMergedPR)
 	read(landed, 1)
 	written(demoted, landed, "one binary", 1, 1)
 	undo(demote(landed, 3), 5)
 
-	// Never ratified, and ratified only at hour 9.
 	open := namedTopic(t, store, "eng", "still open")
 	written(open, chat(), "maybe later", 1, 2)
 	late := namedTopic(t, store, "eng", "ratified late")
@@ -132,14 +101,11 @@ func TestRatificationsReplayStandingOverTheRecordedTimes(t *testing.T) {
 	written(late, lateDoc, "later", 1, 2)
 	ratify(lateDoc, 9)
 
-	// Ratified on arrival and never otherwise.
 	arrived := namedTopic(t, store, "eng", "arrived ratified")
 	shipped := putPR("acme/api#4", config.ArtifactMergedPR)
 	read(shipped, 7)
 	written(arrived, shipped, "vendor it", 1, 7)
 
-	// Ratified at hour 2 by a gesture whose event an operator deletion has
-	// since deleted: out of force throughout, as it is for every read.
 	voided := namedTopic(t, store, "eng", "voided")
 	voidedDoc := chat()
 	written(voided, voidedDoc, "a deleted ratification", 1, 1)
@@ -156,14 +122,10 @@ VALUES ('del_voided', 'kyle', 'test', '{}', ARRAY[$1], '{}', 'evt:hearsay:deleti
 		t.Fatal(err)
 	}
 
-	// Merged away into byHand: it is read as the topic it went into, and has
-	// no entry of its own.
 	away := namedTopic(t, store, "eng", "merged away")
-	// Stated before byHand's own stance, so byHand's stays the current one.
 	written(away, chat(), "a duplicate question", 0, 1)
 	operate(t, pool, repo, l2.OperationRequest{Kind: l2.OperationMerge, Principal: "kyle", Into: byHand.ID, From: away.ID})
 
-	// Another scope, left out when one scope is asked for.
 	elsewhere := namedTopic(t, store, "web", "elsewhere")
 	written(elsewhere, chat(), "somewhere else", 1, 0)
 
@@ -234,9 +196,6 @@ VALUES ('del_voided', 'kyle', 'test', '{}', ARRAY[$1], '{}', 'evt:hearsay:deleti
 	}
 
 	t.Run("the policy in force now decides, not the tier on the row", func(t *testing.T) {
-		// Under a policy where a merged pull request ratifies nothing, the
-		// evidence topics are never ratified, and the one that arrived
-		// ratified starts its clock when it first stood.
 		strict := loadRepo(t, "scope: \"*\"\nratified_by:\n  principals: [kyle]\n  artifacts: []\n")
 		got, err := store.Ratifications(ctx, strict.Authority, "eng", time.Time{})
 		if err != nil {
@@ -257,14 +216,11 @@ VALUES ('del_voided', 'kyle', 'test', '{}', ARRAY[$1], '{}', 'evt:hearsay:deleti
 	})
 
 	t.Run("topics opened", func(t *testing.T) {
-		// Every topic opened at hour 0 but one, opened at hour 20.
 		if _, err := pool.Exec(ctx, `UPDATE l2_topics SET created_at = CASE WHEN id = $2 THEN $1::timestamptz ELSE $3::timestamptz END`, hour(20), open.ID, hour(0)); err != nil {
 			t.Fatal(err)
 		}
 		split := operate(t, pool, repo, l2.OperationRequest{Kind: l2.OperationSplit, Principal: "kyle", Topic: byHand.ID,
 			Name: "the other half", Stances: []string{stanceOn(t, store, byHand.ID, "a duplicate question")}})
-		// A stance landing on the split's topic gives it a row; a person made
-		// that topic, and it is not counted.
 		if _, err := store.Target(ctx, split.Topics[1], public, "l1:s:split"); err != nil {
 			t.Fatal(err)
 		}
@@ -289,8 +245,6 @@ VALUES ('del_voided', 'kyle', 'test', '{}', ARRAY[$1], '{}', 'evt:hearsay:deleti
 	})
 }
 
-// stanceOn is the id of the stance on a topic, as the ledger makes it now,
-// that takes a position.
 func stanceOn(t *testing.T, store *l2.Store, topic, position string) string {
 	t.Helper()
 	history, err := store.StanceHistory(t.Context(), topic)

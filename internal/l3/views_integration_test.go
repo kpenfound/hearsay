@@ -42,8 +42,6 @@ func newPool(t *testing.T) *pgxpool.Pool {
 
 var sources atomic.Int64
 
-// newSource is a source id, and so an entity namespace, nothing else uses: the
-// database outlives one test.
 func newSource() string {
 	return "t" + strconv.FormatInt(time.Now().UnixNano(), 36) + "x" + strconv.FormatInt(sources.Add(1), 36)
 }
@@ -52,27 +50,36 @@ var (
 	day     = time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC)
 	public  = connector.ACL{{Kind: connector.ACLPublic}}
 	private = connector.ACL{{Kind: connector.ACLIdentity, Source: "gh", NativeID: "kyle-node"}}
-	// kyle may read the private list; sam may read only what is public.
-	kyle = l1.Reader{
+	kyle    = l1.Reader{
 		Effective: principal.Effective{Human: "kyle", Grant: principal.Grant{Scopes: principal.AllScopes()}},
 		Audience:  []connector.ACLEntry{{Kind: connector.ACLIdentity, Source: "gh", NativeID: "kyle-node"}},
 	}
 	sam = l1.Reader{Effective: principal.Effective{Human: "sam", Grant: principal.Grant{Scopes: principal.AllScopes()}}}
 )
 
-func putDoc(t *testing.T, pool *pgxpool.Pool, src, artifact string, kind l1.Kind, hour int, scope string, acl connector.ACL, questions ...string) string {
-	t.Helper()
+func docAt(src, artifact string, kind l1.Kind, class config.ArtifactClass, hour int, scope string, acl connector.ACL) l1.Document {
 	at := day.Add(time.Duration(hour) * time.Hour)
-	doc := l1.Document{
-		ID: l1.DocID(src, artifact), Kind: kind, ArtifactClass: config.ArtifactIssue, Source: l1.Source{System: src, NativeID: artifact},
+	return l1.Document{
+		ID: l1.DocID(src, artifact), Kind: kind, ArtifactClass: class, Source: l1.Source{System: src, NativeID: artifact},
 		L0Refs: []string{connector.EventID(src, artifact)}, Time: l1.Times{Created: at, Updated: at, LastActivity: at},
 		Scope: []string{scope}, ACL: acl, Text: artifact, RawText: artifact,
-		Body: l1.Body{Summary: artifact, OutcomeKind: l1.OutcomeNone, OpenQuestions: questions},
+		Body: l1.Body{Summary: artifact, OutcomeKind: l1.OutcomeNone},
 	}
+}
+
+func storeDoc(t *testing.T, pool *pgxpool.Pool, doc l1.Document) string {
+	t.Helper()
 	if _, err := l1.New(pool).Put(t.Context(), doc); err != nil {
 		t.Fatalf("Put(%s) = %v", doc.ID, err)
 	}
 	return doc.ID
+}
+
+func putDoc(t *testing.T, pool *pgxpool.Pool, src, artifact string, kind l1.Kind, hour int, scope string, acl connector.ACL, questions ...string) string {
+	t.Helper()
+	doc := docAt(src, artifact, kind, config.ArtifactIssue, hour, scope, acl)
+	doc.Body.OpenQuestions = questions
+	return storeDoc(t, pool, doc)
 }
 
 func ids(docs []l1.Stored) []string {
@@ -106,8 +113,6 @@ func TestRecentDedupesByKindAndFiltersBeforeItCounts(t *testing.T) {
 		t.Errorf("last_activity = %s, want the newest commit's", got.LastActivity)
 	}
 
-	// Six documents sam may not read, all newer than anything sam may: none of
-	// them takes a place, and none of them is sam's last activity.
 	hiddenScope := "tracker:" + src + ":acme/api#2"
 	visible := putDoc(t, pool, src, "acme/api#2", l1.KindIssue, 1, hiddenScope, public)
 	for i := range 6 {
@@ -133,7 +138,6 @@ func TestOpenQuestionsReadOnlyDocumentsThatLeaveSomethingOpen(t *testing.T) {
 	pool := newPool(t)
 	src := newSource()
 	scope := "tracker:" + src + ":acme/api#1"
-	// The same question twice in one document is one piece of evidence.
 	first := putDoc(t, pool, src, "q1", l1.KindIssue, 1, scope, public, "who runs it?", "when?", " who runs it? ")
 	second := putDoc(t, pool, src, "q2", l1.KindIssue, 2, scope, public, "who runs it?")
 	putDoc(t, pool, src, "q0", l1.KindIssue, 0, scope, public, "an older question")
@@ -148,8 +152,6 @@ func TestOpenQuestionsReadOnlyDocumentsThatLeaveSomethingOpen(t *testing.T) {
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("open questions = %v, want %v", got, want)
 	}
-	// A listing with no reader does not filter on open questions, and says so
-	// rather than returning documents that have none.
 	if _, err := l1.New(pool).List(t.Context(), l1.ListOptions{Scope: scope, OpenQuestions: true}); !errors.Is(err, l1.ErrInvalidDocument) {
 		t.Errorf("List(OpenQuestions) = %v, want ErrInvalidDocument", err)
 	}
@@ -161,7 +163,6 @@ func TestCurrentStancesAreTheHeadsTheReaderMayRead(t *testing.T) {
 	graph := l2.New(pool)
 	src := newSource()
 	child, parent := "code:"+src+":child", "code:"+src+":parent"
-	// A cycle: the walk up part_of must end anyway.
 	for _, e := range []l2.Entity{
 		{ID: child, Type: l2.TypeModule, PartOf: []string{parent}, Origin: l2.OriginConfig},
 		{ID: parent, Type: l2.TypeProject, PartOf: []string{child}, Origin: l2.OriginConfig},
@@ -170,8 +171,6 @@ func TestCurrentStancesAreTheHeadsTheReaderMayRead(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Who may read a topic or a stance is its documents' access lists, so
-	// every document is written with the list the case needs.
 	opener := putDoc(t, pool, src, "x", l1.KindIssue, 0, child, public)
 	topic := func(name string, about string) l2.Topic {
 		t.Helper()
@@ -199,10 +198,7 @@ func TestCurrentStancesAreTheHeadsTheReaderMayRead(t *testing.T) {
 	forked := topic("forked", child)
 	stance(forked, doc("a", public), "first", 1)
 	stance(forked, doc("b", public), "newest", 5)
-	stance(forked, doc("c", public), "read late", 3) // forks behind the head
-	// A document read again, stated earlier than it was the first time (a
-	// deletion moved its last activity back): the newer stance it retired is
-	// not current.
+	stance(forked, doc("c", public), "read late", 3)
 	restated := topic("restated", child)
 	k := doc("k", public)
 	stance(restated, k, "said at first", 8)
@@ -213,14 +209,9 @@ func TestCurrentStancesAreTheHeadsTheReaderMayRead(t *testing.T) {
 	secretNow := topic("a private present", child)
 	stance(secretNow, doc("f", public), "public once", 1)
 	stance(secretNow, doc("g", private), "private now", 3)
-	// Newer than every stance of the child's own, so only the sort puts them
-	// last; the related entity's topic is inherited though no ancestor walk
-	// reached it.
 	sibling := "code:" + src + ":sibling"
 	stance(topic("inherited", parent), doc("h", public), "from the parent", 9)
 	stance(topic("via a related entity", sibling), doc("j", public), "from the sibling", 8)
-	// A topic sam may not read with a stance sam may: the store allows it, and
-	// the topic's name is what must not reach sam.
 	privateOpener := doc("y", private)
 	privateTopic := l2.Topic{ID: l2.TopicID(src, privateOpener, 0, "a private topic"), Scope: src, Name: "a private topic",
 		About: []string{child}, ACL: private, OpenedBy: privateOpener}
@@ -272,9 +263,6 @@ func TestCurrentStancesAreTheHeadsTheReaderMayRead(t *testing.T) {
 	}
 }
 
-// A topic and its stance are read on what their documents allow now. The
-// access lists written on them say everyone may read both, and none of them is
-// what decides.
 func TestStancesFollowEveryPieceOfTheirEvidenceNow(t *testing.T) {
 	pool := newPool(t)
 	ctx := t.Context()
@@ -308,28 +296,20 @@ func TestStancesFollowEveryPieceOfTheirEvidenceNow(t *testing.T) {
 		return tp
 	}
 
-	// Two pieces of evidence, one of them only kyle's.
 	both := doc("both", public)
 	stance(topic("partial evidence", both), "rests on two", 1, both, doc("kyles half", private))
-	// A topic whose opening document goes private after it was opened.
 	narrowed := doc("narrowed", public)
 	stance(topic("opener narrowed", narrowed), "on an open stance", 1, doc("open evidence", public))
-	// A stance whose evidence goes private after it was read, over a stance
-	// that stays public: sam is not offered the older one in its place.
 	head, prior := doc("head", public), doc("prior", public)
 	evidenceNarrowed := topic("evidence narrowed", prior)
 	stance(evidenceNarrowed, "the older position", 1, prior)
 	stance(evidenceNarrowed, "the newer position", 2, head)
-	// A stance whose evidence is retracted, and one whose evidence never was in L1.
 	retracted := doc("retracted", public)
 	stance(topic("evidence retracted", retracted), "retracted evidence", 1, retracted)
 	missing := doc("missing opener", public)
 	stance(topic("evidence missing", missing), "rests on nothing", 1, "l1:"+src+":never")
-	// A topic whose opening document is retracted.
 	gone := doc("gone", public)
 	stance(topic("opener retracted", gone), "on a gone topic", 1, doc("still here", public))
-	// The one that stays readable, superseding a stance whose evidence goes
-	// private: it stays, and no longer names what it superseded.
 	stays := doc("stays", public)
 	kept := topic("kept", stays)
 	stance(kept, "what went private", 1, doc("went private", public))
@@ -372,7 +352,6 @@ func TestStancesFollowEveryPieceOfTheirEvidenceNow(t *testing.T) {
 		t.Errorf("kyle's stances = %v with %d withheld, want %v with 2", kyles, withheld, wantKyle)
 	}
 
-	// The same through the bundle: nothing of what sam may not read is in it.
 	b, report, err := bundle.New(pool).Assemble(ctx, sam, entity)
 	if err != nil {
 		t.Fatal(err)
@@ -401,8 +380,6 @@ func TestAStanceAReaderMayNotReadDoesNotContestForThem(t *testing.T) {
 	if err := graph.PutEntity(ctx, l2.Entity{ID: entity, Type: l2.TypeModule, Origin: l2.OriginConfig}); err != nil {
 		t.Fatal(err)
 	}
-	// Two issues, equal in rank: the newer changes the older's position, so
-	// the topic is contested for whoever reads both. The older is only kyle's.
 	older := putDoc(t, pool, src, "older", l1.KindIssue, 0, entity, private)
 	newer := putDoc(t, pool, src, "newer", l1.KindIssue, 0, entity, public)
 	tp := l2.Topic{ID: l2.TopicID(src, newer, 0, "disputed"), Scope: src, Name: "disputed", About: []string{entity}, ACL: public, OpenedBy: newer}
@@ -476,8 +453,6 @@ func TestTheSubjectIsTheDocumentThatSaysItIsTheEntity(t *testing.T) {
 	}
 }
 
-// A scope the reader was not granted assembles to a bundle with nothing in it,
-// even where the graph holds stances about it.
 func TestABundleForAScopeNotGrantedIsEmpty(t *testing.T) {
 	pool := newPool(t)
 	src := newSource()
@@ -516,22 +491,12 @@ func TestABundleForAScopeNotGrantedIsEmpty(t *testing.T) {
 	}
 }
 
-// anchorDoc is a document about scope of an artifact class, pointing at refs,
-// with a permalink a `url` reference can name.
 func anchorDoc(t *testing.T, pool *pgxpool.Pool, src, artifact string, kind l1.Kind, class config.ArtifactClass, hour int, scope string, acl connector.ACL, refs ...l1.Reference) string {
 	t.Helper()
-	at := day.Add(time.Duration(hour) * time.Hour)
-	doc := l1.Document{
-		ID: l1.DocID(src, artifact), Kind: kind, ArtifactClass: class,
-		Source: l1.Source{System: src, NativeID: artifact, URL: "https://wiki.example/" + src + "/" + artifact},
-		L0Refs: []string{connector.EventID(src, artifact)}, Time: l1.Times{Created: at, Updated: at, LastActivity: at},
-		Scope: []string{scope}, References: refs, ACL: acl, Text: artifact, RawText: artifact,
-		Body: l1.Body{Summary: artifact, OutcomeKind: l1.OutcomeNone},
-	}
-	if _, err := l1.New(pool).Put(t.Context(), doc); err != nil {
-		t.Fatalf("Put(%s) = %v", doc.ID, err)
-	}
-	return doc.ID
+	doc := docAt(src, artifact, kind, class, hour, scope, acl)
+	doc.Source.URL = "https://wiki.example/" + src + "/" + artifact
+	doc.References = refs
+	return storeDoc(t, pool, doc)
 }
 
 func pin(t *testing.T, pool *pgxpool.Pool, scope, doc, by string, hour int) {
@@ -541,7 +506,6 @@ func pin(t *testing.T, pool *pgxpool.Pool, scope, doc, by string, hour int) {
 	}
 }
 
-// anchored is the anchors as `id` or `id@pinner`.
 func anchored(anchors []l3.Anchor) []string {
 	out := make([]string, len(anchors))
 	for i, a := range anchors {
@@ -562,17 +526,13 @@ func TestAnchorsArePinnedThenInferredThenDefaulted(t *testing.T) {
 	views := l3.New(pool)
 
 	tests := []struct {
-		name string
-		// build writes a scope's graph and returns the anchors each reader
-		// should get, as [anchored] spells them.
+		name  string
 		build func(t *testing.T, src, scope string) (kyles, sams []string)
 	}{
 		{"pinned first pinned first, then the most referenced, then specs newest first, capped at four",
 			func(t *testing.T, src, scope string) ([]string, []string) {
 				design := anchorDoc(t, pool, src, "acme/api#10", l1.KindIssue, config.ArtifactIssue, 1, scope, public)
 				anchorDoc(t, pool, src, "acme/api#11", l1.KindIssue, config.ArtifactIssue, 2, scope, public)
-				// #10 is pointed at by three documents, however they spell it;
-				// #11 by two.
 				anchorDoc(t, pool, src, "c1", l1.KindCommit, config.ArtifactCommit, 3, scope, public, item("acme/api#10"))
 				anchorDoc(t, pool, src, "c2", l1.KindCommit, config.ArtifactCommit, 4, scope, public, item("acme/api#11"), tracker("acme/api#10"))
 				anchorDoc(t, pool, src, "c3", l1.KindCommit, config.ArtifactCommit, 5, scope, public, item("acme/api#11"), l1.Reference{Type: l1.RefPR, ID: "acme/api#10"})
@@ -581,7 +541,6 @@ func TestAnchorsArePinnedThenInferredThenDefaulted(t *testing.T) {
 				spec3 := anchorDoc(t, pool, src, "spec3.md", l1.KindWikiSection, config.ArtifactSpec, 8, scope, public)
 				a := anchorDoc(t, pool, src, "acme/api#20", l1.KindIssue, config.ArtifactIssue, 9, scope, public)
 				b := anchorDoc(t, pool, src, "acme/api#21", l1.KindIssue, config.ArtifactIssue, 10, scope, public)
-				// Pinned second, but earlier: pins are ordered by when.
 				pin(t, pool, scope, a, "kyle", 2)
 				pin(t, pool, scope, b, "sam", 1)
 				want := []string{b + "@sam", a + "@kyle", design, spec3}
@@ -595,7 +554,6 @@ func TestAnchorsArePinnedThenInferredThenDefaulted(t *testing.T) {
 				url := "https://wiki.example/" + src + "/spec1.md"
 				anchorDoc(t, pool, src, "chat1", l1.KindChatThread, config.ArtifactChatThread, 4, scope, public, link(url))
 				anchorDoc(t, pool, src, "chat2", l1.KindChatThread, config.ArtifactChatThread, 5, scope, public, link(url))
-				// Pinned, most referenced and a spec: pinned, once.
 				pin(t, pool, scope, spec1, "kyle", 1)
 				want := []string{spec1 + "@kyle", spec3, spec2}
 				return want, want
@@ -622,9 +580,6 @@ func TestAnchorsArePinnedThenInferredThenDefaulted(t *testing.T) {
 				secret := anchorDoc(t, pool, src, "acme/api#1", l1.KindIssue, config.ArtifactIssue, 1, scope, private)
 				open := anchorDoc(t, pool, src, "acme/api#2", l1.KindIssue, config.ArtifactIssue, 2, scope, public)
 				anchorDoc(t, pool, src, "acme/api#3", l1.KindIssue, config.ArtifactIssue, 3, scope, public)
-				// Three public documents point at the private #1, two private
-				// ones at #3, and one public one at #2: sam may read neither #1
-				// nor what points at #3.
 				for i := range 3 {
 					anchorDoc(t, pool, src, fmt.Sprintf("q%d", i), l1.KindChatThread, config.ArtifactChatThread, 4+i, scope, public, item("acme/api#1"))
 				}
@@ -669,8 +624,6 @@ func TestAnchorsArePinnedThenInferredThenDefaulted(t *testing.T) {
 	}
 }
 
-// An anchor is not activity: it is not repeated in `recent`, and it does not
-// cost `recent` a place.
 func TestAnAnchorIsNotRepeatedInRecent(t *testing.T) {
 	pool := newPool(t)
 	src := newSource()
@@ -679,8 +632,6 @@ func TestAnAnchorIsNotRepeatedInRecent(t *testing.T) {
 	for i := range 6 {
 		issues = append(issues, anchorDoc(t, pool, src, fmt.Sprintf("acme/api#%d", i), l1.KindIssue, config.ArtifactIssue, i, scope, public))
 	}
-	// The newest document in the scope is the spec it defaults to, and the
-	// newest issue is pinned.
 	spec := anchorDoc(t, pool, src, "spec.md", l1.KindWikiSection, config.ArtifactSpec, 20, scope, public)
 	pin(t, pool, scope, issues[5], "kyle", 0)
 
@@ -709,8 +660,6 @@ func TestAnAnchorIsNotRepeatedInRecent(t *testing.T) {
 	}
 }
 
-// An entity nobody configured a parent for inherits through the parent its
-// path patterns imply, once seeding has stored it.
 func TestAStanceIsInheritedThroughADerivedParent(t *testing.T) {
 	pool := newPool(t)
 	ctx := t.Context()
@@ -725,8 +674,6 @@ func TestAStanceIsInheritedThroughADerivedParent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Seed() = %v", err)
 	}
-	// Written one by one: ReplaceSeeded would delete every other test's
-	// seeded entities in the shared database.
 	for _, e := range seeded {
 		if err := graph.PutEntity(ctx, e); err != nil {
 			t.Fatal(err)

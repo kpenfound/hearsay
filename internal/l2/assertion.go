@@ -77,8 +77,6 @@ func AssertionOf(ev connector.Event) (Assertion, error) {
 func AssertedEvidence(eventID string) Evidence {
 	source, _, err := connector.ParseEventID(eventID)
 	if err != nil {
-		// Stance.Validate refused this before it was stored. No source is a
-		// source no policy ratifies from.
 		source = ""
 	}
 	return Evidence{Class: config.ArtifactAgent, Source: source}

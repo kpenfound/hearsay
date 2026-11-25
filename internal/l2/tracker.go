@@ -76,9 +76,7 @@ func Configured(repo config.Repo) Parents {
 	return out
 }
 
-// hierarchyLock is the advisory lock [Store.Place] holds for its transaction,
-// so that two items placed at once are merged one after the other.
-const hierarchyLock int64 = 0x68656172_73617931 // "hearsay1"
+const hierarchyLock int64 = 0x68656172_73617931
 
 // Place records where a tracker or work source puts an item now, replacing
 // its former parents, and merges all four hierarchy sources under

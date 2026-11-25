@@ -17,7 +17,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/queue"
 )
 
-// namedTopic opens a topic called name in scope.
 func namedTopic(t *testing.T, store *l2.Store, scope, name string) l2.Topic {
 	t.Helper()
 	doc := "l1:s:" + scope + ":" + name
@@ -38,8 +37,6 @@ func addStance(t *testing.T, store *l2.Store, topic l2.Topic, doc, position stri
 	return stored
 }
 
-// rows is every topic and stance row of a scope, as the tables hold them:
-// reads follow the ledger, so this reads the tables.
 func rows(t *testing.T, pool *pgxpool.Pool, scope string) ([]l2.Topic, map[string][]l2.Stance) {
 	t.Helper()
 	var topics []l2.Topic
@@ -80,8 +77,6 @@ FROM l2_stances s JOIN l2_topics t ON t.id = s.topic_id WHERE t.scope = $1 ORDER
 
 func operate(t *testing.T, pool *pgxpool.Pool, repo config.Repo, req l2.OperationRequest) l2.Operation {
 	t.Helper()
-	// Bounded, so a scope a bug left held fails here rather than at the
-	// test binary's timeout.
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	op, err := l2.Operate(ctx, pool, repo, req)
@@ -129,8 +124,6 @@ func TestMergeSplitAndUndoAreRecordedAndTheRowsStay(t *testing.T) {
 		t.Fatalf("the split = %+v, want the new name and the stance it moved", split)
 	}
 
-	// Undoing the merge while the split that took part of it back stands is
-	// ambiguous: refused, naming the split, and nothing written.
 	_, err := l2.Operate(t.Context(), pool, repo, l2.OperationRequest{Kind: l2.OperationUndo, Principal: "kyle", Undoes: merged.ID})
 	var conflict *l2.ConflictError
 	if !errors.As(err, &conflict) || !slices.Equal(conflict.Conflicting, []int64{split.ID}) {
@@ -150,7 +143,6 @@ func TestMergeSplitAndUndoAreRecordedAndTheRowsStay(t *testing.T) {
 		t.Fatalf("Operate(undo the merge again) = %v, want a conflict naming %d", err, undoMerge.ID)
 	}
 
-	// Refused on their face, or by who asked: nothing written.
 	refused := []struct {
 		req  l2.OperationRequest
 		want error
@@ -175,7 +167,6 @@ func TestMergeSplitAndUndoAreRecordedAndTheRowsStay(t *testing.T) {
 		t.Fatalf("the other scope's ledger = %v, want nothing", got)
 	}
 
-	// The rows every operation was about are as they were.
 	afterTopics, afterStances := rows(t, pool, scope)
 	if !topicsEqual(beforeTopics, afterTopics) || !stancesEqual(beforeStances, afterStances) {
 		t.Errorf("the rows changed:\nbefore %+v %+v\nafter  %+v %+v", beforeTopics, beforeStances, afterTopics, afterStances)
@@ -184,7 +175,6 @@ func TestMergeSplitAndUndoAreRecordedAndTheRowsStay(t *testing.T) {
 		t.Errorf("Stance(a1) = %+v, %v, want it on its own topic", got, err)
 	}
 
-	// History says who, when, what and whether it was undone.
 	ops, err := store.Operations(t.Context(), l2.OperationFilter{Scope: scope, Kind: l2.OperationMerge})
 	if err != nil || len(ops) != 1 || ops[0].ID != merged.ID || ops[0].UndoneBy != undoMerge.ID || ops[0].Principal != "kyle" ||
 		!ops[0].At.Equal(merged.At) || !slices.Equal(ops[0].Stances, merged.Stances) {
@@ -213,8 +203,6 @@ func TestMergeSplitAndUndoAreRecordedAndTheRowsStay(t *testing.T) {
 	}
 }
 
-// A split's new topic has no row, and is still a topic of its scope that a
-// later operation can name.
 func TestASplitsTopicCanBeOperatedOn(t *testing.T) {
 	pool := newPool(t)
 	store := l2.New(pool)
@@ -233,7 +221,6 @@ func TestASplitsTopicCanBeOperatedOn(t *testing.T) {
 	if err := pool.QueryRow(t.Context(), `SELECT EXISTS (SELECT 1 FROM l2_topics WHERE id = $1)`, split.Topics[1]).Scan(&row); err != nil || row {
 		t.Errorf("the split's topic has a row = %v, %v, want none", row, err)
 	}
-	// Merged away, it reads as the topic it went into.
 	if got, err := store.Topic(t.Context(), split.Topics[1]); err != nil || got.ID != c.ID {
 		t.Errorf("Topic(the split's topic) = %+v, %v, want %s", got, err, c.ID)
 	}
@@ -261,8 +248,6 @@ func stancesEqual(a, b map[string][]l2.Stance) bool {
 	return true
 }
 
-// A failure after the ledger row is written rolls the whole operation back,
-// and the scope is let go.
 func TestAFailedOperationWritesNothingAndLetsTheScopeGo(t *testing.T) {
 	pool := scratchPool(t)
 	store := l2.New(pool)
@@ -301,9 +286,6 @@ CREATE TRIGGER refuse_operation AFTER INSERT ON l2_topic_operations FOR EACH ROW
 	}
 }
 
-// An operation takes its turn among the assert jobs of its scope: it waits for
-// the one running, decides on what that job committed, and holds the scope
-// against the next until it has recorded. Another scope does not wait.
 func TestOperationsSerializeWithAssertJobsPerScope(t *testing.T) {
 	pool := scratchPool(t)
 	store := l2.New(pool)
@@ -335,34 +317,30 @@ func TestOperationsSerializeWithAssertJobsPerScope(t *testing.T) {
 		err error
 	}
 	done := make(chan result, 1)
+	waiting, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
 	go func() {
-		op, err := l2.Operate(ctx, pool, repo, l2.OperationRequest{Kind: l2.OperationMerge, Principal: "kyle", Into: a.ID, From: b.ID})
+		op, err := l2.Operate(waiting, pool, repo, l2.OperationRequest{Kind: l2.OperationMerge, Principal: "kyle", Into: a.ID, From: b.ID})
 		done <- result{op, err}
 	}()
+	awaitRunning(t, client, 2)
 	select {
 	case r := <-done:
 		t.Fatalf("Operate() = %+v, %v while an assert job runs on its scope, want it to wait", r.op, r.err)
-	case <-time.After(4 * queue.HoldPoll):
+	default:
 	}
 
-	// Another scope is not held up.
-	quick, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
+	quick, stop := context.WithTimeout(ctx, 2*time.Second)
+	defer stop()
 	if _, err := l2.Operate(quick, pool, repo, l2.OperationRequest{Kind: l2.OperationMerge, Principal: "kyle", Into: c.ID, From: d.ID}); err != nil {
 		t.Fatalf("Operate(another scope) = %v, want it to run at once", err)
 	}
 
-	// What the running job writes before it finishes is what the merge covers.
 	b2 := addStance(t, store, b, "l1:s:b2", "the engine keeps the lock", 2)
 	if ok, err := client.Complete(ctx, running[0]); err != nil || !ok {
 		t.Fatalf("Complete() = %v, %v", ok, err)
 	}
-	var r result
-	select {
-	case r = <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("Operate() did not run once the scope was free")
-	}
+	r := <-done
 	if r.err != nil {
 		t.Fatalf("Operate() = %v", r.err)
 	}
@@ -370,7 +348,6 @@ func TestOperationsSerializeWithAssertJobsPerScope(t *testing.T) {
 		t.Errorf("the merge covers %v, want %v: the stance the job wrote before it finished", r.op.Stances, want)
 	}
 
-	// And the next job on the scope runs after the operation, not during it.
 	next, err := client.Claim(ctx)
 	if err != nil || len(next) != 1 || next[0].TargetID != "l1:second" {
 		t.Fatalf("Claim() after the operation = %v, %v, want the second job", next, err)

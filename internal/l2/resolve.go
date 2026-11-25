@@ -54,10 +54,6 @@ func Resolve(entities []Entity, text string) []Match {
 	}
 
 	for alias, owners := range aliasOwners(entities) {
-		// An alias shaped like a path — `acme/api#12` — is a whole word or
-		// nothing, so `acme/api` does not match inside it; every other alias
-		// is read from the prose with those words blanked out, so `engine` does
-		// not match inside `engine/server/write.go` or a link.
 		if isPathLike(alias) && !foldedPaths[alias] || !isPathLike(alias) && !containsWord(folded, alias) {
 			continue
 		}
@@ -139,8 +135,6 @@ func confirmedCollision(owners map[string]bool, confirmed map[string][]string, n
 	return false
 }
 
-// aliasOwners maps every folded name and alias to the entities that answer to
-// it, with the ambiguous ones already resolved or dropped.
 func aliasOwners(entities []Entity) map[string][]int {
 	all := map[string][]int{}
 	for i, e := range entities {
@@ -171,7 +165,6 @@ func aliasOwners(entities []Entity) map[string][]int {
 	return out
 }
 
-// spelling is the entity's own spelling of a folded alias.
 func spelling(e Entity, folded string) string {
 	for _, name := range append([]string{e.Name}, e.Aliases...) {
 		if fold(name) == folded {
@@ -183,14 +176,8 @@ func spelling(e Entity, folded string) string {
 
 func fold(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 
-// wordRe is one whitespace-separated word.
 var wordRe = regexp.MustCompile(`\S+`)
 
-// splitWords separates a text into its prose and its path-like words: the text
-// with every word that holds a `/` or a `.` blanked out, byte for byte so that
-// word edges either side stay where they were, and those words, trimmed of the
-// punctuation around them. Links are among the words; the caller decides what
-// they are.
 func splitWords(text string) (string, []string) {
 	b := []byte(text)
 	var words []string
@@ -208,12 +195,8 @@ func splitWords(text string) (string, []string) {
 	return string(b), words
 }
 
-// isPathLike reports whether a word is shaped like a path, a link or a
-// qualified reference rather than prose.
 func isPathLike(word string) bool { return strings.ContainsAny(word, "/.") }
 
-// containsWord reports whether needle appears in haystack at word edges. Both
-// are already folded.
 func containsWord(haystack, needle string) bool {
 	for from := 0; from+len(needle) <= len(haystack); {
 		i := strings.Index(haystack[from:], needle)
@@ -230,8 +213,6 @@ func containsWord(haystack, needle string) bool {
 	return false
 }
 
-// isWordByte reports whether a byte continues a word. Bytes above ASCII are word
-// bytes, so an alias is not matched inside a word of another script.
 func isWordByte(c byte) bool {
 	return c >= 0x80 || c == '_' || unicode.IsLetter(rune(c)) || unicode.IsDigit(rune(c))
 }

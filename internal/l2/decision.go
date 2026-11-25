@@ -12,18 +12,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/queue"
 )
 
-// The decision log is the decisions of a `work` source's project, each one a
-// topic of its own with one chain of stances: a revision of the decision is a
-// new stance that replaces the last one, and a deletion withdraws it. Nothing
-// here calls a model — the topic, the position, the evidence and its class and
-// source all come from the record's fields — and a decision is never matched to
-// another topic, so no decision is counted twice.
-//
-// Whether a decision is superseded is not stored. It is read, from the
-// decisions L1 holds for the project ([Store.DecisionMarks]), so it follows
-// the latest revision of every held decision and cannot depend on the order the
-// two sources' records were placed in.
-
 // DecisionKey is the serial key every decision of one project is placed under,
 // whichever source of the work/owner pair posted it, and the scope its topics
 // belong to. It is [ScopeKey] of the project's container on the work source,
@@ -155,7 +143,7 @@ ORDER BY d.last_activity_at, d.id`)
 	return out, rows.Err()
 }
 
-// Decision statuses.
+// The statuses a decision mark reports.
 const (
 	DecisionCurrent    = "current"
 	DecisionSuperseded = "superseded"

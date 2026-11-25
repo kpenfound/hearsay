@@ -76,9 +76,6 @@ func (w *traversal) candidates(ctx context.Context, from NodeRef, edge string, r
 	case "scope":
 		ids = value.doc.Scope
 	case "evidence":
-		// Withdrawals may have deleted evidence; missing documents stay absent.
-		// Hydrate through the node read before sorting or cutting the raw budget,
-		// just as documents and anchors carry their activity into the frontier.
 		for _, id := range value.stance.Evidence {
 			doc, e := w.read(ctx, NodeRef{Type: "document", ID: id})
 			if e != nil {
@@ -131,8 +128,6 @@ func (w *traversal) candidates(ctx context.Context, from NodeRef, edge string, r
 }
 
 func (w *traversal) order(ctx context.Context, candidates []candidate) error {
-	// Topic order is reader-specific. Assess in one batch and use only readable
-	// stances, so a hidden stance never changes where a visible topic sorts.
 	if len(candidates) > 0 && candidates[0].ref.Type == "topic" {
 		ids := make([]string, len(candidates))
 		for i, c := range candidates {

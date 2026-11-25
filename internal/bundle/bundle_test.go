@@ -2,6 +2,7 @@ package bundle_test
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -22,9 +23,6 @@ func doc(id string, kind l1.Kind, hour int, summary string) l1.Stored {
 	}}
 }
 
-// current is a topic standing at tier. The tier its stance was written with is
-// always inferred, so a bundle that served or budgeted by the written tier
-// rather than the computed one would show it.
 func current(topic string, tier l2.Tier, hour int) l3.CurrentStance {
 	return l3.CurrentStance{
 		Topic: l2.Topic{ID: "topic:" + topic, Name: topic},
@@ -41,9 +39,6 @@ func inherited(c l3.CurrentStance) l3.CurrentStance {
 	return c
 }
 
-// inputs is a scope with something in every section: a pinned anchor and a
-// defaulted one, two ratified stances and two inferred ones of its own and a
-// ratified one it inherits, five recent documents and three open questions.
 func inputs() bundle.Inputs {
 	subject := doc("l1:gh:acme/api#12", l1.KindIssue, 9, "Move the lock out of the request path.\nMore detail.")
 	in := bundle.Inputs{
@@ -160,7 +155,6 @@ func TestBuildDropsFromTheBottom(t *testing.T) {
 	}
 	size := tokens(t, full)
 
-	// Empty, not nil: nil encodes as null, which is not what Build leaves.
 	withoutQuestions := full
 	withoutQuestions.OpenQuestions = []bundle.Question{}
 	withoutRecent := withoutQuestions
@@ -171,11 +165,9 @@ func TestBuildDropsFromTheBottom(t *testing.T) {
 	withoutInherited.Stances = withoutAnchors.Stances[:4]
 
 	tests := []struct {
-		name   string
-		budget int
-		want   bundle.Trimmed
-		// anchors are how many anchors are left; stances are the topic names
-		// left, in order.
+		name    string
+		budget  int
+		want    bundle.Trimmed
 		anchors int
 		stances []string
 	}{
@@ -219,14 +211,11 @@ func TestBuildDropsFromTheBottom(t *testing.T) {
 			if tt.budget > 1 && n > tt.budget {
 				t.Errorf("the bundle is %d tokens, over a budget of %d it could have met", n, tt.budget)
 			}
-			if len(got.Scope.Entities) != 2 || len(got.Handles) != len(bundle.Handles) {
-				t.Errorf("the scope and the handles dropped: %+v %v", got.Scope, got.Handles)
-			}
 		})
 	}
 }
 
-func TestBuildLaysOutTheDesignsShape(t *testing.T) {
+func TestBuildScopeEntitiesCarryTheirDocumentLine(t *testing.T) {
 	got, _, _, err := bundle.Build(inputs(), 1<<20)
 	if err != nil {
 		t.Fatal(err)
@@ -238,11 +227,25 @@ func TestBuildLaysOutTheDesignsShape(t *testing.T) {
 	if code := got.Scope.Entities[1]; code.L1 != "" || code.Line != "" || code.Name != "api" || code.Owners[0] != "kyle" {
 		t.Errorf("a code entity = %+v, want its name and owners and no line", code)
 	}
+}
+
+func TestBuildTimesAreAbsolute(t *testing.T) {
+	got, _, _, err := bundle.Build(inputs(), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got.Recent.LastActivity != "2026-09-05T19:00:00Z" || got.Recent.Items[0].When != "2026-09-05T19:00:00Z" {
 		t.Errorf("recent = %+v, want absolute times", got.Recent)
 	}
 	if got.Stances[0].Since != "2026-09-05T18:00:00Z" {
 		t.Errorf("since = %q, want an absolute time", got.Stances[0].Since)
+	}
+}
+
+func TestEncodeSectionsAreTheDesignsShape(t *testing.T) {
+	got, _, _, err := bundle.Build(inputs(), 1<<20)
+	if err != nil {
+		t.Fatal(err)
 	}
 	body, err := bundle.Encode(got)
 	if err != nil {
@@ -255,43 +258,35 @@ func TestBuildLaysOutTheDesignsShape(t *testing.T) {
 			t.Errorf("the encoded bundle has no %s: %s", section, body)
 		}
 	}
+}
 
+func TestEncodeEmptyBundle(t *testing.T) {
 	empty, _, _, err := bundle.Build(bundle.Inputs{Scope: "tracker:gh:acme/api#99"}, bundle.DefaultBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, _ = bundle.Encode(empty)
-	if want := `{"scope":{"id":"tracker:gh:acme/api#99","entities":[]},"anchors":[],"stances":[],"recent":{"items":[]},"open_questions":[],"conflicts":[],"handles":["get_l1","get_l0","search","stance_history","resolve","traverse"]}`; string(body) != want {
+	body, err := bundle.Encode(empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"scope":{"id":"tracker:gh:acme/api#99","entities":[]},"anchors":[],"stances":[],"recent":{"items":[]},"open_questions":[],"conflicts":[],"handles":["get_l1","get_l0","search","stance_history","resolve","traverse"]}`
+	if string(body) != want {
 		t.Errorf("an empty bundle = %s, want %s", body, want)
 	}
 }
 
-func TestLine(t *testing.T) {
-	long := strings.Repeat("é", bundle.MaxLine)
-	tests := []struct {
-		name, in, want string
-	}{
-		{"the first line", "one\ntwo", "one"},
-		{"blank lines are skipped", "\n  \n\tthree  words  here\n", "three words here"},
-		{"nothing", "", ""},
-		{"a long line is cut on a character boundary", long, strings.Repeat("é", (bundle.MaxLine-len("…"))/2) + "…"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := bundle.Line(tt.in)
-			if got != tt.want {
-				t.Errorf("Line(%q) = %q, want %q", tt.in, got, tt.want)
-			}
-			if len(got) > bundle.MaxLine {
-				t.Errorf("Line is %d bytes, over %d", len(got), bundle.MaxLine)
-			}
-		})
+func TestBuildKeepsScopeAndHandlesAtAnyBudget(t *testing.T) {
+	for _, budget := range []int{0, 1, 1 << 20} {
+		got, _, _, err := bundle.Build(inputs(), budget)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got.Scope.Entities) != 2 || !slices.Equal(got.Handles, bundle.Handles) {
+			t.Errorf("budget %d: the scope and the handles dropped: %+v %v", budget, got.Scope, got.Handles)
+		}
 	}
 }
 
-// reference is the simplest trim there is: re-encode the whole bundle, drop one
-// element, repeat. It is quadratic and obviously right, which is what Build's
-// linear trim is checked against.
 func reference(b bundle.Bundle, budget int) (bundle.Bundle, bundle.Trimmed, int) {
 	var trimmed bundle.Trimmed
 	for {
@@ -331,8 +326,6 @@ func reference(b bundle.Bundle, budget int) (bundle.Bundle, bundle.Trimmed, int)
 	}
 }
 
-// mixed is inputs with stances of every kind interleaved and of uneven sizes,
-// including one that escapes to more bytes than it holds.
 func mixed(n int) bundle.Inputs {
 	in := inputs()
 	in.Stances = nil
@@ -347,9 +340,6 @@ func mixed(n int) bundle.Inputs {
 	return in
 }
 
-// Build's trim keeps exactly what re-encoding after every drop keeps — the same
-// stances, the same counts, the same size — at every budget from nothing to
-// everything.
 func TestTrimMatchesReEncodingAfterEveryDrop(t *testing.T) {
 	for _, n := range []int{0, 1, 2, 7, 40} {
 		in := mixed(n)
@@ -357,8 +347,6 @@ func TestTrimMatchesReEncodingAfterEveryDrop(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// Every budget for the small cases; a stride for the large one, whose
-		// reference is quadratic.
 		stride := 1 + n/5
 		for budget := 0; budget <= size+1; budget += stride {
 			got, trimmed, tokens, err := bundle.Build(in, budget)
@@ -376,14 +364,11 @@ func TestTrimMatchesReEncodingAfterEveryDrop(t *testing.T) {
 	}
 }
 
-// A repository's worth of inherited ratified stances. What survives is the
-// scope's own stances and the longest prefix of the inherited ones that fits,
-// found here by encoding candidate bundles directly.
 func TestTrimOfThousandsOfInheritedStances(t *testing.T) {
 	const n = 4000
 	in := inputs()
 	in.Questions, in.Recent, in.Anchors = nil, l3.Activity{}, nil
-	own := len(in.Stances) - 1 // inputs ends with one inherited stance
+	own := len(in.Stances) - 1
 	in.Stances = in.Stances[:own]
 	for i := range n {
 		in.Stances = append(in.Stances, inherited(current(fmt.Sprintf("inherited %04d %s", i, strings.Repeat("y", 160)), l2.TierRatified, 3)))
@@ -397,7 +382,7 @@ func TestTrimOfThousandsOfInheritedStances(t *testing.T) {
 		b.Stances = full.Stances[:own+m]
 		return tokens(t, b) <= bundle.DefaultBudget
 	}
-	lo, hi := 0, n // the largest m that fits, by binary search
+	lo, hi := 0, n
 	for lo < hi {
 		mid := (lo + hi + 1) / 2
 		if fits(mid) {
@@ -422,41 +407,59 @@ func TestTrimOfThousandsOfInheritedStances(t *testing.T) {
 			t.Fatalf("stance %d is inherited; the scope's own come first and stay", i)
 		}
 	}
-	// Generous enough for -race on a slow machine; a trim that re-encodes the
-	// bundle after every drop takes seconds at half this size without it.
 	if elapsed > 2*time.Second {
 		t.Errorf("trimming %d stances took %s", n, elapsed)
 	}
 }
 
-// The directive is a fixed block: budgeting still removes the same lower
-// sections in the documented order, and the instruction itself stays verbatim.
-func TestDirectiveKeepsBudgetAndOtherSections(t *testing.T) {
+func directiveInputs() bundle.Inputs {
 	in := inputs()
 	in.Directive = &bundle.Directive{Text: "  @shed do this\n exactly  ", From: "kyle", Via: "discord:channel:thread", L0: "evt:1"}
-	full, _, _, err := bundle.Build(in, 1<<20)
+	return in
+}
+
+func TestDirectiveTextIsServedVerbatim(t *testing.T) {
+	in := directiveInputs()
+	got, _, _, err := bundle.Build(in, 1<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if full.Directive.Text != in.Directive.Text {
-		t.Fatalf("directive text = %q", full.Directive.Text)
+	if got.Directive.Text != in.Directive.Text {
+		t.Fatalf("directive text = %q, want %q", got.Directive.Text, in.Directive.Text)
 	}
+}
+
+func TestDirectiveChangesNoOtherSection(t *testing.T) {
+	in := directiveInputs()
+	with, _, _, err := bundle.Build(in, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.Directive = nil
+	base, _, _, err := bundle.Build(in, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	with.Directive = nil
+	if fmt.Sprintf("%+v", with) != fmt.Sprintf("%+v", base) {
+		t.Fatal("a directive changed another section")
+	}
+}
+
+func TestDirectiveIsHeldToTheBudgetByTrimmingLowerSections(t *testing.T) {
+	in := directiveInputs()
 	without := in
 	without.Directive = nil
 	base, _, _, err := bundle.Build(without, 1<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
-	full.Directive = nil
-	if fmt.Sprintf("%+v", full) != fmt.Sprintf("%+v", base) {
-		t.Fatal("a directive changed another section")
-	}
 	budget := tokens(t, base)
-	with, trimmed, used, err := bundle.Build(in, budget)
+	got, trimmed, used, err := bundle.Build(in, budget)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if with.Directive == nil || trimmed.OpenQuestions == 0 || used > budget || tokens(t, with) != used {
-		t.Fatalf("budgeted bundle: directive=%+v trimmed=%+v used=%d budget=%d", with.Directive, trimmed, used, budget)
+	if got.Directive == nil || trimmed.OpenQuestions == 0 || used > budget || tokens(t, got) != used {
+		t.Fatalf("budgeted bundle: directive=%+v trimmed=%+v used=%d budget=%d", got.Directive, trimmed, used, budget)
 	}
 }

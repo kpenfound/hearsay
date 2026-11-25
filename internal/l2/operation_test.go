@@ -17,7 +17,7 @@ func TestOperationRequestValidate(t *testing.T) {
 	tests := []struct {
 		name string
 		req  l2.OperationRequest
-		want string // "" is valid
+		want string
 	}{
 		{name: "merge", req: l2.OperationRequest{Kind: l2.OperationMerge, Principal: "kyle", Into: "a", From: "b"}},
 		{name: "split", req: l2.OperationRequest{Kind: l2.OperationSplit, Principal: "kyle", Topic: "a", Name: "the other question", Stances: []string{"s1"}}},
@@ -53,8 +53,6 @@ func TestOperationRequestValidate(t *testing.T) {
 	}
 }
 
-// scope is a ledger's starting point: topics a (stances a1, a2), b (b1, b2)
-// and c (c1).
 func scope(ops ...l2.Operation) l2.ScopeState {
 	return l2.ScopeState{
 		Scope:      "eng",
@@ -87,12 +85,11 @@ func TestDecide(t *testing.T) {
 	s2 := split(2, "a", "the other lock", "b1")
 	newTopic := s2.Topics[1]
 	tests := []struct {
-		name  string
-		state l2.ScopeState
-		req   l2.OperationRequest
-		want  l2.Operation
-		err   error
-		// conflicting is the ids a ConflictError must name.
+		name        string
+		state       l2.ScopeState
+		req         l2.OperationRequest
+		want        l2.Operation
+		err         error
 		conflicting []int64
 		says        string
 	}{
@@ -225,8 +222,6 @@ func TestDecide(t *testing.T) {
 	}
 }
 
-// withSplitRow is a state in which the split's topic has a row, with stance
-// n1 written on it after the split.
 func withSplitRow(s l2.ScopeState, of l2.Operation) l2.ScopeState {
 	s.Topics = append(slices.Clone(s.Topics), of.Topics[1])
 	s.Stances = maps.Clone(s.Stances)
@@ -234,9 +229,6 @@ func withSplitRow(s l2.ScopeState, of l2.Operation) l2.ScopeState {
 	return s
 }
 
-// A split's topic gets a row when a stance is first written on it after the
-// split (Store.Target). The row is a topic only while a split creating it is
-// in force; its stances are otherwise on the topic the split took from.
 func TestDecideOverASplitsRow(t *testing.T) {
 	s1 := split(1, "a", "the other lock", "a2")
 	row := s1.Topics[1]
@@ -303,8 +295,6 @@ func TestSplitTopicIDIgnoresTheOrderOfStances(t *testing.T) {
 	}
 }
 
-// loadRepo is a configuration with a scope `eng`, humans kyle and sam, an
-// agent, and whatever authority is given.
 func loadRepo(t *testing.T, authority string) config.Repo {
 	t.Helper()
 	dir := t.TempDir()
@@ -350,7 +340,6 @@ func TestCheckOperator(t *testing.T) {
 		{name: "a human named in ratified_by", repo: restricted, id: "kyle", allow: true},
 		{name: "a human not named in ratified_by", repo: restricted, id: "sam"},
 	}
-	// A gesture is held to the rule a topic operation is.
 	checks := map[string]func(config.Repo, string, string) error{"CheckOperator": l2.CheckOperator, "CheckGesturer": l2.CheckGesturer}
 	for _, tt := range tests {
 		for name, check := range checks {

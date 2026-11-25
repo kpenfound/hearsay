@@ -9,45 +9,21 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector"
 )
 
-// Reads follow the topic ledger. What the operations in force make
-// of a scope — which topics stand and which topic each stance is on — is the
-// ledger replayed over the rows ([ScopeState.arrange]), and every read serves
-// that: a topic merged away reads as the topic it went into, a split's topic
-// reads with exactly the stances it moved, and a stance carries the topic it
-// is on now. Nothing here writes a topic or a stance row, so a read after an
-// undo is the read before the operation.
-//
-// Only the scopes whose ledger names a topic being read are replayed, and
-// only over the rows their operations name: a topic no operation touches is
-// what its row says, at the cost of one indexed read of the ledger.
-
 // StanceRef names a stance and the topic it is on now.
 type StanceRef struct {
 	Stance string
 	Topic  string
 }
 
-// projection is what the ledgers of some scopes make of the topics their
-// operations touch. A topic or a stance not in it is what its row says.
 type projection struct {
-	// effective maps each topic an operation names — a row, or a split's
-	// topic — to the topic it is now.
 	effective map[string]string
-	// placed maps each stance on one of those rows to the topic it is on now.
-	placed map[string]string
-	// members is, for each topic an operation shaped, the rows whose stances
-	// it holds or that were merged into it, itself first where it is a row.
-	members map[string][]string
-	// rows are the topic rows the operations name.
-	rows map[string]Topic
-	// splits are the splits in force, by the topic each created.
-	splits map[string]Operation
-	// shaping is, for each topic now, the operations in force that shaped it,
-	// oldest first.
-	shaping map[string][]Operation
+	placed    map[string]string
+	members   map[string][]string
+	rows      map[string]Topic
+	splits    map[string]Operation
+	shaping   map[string][]Operation
 }
 
-// topicOf is the topic a topic id is now.
 func (p projection) topicOf(id string) string {
 	if e, ok := p.effective[id]; ok {
 		return e
@@ -55,8 +31,6 @@ func (p projection) topicOf(id string) string {
 	return id
 }
 
-// place is the topic a stance written on a row is on now. A stance written
-// after the ledger was read is on its row's topic as it is now.
 func (p projection) place(stance, row string) string {
 	if t, ok := p.placed[stance]; ok {
 		return t
@@ -64,7 +38,6 @@ func (p projection) place(stance, row string) string {
 	return p.topicOf(row)
 }
 
-// rowsOf is the rows whose stances a topic may hold.
 func (p projection) rowsOf(topic string) []string {
 	if m, ok := p.members[topic]; ok {
 		return m
@@ -72,8 +45,6 @@ func (p projection) rowsOf(topic string) []string {
 	return []string{topic}
 }
 
-// project reads the ledger of every scope that has an operation naming one of
-// these topics, and replays it.
 func (s *Store) project(ctx context.Context, topics []string) (projection, error) {
 	p := projection{
 		effective: map[string]string{}, placed: map[string]string{}, members: map[string][]string{},
@@ -227,8 +198,6 @@ func (s *Store) TopicsOver(ctx context.Context, rows []string) ([]Topic, error) 
 	return topics, nil
 }
 
-// over is the topics now that these rows are or hold stances of, in the order
-// the rows were given.
 func (p projection) over(rows []string) []string {
 	var out []string
 	add := func(t string) {
@@ -247,12 +216,6 @@ func (p projection) over(rows []string) []string {
 	return out
 }
 
-// compose builds these topics as they are now, in the order given, leaving
-// out one that is neither a row nor a split in force. A topic an operation
-// shaped is about, and joined by, everything its rows are, and carries the
-// operations that shaped it. A split's topic is named by its split, was
-// created when it was, and has no opening document: who may read it is
-// decided by its live stances ([Access.Topic]).
 func (s *Store) compose(ctx context.Context, p projection, ids []string) ([]Topic, error) {
 	var missing []string
 	for _, id := range ids {
@@ -306,9 +269,6 @@ func (s *Store) compose(ctx context.Context, p projection, ids []string) ([]Topi
 	return out, nil
 }
 
-// histories is every stance on each of these topics as they are now, keyed
-// by topic, each oldest stated first, with the topic each is on now and the
-// supersession edges that cross to another topic marked.
 func (s *Store) histories(ctx context.Context, p projection, topics []string) (map[string][]Stance, error) {
 	out := map[string][]Stance{}
 	if len(topics) == 0 {
@@ -334,7 +294,6 @@ ORDER BY s.stated_at, s.created_at, s.id`, sortedUnique(rows))
 	return out, nil
 }
 
-// stance is a stance row as the ledger places it.
 func (p projection) stance(row stanceRow) Stance {
 	st := row.Stance
 	st.TopicID = p.place(st.ID, row.TopicID)
@@ -351,7 +310,6 @@ func (p projection) stance(row stanceRow) Stance {
 	return st
 }
 
-// placed is these stance rows as the ledger places them.
 func (s *Store) placed(ctx context.Context, rows []stanceRow) ([]Stance, error) {
 	var topics []string
 	for _, row := range rows {
@@ -395,10 +353,6 @@ func (s *Store) Target(ctx context.Context, id string, acl connector.ACL, opened
 	return t, nil
 }
 
-// readableBy reports whether everyone who may read a document may read a
-// topic as it is now: its opening document while that exists, and otherwise
-// one of its live stances with every piece of its evidence. It is the test
-// topicReadableBy makes of a row, made of a topic an operation shaped.
 func (s *Store) readableBy(ctx context.Context, t Topic, history []Stance, readers connector.ACL) (bool, error) {
 	if t.OpenedBy != "" {
 		var exists bool
@@ -422,10 +376,6 @@ func (s *Store) readableBy(ctx context.Context, t Topic, history []Stance, reade
 	return false, nil
 }
 
-// matchable is the topics these rows are part of now that a document's
-// readers may read, in order, at most limit of them and none in exclude. A
-// row found by a query that tested the row is tested again as the topic it is
-// part of, where an operation shaped that topic.
 func (s *Store) matchable(ctx context.Context, rows []Topic, readers connector.ACL, limit int, exclude []string) ([]Topic, error) {
 	ids := make([]string, len(rows))
 	for i, row := range rows {

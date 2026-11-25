@@ -20,7 +20,6 @@ import (
 // GestureAction is what a person's gesture does (docs/design.md#human-feedback-loop).
 type GestureAction string
 
-// The gesture actions.
 const (
 	// GestureRatify confirms every live stance drawn from the documents: the
 	// one a topic stands at is served as ratified ([Stand]).
@@ -58,25 +57,23 @@ var ErrNotLive = errors.New("stance is not live")
 
 // ErrNotUndoable is an undo of a gesture that cannot be undone: one already
 // undone, an undo, or, where the request is limited to decisions
-// ([GestureRequest.DecisionsOnly]), a pin. It also wraps [ErrInvalid], which
-// the undo of an undone gesture or of an undo has always been, so a caller
-// that only knows ErrInvalid still refuses it; test for this kind first.
+// ([GestureRequest.DecisionsOnly]), a pin. It also wraps [ErrInvalid], so a
+// caller that only knows ErrInvalid still refuses it; test for this kind
+// first.
 var ErrNotUndoable = errors.New("gesture is not undoable")
 
 // ErrEventConflict is a request whose event already holds a different gesture:
-// an event is one gesture. It also wraps [ErrInvalid], which the reuse of an
-// event has always been; test for this kind first.
+// an event is one gesture. It also wraps [ErrInvalid]; test for this kind
+// first.
 var ErrEventConflict = errors.New("event already holds a different gesture")
 
-// compatError is a refusal of a kind that also is an older, broader one, which
-// callers written before the kind existed still test for.
-type compatError struct {
+type refusalError struct {
 	kind, broad error
 	msg         string
 }
 
-func (e compatError) Error() string   { return e.broad.Error() + ": " + e.msg }
-func (e compatError) Unwrap() []error { return []error{e.kind, e.broad} }
+func (e refusalError) Error() string   { return e.broad.Error() + ": " + e.msg }
+func (e refusalError) Unwrap() []error { return []error{e.kind, e.broad} }
 
 // GestureRequest is a person's gesture, as its source's caller read it: who
 // made it, from which L0 event, and what it points at. Parsing the source's
@@ -226,8 +223,6 @@ func RecordGesture(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, re
 	}
 	plan, err := store.planGesture(ctx, req)
 	if err != nil {
-		// An identical request that committed since the lookup above is a
-		// replay, not a refusal of what it did.
 		if g, found, rerr := store.recorded(ctx, req); rerr == nil && found {
 			return g, false, nil
 		}
@@ -274,7 +269,6 @@ func RecordGesture(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, re
 		return nil
 	})
 	if err != nil {
-		// The transaction did not complete the hold; let the scope go.
 		if _, released := client.Complete(context.WithoutCancel(ctx), job); released != nil {
 			return Gesture{}, false, errors.Join(err, released)
 		}
@@ -348,9 +342,6 @@ func (s *Store) ApplyGesture(ctx context.Context, repo config.Repo, scope string
 	return g, true, nil
 }
 
-// recorded is the gesture already recorded from the request's event, if there
-// is one. A retry of the same gesture finds it; a different gesture from the
-// same event is refused, because an event is one gesture.
 func (s *Store) recorded(ctx context.Context, req GestureRequest) (Gesture, bool, error) {
 	g, err := s.GestureByEvent(ctx, req.Event)
 	if errors.Is(err, ErrNotFound) {
@@ -363,7 +354,7 @@ func (s *Store) recorded(ctx context.Context, req GestureRequest) (Gesture, bool
 		g.UndoesEvent == req.Undoes && g.Stance == req.Stance &&
 		(req.Action == GestureUndo || req.Stance != "" || slices.Equal(g.Documents, sortedUnique(req.Documents)))
 	if !same {
-		return Gesture{}, false, compatError{kind: ErrEventConflict, broad: ErrInvalid,
+		return Gesture{}, false, refusalError{kind: ErrEventConflict, broad: ErrInvalid,
 			msg: fmt.Sprintf("event %s is already gesture %d, a %s by %q", req.Event, g.ID, g.Action, g.Principal)}
 	}
 	return g, true, nil
@@ -374,28 +365,16 @@ type pinScope struct {
 	touches           []connector.Touch
 }
 
-// gesturePlan is what a gesture would record, read before it is authorized.
 type gesturePlan struct {
-	// scope is the serial key of the stances' topics or of the gesture undone;
-	// empty for a pin, whose key is its documents'.
-	scope   string
-	stances []string
-	// documents are the evidence of the one stance a stance-targeted gesture
-	// names.
+	scope     string
+	stances   []string
 	documents []string
 	pins      []Pin
-	// keys are the pinned documents' source and container, from which a
-	// pin's serial key is computed ([ScopeKey]).
-	keys   []pinScope
-	undoes Gesture
-	// refusal is why the gesture cannot be recorded though it names something
-	// that exists: a stance that is not live, a gesture that cannot be undone.
-	// It is reported once the principal is authorized.
-	refusal error
+	keys      []pinScope
+	undoes    Gesture
+	refusal   error
 }
 
-// scopeKey is the serial key the gesture is recorded under. Documents to pin
-// in two scopes are refused, as stances in two are.
 func (p gesturePlan) scopeKey(repo config.Repo) (string, error) {
 	if p.scope != "" {
 		return p.scope, nil
@@ -426,10 +405,10 @@ func (s *Store) planGesture(ctx context.Context, req GestureRequest) (gesturePla
 		plan := gesturePlan{scope: g.Scope, stances: g.Stances, pins: pins, undoes: g}
 		switch {
 		case g.Action == GestureUndo:
-			plan.refusal = compatError{kind: ErrNotUndoable, broad: ErrInvalid,
+			plan.refusal = refusalError{kind: ErrNotUndoable, broad: ErrInvalid,
 				msg: fmt.Sprintf("gesture %d is an undo, and an undo is not undone: make the gesture again", g.ID)}
 		case g.UndoneBy != 0:
-			plan.refusal = compatError{kind: ErrNotUndoable, broad: ErrInvalid,
+			plan.refusal = refusalError{kind: ErrNotUndoable, broad: ErrInvalid,
 				msg: fmt.Sprintf("gesture %d is already undone, by gesture %d", g.ID, g.UndoneBy)}
 		case g.Action == GesturePin && req.DecisionsOnly:
 			plan.refusal = fmt.Errorf("%w: gesture %d is a pin, not a ratify or a demote", ErrNotUndoable, g.ID)
@@ -444,10 +423,6 @@ func (s *Store) planGesture(ctx context.Context, req GestureRequest) (gesturePla
 	return s.planStances(ctx, sortedUnique(req.Documents))
 }
 
-// planStances finds the live stances drawn from the documents: every stance
-// that cites one of them, that a later reading of its own document has not
-// retired and that is not a withdrawal. A stance an agent asserted citing one
-// is the agent's, not the document's, and is not among them.
 func (s *Store) planStances(ctx context.Context, docs []string) (gesturePlan, error) {
 	rows, err := s.db.Query(ctx, `
 SELECT s.id, t.scope FROM l2_stances s JOIN l2_topics t ON t.id = s.topic_id
@@ -479,10 +454,6 @@ ORDER BY s.id`, docs)
 	return plan, nil
 }
 
-// planStance reads the one stance a ratify or a demote names: its topic's
-// scope and its evidence, which the gesture records as its documents. A stance
-// an agent asserted is allowed, since a person names it. One that is not live
-// plans, and carries the refusal to report once the principal is authorized.
 func (s *Store) planStance(ctx context.Context, id string) (gesturePlan, error) {
 	var scope string
 	var evidence []string
@@ -506,9 +477,6 @@ FROM l2_stances s JOIN l2_topics t ON t.id = s.topic_id WHERE s.id = $1`, id).Sc
 	return plan, nil
 }
 
-// planPin reads the documents a pin names as L1 holds them now: the entities
-// each one is about, where it is pinned, and the source and container of its
-// artifact, which decide its serial key.
 func (s *Store) planPin(ctx context.Context, docs []string) (gesturePlan, error) {
 	rows, err := s.db.Query(ctx, `
 SELECT d.id, d.scope, d.source, coalesce(e.payload->'container'->>'native_id', ''), coalesce(e.payload->'touches', '[]'::jsonb)
@@ -545,7 +513,6 @@ WHERE d.id = ANY($1) ORDER BY d.id`, docs)
 	return plan, nil
 }
 
-// pinRef is a pin as the ledger records it.
 type pinRef struct {
 	Scope string `json:"scope"`
 	L1    string `json:"l1"`
@@ -581,9 +548,6 @@ RETURNING id, created_at`, g.Event, string(g.Action), g.Scope, g.Principal, g.Ca
 	return g, nil
 }
 
-// gestureInForceSQL is whether the gesture g is in force: no undo reverses
-// it, and an operator deletion has not deleted the event it came from, which
-// takes the gesture back with it.
 const gestureInForceSQL = `(NOT EXISTS (SELECT 1 FROM l2_gestures x WHERE x.undoes = g.id)
   AND NOT EXISTS (SELECT 1 FROM l0_events e WHERE e.id = g.event AND e.deletion IS NOT NULL))`
 
@@ -713,11 +677,7 @@ ORDER BY g.id`, stanceIDs)
 	return out, nil
 }
 
-// pinLock is the advisory lock every change to the pins gestures made takes,
-// so that a pin, its undo and an operator deletion decide a document's pin
-// one after the other. It is taken for a transaction ([lockPins]) or, by a
-// deletion, for the session its transaction runs on ([HoldPins]).
-const pinLock int64 = 0x68656172_73617932 // "hearsay2"
+const pinLock int64 = 0x68656172_73617932
 
 func lockPins(ctx context.Context, q Querier) error {
 	if _, err := q.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, pinLock); err != nil {
@@ -773,10 +733,6 @@ WHERE g.action = 'pin' AND g.event = ANY($1) ORDER BY 1, 2`, events)
 	return nil
 }
 
-// resyncPin makes a document's pin on an entity what the pin gestures in force
-// say: a pin a gesture made that is no longer in force is taken out, and a
-// document no pin holds is pinned as the first gesture in force that pinned it
-// did. A pin no gesture made is left as it is.
 func (s *Store) resyncPin(ctx context.Context, scope, doc string) error {
 	ref, err := json.Marshal([]pinRef{{Scope: scope, L1: doc}})
 	if err != nil {

@@ -8,25 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/principal"
-)
-
-// Querier is what the views run on: a pool, or a transaction on one, so that
-// every view one bundle reads can see the same snapshot. It is the graph's,
-// because the views read entities through [l2.Store]; nothing here writes.
-type Querier = l2.Querier
-
-// Both of pgx's are one.
-var (
-	_ Querier = (*pgxpool.Pool)(nil)
-	_ Querier = (pgx.Tx)(nil)
 )
 
 // RecentCandidates is how many of a scope's newest readable documents
@@ -37,7 +23,7 @@ const RecentCandidates = 50
 // Views are the derived views over one database. Nothing here writes.
 type Views struct {
 	principals *principal.Resolver
-	db         Querier
+	db         l2.Querier
 	docs       *l1.Store
 	graph      *l2.Store
 	authority  config.Authority
@@ -45,7 +31,7 @@ type Views struct {
 
 // New returns the views over a pool or a transaction, under the built-in
 // authority policy. The caller owns it.
-func New(q Querier) *Views { return &Views{db: q, docs: l1.New(q), graph: l2.New(q)} }
+func New(q l2.Querier) *Views { return &Views{db: q, docs: l1.New(q), graph: l2.New(q)} }
 
 // WithAuthority returns a copy of the views that computes tiers under a
 // configuration's authority policies rather than the built-in one.
@@ -78,9 +64,6 @@ type CurrentStance struct {
 	Inherited bool
 }
 
-// topicsSQL is every topic row about one of the entities or an ancestor of
-// one. The walk up `part_of` is a UNION, so a cycle ends it rather than
-// looping.
 const topicsSQL = `
 WITH RECURSIVE up(id) AS (
     SELECT unnest($1::text[])
@@ -131,7 +114,7 @@ func (v *Views) CurrentStances(ctx context.Context, reader l1.Reader, own string
 		return []CurrentStance{}, 0, 0, nil
 	}
 	entities := append([]string{own}, related...)
-	topics, err := v.topics(ctx, entities)
+	topics, _, err := v.topicsWithin(ctx, entities, 0)
 	if err != nil {
 		return nil, 0, 0, err
 	}
@@ -179,7 +162,6 @@ func (v *Views) CurrentStances(ctx context.Context, reader l1.Reader, own string
 			}
 		}
 	}
-	// Own before inherited, and each newest stated first.
 	slices.SortStableFunc(out, func(a, b CurrentStance) int {
 		if a.Inherited != b.Inherited {
 			if b.Inherited {
@@ -195,14 +177,6 @@ func (v *Views) CurrentStances(ctx context.Context, reader l1.Reader, own string
 	return out, withheld, outOfReach, nil
 }
 
-func (v *Views) topics(ctx context.Context, entities []string) ([]l2.Topic, error) {
-	topics, _, err := v.topicsWithin(ctx, entities, 0)
-	return topics, err
-}
-
-// topicsWithin bounds raw topic candidates before replaying their ledger. Zero
-// preserves the complete read used by bundles. Traversal uses its remaining
-// raw-row budget; the deterministic id cut precedes reader-specific ordering.
 func (v *Views) topicsWithin(ctx context.Context, entities []string, limit int) ([]l2.Topic, int, error) {
 
 	var rows []string
@@ -255,8 +229,6 @@ func (v *Views) Recent(ctx context.Context, reader l1.Reader, scope string, n in
 		return out, nil
 	}
 	out.LastActivity = listed[0].Time.LastActivity
-	// A decision is served once, in the scope's decision log, which is its
-	// stance. It is activity, but it takes no place among the documents.
 	listed = slices.DeleteFunc(listed, func(doc l1.Stored) bool { return doc.Kind == l1.KindDecision })
 	candidates := slices.DeleteFunc(listed, func(doc l1.Stored) bool { return slices.Contains(except, doc.ID) })
 	if len(candidates) > RecentCandidates {
@@ -314,16 +286,12 @@ func (v *Views) Anchors(ctx context.Context, reader l1.Reader, scope string, n i
 	return v.anchors(ctx, reader, scope, n, nil)
 }
 
-// anchorsWithin shares the bundle's anchor selection, but bounds and counts
-// candidate documents before access filtering. Exhausting the budget must stop
-// selection before inference or defaults can bypass the unreadable pins.
 func (v *Views) anchorsWithin(ctx context.Context, reader l1.Reader, scope string, n, remaining int) ([]Anchor, int, error) {
 	budget := remaining
 	out, err := v.anchors(ctx, reader, scope, n, &budget)
 	return out, remaining - budget, err
 }
 
-// A nil budget preserves the unbounded, reader-filtered bundle view.
 func (v *Views) anchors(ctx context.Context, reader l1.Reader, scope string, n int, budget *int) ([]Anchor, error) {
 	out := []Anchor{}
 	if n <= 0 || scope == "" || reader.Effective.Human == "" || !reader.Effective.Grant.Scopes.Has(scope) {
@@ -385,7 +353,6 @@ func (v *Views) anchors(ctx context.Context, reader l1.Reader, scope string, n i
 		return out, nil
 	}
 
-	// Enough that the ones already taken cannot leave a place unfilled.
 	limit := n + len(out)
 	if budget != nil {
 		limit = min(limit, *budget)

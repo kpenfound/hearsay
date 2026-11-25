@@ -30,7 +30,6 @@ func (j Judgement) Valid() bool {
 	return j == JudgementUnknown || j == JudgementChanges || j == JudgementRestates
 }
 
-// The tiers.
 const (
 	// TierRatified is a stance a human confirmed or an authoritative artifact
 	// carried. Agents act on it.
@@ -46,8 +45,8 @@ const (
 // Valid reports whether t is one of the three.
 func (t Tier) Valid() bool { return t == TierRatified || t == TierInferred || t == TierContested }
 
-// Bounds on what a topic and a stance hold. They are the table's, and they are
-// what the assertion worker's schema asks a model for.
+// Bounds on what a topic and a stance hold. They are the table's, and what
+// the assertion worker's schema asks a model for.
 const (
 	MaxTopicName = 1000
 	MaxPosition  = 2000
@@ -133,9 +132,6 @@ type Stance struct {
 	ACL       connector.ACL
 	CreatedAt time.Time
 
-	// The rest is set on a read, from the ledger and the other rows, and never
-	// written.
-
 	// Retired reports that a later reading of the stance's own origin
 	// superseded it, on whatever topic that reading is now ([RetiredSQL]).
 	Retired bool
@@ -183,8 +179,6 @@ func (s Stance) Validate() error {
 	return nil
 }
 
-// origin is what a stance was read from: its assertion event, or its first
-// piece of evidence. One origin holds at most one live stance per topic.
 func (s Stance) origin() string {
 	if s.Assertion != "" {
 		return s.Assertion
@@ -209,8 +203,6 @@ func Current(history []Stance) (Stance, bool) {
 	return Stance{}, false
 }
 
-// retiredIn is the stances in a history that a later reading of their own
-// origin replaced.
 func retiredIn(history []Stance) map[string]bool {
 	from := make(map[string]string, len(history))
 	for _, st := range history {
@@ -250,8 +242,6 @@ func AssertionStanceID(topicID, eventID string) string {
 	return "stance:" + digest("assertion", topicID, eventID)
 }
 
-// digest is a short hex id over parts that cannot run into each other: each is
-// length-prefixed, so ("ab", "c") and ("a", "bc") differ.
 func digest(parts ...string) string {
 	h := sha256.New()
 	for _, p := range parts {

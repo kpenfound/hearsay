@@ -128,11 +128,6 @@ func Stand(in TierInputs) (Standing, bool) {
 	return Standing{Current: current, Tier: TierInferred}, true
 }
 
-// rank is a stance's authority under the policy: that of its highest-ranked
-// evidence document, the first listed on a tie, and that document's evidence.
-// A stance none of whose evidence is known ranks 0 and names no evidence. A
-// stance an agent asserted ranks as its own evidence, class `agent`
-// ([AssertedEvidence]), whatever it cites.
 func (in TierInputs) rank(st Stance) (int, Evidence) {
 	if st.Assertion != "" {
 		by := AssertedEvidence(st.Assertion)
@@ -167,8 +162,6 @@ func RecordedTier(policy config.Policy, doc l1.Document) Tier {
 	return TierInferred
 }
 
-// supersession is a topic's stances as the forest their supersedes pointers
-// make, each edge carrying the judgement of the stance that made it.
 type supersession struct {
 	parent  map[string]string
 	changes map[string]bool
@@ -189,9 +182,6 @@ func newSupersession(history []Stance) supersession {
 	return s
 }
 
-// disagree reports whether the path between two stances crosses an edge judged
-// `changes`. It walks up from a to every ancestor, noting whether a change was
-// crossed on the way, then up from b until it meets one of them.
 func (s supersession) disagree(a, b string) bool {
 	changedTo := map[string]bool{}
 	changed := false

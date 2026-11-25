@@ -22,6 +22,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/principal"
+	"github.com/kpenfound/hearsay/internal/queue"
 )
 
 func newPool(t *testing.T) *pgxpool.Pool {
@@ -40,14 +41,10 @@ func newPool(t *testing.T) *pgxpool.Pool {
 
 var uniques atomic.Int64
 
-// unique is a suffix nothing else in the shared database uses.
 func unique() string {
 	return "t" + strconv.FormatInt(time.Now().UnixNano(), 36) + "x" + strconv.FormatInt(uniques.Add(1), 36)
 }
 
-// scratchPool is a migrated database of this test's own, for the one write that
-// is global by design: replacing the seeded entities deletes every seeded row
-// not in the set, which on the shared database would delete another package's.
 func scratchPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	admin := newPool(t)
@@ -83,6 +80,28 @@ func scratchPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
+func awaitRunning(t *testing.T, client *queue.Client, want int) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		running, err := client.List(ctx, queue.StateRunning, 0)
+		if err != nil {
+			t.Fatalf("listing running jobs: %v", err)
+		}
+		if len(running) >= want {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("%d jobs running, want %d: the hold was never taken", len(running), want)
+		case <-tick.C:
+		}
+	}
+}
+
 var public = connector.ACL{{Kind: connector.ACLPublic}}
 
 func TestEntitiesAreSeededAndCreatedOnReference(t *testing.T) {
@@ -102,15 +121,12 @@ func TestEntitiesAreSeededAndCreatedOnReference(t *testing.T) {
 	if created, err := store.EnsureEntity(ctx, item); err != nil || !created {
 		t.Fatalf("EnsureEntity() = %v, %v, want it created", created, err)
 	}
-	// A second reference changes nothing, and does not overwrite what is there.
 	renamed := item
 	renamed.Name = "something else"
 	if created, err := store.EnsureEntity(ctx, renamed); err != nil || created {
 		t.Fatalf("EnsureEntity(again) = %v, %v, want nothing written", created, err)
 	}
 
-	// Removing an entry from configuration removes its row, and never a row a
-	// document created.
 	if err := store.ReplaceSeeded(ctx, []l2.Entity{seeded[0], seeded[2]}); err != nil {
 		t.Fatalf("ReplaceSeeded(without gone) = %v", err)
 	}
@@ -148,8 +164,6 @@ func TestEntitiesAreSeededAndCreatedOnReference(t *testing.T) {
 		t.Errorf("Resolve() = %q, want %q", matched, want)
 	}
 
-	// The tracker items the tracker places are seeded with their
-	// parents, and one it no longer places keeps its row and loses them.
 	placed := item
 	placed.PartOf = []string{"tracker:github-acme:acme/api#10"}
 	if err := store.ReplaceSeeded(ctx, []l2.Entity{seeded[0], seeded[2], placed}); err != nil {
@@ -215,15 +229,11 @@ func TestStancesAreSupersededNeverOverwritten(t *testing.T) {
 		t.Errorf("stored judgements = %q, %q, want unknown then changes", first.Judgement, second.Judgement)
 	}
 
-	// The same position from the same document again is the stance already
-	// there, as it was stored.
 	again, written := add(stance(topic, "l1:s:pr", "engine takes the lock", 5))
 	if written || again.ID != second.ID || again.Supersedes != second.Supersedes {
 		t.Errorf("appending again = %+v, written %v, want the stored stance and nothing written", again, written)
 	}
 
-	// A document read late supersedes what came before it and leaves the later
-	// stance alone: the chain forks rather than being rewritten.
 	late, _ := add(stance(topic, "l1:s:thread", "nobody agrees yet", 3))
 	if late.Supersedes != first.ID {
 		t.Errorf("the late stance supersedes %q, want %q", late.Supersedes, first.ID)
@@ -231,7 +241,6 @@ func TestStancesAreSupersededNeverOverwritten(t *testing.T) {
 	if reread, err := store.Stance(ctx, second.ID); err != nil || reread.Supersedes != first.ID {
 		t.Errorf("the later stance after a late one = %+v, %v, want it untouched", reread, err)
 	}
-	// And the newest stance supersedes the newest before it, of three.
 	fourth, _ := add(stance(topic, "l1:s:later", "the engine keeps the lock", 6))
 	if fourth.Supersedes != second.ID {
 		t.Errorf("the newest stance supersedes %q, want the newest before it, %q", fourth.Supersedes, second.ID)
@@ -266,8 +275,6 @@ func TestStancesAreSupersededNeverOverwritten(t *testing.T) {
 	}
 }
 
-// A document read again in a new version replaces its own stance on a topic
-// rather than answering whatever is newest there.
 func TestANewReadingOfADocumentRetiresItsOwnStance(t *testing.T) {
 	pool := newPool(t)
 	store := l2.New(pool)
@@ -300,9 +307,6 @@ func TestANewReadingOfADocumentRetiresItsOwnStance(t *testing.T) {
 		return out
 	}
 
-	// The issue proposes, the merged pull request does otherwise, and the
-	// issue, re-distilled after a comment following the merge, restates its
-	// proposal in other words.
 	s1 := add(stance(topic, "l1:s:issue", "move the lock into the queue", 1))
 	s2 := add(stance(topic, "l1:s:pr", "the engine takes the lock", 3))
 	s3 := add(stance(topic, "l1:s:issue", "the queue should hold the lock", 5))
@@ -323,15 +327,11 @@ func TestANewReadingOfADocumentRetiresItsOwnStance(t *testing.T) {
 		t.Errorf("unsuperseded stances = %q, want %q: one per document", got, want)
 	}
 
-	// A later document on the topic answers the head, never the retired stance.
 	s4 := add(stance(topic, "l1:s:thread", "agreed, the engine", 6))
 	if s4.Supersedes != s3.ID {
 		t.Errorf("a later document's stance supersedes %q, want the head %q", s4.Supersedes, s3.ID)
 	}
 
-	// A reading stated earlier than the document's previous one — a deletion
-	// took the comment that moved its last activity — still replaces it, and
-	// the newer stance it retired is not the topic's current one.
 	s5 := add(stance(topic, "l1:s:thread", "the engine, for now", 2))
 	if s5.Supersedes != s4.ID {
 		t.Errorf("a reading stated before its document's last supersedes %q, want that document's %q", s5.Supersedes, s4.ID)
@@ -344,18 +344,12 @@ func TestANewReadingOfADocumentRetiresItsOwnStance(t *testing.T) {
 		t.Errorf("Current() = %+v, %v, want the issue's restatement: the thread's newer stance was retired", current, ok)
 	}
 
-	// A document stated after the retired stance skips it for the newest live
-	// one.
 	s6 := add(stance(topic, "l1:s:review", "ship it", 7))
 	if s6.Supersedes != s3.ID {
 		t.Errorf("a stance stated after a retired one supersedes %q, want the newest live one before it, %q", s6.Supersedes, s3.ID)
 	}
 }
 
-// A stance an agent asserted cites a document without having been read from
-// it: a later reading of that document replaces the document's own stance and
-// leaves the agent's alone, and the assertion is written once however often it
-// is appended.
 func TestAnAssertedStanceIsNotTheDocumentItCites(t *testing.T) {
 	pool := newPool(t)
 	store := l2.New(pool)
@@ -389,7 +383,6 @@ func TestAnAssertedStanceIsNotTheDocumentItCites(t *testing.T) {
 		t.Errorf("StancesFrom(issue) = %+v, %v, want the issue's own stances only", from, err)
 	}
 
-	// The issue read again replaces its own stance, not the agent's.
 	reread, _ := add(stance(topic, "l1:s:issue", "the queue should hold the lock", 3))
 	if reread.Supersedes != read.ID {
 		t.Errorf("the issue's new reading supersedes %q, want its own earlier stance %q", reread.Supersedes, read.ID)
@@ -402,9 +395,6 @@ func TestAnAssertedStanceIsNotTheDocumentItCites(t *testing.T) {
 	if !ok {
 		t.Fatal("Stand() found no live stance")
 	}
-	// Two live stances: the agent's and the issue's new reading. Neither has
-	// evidence L1 holds here, so the agent's class is what ranks it — above a
-	// document L1 does not hold.
 	if standing.Current.ID != agent.ID || standing.Tier != l2.TierInferred {
 		t.Errorf("Stand() = %s at %s, want the agent's stance, inferred: it is live and ranks as an agent", standing.Current.ID, standing.Tier)
 	}
@@ -483,7 +473,6 @@ func TestTopicsAreOnlyOfferedToDocumentsTheirReadersMayRead(t *testing.T) {
 		})
 	}
 
-	// A public topic is offered to everyone, most shared keys first.
 	more := openTopicFrom(t, pool, scope, "acme/api#31", public, "item:acme/api#12", "item:acme/api#31")
 	got, err := store.TopicsByJoinKeys(ctx, scope, []string{"item:acme/api#12", "item:acme/api#31"}, connector.ACL{group}, 5)
 	if err != nil || len(got) != 2 || got[0].ID != more.ID {
@@ -491,8 +480,6 @@ func TestTopicsAreOnlyOfferedToDocumentsTheirReadersMayRead(t *testing.T) {
 	}
 }
 
-// Who a topic is offered to is its opening document's access list
-// now, not the one the topic was written with.
 func TestATopicIsOfferedByItsOpeningDocumentAsItIsNow(t *testing.T) {
 	pool := newPool(t)
 	store := l2.New(pool)
@@ -533,8 +520,6 @@ func TestATopicIsOfferedByItsOpeningDocumentAsItIsNow(t *testing.T) {
 	}
 }
 
-// A position is shown to a document only where everyone who may
-// read the document may read every piece of the position's evidence now.
 func TestEvidenceIsReadableOnlyWhenEveryPieceIs(t *testing.T) {
 	pool := newPool(t)
 	store := l2.New(pool)
@@ -573,8 +558,6 @@ func TestEvidenceIsReadableOnlyWhenEveryPieceIs(t *testing.T) {
 	}
 }
 
-// [l2.Access] decides from L1 as it is now, and fails closed on a
-// document it cannot find.
 func TestAccessIsTheEvidenceAsItIsNow(t *testing.T) {
 	pool := newPool(t)
 	store := l2.New(pool)
@@ -625,38 +608,43 @@ func TestAccessIsTheEvidenceAsItIsNow(t *testing.T) {
 	}
 }
 
-// embeddedDoc writes a public L1 document with a vector of its own.
+func issueDoc(src, native string) l1.Document {
+	when := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)
+	return l1.Document{
+		ID: l1.DocID(src, native), Kind: l1.KindIssue, ArtifactClass: config.ArtifactIssue,
+		Source: l1.Source{System: src, NativeID: native},
+		L0Refs: []string{"evt:" + src + ":" + native}, Time: l1.Times{Created: when, Updated: when, LastActivity: when},
+		ACL: public, Text: "text of " + native, RawText: "raw " + native,
+		Body: l1.Body{Summary: "s", OutcomeKind: l1.OutcomeDecided},
+	}
+}
+
+func storeDoc(t *testing.T, pool *pgxpool.Pool, doc l1.Document) string {
+	t.Helper()
+	if _, err := l1.New(pool).Put(t.Context(), doc); err != nil {
+		t.Fatalf("Put(%s) = %v", doc.ID, err)
+	}
+	return doc.ID
+}
+
 func embeddedDoc(t *testing.T, pool *pgxpool.Pool, src, native string, vector []float32) string {
 	t.Helper()
 	return putDoc(t, pool, src, native, public, vector)
 }
 
-// putDoc writes an L1 document with this access list, and a vector where there
-// is one. Writing it again with another list is what an ACL re-sync does.
 func putDoc(t *testing.T, pool *pgxpool.Pool, src, native string, acl connector.ACL, vector []float32) string {
 	t.Helper()
-	when := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)
-	doc := l1.Document{
-		ID: l1.DocID(src, native), Kind: l1.KindIssue, ArtifactClass: config.ArtifactIssue,
-		Source: l1.Source{System: src, NativeID: native},
-		L0Refs: []string{"evt:" + src + ":" + native}, Time: l1.Times{Created: when, Updated: when, LastActivity: when},
-		ACL: acl, Text: "text of " + native, RawText: "raw " + native,
-		Body: l1.Body{Summary: "s", OutcomeKind: l1.OutcomeDecided},
-	}
-	store := l1.New(pool)
-	if _, err := store.Put(t.Context(), doc); err != nil {
-		t.Fatalf("Put(%s) = %v", doc.ID, err)
-	}
+	doc := issueDoc(src, native)
+	doc.ACL = acl
+	id := storeDoc(t, pool, doc)
 	if vector != nil {
-		if ok, err := store.SetEmbedding(t.Context(), doc.ID, doc.Text, vector); err != nil || !ok {
+		if ok, err := l1.New(pool).SetEmbedding(t.Context(), doc.ID, doc.Text, vector); err != nil || !ok {
 			t.Fatalf("SetEmbedding(%s) = %v, %v", doc.ID, ok, err)
 		}
 	}
-	return doc.ID
+	return id
 }
 
-// openTopicFrom opens a topic from an L1 document written with this access
-// list, which is what decides who the topic is offered to.
 func openTopicFrom(t *testing.T, pool *pgxpool.Pool, scope, native string, acl connector.ACL, keys ...string) l2.Topic {
 	t.Helper()
 	opener := putDoc(t, pool, scope, native, acl, nil)
@@ -718,8 +706,6 @@ func TestTopicsBySimilarityReadTheEvidenceVectors(t *testing.T) {
 	}
 }
 
-// Every CHECK the store's validation mirrors holds on its own, for a row written
-// by something other than this package.
 func TestTheTablesRefuseWhatTheStoreRefuses(t *testing.T) {
 	pool := newPool(t)
 	ctx := t.Context()
@@ -785,11 +771,9 @@ func TestPinsPersistInPinOrderAndUnpin(t *testing.T) {
 			t.Fatalf("Pin(%s) = %v, %v; want it recorded", p.L1, ok, err)
 		}
 	}
-	// Pinning again changes nothing: the first pinner and time stay.
 	if ok, err := l2.New(pool).Pin(t.Context(), l2.Pin{Scope: scope, L1: a.L1, PinnedBy: "sam", PinnedAt: at.Add(-time.Hour)}); err != nil || ok {
 		t.Fatalf("pinning %s again = %v, %v; want nothing written", a.L1, ok, err)
 	}
-	// Another scope's pin is not this one's.
 	if _, err := l2.New(pool).Pin(t.Context(), l2.Pin{Scope: scope + "/other", L1: a.L1, PinnedBy: "kyle", PinnedAt: at}); err != nil {
 		t.Fatal(err)
 	}
@@ -960,21 +944,11 @@ func TestIncrementalPlacementRanksTrackerAboveWork(t *testing.T) {
 	}
 }
 
-// textDoc writes an L1 document whose distillation is text.
 func textDoc(t *testing.T, pool *pgxpool.Pool, src, native string, acl connector.ACL, text string) string {
 	t.Helper()
-	when := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)
-	doc := l1.Document{
-		ID: l1.DocID(src, native), Kind: l1.KindIssue, ArtifactClass: config.ArtifactIssue,
-		Source: l1.Source{System: src, NativeID: native},
-		L0Refs: []string{"evt:" + src + ":" + native}, Time: l1.Times{Created: when, Updated: when, LastActivity: when},
-		ACL: acl, Text: text, RawText: "raw " + native,
-		Body: l1.Body{Summary: "s", OutcomeKind: l1.OutcomeDecided},
-	}
-	if _, err := l1.New(pool).Put(t.Context(), doc); err != nil {
-		t.Fatalf("Put(%s) = %v", doc.ID, err)
-	}
-	return doc.ID
+	doc := issueDoc(src, native)
+	doc.ACL, doc.Text = acl, text
+	return storeDoc(t, pool, doc)
 }
 
 func TestTopicsByTextReadTheEvidenceWords(t *testing.T) {

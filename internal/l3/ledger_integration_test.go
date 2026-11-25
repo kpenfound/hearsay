@@ -21,8 +21,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/l3"
 )
 
-// operator is a configuration in which kyle may merge, split and undo in any
-// scope: no authority is configured, so anyone may ratify by hand.
 func operator(t *testing.T) config.Repo {
 	t.Helper()
 	dir := t.TempDir()
@@ -58,8 +56,6 @@ func operateOn(t *testing.T, pool *pgxpool.Pool, repo config.Repo, req l2.Operat
 	return op
 }
 
-// The current stances and the bundle serve topics as the topic ledger makes
-// them, and withhold what the reader may not read of them.
 func TestCurrentStancesFollowTheTopicLedger(t *testing.T) {
 	pool := newPool(t)
 	ctx := t.Context()
@@ -135,8 +131,6 @@ func TestCurrentStancesFollowTheTopicLedger(t *testing.T) {
 	}
 	before := all()
 
-	// Merged, one topic is about both entities and stands on every stance of
-	// both; sam reads it, but not the private stance the current one replaced.
 	merged := operateOn(t, pool, repo, l2.OperationRequest{Kind: l2.OperationMerge, Into: a.ID, From: b.ID})
 	kyles := []row{{a.ID, "the lock", "the engine keeps the lock", "the engine takes the lock"}}
 	sams := []row{{a.ID, "the lock", "the engine keeps the lock", ""}}
@@ -156,8 +150,6 @@ func TestCurrentStancesFollowTheTopicLedger(t *testing.T) {
 		t.Errorf("sam's bundle on %s = %+v, want the one merged topic", f, b0.Stances)
 	}
 
-	// Split, the private stance is a topic of its own that sam may not read:
-	// withheld from sam, and the stance it superseded is no position of a's.
 	split := operateOn(t, pool, repo, l2.OperationRequest{Kind: l2.OperationSplit, Topic: a.ID, Name: "who took the lock", Stances: []string{b1.ID}})
 	s := split.Topics[1]
 	want := []row{{a.ID, "the lock", "the engine keeps the lock", ""}, {s, "who took the lock", "the engine takes the lock", ""}}
@@ -168,7 +160,6 @@ func TestCurrentStancesFollowTheTopicLedger(t *testing.T) {
 		t.Errorf("sam's stances on %s after the split = %+v (%d withheld), want %+v and the split's topic withheld", f, got, withheld, sams)
 	}
 
-	// Undone, every read is as it was.
 	operateOn(t, pool, repo, l2.OperationRequest{Kind: l2.OperationUndo, Undoes: split.ID})
 	operateOn(t, pool, repo, l2.OperationRequest{Kind: l2.OperationUndo, Undoes: merged.ID})
 	if after := all(); fmt.Sprint(after) != fmt.Sprint(before) {

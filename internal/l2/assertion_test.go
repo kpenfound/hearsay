@@ -38,6 +38,10 @@ func TestAssertionNativeID(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAssertionNativeIDMakesAnEventID(t *testing.T) {
+	base := l2.Assertion{Topic: "topic:1", Position: "take the lock first", Evidence: []string{"l1:a", "l1:b"}, Agent: "shed", Principal: "kyle"}
 	id := connector.EventID(connector.SelfSource, base.NativeID())
 	if _, _, err := connector.ParseEventID(id); err != nil {
 		t.Errorf("the native id does not make an event id: %v", err)

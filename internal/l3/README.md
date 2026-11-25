@@ -5,8 +5,7 @@ directly.
 
 **Belongs here:** current stances for an entity (including ones inherited from
 ancestors, tagged as inherited), a scope's anchors, recent L1 activity on a
-scope, open questions, and ownership derived from participation and
-authorship. Caching and materialization of these views, if it becomes worth it.
+scope and open questions.
 
 **Does not belong here:** any write path. If something cannot be recomputed from
 L2 it is not an L3 view — it is an L2 fact and belongs in `internal/l2`.
@@ -44,6 +43,5 @@ L2 it is not an L3 view — it is an L2 fact and belongs in `internal/l2`.
   out and takes no place, and "most referenced" counts only documents the
   reader may read on both ends (`l1.Store.MostReferencedFor`), so a private
   document neither wins nor decides what does.
-- **Ownership and "who knows X" are not built yet.**
 
 See [docs/design.md](../../docs/design.md#l3-derived-views).

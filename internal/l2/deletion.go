@@ -65,10 +65,6 @@ WHERE s.evidence && $1::text[] AND NOT s.withdrawn AND NOT `+RetiredSQL, docIDs)
 // assertion worker calls it under the topic's serialized scope key.
 func (s *Store) RerunDeletedEvidence(ctx context.Context, stanceID, scope string) (bool, error) {
 	var live bool
-	// A repair normally stays on its predecessor's row, so undoing a merge
-	// returns both to that row. A split is different: its selected stances
-	// moved without rewriting their rows. Materialize the split's row for a
-	// repair, so the repair follows the split and folds back on undo.
 	var row string
 	err := s.db.QueryRow(ctx, `SELECT t.scope = $2 AND NOT s.withdrawn AND NOT `+RetiredSQL+`, s.topic_id
 FROM l2_stances s JOIN l2_topics t ON t.id = s.topic_id WHERE s.id = $1`, stanceID, scope).Scan(&live, &row)
@@ -82,8 +78,6 @@ FROM l2_stances s JOIN l2_topics t ON t.id = s.topic_id WHERE s.id = $1`, stance
 	if err != nil {
 		return false, err
 	}
-	// Follow a repair chain to the stance a split selected. This also keeps
-	// the repair on the split's row when that split was subsequently merged.
 	var ancestors []string
 	if err := s.db.QueryRow(ctx, `WITH RECURSIVE chain AS (
     SELECT id, supersedes FROM l2_stances WHERE id = $1
@@ -139,7 +133,7 @@ FROM l2_stances s JOIN l2_topics t ON t.id = s.topic_id WHERE s.id = $1`, stance
 	evidence := surviving
 	position := st.Position
 	if withdrawn {
-		evidence = st.Evidence // provenance remains in the historical row
+		evidence = st.Evidence
 		position = "evidence deleted"
 		var nonasserting bool
 		if err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM l1_docs WHERE id = ANY($1))`, st.Evidence).Scan(&nonasserting); err != nil {
@@ -172,13 +166,6 @@ ON CONFLICT (id) DO NOTHING`, id, row, position, st.Author, st.StatedAt,
 // stance's position or a topic's name.
 const Redacted = "[redacted]"
 
-// redactStancesSQL replaces the position of every stance on these topics that
-// is superseded and was written before an operator deletion rebuilt one of its
-// documents: its text may have been read from what the operator deleted. A
-// stance still current keeps its text until something supersedes it, since a
-// stance is never overwritten while it stands. A withdrawal uses a fixed
-// reason and is left alone. The earliest deletion is the one
-// named.
 const redactStancesSQL = `
 UPDATE l2_stances s SET position = $2, redacted_by = r.deletion
 FROM (
@@ -191,10 +178,6 @@ FROM (
 ) r
 WHERE s.id = r.id`
 
-// redactTopicsSQL replaces the name of every topic on the list whose opening
-// document an operator deletion removed, and which no document still in L1
-// supports: a name read only from deleted content. A topic a surviving
-// document still cites keeps its name.
 const redactTopicsSQL = `
 UPDATE l2_topics t SET name = $2, redacted_by = r.deletion
 FROM (
@@ -228,7 +211,6 @@ func RedactDeleted(ctx context.Context, q Querier, docIDs []string) error {
 	return New(q).redact(ctx, topics)
 }
 
-// redact applies an operator deletion's redactions on these topics.
 func (s *Store) redact(ctx context.Context, topics []string) error {
 	if len(topics) == 0 {
 		return nil
