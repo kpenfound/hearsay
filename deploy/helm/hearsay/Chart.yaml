@@ -7,8 +7,6 @@ description: >-
   (16 or later, with pgvector) is yours. docs/deploy.md is the operator guide.
 type: application
 version: 0.10.0
-# The release this chart was written against. The image tag is always set
-# explicitly (image.tag); this does not choose it.
 appVersion: v0.10.0
 home: https://github.com/kpenfound/hearsay
 sources:

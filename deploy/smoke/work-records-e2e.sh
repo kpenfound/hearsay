@@ -1,26 +1,4 @@
 #!/bin/sh
-# Runs the owner/work decision path end to end in containers, with Docker alone.
-#
-# It starts the pgvector Postgres Hearsay's tests use (the same image the Dagger
-# module binds), then runs TestWorkRecordsEndToEnd
-# (cmd/hearsay/work_records_e2e_integration_test.go) from this tree in the Go
-# image go.mod asks for, on a network with that Postgres. The test runs
-# `hearsay all` — connectors, distiller, assertion worker and API — posts the
-# owner/work records through /hooks/<source> and reads them back as the owner
-# through get_bundle and traverse; its output is the evidence, and it is
-# container evidence because every process ran in those two containers. The
-# model provider is a local stub (the test says so).
-#
-#   deploy/smoke/work-records-e2e.sh [evidence-dir]
-#
-# Run it from the repository root. The raw get_bundle and traverse outputs are
-# written to evidence-dir (default: a new temporary directory, printed at the
-# end). Without Docker, run the test against a Postgres of your own:
-#
-#   HEARSAY_DATABASE_URL=postgres://... go test -tags=integration -count=1 -v \
-#       -run TestWorkRecordsEndToEnd ./cmd/hearsay
-#
-# `dagger check hearsay:integration-test` runs the same test with the rest.
 set -eu
 
 root=$(pwd)

@@ -1757,8 +1757,8 @@ on the project, omit `workstream`. The project above is written as:
 
 The `work` source also accepts two more request kinds, `document` and
 `decision`, which record what was written and what was ruled about a project or
-workstream it holds. Both are additive: the `project`, `workstream` and `update`
-requests, their validation and their L0 ids are unchanged.
+workstream it holds. The `project`, `workstream` and `update` requests are
+validated and identified as described above.
 
 | Artifact | kind | artifact id | native_id | container |
 |---|---|---|---|---|

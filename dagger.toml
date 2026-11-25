@@ -1,8 +1,3 @@
-# Dagger workspace configuration
-# Install modules with: dagger install <module>
-# Example:
-#   dagger install github.com/dagger/dagger/modules/wolfi
-
 [modules.go]
 source = "github.com/dagger/go"
 
@@ -30,6 +25,4 @@ source = "dagger.io/skill"
 source = "dagger.io/go/golangci-lint"
 
 [modules.golangci-lint.settings]
-# golangci-lint's own image, which pins the version: the module installs
-# none into a base that already has the binary.
 base = "dag://hearsay/lint-base"

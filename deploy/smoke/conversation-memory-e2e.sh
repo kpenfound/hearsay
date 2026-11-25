@@ -1,42 +1,4 @@
 #!/bin/sh
-# Runs Kern's conversation as memory end to end in containers, with Docker alone.
-#
-# It starts the pgvector Postgres Hearsay's tests use, then runs
-# TestConversationMemoryEndToEnd (cmd/hearsay/conversation_e2e_integration_test.go)
-# from this tree in the Go image go.mod asks for, on a network with that
-# Postgres. The test runs `hearsay all` (connectors, distiller, assertion worker
-# and API) on the conversation source docs/config.md documents, plus a second
-# human, an agent acting for them, and a public ticket in the same scope and
-# topic, and then:
-#
-#   - posts a multi-topic conversation to /hooks/<source id> as the agent that
-#     is allowed to post, one message per request, the owner's decision on the
-#     ticket's topic among them;
-#   - polls `coverage` from pending to covered, and finds the conversation with
-#     `search` (since/until) by a word only its distilled summary holds;
-#   - reads the owner's stance through get_bundle, traverse and stance_history,
-#     and the second human's and their agent's reads (search, get_l0, get_l1,
-#     get_bundle, traverse, stance_history, coverage, watch), which hold the
-#     ticket and none of the conversation;
-#   - deletes the decision's exchange, sees it excluded, and, after the
-#     distiller's rebuild, its words in none of search, get_l0, get_l1,
-#     get_bundle or any stance's position;
-#   - posts it again, as it was and rewritten, and sees nothing written.
-#
-# Its output is the evidence, and it is container evidence because every process
-# ran in those two containers. The model provider and Jev are a local stub (the
-# test says so); no real model, Jev or live source is reachable from the test.
-#
-#   deploy/smoke/conversation-memory-e2e.sh [evidence-dir]
-#
-# Run it from the repository root. The raw reads are written to evidence-dir
-# (default: a new temporary directory, printed at the end). Without Docker, run
-# the test against a Postgres of your own:
-#
-#   HEARSAY_DATABASE_URL=postgres://... go test -tags=integration -count=1 -v \
-#       -run TestConversationMemoryEndToEnd ./cmd/hearsay
-#
-# `dagger check` runs the same test with the rest.
 set -eu
 
 root=$(pwd)

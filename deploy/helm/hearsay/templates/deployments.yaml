@@ -1,8 +1,3 @@
-{{- /*
-One Deployment per service, all from the one image, the subcommand as the
-argument. None of them migrates: the hook Job does, before any of
-them rolls.
-*/ -}}
 {{- $configChecksum := include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
 {{- range $svc := include "hearsay.services" . | fromYamlArray }}
 {{- $values := index $.Values $svc.key }}
@@ -29,8 +24,6 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       annotations:
-        # Configuration is read once, at startup: a change to it
-        # has to replace the pods.
         checksum/config: {{ $configChecksum }}
         {{- with $.Values.config.digest }}
         hearsay/config-digest: {{ . | quote }}
@@ -43,8 +36,6 @@ spec:
       serviceAccountName: {{ . }}
       {{- end }}
       automountServiceAccountToken: false
-      # Service links would put <SERVICE>_PORT variables in the environment,
-      # and a release named hearsay would have them start with HEARSAY_.
       enableServiceLinks: false
       {{- with $.Values.imagePullSecrets }}
       imagePullSecrets:

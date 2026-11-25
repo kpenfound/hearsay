@@ -32,6 +32,10 @@ is `dagger up`; see [CONTRIBUTING.md](../CONTRIBUTING.md).
 | `assert-worker` | `hearsay assert-worker` | 8083: `/healthz`, `/readyz` | no | `.env` |
 | `api` | `hearsay api` | 8080: `/v1/<call>`, `/mcp`, `/discord/<source id>/interactions`, `/healthz`, `/readyz` | `127.0.0.1:8080` | `.env` |
 
+Postgres is pgvector on Postgres 16, the minimum Hearsay supports. Pin its image
+by digest for production; a major version change is a dump and restore. Its
+healthcheck connects over TCP, because the image's first-start initialisation
+serves on the socket alone and would pass a socket check before restarting.
 Postgres keeps its data on the named volume `pgdata`. Every Hearsay service
 waits for Postgres to be healthy and for `migrate` to exit 0. Each has a Docker
 healthcheck on its own `/readyz`: 200 when its database is reachable and its
@@ -79,9 +83,9 @@ Choose a tag actually listed in the
 then open its successful
 [Publish release image run](https://github.com/kpenfound/hearsay/actions/workflows/publish.yml).
 The run log and Summary show the digest-qualified address and the smoke check
-on both platforms. A repository tag alone is not proof of an image: tags that
-predate the workflow are not published retroactively. All concrete versions in
-examples, including `v0.10.0`, are illustrative, not a claim that they exist.
+on both platforms. A repository tag alone is not proof of an image: only a tag
+whose workflow run succeeded has one. All concrete versions in examples,
+including `v0.10.0`, are illustrative, not a claim that they exist.
 After the first publish, the owner must set the GHCR package's visibility to
 Public in Package settings for pulls without credentials.
 
@@ -624,7 +628,7 @@ schema, which expand and contract allows, as with a Compose rollback.
 ### Upgrading and changing configuration
 
 An upgrade selects another published `image.tag` using [Choosing the image](#choosing-the-image)
-and the same configuration flags as before. Replace the example placeholder;
+and the same configuration flags as the install. Replace the example placeholder;
 if you set `image.digest`, update it to the new run's digest too:
 
 ```sh
@@ -726,3 +730,9 @@ the stack for real, in a Docker daemon of its own, from the image built from the
 working tree. It checks that the migration job succeeds, the four services
 become healthy, only 8080 and 8081 are published, and an authenticated
 `get_bundle` answers 200.
+
+A service that reads a new environment variable adds it to
+`deploy/compose/env.example` and to the env table in
+[The env file](#the-env-file). A new listen address that the probes or Services
+depend on belongs in the chart's reserved list in
+`deploy/helm/hearsay/templates/_helpers.tpl`.

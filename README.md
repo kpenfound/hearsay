@@ -93,13 +93,8 @@ dagger up              # Postgres plus all four services
 dagger api call hearsay qa --script 'hearsay version'   # try a change in the shipped image
 ```
 
-Or without [Dagger](https://dagger.io), which needs a container runtime:
-
-```sh
-go build ./...
-go test ./...
-go run ./cmd/hearsay help
-```
+[Dagger](https://dagger.io) needs a container runtime; tests run only inside it.
+[CONTRIBUTING.md](CONTRIBUTING.md) has the checks and the commands.
 
 To run it for a team, [docs/deploy.md](docs/deploy.md) deploys the published
 image with [Docker Compose](docs/deploy.md#first-deployment): Postgres, the
@@ -111,9 +106,8 @@ migration as a hook Job, against a Postgres you provide.
 
 The four services — connectors, distiller, assertion worker and API — are
 subcommands of one binary. The API serves the context bundle and the handles a
-consumer follows it with, over MCP and HTTP. The distiller is real, and so are
-the layers around it: `hearsay migrate` builds the schema, `hearsay l0` reads what
-has been ingested, `hearsay distiller` turns those events into L1 documents, and
+consumer follows it with, over MCP and HTTP. `hearsay migrate` builds the
+schema, `hearsay l0` reads what has been ingested, `hearsay distiller` turns those events into L1 documents, and
 `hearsay assert-worker` turns the documents that decided, proposed or resolved
 something into L2 topics and stances, and appends the stances agents write
 through the API's `assert` call.

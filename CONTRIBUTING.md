@@ -4,8 +4,8 @@ Read [docs/design.md](docs/design.md) first. It is the source of truth for what
 Hearsay is, and most disagreements about a change are settled by a paragraph in
 it.
 
-[AGENTS.md](AGENTS.md) has shorter working notes for an agent or a returning
-contributor who wants the commands and conventions without the reasons.
+[AGENTS.md](AGENTS.md) holds the rules that bind every change, for an agent or
+a returning contributor.
 
 ## Prerequisites
 
@@ -29,6 +29,10 @@ contributor who wants the commands and conventions without the reasons.
   want to run it outside Dagger. The lint check runs the version tagged in
   `hearsay:lint-base` (`.dagger/modules/hearsay/main.dang`); match it if a lint
   failure looks like a disagreement.
+
+Tests run only inside Dagger, never directly on the host: they start processes
+and need a migrated Postgres. `gofmt`, `go build` and `go vet` are fine on the
+host.
 - Postgres 16 with [pgvector](https://github.com/pgvector/pgvector) — only if
   you want a database Dagger did not start for you.
 
@@ -66,6 +70,7 @@ and the dev stack.
 | `hearsay:compose-check` | hearsay | `docker compose config` on `deploy/compose` with `env.example` filled in, held to the shape in `docs/deploy.md`; `hearsay config validate` on its example configuration; `hearsay.service` held to its shape. No Docker daemon |
 | `hearsay:helm-check` | hearsay | `helm lint --strict` and `helm template` on `deploy/helm/hearsay` with the values in `deploy/helm/ci`, held to the shape in `docs/deploy.md`; the refusals it must make; `hearsay config validate` on each config form as the kubelet mounts it. No cluster |
 | `dagger-dang-sdk:stale` | Dang SDK | fails if the SDK would regenerate anything under `.dagger` |
+| `dagger-skill:stale` | Dagger skill | fails if the vendored Dagger skill under `.claude/skills/dagger` is out of date |
 
 `dagger check -l` shows collection dimensions as `*`. Use
 `dagger check -l --all --go` to expand the Go packages and tests, and
@@ -134,10 +139,7 @@ as well as publishing, so its smoke check works while the package is private.
 The digest-qualified image address appears in the workflow run's log and
 **Summary**, even if the subsequent smoke check fails. Use a successful run and
 the [GHCR package versions](https://github.com/kpenfound/hearsay/pkgs/container/hearsay)
-to find an image that actually exists and its digest to pin. Tags predating
-this workflow do not publish retroactively; in particular, the old `v0.10.0`
-tag has no published image from this flow. The first live publish belongs to
-the owner's first tag push after this workflow merges.
+to find an image that actually exists and its digest to pin.
 
 After the first publish, the owner must make the GHCR package public once for
 operators to pull without credentials: open the `hearsay` package on GitHub,
@@ -271,24 +273,18 @@ deploy/smoke/work-records-e2e.sh [evidence-dir]
 
 That starts the pgvector Postgres and runs the test in the Go image `go.mod`
 asks for, so its output is **container evidence**: the test names the
-environment it detected, and the script labels the run. With a Postgres of
-your own and a Go toolchain:
-
-```sh
-HEARSAY_DATABASE_URL=postgres://... go test -tags=integration -count=1 -v \
-    -run TestWorkRecordsEndToEnd ./cmd/hearsay
-```
-
+environment it detected, and the script labels the run.
 `dagger check --go --go-package=cmd/hearsay --go-test=TestWorkRecordsEndToEnd`
-runs it alone, and `dagger check` runs it with every other test, so the factory's gate holds the path on every commit. It is not run
-through `qa`, whose image carries the binary and no Go toolchain.
+runs it alone, and `dagger check` runs it with every other test, so the gate
+holds the path on every commit. It is not run through `qa`, whose image carries
+the binary and no Go toolchain.
 
 The owner-decision call has its own: `TestDecideEndToEnd` runs `hearsay all`,
 decides a stance as the owner over HTTP and over MCP with an agent carrying
 the decision, and reads each result back through `stance_history`,
 `get_bundle`, `traverse` and `hearsay gestures list`. Rerun it with Docker
-alone through `deploy/smoke/decide-e2e.sh [evidence-dir]`, or with the
-command above and `-run TestDecideEndToEnd`.
+alone through `deploy/smoke/decide-e2e.sh [evidence-dir]`, or alone in
+Dagger with `--go-test=TestDecideEndToEnd`.
 
 Kern's conversation as memory has its own: `TestConversationMemoryEndToEnd`
 runs `hearsay all` on the conversation source docs/config.md documents, with a
@@ -304,8 +300,8 @@ conversation. It then `delete`s the decision's exchange, sees it `excluded` and
 its words gone from every read once the distiller has rebuilt, and re-posts it
 twice to see nothing written. The model provider and Jev are a local stub that
 answers from what it is shown, so no real model is called. Rerun it with Docker
-alone through `deploy/smoke/conversation-memory-e2e.sh [evidence-dir]`, or with the
-command above and `-run TestConversationMemoryEndToEnd`.
+alone through `deploy/smoke/conversation-memory-e2e.sh [evidence-dir]`, or alone
+in Dagger with `--go-test=TestConversationMemoryEndToEnd`.
 
 ### Changing the module
 
@@ -319,7 +315,7 @@ The Go test base lives in `hearsay`, so the Go release and Postgres are written
 down once.
 
 `dagger.toml` pins the Dang SDK to v1.0.1; `dagger.lock` resolves it to
-`6dde4a9ca2cb598bf281ba36778d2428ad53aa48`. The module scope still declares
+`6dde4a9ca2cb598bf281ba36778d2428ad53aa48`. The module scope declares
 `engineVersion = "v1.0.0-beta.11"`; the release workflow uses CLI
 `v1.0.0-beta.25`. These are separate pins, not comparable SDK and engine
 release numbers. When updating either, check module loading, function execution
@@ -329,12 +325,9 @@ The Go module's bare remote source is `github.com/dagger/go`. `dagger.lock`
 pins it to `refs/tags/v0.4.0` at
 `e327bee9103fe60cb66c9d11bf2e1604686021df` and records the container image
 digests. It also retains v0.3.1 `gobuild`/`gomod` helper resolutions and older
-image entries; those do not select the bare Go module's release. This differs
-from the previous v0.3.1 guidance and has been reported for reconciliation;
-this documentation refresh leaves the generated lock unchanged. Its retained
-`main` and `refs/heads/main` entries also point at `e327bee9`, differing from
-the earlier accepted `5ec2ba85` exception. Run `dagger lock update` to refresh
-the recorded pins, then inspect the lockfile and run the checks. Call the Go
+image entries; those do not select the bare Go module's release. Its `main`
+and `refs/heads/main` entries also point at `e327bee9`. Run `dagger lock update`
+to refresh the recorded pins, then inspect the lockfile and run the checks. Call the Go
 module's test and generate functions as well as listing them: listing alone
 does not type-check the `hearsay:go-test-base` function they receive.
 
@@ -353,45 +346,11 @@ stricter vet or lint lands somewhere it can be read:
    hand-prune or delete/regenerate the lockfile to remove retained entries.
 3. Confirm it took — `rg 'golang:' dagger.lock` must include the new release's
    images. Inspect other entries against the modules that use them and report
-   unexpected ones. The current lock retains `golang:1.26-alpine` alongside
-   the 1.27.1 images and the SDK's `golang:1.25-alpine`; that discrepancy with
-   the previous cleanup guidance has been reported, not pruned here.
+   unexpected ones. The lock retains `golang:1.26-alpine` and the SDK's
+   `golang:1.25-alpine` beside the current release's images.
 
 Step 3 is not optional and no check does it for you. Passing checks alone does
 not establish that the generated lock records every new image resolution.
-
-### Without Dagger
-
-Dagger needs a container runtime, which is not always available — a sandbox
-that denies the Docker socket and the Dagger registry is the case to plan for.
-Everything but the tests that need Postgres runs directly:
-
-```sh
-go build ./...
-go test ./...
-go test -race ./...
-go vet ./...
-golangci-lint run
-golangci-lint fmt --diff   # fails if anything is unformatted
-golangci-lint fmt          # fixes it
-```
-
-The module has five direct third-party dependencies:
-`go.yaml.in/yaml/v3` parses the configuration format,
-`github.com/jackc/pgx/v5` is the Postgres driver,
-`github.com/pressly/goose/v3` applies the migrations,
-`github.com/gorilla/websocket` carries Discord Gateway and Slack Socket Mode
-connections, and `github.com/kpenfound/agentcore` runs the `claude-sbx`
-provider's sandboxed Claude Code call. `go.mod` also lists their indirect
-dependencies. Once those and the Go release `go.mod` asks for are in the module
-cache, all of that works with no network and no services running — `go test
-./...` included, because the tests that need Postgres carry the `integration`
-build tag and skip without `HEARSAY_DATABASE_URL`. With an older Go and the
-default `GOTOOLCHAIN=auto`, the first build downloads that toolchain too.
-
-That is a fallback, not a second gate: the pull request is judged by
-`dagger check`, which Dagger Cloud runs on every commit whether or not you could
-run it yourself.
 
 ## Running it
 
@@ -553,7 +512,6 @@ current one first.
 
 ```sh
 go run ./cmd/hearsay distiller --config ./config    # L0 to L1, until you stop it
-go test ./internal/service/distiller -record        # re-record the model answers
 ```
 
 The distiller is two loops over one database. The pump reads the L0 change feed
@@ -584,15 +542,14 @@ Two rules to know before changing it:
 - **No test calls a provider.** The answers are recorded in
   `internal/service/distiller/testdata/fixtures`, keyed by the request, and
   replayed through the fake in `internal/llm`. Edit a prompt and the keys change:
-  `-record` rewrites the file from the answers written down in
-  `fixtures_test.go`, and without it the same test checks that what is on disk is
-  what the package would send.
+  the package's `-record` test flag rewrites the file from the answers written
+  down in `fixtures_test.go`, and without it the same test checks that what is on
+  disk is what the package would send.
 
 ## Assertion
 
 ```sh
 go run ./cmd/hearsay assert-worker --config ./config   # L1 to L2, until you stop it
-go test ./internal/service/assertworker -record        # re-record the model answers
 ```
 
 The distiller enqueues an `assert` job in the transaction that writes a document
@@ -640,7 +597,8 @@ Four rules to know before changing it:
   so a later reading of a cited document neither retires it nor is taken for
   its own, and it ranks as class `agent` whatever it cites.
 - **No test calls a provider**, as for the distiller: the answers are written
-  down in `fixtures_test.go` and `-record` writes them to `testdata/fixtures`.
+  down in `fixtures_test.go` and the `-record` test flag writes them to
+  `testdata/fixtures`.
 
 ## Topic operations
 
@@ -777,9 +735,9 @@ a README for its segmentation and optional outcome rules.
   way guards nothing.
 - Integration tests that need Postgres carry the `integration` build tag, and
   read the connection URL from `HEARSAY_DATABASE_URL`. The Go module's
-  `test` check brings a migrated database up and sets it; nothing else does, so a plain `go test ./...` skips them rather than failing on a
-  machine with no Postgres. Tests never build a schema of their own — they run
-  the real migrations, so a missing migration fails CI instead of hiding.
+  `test` check brings a migrated database up and sets it. Tests never build a
+  schema of their own — they run the real migrations, so a missing migration
+  fails CI instead of hiding.
 
 ### Model calls
 
@@ -806,10 +764,10 @@ standard field names listed in
 services join up, and one `info` line per completed unit of work
 rather than a narration of steps.
 
-Never log L0 `payload`, L1 `text` or `raw_text`, prompts, completions,
-credentials or webhook signatures above `debug`. Log ids and let whoever is
-debugging follow them to the row, where the ACL still applies. This is access
-control, not style.
+Never log L0 `payload`, L1 `text` or `raw_text`, prompts or completions at
+`info` or above. Never log credentials, tokens or webhook signatures at any
+level. Log ids and let whoever is debugging follow them to the row, where the
+ACL still applies. This is access control, not style.
 
 ### Dependencies
 
@@ -817,6 +775,15 @@ The standard library is the default. Add a dependency when it carries
 real weight — a database driver, a migration tool — not for a convenience
 wrapper. Say why in the pull request. Run `go mod tidy`; CI checks that `go.mod`
 and `go.sum` are unchanged by it.
+
+The module has five direct third-party dependencies:
+`go.yaml.in/yaml/v3` parses the configuration format,
+`github.com/jackc/pgx/v5` is the Postgres driver,
+`github.com/pressly/goose/v3` applies the migrations,
+`github.com/gorilla/websocket` carries Discord Gateway and Slack Socket Mode
+connections, and `github.com/kpenfound/agentcore` runs the `claude-sbx`
+provider's sandboxed Claude Code call. `go.mod` also lists their indirect
+dependencies.
 
 ## Changing a decision
 
@@ -838,8 +805,8 @@ called out in the pull request description.
 - The description says what changed, how you tested it, and any choice you made
   that the issue left open — reviewers rule on those, and stating one costs
   nothing while a silent one costs a round.
-- `dagger check` passes before you push — or, where Dagger cannot run,
-  `go test -race ./...` and `golangci-lint run`, and say so in the description.
+- `dagger check` passes before you push. Where Dagger cannot run, say so in the
+  description.
 - A change to what the binary does was tried, with `dagger api call hearsay qa`
   or `playground`, and the pull request says how.
 - Merge `main` into your branch before opening or updating a pull request.

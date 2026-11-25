@@ -1,5 +1,3 @@
-{{- /* The API and the connectors' webhooks. The distiller and the assertion
-worker serve only their probes, so they have no Service. */ -}}
 {{- range $svc := include "hearsay.services" . | fromYamlArray }}
 {{- $values := index $.Values $svc.key }}
 {{- if $values.service }}

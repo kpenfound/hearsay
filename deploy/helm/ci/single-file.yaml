@@ -1,6 +1,3 @@
-# The single-file form, with an Ingress and credentials by reference.
-# `helm-check` renders the chart with this and deploy/compose/config/hearsay.yaml
-# as config.hearsayYaml.
 image:
   tag: v0.10.0
 database:

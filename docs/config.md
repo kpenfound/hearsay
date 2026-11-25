@@ -328,7 +328,7 @@ fill messages missed while the process was down, even when the initial backfill
 already finished. A channel visibility update requests the same walk before
 its Gateway sequence is acknowledged. At startup, the runtime also checks
 channels whose current L0 artifacts are still public and requests a walk if
-Discord now reports them private. The walk re-emits messages with a new
+Discord reports them private. The walk re-emits messages with a new
 permission revision and the current ACL. `/readyz` reports backfill and re-sync
 failures; a REST error or 429 retries the same page. Keep the bot's View Channel,
 Read Message History, and private-thread access after changing a channel's
@@ -828,7 +828,7 @@ inherits, and a project's read does not serve its workstreams'. A decision is
 names it in its latest revision's `supersedes`, and `current` otherwise; a
 superseded decision keeps the tier its own source gave it and makes nothing
 contested. Documents and decisions are readable by whoever may read their
-project, as it is now: when its `repos` change, once the distiller has processed
+project as it stands: when its `repos` change, once the distiller has processed
 the change, a reader who lost access is served none of them, by a bundle, a
 traversal or a fetch by handle. Their tier is
 [the source's](#authority-by-source), and nothing else's.
@@ -1468,7 +1468,7 @@ called; none of it is any caller's to configure twice.
 **The `embed` tier has no default and no shipped provider.** Neither adapter
 this build has (`anthropic`, `claude-sbx`) has an embedding model, so
 `hearsay config validate` refuses both on `embed` and there is nothing else to
-name yet. Until an embedding adapter ships, no document is
+name. Without an embedding adapter, no document is
 embedded: documents are written and searchable, and `search` runs on its
 full-text half alone — it finds a document by the words the team wrote in it and
 never by what it is about.
@@ -2001,7 +2001,7 @@ they are valid and that the two forms produce the same configuration. The
 completion tiers on `claude-sbx`. An example here that stops working stops the
 build.
 
-## Not in this version
+## Not configurable
 
 Named deliberately, so that the absence is a decision rather than an oversight.
 

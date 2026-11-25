@@ -152,7 +152,6 @@ type Hearsay {
     base
       .withEnvVariable("CGO_ENABLED", "0")
       .withEnvVariable("GOOS", "linux")
-      # go build does not create the directory it is told to write into.
       .withDirectory("/out", directory)
       .withExec(["go", "build", "-trimpath", "-ldflags", ldflags, "-o", "/out/hearsay", "./cmd/hearsay"])
       .file("/out/hearsay")
@@ -178,9 +177,6 @@ type Hearsay {
       .withFile("/usr/local/bin/hearsay", build(ws, version: version, platform: platform))
       .withUser("nobody")
       .withEntrypoint(["/usr/local/bin/hearsay"])
-      # The base image's CMD would otherwise be handed to hearsay as a
-      # subcommand. With no default the image prints its usage and exits
-      # non-zero, which is the right answer to "run hearsay" with no service.
       .withoutDefaultArgs
   }
 
@@ -384,15 +380,12 @@ type Hearsay {
         .withWorkdir("/deploy")
         .withExec(["sh", "-c", """
           set -eu
-          # Every variable compose.yaml interpolates, and every one the example
-          # configuration names, is an entry in env.example.
           missing=""
           for v in $( { grep -oE '[$][{][A-Z0-9_]+' compose.yaml | cut -c3-; grep -rhoE 'HEARSAY_[A-Z0-9_]+' config; } | sort -u); do
             grep -qE "^$v=" env.example || missing="$missing $v"
           done
           if [ -n "$missing" ]; then echo "env.example does not name:$missing"; exit 1; fi
 
-          # What an operator writes: env.example with every blank filled in.
           sed -E 's/^([A-Z0-9_]+)=$/\1=example-value/' env.example > .env
           image=$(grep -E '^HEARSAY_IMAGE=' .env | cut -d= -f2-)
           docker compose config --format json > /tmp/compose.json
@@ -429,12 +422,9 @@ type Hearsay {
           JQ
           if [ -s /tmp/failures ]; then cat /tmp/failures; exit 1; fi
 
-          # hearsay.service wraps this project and is held to its shape. Comments
-          # are ignored, so the unit may explain what it never does.
           sec() { awk -v s="[$1]" '/^[[:space:]]*[#;]/ { next } /^[[:space:]]*[[]/ { cur = $0; next } cur == s' hearsay.service; }
           : > /tmp/unit-failures
           ufail() { echo "hearsay.service: $*" >> /tmp/unit-failures; }
-          # The words of every KEY= line in a section.
           words() { sec "$1" | grep -E "^$2=" | cut -d= -f2- | tr ' ' '\n' | grep -v '^$' || true; }
           has() { words "$1" "$2" | grep -qxF -- "$3"; }
           [ -f hearsay.service ] || { echo "hearsay.service is missing"; exit 1; }
@@ -448,10 +438,8 @@ type Hearsay {
           [ "$(words Service TimeoutStartSec)" = 600 ] || ufail "[Service] TimeoutStartSec is not 600, ten minutes"
           has Install WantedBy multi-user.target || ufail "[Install] is not WantedBy=multi-user.target"
           [ -z "$(sec Service | grep -E '^(EnvironmentFile|ExecReload)=' || true)" ] || ufail "[Service] sets EnvironmentFile or ExecReload; Compose reads .env itself and a reload is a manual restart"
-          # Docker is named by absolute path (systemd searches no PATH for it).
           [ "$(sec Service | grep -cE '^ExecStart=')" = 1 ] && sec Service | grep -qE '^ExecStart=(/[^ ]*/)?docker compose up -d --wait$' || ufail "[Service] ExecStart is not exactly docker compose up -d --wait"
           [ "$(sec Service | grep -cE '^ExecStop=')" = 1 ] && sec Service | grep -qE '^ExecStop=(/[^ ]*/)?docker compose down$' || ufail "[Service] ExecStop is not exactly docker compose down"
-          # No command in the unit may remove a volume, whatever the flag or verb.
           if sec Service | grep -E '^Exec' | grep -qE ' -[a-zA-Z]*v|--volumes?( |$)| volume( |$)| rm( |$)'; then ufail "[Service] a command removes volumes; pgdata holds the database"; fi
           if [ -s /tmp/unit-failures ]; then cat /tmp/unit-failures; exit 1; fi
         """])
@@ -506,7 +494,6 @@ type Hearsay {
         helm lint --strict hearsay -f ci/single-file.yaml --set-file config.hearsayYaml=$cfg
         helm lint --strict hearsay -f ci/directory.yaml
 
-        # The single-file form, with credentials by reference and an Ingress.
         render -f ci/single-file.yaml --set-file config.hearsayYaml=$cfg | tojson > /tmp/single.json
         jq -r --rawfile cfg $cfg -f /dev/stdin /tmp/single.json >> /tmp/failures <<'JQ'
         def of(k): map(select(.kind == k));
@@ -574,7 +561,6 @@ type Hearsay {
         ] | .[]
         JQ
 
-        # The directory form, a digest-pinned image and a Secret read whole.
         render -f ci/directory.yaml | tojson > /tmp/directory.json
         jq -r -f /dev/stdin /tmp/directory.json >> /tmp/failures <<'JQ'
         def of(k): map(select(.kind == k));
@@ -595,8 +581,6 @@ type Hearsay {
         ] | .[]
         JQ
 
-        # Each form's ConfigMap as the kubelet mounts it: the files under
-        # ..data, and a symlink into it for each top-level entry.
         mount() {
           dir=$1; json=$2
           mkdir -p "$dir/..data"
@@ -611,15 +595,11 @@ type Hearsay {
         mount /out/directory /tmp/directory.json
         cmp /out/single/hearsay.yaml $cfg || fail "single: the mounted hearsay.yaml is not the file given"
 
-        # Upgrades render the hook too, and migrate.enabled=false drops it.
         [ "$(render -f ci/directory.yaml --is-upgrade | yq ea 'select(.kind == "Job") | .metadata.annotations["helm.sh/hook"]')" = "pre-install,pre-upgrade" ] ||
           fail "upgrade: the migration hook is not rendered"
         [ -z "$(render -f ci/directory.yaml --set migrate.enabled=false | yq ea 'select(.kind == "Job") | .metadata.name')" ] ||
           fail "migrate.enabled=false still renders the Job"
 
-        # A change to the configuration changes the pods' checksum; the same
-        # configuration does not. A volume has no checksum to take, so
-        # config.digest is what rolls it.
         checksum() { render "$@" | yq ea 'select(.kind == "Deployment" and .metadata.name == "r-hearsay-api") | .spec.template.metadata.annotations["checksum/config"]'; }
         { cat $cfg; echo '# changed'; } > /tmp/changed.yaml
         printf 'config:\n  files:\n    scopes/team.yaml: |\n      id: team\n      name: Renamed team\n      sources: [agent-sessions]\n' > /tmp/changed-dir.yaml
@@ -637,7 +617,6 @@ type Hearsay {
         ] | .[]
         JQ
 
-        # What the chart has to refuse, and the reason it has to give.
         refuse() {
           want=$1; shift
           if out=$(render "$@" 2>&1); then fail "rendered with $*; want it refused: $want"
@@ -686,8 +665,6 @@ type Hearsay {
       dagger api call hearsay compose-smoke
   """
   composeSmoke(ws: Workspace!): String! {
-    # Compose asks the daemon to bind-mount ./config, and the daemon resolves
-    # that path on its own filesystem, so the daemon has the directory too.
     let dockerd = container
       .from("docker:28-dind")
       .withEnvVariable("DOCKER_TLS_CERTDIR", "")
@@ -708,7 +685,6 @@ type Hearsay {
           i=$((i + 1)); [ "$i" -lt 60 ] || { echo "the Docker daemon did not start"; exit 1; }
           sleep 1
         done
-        # Both images come from Dagger, so the daemon pulls nothing.
         docker tag "$(docker load -q -i /images/hearsay.tar | awk '{print $NF}')" hearsay:compose-smoke
         docker tag "$(docker load -q -i /images/postgres.tar | awk '{print $NF}')" pgvector/pgvector:pg16
 
@@ -740,9 +716,6 @@ type Hearsay {
         echo "published: $published"
         [ "$published" = "api 127.0.0.1:8080->8080, connectors 127.0.0.1:8081->8081" ] || { echo "FAIL: published ports"; fail=1; }
 
-        # An authenticated call, from inside the API's container: the tokens in
-        # .env reached it, and the configuration mounted at /etc/hearsay is the
-        # one it serves.
         code=$(docker compose exec -T api wget -q -S -O /dev/null \
           --header 'Hearsay-Principal: operator' --header "Authorization: Bearer $operator" \
           --post-data '{"scope":"team"}' http://127.0.0.1:8080/v1/get_bundle 2>&1 | awk '/HTTP\//{print $2}' | tail -1)
@@ -764,10 +737,7 @@ type Hearsay {
   """
   dev(ws: Workspace!): Service! @up {
     runtime(ws)
-      # The API: POST /v1/<call>, MCP at /mcp, and /healthz and /readyz.
       .withExposedPort(8080, description: "hearsay API (HTTP and MCP)")
-      # The connectors service does listen: webhooks under /hooks/<source>, and
-      # /healthz and /readyz.
       .withExposedPort(8081, description: "hearsay connectors (webhooks and health)")
       .asService(useEntrypoint: true, args: ["all", "--log-level", "debug", "--log-format", "text"])
   }
