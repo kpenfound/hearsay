@@ -3,9 +3,7 @@
 package api_test
 
 import (
-	"bytes"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -16,6 +14,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/bundle"
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
@@ -23,14 +22,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/api"
 )
 
-// reachWorld is a repository with two directories, a pull request that
-// touched one of them, and agents of every class scoped to that pull request's
-// tracker item.
-//
-//	code:P            the repository; the readme is about it alone
-//	├─ code:P:engine  the pull request touched it; the engine doc is about it
-//	└─ code:P:web     the web doc is about it
-//	tracker:…#20      the pull request itself
 type reachWorld struct {
 	src, project, item     string
 	repo, engine, web      string
@@ -39,13 +30,10 @@ type reachWorld struct {
 	undistilled            string
 	ownTopic, engineTopic  string
 	repoTopic              string
-	server                 *httptest.Server
-	events                 *l0.Store
+	client
+	events *l0.Store
 }
 
-// The principals: kyle reaches everything; ann is granted the pull request and
-// the web directory. Every agent is granted the pull request's item, and pry
-// the engine as well.
 var (
 	annAlone    = api.Caller{Principal: "ann"}
 	shedForKyle = api.Caller{Principal: "kyle", Agent: "shed"}
@@ -57,9 +45,9 @@ var (
 
 func newReachWorld(t *testing.T) *reachWorld {
 	t.Helper()
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	ctx := t.Context()
-	w := &reachWorld{src: newSource(), events: l0.New(pool)}
+	w := &reachWorld{src: newSource(), events: l0.New(pool), client: client{credential: reachCredential}}
 	w.project = "acme/" + w.src
 	w.repo, w.engine, w.web = "code:"+w.project, "code:"+w.project+":engine", "code:"+w.project+":web"
 	w.item = "tracker:" + w.src + ":" + w.project + "#20"
@@ -69,36 +57,9 @@ func newReachWorld(t *testing.T) *reachWorld {
 	private := connector.ACL{{Kind: connector.ACLIdentity, Source: w.src, NativeID: kyleNode}}
 	put := func(artifact string, kind l1.Kind, hour int, text string, acl connector.ACL, scope []string, refs ...l1.Reference) string {
 		t.Helper()
-		at := day.Add(time.Duration(hour) * time.Hour)
-		ev := connector.Event{
-			Source: w.src, NativeID: artifact, Kind: connector.KindIssue, Time: at,
-			Payload: connector.Payload{
-				Artifact: artifact, Title: text,
-				Container: connector.Container{Kind: connector.ContainerRepository, NativeID: w.project},
-				Author:    &connector.Identity{Source: w.src, Kind: connector.IdentityUser, NativeID: kyleNode},
-			},
-			ACL: acl,
-		}
-		class := config.ArtifactIssue
-		if kind == l1.KindPR {
-			ev.Kind, class = connector.KindPullRequest, config.ArtifactMergedPR
-		}
-		if _, err := w.events.Append(ctx, ev); err != nil {
-			t.Fatalf("Append(%s) = %v", artifact, err)
-		}
-		doc := l1.Document{
-			ID: l1.DocID(w.src, artifact), Kind: kind, ArtifactClass: class,
-			Source: l1.Source{System: w.src, NativeID: artifact},
-			L0Refs: []string{connector.EventID(w.src, artifact)},
-			Time:   l1.Times{Created: at, Updated: at, LastActivity: at},
-			Scope:  scope, References: refs,
-			ACL: acl, Text: text, RawText: text,
-			Body: l1.Body{Summary: text, OutcomeKind: l1.OutcomeDecided},
-		}
-		if _, err := docs.Put(ctx, doc); err != nil {
-			t.Fatalf("Put(%s) = %v", doc.ID, err)
-		}
-		return doc.ID
+		return putDocument(t, w.events, docs, documentSpec{
+			src: w.src, project: w.project, artifact: artifact, kind: kind, hour: hour, text: text, acl: acl, scope: scope, refs: refs,
+		})
 	}
 	w.pr = put(w.project+"#20", l1.KindPR, 1, "Moves the lock into the worker.", public,
 		[]string{w.repo, w.engine, w.item}, l1.Reference{Type: l1.RefSystem, ID: w.engine})
@@ -107,7 +68,7 @@ func newReachWorld(t *testing.T) *reachWorld {
 	w.readme = put(w.project+"#32", l1.KindIssue, 4, "Every service logs as JSON.", public, []string{w.repo})
 	w.orphan = put(w.project+"#33", l1.KindIssue, 5, "A note about nothing in particular.", public, nil)
 	w.secret = put(w.project+"#34", l1.KindIssue, 6, "The pull request's private follow-up.", private, []string{w.item})
-	// An event nothing was distilled from yet.
+
 	undistilled := connector.Event{
 		Source: w.src, NativeID: w.project + "#40", Kind: connector.KindIssue, Time: day,
 		Payload: connector.Payload{Artifact: w.project + "#40", Title: "Not distilled yet.",
@@ -174,63 +135,6 @@ func newReachWorld(t *testing.T) *reachWorld {
 	return w
 }
 
-// post calls over HTTP with the caller's credentials and returns the status and
-// the body.
-func (w *reachWorld) post(t *testing.T, path string, caller api.Caller, body []byte) (int, []byte) {
-	t.Helper()
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, w.server.URL+path, bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set(api.PrincipalHeader, caller.Principal)
-	req.Header.Set(api.AuthorizationHeader, "Bearer reach-"+caller.Principal+"-credential")
-	if caller.Agent != "" {
-		req.Header.Set(api.AgentHeader, caller.Agent)
-		req.Header.Set(api.AgentTokenHeader, "reach-"+caller.Agent+"-credential")
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	got, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return resp.StatusCode, got
-}
-
-// answer is what one call was served over one interface: the status (HTTP's,
-// or 200 and isError over MCP) and the bytes.
-type answer struct {
-	status  int
-	isError bool
-	body    string
-}
-
-// both makes one call over HTTP and over MCP.
-func (w *reachWorld) both(t *testing.T, caller api.Caller, call string, args any) (overHTTP, overMCP answer) {
-	t.Helper()
-	body, _ := json.Marshal(args)
-	status, got := w.post(t, "/v1/"+call, caller, body)
-	overHTTP = answer{status: status, body: string(got)}
-	rpc, _ := json.Marshal(map[string]any{
-		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-		"params": map[string]any{"name": call, "arguments": args},
-	})
-	status, got = w.post(t, "/mcp", caller, rpc)
-	var resp struct {
-		Result api.ToolResult `json:"result"`
-	}
-	if err := json.Unmarshal(got, &resp); err != nil || len(resp.Result.Content) != 1 {
-		t.Fatalf("tools/call %s answered %d %s", call, status, got)
-	}
-	overMCP = answer{status: status, isError: resp.Result.IsError, body: resp.Result.Content[0].Text}
-	return overHTTP, overMCP
-}
-
-// reads reports whether a caller may read a document, over both interfaces,
-// and fails the test if the two disagree.
 func (w *reachWorld) reads(t *testing.T, caller api.Caller, doc string) bool {
 	t.Helper()
 	overHTTP, overMCP := w.both(t, caller, "get_l1", map[string]any{"id": doc})
@@ -240,11 +144,6 @@ func (w *reachWorld) reads(t *testing.T, caller api.Caller, doc string) bool {
 	return overHTTP.status == http.StatusOK
 }
 
-// Every class's reach, through get_l1 over both interfaces: an observer reads
-// its scope and no linked code, a worker the code its scope links to, a person
-// and an agent only what both reach, and a steward everything the person
-// reaches whatever its own scopes say — and the access lists hold inside every
-// reach.
 func TestReachByClass(t *testing.T) {
 	w := newReachWorld(t)
 	for _, tt := range []struct {
@@ -257,8 +156,6 @@ func TestReachByClass(t *testing.T) {
 		caller: kyle,
 		reads:  []string{w.pr, w.engineDoc, w.webDoc, w.readme, w.orphan, w.secret},
 	}, {
-		// ann reaches the engine through the pull request her scope holds,
-		// and nothing about the repository alone or about no entity.
 		name:   "a person with scopes",
 		caller: annAlone,
 		reads:  []string{w.pr, w.engineDoc, w.webDoc},
@@ -279,8 +176,6 @@ func TestReachByClass(t *testing.T) {
 		reads:  []string{w.pr, w.engineDoc},
 		denied: []string{w.webDoc, w.readme},
 	}, {
-		// ann reads the web doc and pry, for kyle, the engine doc; pry acting
-		// for ann reads neither: the intersection is narrower than both.
 		name:   "a person and an agent reach only what both do",
 		caller: pryAnn,
 		reads:  []string{w.pr},
@@ -290,8 +185,6 @@ func TestReachByClass(t *testing.T) {
 		caller: bossKyle,
 		reads:  []string{w.pr, w.engineDoc, w.webDoc, w.readme, w.orphan, w.secret},
 	}, {
-		// Still bound by the person: what ann does not reach, and what her
-		// access lists do not allow, a steward acting for her does not read.
 		name:   "a steward is bound by the person",
 		caller: bossAnn,
 		reads:  []string{w.pr, w.engineDoc, w.webDoc},
@@ -312,10 +205,6 @@ func TestReachByClass(t *testing.T) {
 	}
 }
 
-// The bundle holds only what is in reach: an observer's has the pull request's
-// own stance and no linked entity; a worker's has the engine and its stance as
-// well; and neither inherits the repository's stance, whose topic is about an
-// ancestor outside both reaches. Each is identical over both interfaces.
 func TestABundleHoldsOnlyWhatIsInReach(t *testing.T) {
 	w := newReachWorld(t)
 	bundleFor := func(caller api.Caller) bundle.Bundle {
@@ -365,20 +254,14 @@ func TestABundleHoldsOnlyWhatIsInReach(t *testing.T) {
 	}
 }
 
-// Every handle answers an id out of the caller's reach exactly as it answers
-// one that does not exist — status and body, byte for byte, over both
-// interfaces — and serves it to a caller whose reach holds it. A not-found
-// message names the id it was asked for, so the nonexistent id's body is
-// compared with that id spelled as the out-of-reach one.
 func TestAnOutOfReachIDIsAnsweredAsANonexistentOne(t *testing.T) {
 	w := newReachWorld(t)
 	nothing := w.src + "-nothing"
 	for _, tt := range []struct {
 		name, call, arg string
-		// outside is an id out of the observer's reach that kyle reaches;
-		// missing is one nothing holds.
+
 		outside, missing string
-		// holds is what the answer to kyle carries, to show it is there.
+
 		holds string
 	}{
 		{"get_l1", "get_l1", "id", w.engineDoc, l1.DocID(w.src, nothing), "retries every write"},
@@ -422,7 +305,6 @@ func TestAnOutOfReachIDIsAnsweredAsANonexistentOne(t *testing.T) {
 	}
 }
 
-// Search without a scope ranks only what is in reach.
 func TestSearchRanksOnlyWhatIsInReach(t *testing.T) {
 	w := newReachWorld(t)
 	found := func(caller api.Caller) []string {
@@ -449,8 +331,6 @@ func TestSearchRanksOnlyWhatIsInReach(t *testing.T) {
 	}
 }
 
-// The audit record names the agent's class and counts what reach withheld
-// apart from what the access lists did.
 func TestTheAuditRecordCountsWhatReachWithheld(t *testing.T) {
 	w := newReachWorld(t)
 	w.both(t, shedForKyle, "get_bundle", map[string]any{"scope": w.item})
@@ -468,7 +348,6 @@ func TestTheAuditRecordCountsWhatReachWithheld(t *testing.T) {
 			t.Fatal(err)
 		}
 		if rec.Scope == w.item || rec.Scope == w.web {
-			// Two calls each: one over HTTP and one over MCP.
 			got[rec.Principal+"/"+rec.Agent+"@"+rec.Scope] = rec
 		}
 	}
@@ -478,14 +357,8 @@ func TestTheAuditRecordCountsWhatReachWithheld(t *testing.T) {
 		reach    bundle.Reach
 		withheld bundle.Withheld
 	}{
-		// The worker drops the repository entity and the stance inherited
-		// from it; kyle's access lists withhold nothing.
 		{"kyle/shed@" + w.item, "worker", bundle.Reach{Stances: 1, Entities: 1}, bundle.Withheld{}},
-		// The web directory is out of the observer's reach: its whole bundle
-		// is, and the one document about it is counted.
 		{"kyle/peek@" + w.web, "observer", bundle.Reach{Scope: true, Documents: 1}, bundle.Withheld{}},
-		// ann reaches the engine but not the repository; the private
-		// follow-up is in her reach and withheld by its access list.
 		{"ann/@" + w.item, "", bundle.Reach{Stances: 1, Entities: 1}, bundle.Withheld{Documents: 1}},
 	} {
 		rec, ok := got[tt.key]

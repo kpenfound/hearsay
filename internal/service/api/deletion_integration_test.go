@@ -21,8 +21,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
-// The fake registry has no recordings: deleting the root needs no model call.
-// The assertion event and withdrawal jobs are processed by the real worker.
 func TestSourceTombstoneWithdrawsEvidenceAndKeepsSurvivorsReadable(t *testing.T) {
 	w := newWorld(t)
 	ctx := t.Context()

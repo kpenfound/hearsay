@@ -42,11 +42,8 @@ const (
 	ReasonInternal = "internal"
 )
 
-// maxDecisionID bounds the opaque id a caller supplies; Kern's is 64 hex
-// characters.
 const maxDecisionID = 256
 
-// maxTargetID bounds a stance id.
 const maxTargetID = 512
 
 var decideTool = Tool{"decide", "Make the person's own decision on a stance: ratify or demote one live stance by its id, or undo an earlier ratify or demote by its gesture id. The decision is the human's in the Hearsay-Principal header, checked against the scope's ratified_by policy; an agent named in Hearsay-Agent only carries it, is recorded as the carrier, and needs class worker or above. decision_id is the idempotency key, from the human, the carrier and that id: repeating a request returns the original gesture with recorded false, and the same id for a different decision is refused. Returns the gesture id, the action, the stance or the gesture undone, and whether this call recorded it. Refusals carry a code: not_allowed, not_found, not_live, not_undoable, conflict, invalid or internal. Pins, merges, splits and alias decisions are not offered.",
@@ -63,42 +60,20 @@ type Decided struct {
 	Recorded        bool   `json:"recorded"`
 }
 
-// refusal is a `decide` refusal: a status, a fixed sentence and its reason code.
 func refusal(status int, code, message string) *Error {
 	return &Error{Status: status, Message: message, Code: code}
 }
 
 func invalid(message string) *Error { return refusal(http.StatusBadRequest, ReasonInvalid, message) }
 
-// errDecideNotFound is the one answer for a stance or gesture that does not
-// exist, one the caller may not read, one out of their reach, and a replay
-// whose target they have since lost: a refusal that told them apart would say
-// which private document exists.
 var errDecideNotFound = refusal(http.StatusNotFound, ReasonNotFound, "no such stance or gesture that you may read")
 
-// decideEvent is the L0 event id the gesture is recorded under, which is its
-// idempotency key: derived from the human, the carrier and the caller's
-// decision id, so another person's decision ids never collide with this one's.
-// Nothing is written to L0 under it; it only names the ledger entry.
 func decideEvent(human, carrier, decision string) string {
 	key, _ := json.Marshal([]string{human, carrier, decision})
 	sum := sha256.Sum256(key)
 	return connector.EventID(AuditSource, "decision-"+hex.EncodeToString(sum[:]))
 }
 
-// decide is `decide(decision_id, action, stance_id | gesture_id)`
-// (docs/design.md#human-feedback-loop): the named human's ratify, demote or
-// undo of one stance, recorded in the gesture ledger through the same entry
-// point a reaction or the CLI uses, with the carrying agent beside the human.
-// No model is called. The scope's ratify policy is checked against the human
-// alone; the agent's class only decides whether it may carry.
-//
-// A request is handled in this order: its arguments and its carrier; a
-// decision already recorded under the key, answered as a replay (the same
-// content, whose target the caller can still read and reach) or refused as a
-// conflict (another content), neither looking at liveness, undoability or
-// policy; and otherwise a new decision, checked for read and reach, policy and
-// liveness or undoability, in that order, by the ledger.
 func decide(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, raw json.RawMessage) (any, error) {
 	out, err := c.decide(ctx, caller, reader, raw)
 	if err == nil {
@@ -107,7 +82,6 @@ func decide(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, raw 
 	var e *Error
 	if errors.As(err, &e) {
 		if e.Code == "" {
-			// A shared failure raised below the call, such as a malformed body.
 			e = &Error{Status: e.Status, Message: e.Message, Code: ReasonInvalid}
 		}
 		return nil, e
@@ -165,7 +139,7 @@ func (c *Calls) decide(ctx context.Context, caller Caller, reader l1.Reader, raw
 	if undoes != 0 {
 		out.UndoneGestureID = args.GestureID
 	}
-	// A decision already recorded under the key.
+
 	prior, err := c.graph.GestureByEvent(ctx, event)
 	switch {
 	case err == nil:
@@ -187,8 +161,6 @@ func (c *Calls) decide(ctx context.Context, caller Caller, reader l1.Reader, raw
 		return nil, err
 	}
 
-	// A new decision: read and reach first, so a target the caller may not read
-	// is answered as one that does not exist whatever else is wrong with it.
 	req := l2.GestureRequest{Event: event, Principal: caller.Principal, Action: action, Carrier: caller.Agent, DecisionsOnly: true}
 	if action == l2.GestureUndo {
 		target, err := c.graph.GestureByID(ctx, undoes)
@@ -225,8 +197,6 @@ func (c *Calls) decide(ctx context.Context, caller Caller, reader l1.Reader, raw
 	return &out, nil
 }
 
-// invalidFrom is a malformed-arguments refusal for an error the argument
-// decoder raised.
 func invalidFrom(err error) error {
 	var e *Error
 	if errors.As(err, &e) {
@@ -235,9 +205,6 @@ func invalidFrom(err error) error {
 	return err
 }
 
-// mayCarry refuses an agent whose class writes nothing: an observer may not
-// carry a person's decision, as it may not assert. No class gains authority by
-// carrying; the policy is the human's.
 func (c *Calls) mayCarry(caller Caller) error {
 	if caller.Agent == "" {
 		return nil
@@ -249,9 +216,6 @@ func (c *Calls) mayCarry(caller Caller) error {
 	return nil
 }
 
-// decideRefusal maps what the ledger refused with to a refusal `decide`
-// serves. Messages are fixed sentences: nothing the ledger says, which may name
-// events and scopes, is served.
 func decideRefusal(err error) error {
 	switch {
 	case errors.Is(err, l2.ErrEventConflict):
@@ -270,9 +234,6 @@ func decideRefusal(err error) error {
 	return err
 }
 
-// decisionReadable is whether the caller may still read and reach what a
-// recorded decision targeted: the stance it named, or what the gesture it
-// undid covered.
 func (c *Calls) decisionReadable(ctx context.Context, reader l1.Reader, g l2.Gesture) (bool, error) {
 	if g.Action != l2.GestureUndo {
 		return c.stanceReadable(ctx, reader, g.Stance)
@@ -287,10 +248,6 @@ func (c *Calls) decisionReadable(ctx context.Context, reader l1.Reader, g l2.Ges
 	return c.gestureReadable(ctx, reader, target)
 }
 
-// stanceReadable is whether the reader may read a stance within their reach
-// and the access lists of what it rests on, as `stance_history` would show it.
-// A withdrawn stance is readable by those the withdrawal's audience names, so
-// that it is refused as not live, not as missing.
 func (c *Calls) stanceReadable(ctx context.Context, reader l1.Reader, id string) (bool, error) {
 	st, err := c.graph.Stance(ctx, id)
 	if errors.Is(err, l2.ErrNotFound) {
@@ -314,8 +271,6 @@ func (c *Calls) stanceReadable(ctx context.Context, reader l1.Reader, id string)
 	return a.Access.Topic(reader, topic) && (a.Access.Stance(reader, st) || a.Access.Withdrawal(reader, st)), nil
 }
 
-// gestureReadable is whether the reader may read what a gesture covered: every
-// document it pointed at, and the stance it named.
 func (c *Calls) gestureReadable(ctx context.Context, reader l1.Reader, g l2.Gesture) (bool, error) {
 	for _, id := range g.Documents {
 		doc, err := c.docs.Get(ctx, id)

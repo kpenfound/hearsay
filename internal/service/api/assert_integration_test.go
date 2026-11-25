@@ -24,12 +24,8 @@ var (
 	peekKyle = api.Caller{Principal: "kyle", Agent: "peek"}
 )
 
-// lockTopic is the world's public topic, where the merged pull request is the
-// ratified current stance.
 func (w *world) lockTopic() string { return l2.TopicID(w.src, w.issue, 0, "where the lock lives") }
 
-// assertJob is the serial key of the assert job enqueued for an event, and how
-// many there are.
 func (w *world) assertJob(t *testing.T, eventID string) (string, int) {
 	t.Helper()
 	var key string
@@ -51,10 +47,6 @@ func (w *world) history(t *testing.T, caller api.Caller, topic string) api.Histo
 	return h
 }
 
-// An agent's assertion is an L0 event, the job that appends it is enqueued
-// under the topic's scope, and once the worker has run it is a stance in
-// stance_history — by the agent, citing every document, and not ratified. The
-// same request over MCP is the same answer, and writes nothing more.
 func TestAnAgentAssertsAStanceThatStanceHistoryServes(t *testing.T) {
 	w := newWorld(t)
 	topic := w.lockTopic()
@@ -81,13 +73,11 @@ func TestAnAgentAssertsAStanceThatStanceHistoryServes(t *testing.T) {
 		Evidence: l2.SortedEvidence([]string{w.issue, w.pr}), Agent: "shed", Principal: "kyle"}); !assertionEqual(as, want) {
 		t.Errorf("the event carries %+v, want %+v", as, want)
 	}
-	// The event fails closed, as an audit event does: the stance is how the
-	// position is read.
+
 	if status, _ := w.post(t, "/v1/get_l0", kyle, `{"id":"`+asserted.ID+`"}`); status != http.StatusNotFound {
 		t.Errorf("get_l0 of the assertion event = %d, want 404", status)
 	}
 
-	// A retry, over the other interface: the same bytes, one event, one job.
 	overMCP, isError := w.mcp(t, shedKyle, "assert", args)
 	if isError || !bytes.Equal(overHTTP, overMCP) {
 		t.Errorf("the same assert over MCP = %s (isError %v), want %s", overMCP, isError, overHTTP)
@@ -101,8 +91,6 @@ func TestAnAgentAssertsAStanceThatStanceHistoryServes(t *testing.T) {
 		t.Errorf("assert jobs = %d under %q, want 1 under the topic's scope %q", jobs, key, w.src)
 	}
 
-	// Nothing is in L2 until the worker runs; then the stance is there, once,
-	// however often its job runs.
 	if h := w.history(t, kyle, topic); len(h.Stances) != 3 {
 		t.Errorf("stance_history before the worker = %d stances, want the world's 3", len(h.Stances))
 	}
@@ -120,16 +108,11 @@ func TestAnAgentAssertsAStanceThatStanceHistoryServes(t *testing.T) {
 		!slices.Equal(got.Evidence, as.Evidence) || got.Judgement != nil {
 		t.Errorf("the agent's stance = %+v, want shed's position, inferred, citing %v", got, as.Evidence)
 	}
-	// The world's stances were stated weeks before the assertion, outside the
-	// contested window, so the agent's is current — and inferred: an agent
-	// does not ratify on its own under the default policy. That it ranks last
-	// within the window is internal/l2's and the assertion worker's to show.
+
 	if h.Current != got.ID || h.Tier != string(l2.TierInferred) {
 		t.Errorf("the topic stands at %s (%s), want the agent's stance, inferred", h.Current, h.Tier)
 	}
 
-	// Sam may not read the private stance on the topic, but may read the
-	// agent's: every document it cites is public.
 	if h := w.history(t, sam, topic); !slices.ContainsFunc(h.Stances, func(s api.StanceRecord) bool { return s.ID == got.ID }) {
 		t.Errorf("sam's history = %+v, want the agent's stance in it", h.Stances)
 	}
@@ -139,10 +122,6 @@ func assertionEqual(a, b l2.Assertion) bool {
 	return a.Topic == b.Topic && a.Position == b.Position && slices.Equal(a.Evidence, b.Evidence) && a.Agent == b.Agent && a.Principal == b.Principal
 }
 
-// A person, an observer, and a topic or evidence the effective principal cannot
-// read are refused; the refusals for a missing and an unreadable id are one
-// answer, so neither says which; every piece of evidence is checked; and
-// nothing is written for a refusal.
 func TestAssertRefusesWithoutRevealingWhatExists(t *testing.T) {
 	w := newWorld(t)
 	topic := w.lockTopic()
@@ -182,7 +161,7 @@ func TestAssertRefusesWithoutRevealingWhatExists(t *testing.T) {
 			if !isError || !bytes.Equal(overHTTP, overMCP) {
 				t.Errorf("over MCP = %s (isError %v), want the same refusal as over HTTP", overMCP, isError)
 			}
-			// Nothing was written under the id the request would have had.
+
 			position, _ := tt.args["position"].(string)
 			evidence, _ := tt.args["evidence"].([]string)
 			topic, _ := tt.args["topic"].(string)

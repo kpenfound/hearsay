@@ -25,6 +25,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/discord"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
@@ -39,13 +40,6 @@ const (
 	otherChannel   = "824100000000000002"
 )
 
-// discordWorld is a Discord source whose application Hearsay answers, over
-// its own scope: a distilled thread to pin, topics to merge (one only kyle
-// may read, one under another scope key), and a fake of Discord's REST API
-// that records the edits of deferred answers.
-//
-// kyle, sam and viv are people; kyle and sam may ratify by hand and viv may
-// not. shed is an agent. Discord user 99 maps to nobody.
 type discordWorld struct {
 	src, scope          string
 	thread, bare        string
@@ -63,7 +57,7 @@ var discordUsers = map[string]string{"kyle": "11", "sam": "12", "viv": "13", "sh
 
 func newDiscordWorld(t *testing.T) *discordWorld {
 	t.Helper()
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	ctx := t.Context()
 	w := &discordWorld{src: newSource(), edits: make(chan string, 4)}
 	w.scope = "d" + w.src
@@ -123,7 +117,7 @@ func newDiscordWorld(t *testing.T) *discordWorld {
 	if err := graph.PutEntity(ctx, l2.Entity{ID: entity, Type: l2.TypeProject, Name: w.src, Origin: l2.OriginConfig}); err != nil {
 		t.Fatal(err)
 	}
-	// The thread, as the connector and the distiller leave it.
+
 	artifact := discord.ThreadArtifact(w.thread)
 	ev := connector.Event{Source: w.src, NativeID: artifact, Kind: connector.KindThread, Time: when, ACL: public,
 		Payload: connector.Payload{Artifact: artifact, Title: "where the lock lives",
@@ -177,8 +171,6 @@ func newDiscordWorld(t *testing.T) *discordWorld {
 	return w
 }
 
-// interaction is a request as Discord would send it, from one of
-// discordUsers, in a channel of the given type.
 type interaction struct {
 	kind       discord.InteractionType
 	user       string
@@ -211,8 +203,6 @@ func (w *discordWorld) body(in interaction) (string, []byte) {
 	return id, body
 }
 
-// send posts a signed body and returns the status, the response and how long
-// it took.
 func (w *discordWorld) send(t *testing.T, body []byte, key ed25519.PrivateKey) (int, discord.Response, time.Duration) {
 	t.Helper()
 	stamp := strconv.FormatInt(time.Now().Unix(), 10)
@@ -242,8 +232,6 @@ func (w *discordWorld) send(t *testing.T, body []byte, key ed25519.PrivateKey) (
 	return resp.StatusCode, discord.Response{Type: out.Type, Data: out.Data}, took
 }
 
-// answer sends a command and returns its ephemeral answer, failing on
-// anything but one given within Discord's deadline.
 func (w *discordWorld) answer(t *testing.T, in interaction) (string, string) {
 	t.Helper()
 	in.kind = discord.InteractionCommand
@@ -266,7 +254,6 @@ func (w *discordWorld) answer(t *testing.T, in interaction) (string, string) {
 	return connector.EventID(w.src, "interaction:"+id), data.Content
 }
 
-// choices sends an autocomplete for merge and returns the topic ids offered.
 func (w *discordWorld) choices(t *testing.T, user string, options ...map[string]any) []string {
 	t.Helper()
 	_, body := w.body(interaction{kind: discord.InteractionAutocomplete, user: user, channel: discordChannel, sub: discord.CommandMerge, options: options})
@@ -300,8 +287,6 @@ func sorted(ids ...string) []string {
 	return ids
 }
 
-// Only a request Discord signed with the application's key is answered, and
-// Discord's endpoint check is.
 func TestDiscordInteractionsAreVerified(t *testing.T) {
 	w := newDiscordWorld(t)
 	_, other, _ := ed25519.GenerateKey(nil)
@@ -314,9 +299,6 @@ func TestDiscordInteractionsAreVerified(t *testing.T) {
 	}
 }
 
-// `/hearsay pin` pins the thread it is run in, as the person the Discord user
-// maps to, when the scope lets them; every other case says why nothing was
-// pinned and pins nothing.
 func TestDiscordPin(t *testing.T) {
 	w := newDiscordWorld(t)
 	graph := l2.New(w.pool)
@@ -372,15 +354,13 @@ func TestDiscordPin(t *testing.T) {
 	if pins() != 1 {
 		t.Errorf("%d pins after kyle's pin, want 1", pins())
 	}
-	// The command is in L0, as control traffic.
+
 	ev, err := l0.New(w.pool).Get(t.Context(), event)
 	if err != nil || ev.Kind != connector.KindCommand {
 		t.Errorf("the command's event = %+v, %v; want a command", ev, err)
 	}
 }
 
-// `/hearsay merge` offers, and accepts, only topics the person may read, and
-// merges them as that person when the scope lets them.
 func TestDiscordMerge(t *testing.T) {
 	w := newDiscordWorld(t)
 	graph := l2.New(w.pool)
@@ -462,12 +442,10 @@ func TestDiscordMerge(t *testing.T) {
 	}
 }
 
-// A command whose work outlasts the deadline is answered at once with an
-// ephemeral deferral, and its answer is edited in once the work is done.
 func TestDiscordCommandIsDeferredPastTheDeadline(t *testing.T) {
 	w := newDiscordWorld(t)
 	w.interactions.AnswerWithin(200 * time.Millisecond)
-	// Hold the scope's key, as an assert job running on it would.
+
 	client, err := queue.New(w.pool, queue.Config{Kind: l2.AssertKind()})
 	if err != nil {
 		t.Fatal(err)

@@ -10,7 +10,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
-	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
@@ -18,11 +18,7 @@ import (
 )
 
 func TestContainerAccessChangeInvalidatesBundleWithoutRepost(t *testing.T) {
-	pool, err := db.Connect(t.Context(), cacheTestDB(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
+	pool := dbtest.Scratch(t, "container_cache")
 	t.Setenv("CONTAINER_CACHE_READER", "reader-token")
 	repo := config.Repo{
 		Sources:    []connector.SourceConfig{{ID: "cache-work", Type: "work"}},
@@ -90,8 +86,7 @@ func TestContainerAccessChangeInvalidatesBundleWithoutRepost(t *testing.T) {
 	if &first[0] != &again[0] {
 		t.Fatal("unchanged bundle did not use cached encoding")
 	}
-	// Only one of the repository's artifacts has re-synced. No L1 row or
-	// work event changes, and the other repository artifact is still public.
+
 	root.NativeID = root.Payload.Artifact + "@private"
 	root.Payload.Revision = &connector.Revision{Token: "private", EditedAt: root.Time.Add(time.Hour)}
 	root.ACL = connector.ACL{{Kind: connector.ACLGroup, Source: root.Source, NativeID: "private-team"}}

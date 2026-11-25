@@ -20,42 +20,51 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
-func TestNextActionTracesToLatestBundleOnItsScope(t *testing.T) {
-	w := newWorld(t)
-	source, session := w.src+"session", "session-next"
+type sessionEndpoint struct {
+	url     string
+	started time.Time
+	session string
+}
+
+func (w *world) sessionEndpoint(t *testing.T, session string) sessionEndpoint {
+	t.Helper()
 	src := repo(w.src).Sources[0]
 	c, err := agent.New(src, repo(w.src).Principals, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(c.Handler(connector.NewGate(l0.New(w.pool), source, c.Describe(), connector.NewAllowlist(src))))
-	defer srv.Close()
-	started := time.Now().UTC().Add(-time.Minute)
-	postSession := func(kind connector.Kind, fields map[string]any, at time.Time) string {
-		t.Helper()
-		body := map[string]any{"on_behalf_of": "kyle", "session": session, "kind": kind, "started_at": started, "time": at}
-		for k, v := range fields {
-			body[k] = v
-		}
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, srv.URL, bytes.NewReader(mustJSON(t, body)))
-		if err != nil {
-			t.Fatal(err)
-		}
-		req.Header.Set("Authorization", "Bearer test-shed-api-credential")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		var accepted agent.Accepted
-		if err := json.NewDecoder(resp.Body).Decode(&accepted); err != nil || resp.StatusCode != http.StatusAccepted {
-			t.Fatalf("POST session event = %d %+v, %v", resp.StatusCode, accepted, err)
-		}
-		return accepted.ID
+	srv := httptest.NewServer(c.Handler(connector.NewGate(l0.New(w.pool), src.ID, c.Describe(), connector.NewAllowlist(src))))
+	t.Cleanup(srv.Close)
+	return sessionEndpoint{url: srv.URL, started: time.Now().UTC().Add(-time.Minute), session: session}
+}
+
+func (s sessionEndpoint) post(t *testing.T, kind connector.Kind, fields map[string]any, at time.Time) string {
+	t.Helper()
+	body := map[string]any{"on_behalf_of": "kyle", "session": s.session, "kind": kind, "started_at": s.started, "time": at}
+	for k, v := range fields {
+		body[k] = v
 	}
-	postSession(connector.KindAgentSession, map[string]any{"phase": "start"}, started)
-	directive := connector.Event{Source: w.src, NativeID: "next-conflict", Kind: connector.KindMessage, Time: day,
-		Payload: connector.Payload{Artifact: "next-conflict", Container: connector.Container{Kind: connector.ContainerChannel, NativeID: w.project},
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, s.url, bytes.NewReader(mustJSON(t, body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+testCredential("shed"))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var accepted agent.Accepted
+	if err := json.NewDecoder(resp.Body).Decode(&accepted); err != nil || resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("POST %s = %d %+v, %v", kind, resp.StatusCode, accepted, err)
+	}
+	return accepted.ID
+}
+
+func (w *world) appendDirective(t *testing.T, artifact string) string {
+	t.Helper()
+	directive := connector.Event{Source: w.src, NativeID: artifact, Kind: connector.KindMessage, Time: day,
+		Payload: connector.Payload{Artifact: artifact, Container: connector.Container{Kind: connector.ContainerChannel, NativeID: w.project},
 			Thread: w.project + "#12", Text: "where the lock lives",
 			Author:   &connector.Identity{Source: w.src, Kind: connector.IdentityUser, NativeID: kyleNode},
 			Mentions: []connector.Identity{{Source: w.src, Kind: connector.IdentityBot, NativeID: "shed-native", Handle: "shed[bot]"}}},
@@ -63,15 +72,24 @@ func TestNextActionTracesToLatestBundleOnItsScope(t *testing.T) {
 	if _, err := l0.New(w.pool).Append(t.Context(), directive); err != nil {
 		t.Fatal(err)
 	}
+	return connector.EventID(w.src, artifact)
+}
+
+func TestNextActionTracesToLatestBundleOnItsScope(t *testing.T) {
+	w := newWorld(t)
+	session := "session-next"
+	endpoint := w.sessionEndpoint(t, session)
+	endpoint.post(t, connector.KindAgentSession, map[string]any{"phase": "start"}, endpoint.started)
+	directive := w.appendDirective(t, "next-conflict")
 	caller := api.Caller{Principal: "kyle", Agent: "shed", Session: session}
-	b := decodeBundle(t, w.http(t, caller, "get_bundle", map[string]any{"scope": w.scope, "directive": connector.EventID(w.src, directive.NativeID)}))
+	b := decodeBundle(t, w.http(t, caller, "get_bundle", map[string]any{"scope": w.scope, "directive": directive}))
 	if len(b.Conflicts) == 0 {
 		t.Fatal("the served bundle has no flagged conflict")
 	}
 	otherScope := "code:" + w.project
 	w.http(t, caller, "get_bundle", map[string]any{"scope": otherScope})
 	w.http(t, caller, "get_bundle", map[string]any{"scope": w.scope})
-	nextID := postSession(connector.KindNextAction, map[string]any{"next": "1", "scope": w.scope, "action": "proceeded",
+	nextID := endpoint.post(t, connector.KindNextAction, map[string]any{"next": "1", "scope": w.scope, "action": "proceeded",
 		"verdicts": []agent.Verdict{{TopicID: b.Conflicts[0].TopicID, Verdict: "real"}}}, time.Now().UTC().Add(time.Minute))
 	nextEvent, err := l0.New(w.pool).Get(t.Context(), nextID)
 	if err != nil {
@@ -278,8 +296,7 @@ func TestAssertionTracesToSessionAndBundles(t *testing.T) {
 	if len(after.Events) != before+3 {
 		t.Errorf("session grew after unlinked handles: %d events", len(after.Events))
 	}
-	// The audit event exists, but its ACL deliberately prevents get_l0 from
-	// serving it. The refusal must not repeat its id in another audit.
+
 	if status, _ := w.post(t, "/v1/get_l0", withSession, string(mustJSON(t, map[string]any{"id": trace.Events[3].ID}))); status != http.StatusNotFound {
 		t.Errorf("get_l0 of a closed audit = %d, want 404", status)
 	}

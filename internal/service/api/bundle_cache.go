@@ -11,20 +11,13 @@ import (
 	"github.com/kpenfound/hearsay/internal/l1"
 )
 
-// bundleCacheLimit is fixed per API replica. Each entry holds one encoded
-// bundle and its audit report; the least recently used entry leaves first.
 const bundleCacheLimit = 128
 
-// bundleKey is what a cached bundle was assembled for. The reach is in it as
-// well as the caller: it is read from the graph on every call, and a bundle
-// assembled within a reach that has since changed is not one to serve.
 type bundleKey struct {
 	scope, principal, agent, directive, reach string
 	revision                                  int64
 }
 
-// reachKey is a reader's reach as a key: its digest, since a reach can be many
-// entity ids.
 func reachKey(reader l1.Reader) string {
 	scopes := reader.Effective.Grant.Scopes
 	if scopes.All {

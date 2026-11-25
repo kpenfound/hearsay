@@ -17,10 +17,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/api"
 )
 
-// A stance resting on a conversation document is the owner's alone. A second
-// human, and an agent acting for them, get neither the stance, its position nor
-// its evidence from get_bundle, traverse or stance_history — including on a
-// topic that also holds evidence they may read — and the owner gets all three.
 func TestAStanceRestingOnAConversationIsOnlyTheOwners(t *testing.T) {
 	w := newWorld(t)
 	ctx := t.Context()
@@ -29,15 +25,13 @@ func TestAStanceRestingOnAConversationIsOnlyTheOwners(t *testing.T) {
 	public := connector.ACL{{Kind: connector.ACLPublic}}
 	ownerOnly := connector.ACL{{Kind: connector.ACLIdentity, Source: w.src, NativeID: kyleNode}}
 
-	// The topic opened by public evidence, then the owner's own decision in a
-	// conversation document with the owner's list alone.
 	openedBy := w.putIn(w.scope, w.project+"#50", l1.KindIssue, 20, "The cache is shared by every service.", public)
 	topic := l2.Topic{ID: l2.TopicID(w.src, openedBy, 0, "who owns the cache"), Scope: w.src, Name: "who owns the cache",
 		About: []string{w.scope}, ACL: public, OpenedBy: openedBy}
 	if _, err := graph.OpenTopic(ctx, topic); err != nil {
 		t.Fatal(err)
 	}
-	// The conversation's own topic: only the conversation's evidence is on it.
+
 	conversation := conversationDoc(t, w, "c-cache", "x-1", 21, ownerOnly)
 	alone := l2.Topic{ID: l2.TopicID(w.src, conversation, 0, "the owner's cache decision"), Scope: w.src, Name: "the owner's cache decision",
 		About: []string{w.scope}, ACL: ownerOnly, OpenedBy: conversation}
@@ -60,14 +54,10 @@ func TestAStanceRestingOnAConversationIsOnlyTheOwners(t *testing.T) {
 	const decision = "KERN-CONVERSATION-DECISION the platform team owns the cache"
 	mixed := stance(topic, conversation, decision, 22, l2.JudgementChanges, ownerOnly)
 	sole := stance(alone, conversation, decision+" (alone)", 23, l2.JudgementUnknown, ownerOnly)
-	// A public stance that later replaces the owner's: the edge that points
-	// back at it is not something to follow.
+
 	later := w.putIn(w.scope, w.project+"#51", l1.KindIssue, 24, "Each service owns its cache again.", public)
 	after := stance(topic, later, "each service owns its cache again", 24, l2.JudgementChanges, public)
 
-	// Under a policy where the conversation outranks everything, the owner's
-	// stance is the current one on the shared topic: the case that withholds the
-	// topic's current stance from everyone else.
 	strict := repo(w.src)
 	strict.Authority = loadAuthority(t, "scope: \"*\"\nranking: [dm, merged_pr]\n")
 	calls, err := api.NewCalls(w.pool, strict, nil)
@@ -111,7 +101,7 @@ func TestAStanceRestingOnAConversationIsOnlyTheOwners(t *testing.T) {
 						}
 					}
 				}
-				// The solely-conversation topic is not theirs to learn of.
+
 				if status, got := w.post(t, "/v1/stance_history", caller, `{"topic":"`+alone.ID+`"}`); status != 404 {
 					t.Errorf("stance_history of the conversation's own topic for %s = %d %s, want 404", who, status, got)
 				}
@@ -153,8 +143,6 @@ func TestAStanceRestingOnAConversationIsOnlyTheOwners(t *testing.T) {
 	}
 }
 
-// conversationDoc stores a conversation segment document, and the message events
-// it quotes, with the access list given.
 func conversationDoc(t *testing.T, w *world, thread, exchange string, hour int, acl connector.ACL) string {
 	t.Helper()
 	at := day.Add(time.Duration(hour) * time.Hour)

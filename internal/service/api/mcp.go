@@ -15,10 +15,8 @@ import (
 // lets a server answer a POST with a single JSON response.
 const MCPProtocolVersion = "2025-06-18"
 
-// mcpVersions are the revisions whose tool calls look like this one's.
 var mcpVersions = []string{"2025-03-26", MCPProtocolVersion}
 
-// The JSON-RPC error codes this server answers with.
 const (
 	rpcParseError     = -32700
 	rpcInvalidRequest = -32600
@@ -64,10 +62,6 @@ type ToolResult struct {
 // needs to call tools — initialize, ping, tools/list and tools/call — and every
 // tool is a call of [Calls], so there is nothing a tool does that the HTTP
 // surface does differently.
-//
-// It is written against the protocol rather than a library: the protocol is
-// four methods here, and a dependency for four methods is not one that carries
-// its weight (CONTRIBUTING.md).
 func MCP(calls *Calls) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -95,8 +89,6 @@ func MCP(calls *Calls) http.Handler {
 			return
 		}
 		if len(req.ID) == 0 {
-			// A notification or a response: nothing to answer (initialized,
-			// cancelled).
 			w.WriteHeader(http.StatusAccepted)
 			return
 		}

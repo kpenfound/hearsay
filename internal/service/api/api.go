@@ -2,9 +2,10 @@
 // assembly, the handles a consumer follows, `watch`, the audit trail, `assert`,
 // through which an agent proposes a stance as an L0 `assertion` event, and
 // `decide`, through which a person (with an agent carrying it, if one does)
-// ratifies, demotes or undoes a stance in the gesture ledger. Reads are structured lookups, and nothing here asks a
-// model to generate anything: the one model call a read makes is `search` embedding the
-// query it was given, on the `embed` tier (internal/l1).
+// ratifies, demotes or undoes a stance in the gesture ledger. Reads are
+// structured lookups, and nothing here asks a model to generate anything: the
+// one model call a read makes is `search` embedding the query it was given, on
+// the `embed` tier (internal/l1).
 //
 // Both interfaces are thin over one call layer, [Calls]: a call takes the
 // caller, a name and JSON arguments, and returns the bytes that are served. HTTP
@@ -14,11 +15,12 @@
 //
 // Both interfaces authenticate the person named in [PrincipalHeader] with a
 // bearer token. When [AgentHeader] names an agent, that agent's token is also
-// required. Authentication precedes the shared call layer.
-// Failures of authentication, request size, session and reach resolution happen
-// before a call is dispatched and are the same for every call: a status and a
-// `{"error": message}` body with no reason code. Only `decide` documents its
-// own refusals, with a `code` beside the message ([Error.Code]).
+// required. Authentication precedes the shared call layer. Failures of
+// authentication, request size, session and reach resolution happen before a
+// call is dispatched and are the same for every call: a status and a
+// `{"error": message}` body with no reason code. Only `decide`, `delete`,
+// `coverage` and a refused `search` window document their refusals, with a
+// `code` beside the message ([Error.Code]).
 // An authenticated agent may name its session in [SessionHeader]; the call
 // layer links audits and assertions to its artifact.
 //
@@ -49,10 +51,10 @@
 // stops.
 //
 // Beside the calls, the API is the Discord interaction adapter
-// ([Interactions]): for a Discord source that configures
-// its application and is not read-only, it answers `/hearsay pin` and `/hearsay merge` on
-// [DiscordPath], applying them through the shared applier ([l2.Commands]),
-// and registers the two commands at startup.
+// ([Interactions]): for a Discord source that configures its application and is
+// not read-only, it answers `/hearsay pin` and `/hearsay merge` on
+// [DiscordPath], applying them through the shared applier ([l2.Commands]), and
+// registers the two commands at startup.
 package api
 
 import (
@@ -88,8 +90,6 @@ const DefaultListen = ":8080"
 // a scope, an id or a query: kilobytes, not megabytes.
 const MaxRequest = 1 << 20
 
-// shutdownGrace is how long requests in flight get once the process is asked
-// to stop.
 const shutdownGrace = 5 * time.Second
 
 // Deps are the dependencies the process builds and hands to Run.
@@ -100,8 +100,7 @@ type Deps struct {
 	// search, and runs full-text search without it. Nil is a process given no
 	// configuration.
 	LLM llm.Registry
-	// Listener is what the API is served on. Nil is a listener on Listen; a
-	// test passes one bound to port 0.
+	// Listener is what the API is served on. Nil is a listener on Listen.
 	Listener net.Listener
 	// Listen is the address to serve on when Listener is nil. Empty is
 	// [DefaultListen].
@@ -159,12 +158,10 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 	server := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
-		// Not the cancellable context: a request in flight keeps its logger
-		// through the shutdown grace period.
+
 		BaseContext: func(net.Listener) context.Context { return context.WithoutCancel(ctx) },
 	}
-	// A waiting watch returns what it has rather than outlast the grace
-	// period.
+
 	server.RegisterOnShutdown(calls.stopWatches)
 	log.InfoContext(ctx, "api started", "listen", listener.Addr().String(), "config_digest", cfg.Repo.Digest,
 		"embedding", embedder != nil)
@@ -210,9 +207,6 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 	return err
 }
 
-// embedTier is the `embed` tier, or nil where there is no registry or it names
-// none: search then runs on full text alone. A tier of the wrong width stops
-// the process, as it does the distiller's.
 func embedTier(registry llm.Registry) (l1.Embedder, error) {
 	if registry == nil {
 		return nil, nil
@@ -231,8 +225,8 @@ func embedTier(registry llm.Registry) (l1.Embedder, error) {
 }
 
 // Handler is the API's HTTP surface: the calls over HTTP and over MCP, and the
-// two endpoints every service has. A nil pool serves readiness
-// without the database check, for a test.
+// two endpoints every service has. A nil pool serves readiness without the
+// database check.
 func Handler(calls *Calls, pool *pgxpool.Pool) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/{call}", func(w http.ResponseWriter, r *http.Request) {

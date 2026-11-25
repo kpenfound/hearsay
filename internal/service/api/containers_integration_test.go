@@ -11,13 +11,14 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/service/api"
 )
 
 func TestContainerAudienceFiltersHandlesOverBothInterfaces(t *testing.T) {
 	w := newReachWorld(t)
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	containers, key, err := connector.CanonicalContainers([]connector.ContainerRef{
 		{Source: w.src, NativeID: "access-repo-a"},
 		{Source: w.src, NativeID: "access-repo-b"},
@@ -42,8 +43,7 @@ func TestContainerAudienceFiltersHandlesOverBothInterfaces(t *testing.T) {
 	if _, err := l1.New(pool).Put(t.Context(), doc); err != nil {
 		t.Fatal(err)
 	}
-	// Readers inspect every deferred grant in L1, so this fixture must not
-	// leave a repository dependency behind for unrelated API tests.
+
 	defer func() {
 		if _, err := l1.New(pool).Delete(t.Context(), doc.ID); err != nil {
 			t.Error(err)
@@ -106,7 +106,7 @@ func TestContainerAudienceFiltersHandlesOverBothInterfaces(t *testing.T) {
 					missing := l1.DocID(w.src, "nonexistent")
 					hiddenHTTP, hiddenMCP := w.both(t, caller, "get_l1", map[string]string{"id": doc.ID})
 					missingHTTP, missingMCP := w.both(t, caller, "get_l1", map[string]string{"id": missing})
-					// Only the id the caller supplied may differ in the not-found answer.
+
 					quotedDoc, _ := json.Marshal(doc.ID)
 					quotedMissing, _ := json.Marshal(missing)
 					hiddenHTTP.body = strings.ReplaceAll(hiddenHTTP.body, string(quotedDoc)[1:len(quotedDoc)-1], string(quotedMissing)[1:len(quotedMissing)-1])

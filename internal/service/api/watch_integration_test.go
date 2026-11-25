@@ -16,11 +16,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
@@ -30,20 +32,8 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
-// watchWait is how long a watch in these tests waits before it returns empty.
 const watchWait = 300 * time.Millisecond
 
-// watchWorld is a database of its own, because a watch reads the whole feed
-// and the distiller's cursor, which every other test in the database moves.
-// The entities:
-//
-//	code:acme/w           the repository
-//	└─ code:acme/w:engine a directory of it
-//	code:acme/other       somewhere else
-//
-// kyle and sam reach everything, and each may read what is public and what is
-// granted to their own identity. ann reaches the engine alone. boss is an
-// orchestrator, shed a worker and peek an observer.
 type watchWorld struct {
 	src, repo, engine, other string
 	pool                     *pgxpool.Pool
@@ -51,8 +41,8 @@ type watchWorld struct {
 	events                   *l0.Store
 	docs                     *l1.Store
 	principals               []principal.Principal
-	server                   *httptest.Server
-	hour                     int
+	client
+	hour int
 }
 
 var (
@@ -64,13 +54,10 @@ var (
 
 func newWatchWorld(t *testing.T) *watchWorld {
 	t.Helper()
-	pool, err := db.Connect(t.Context(), api.ScratchDB(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
+	pool := dbtest.Scratch(t, "watch")
+	var err error
 	w := &watchWorld{src: "w", repo: "code:acme/w", engine: "code:acme/w:engine", other: "code:acme/other",
-		pool: pool, events: l0.New(pool), docs: l1.New(pool)}
+		pool: pool, events: l0.New(pool), docs: l1.New(pool), client: client{credential: reachCredential}}
 	graph := l2.New(pool)
 	for _, e := range []l2.Entity{
 		{ID: w.repo, Type: l2.TypeProject, Name: "watch-repo", Origin: l2.OriginConfig},
@@ -92,7 +79,7 @@ func newWatchWorld(t *testing.T) *watchWorld {
 		{ID: "shed", Kind: principal.KindAgent, Class: principal.ClassWorker, Grant: principal.Grant{Scopes: principal.AllScopes()}},
 		{ID: "peek", Kind: principal.KindAgent, Class: principal.ClassObserver, Grant: principal.Grant{Scopes: principal.AllScopes()}},
 	}
-	// The credentials reachWorld.post sends.
+
 	for i := range w.principals {
 		env := "HEARSAY_WATCH_" + strings.ToUpper(w.principals[i].ID) + "_TOKEN"
 		w.principals[i].TokenEnv = env
@@ -108,14 +95,11 @@ func newWatchWorld(t *testing.T) *watchWorld {
 	return w
 }
 
-// emit appends an event and returns its id. Its title is words no
-// notification may carry.
 func (w *watchWorld) emit(t *testing.T, source, artifact string, kind connector.Kind, acl connector.ACL) string {
 	t.Helper()
 	return w.emitIn(t, w.events, source, artifact, kind, acl)
 }
 
-// emitIn is emit in a transaction of the caller's.
 func (w *watchWorld) emitIn(t *testing.T, events *l0.Store, source, artifact string, kind connector.Kind, acl connector.ACL) string {
 	t.Helper()
 	w.hour++
@@ -134,8 +118,6 @@ func (w *watchWorld) emitIn(t *testing.T, events *l0.Store, source, artifact str
 	return connector.EventID(source, artifact)
 }
 
-// distil writes the document an artifact's events are distilled into, about
-// these entities, as the distiller would.
 func (w *watchWorld) distil(t *testing.T, source, artifact string, scope []string, acl connector.ACL, events ...string) string {
 	t.Helper()
 	at := day.Add(time.Duration(w.hour) * time.Hour)
@@ -152,34 +134,9 @@ func (w *watchWorld) distil(t *testing.T, source, artifact string, scope []strin
 	return doc.ID
 }
 
-// settled waits until the feed serves everything this database has
-// committed. The feed holds back behind any transaction open in the cluster,
-// and the other packages' tests share the cluster, so without this a test
-// would race them.
-func (w *watchWorld) settled(t *testing.T) {
-	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		var behind int
-		if err := w.pool.QueryRow(t.Context(),
-			`SELECT count(*) FROM l0_events WHERE xact_id >= pg_snapshot_xmin(pg_current_snapshot())`).Scan(&behind); err != nil {
-			t.Fatal(err)
-		}
-		if behind == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the feed is still %d events behind after 30s", behind)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-}
-
-// pumped waits for the feed to settle and moves the distiller's cursor to its
-// end: it has read everything there is.
 func (w *watchWorld) pumped(t *testing.T) {
 	t.Helper()
-	w.settled(t)
+	awaitFeed(t, w.pool)
 	var last string
 	if err := w.pool.QueryRow(t.Context(),
 		`SELECT coalesce((SELECT xact_id::text || '.' || seq FROM l0_events ORDER BY xact_id DESC, seq DESC LIMIT 1), '')`).Scan(&last); err != nil {
@@ -194,17 +151,9 @@ func (w *watchWorld) pumped(t *testing.T) {
 	}
 }
 
-// both makes one call over HTTP and over MCP.
-func (w *watchWorld) both(t *testing.T, caller api.Caller, args map[string]any) (overHTTP, overMCP answer) {
-	t.Helper()
-	return (&reachWorld{server: w.server}).both(t, caller, "watch", args)
-}
-
-// watch calls watch over both interfaces, fails the test unless both served
-// the same bytes and succeeded, and decodes them.
 func (w *watchWorld) watch(t *testing.T, caller api.Caller, args map[string]any) api.Watched {
 	t.Helper()
-	overHTTP, overMCP := w.both(t, caller, args)
+	overHTTP, overMCP := w.both(t, caller, "watch", args)
 	if overHTTP.status != http.StatusOK || overMCP.isError {
 		t.Fatalf("watch(%v) for %+v: HTTP %d %s, MCP isError=%v %s", args, caller, overHTTP.status, overHTTP.body, overMCP.isError, overMCP.body)
 	}
@@ -229,9 +178,6 @@ func eventsOf(notes []api.Notification) []string {
 	return out
 }
 
-// An event is delivered once it is distilled, and not before: the watch holds
-// its cursor at an event the distiller has not read, and at one whose job has
-// not run, rather than pass it.
 func TestWatchDeliversAnEventOnceItIsDistilled(t *testing.T) {
 	w := newWatchWorld(t)
 	w.distil(t, w.src, "acme/w#0", []string{w.repo}, openACL, w.emit(t, w.src, "acme/w#0", connector.KindIssue, openACL))
@@ -253,7 +199,6 @@ func TestWatchDeliversAnEventOnceItIsDistilled(t *testing.T) {
 		t.Fatalf("while its job is still to run: %+v, want nothing and the cursor %s", got, start.Cursor)
 	}
 
-	// Distilled, about an entity under the scope.
 	doc := w.distil(t, w.src, "acme/w#1", []string{w.engine}, openACL, ev)
 	got := w.watch(t, kyle, args)
 	want := []api.Notification{{Event: ev, Kind: connector.KindIssue, Source: w.src, Time: day.Add(2 * time.Hour), Document: doc}}
@@ -265,8 +210,6 @@ func TestWatchDeliversAnEventOnceItIsDistilled(t *testing.T) {
 		t.Errorf("after the cursor it returned: %+v, want nothing", again.Notifications)
 	}
 
-	// A job that finished without putting the event in any document is not
-	// waited for: the watch passes the event.
 	w.emit(t, w.src, "acme/w#2", connector.KindIssue, openACL)
 	w.pumped(t)
 	skipped := w.watch(t, kyle, map[string]any{"scope": w.repo, "after": got.Cursor})
@@ -275,9 +218,6 @@ func TestWatchDeliversAnEventOnceItIsDistilled(t *testing.T) {
 	}
 }
 
-// A watch from now passes over what had committed before it, even where an
-// open transaction holds the feed short of it, and delivers what that
-// transaction writes once it commits: the event was not there at the start.
 func TestAWatchFromNowPassesWhatHadCommittedBehindAnOpenTransaction(t *testing.T) {
 	w := newWatchWorld(t)
 	tx, err := w.pool.Begin(t.Context())
@@ -302,9 +242,6 @@ func TestAWatchFromNowPassesWhatHadCommittedBehindAnOpenTransaction(t *testing.T
 	}
 }
 
-// Reading on from the cursor each watch returns delivers every event on the
-// scope once, in feed order, whatever the feed holds between them and however
-// many watches it takes.
 func TestWatchResumesFromItsCursorWithoutDuplicatesOrGaps(t *testing.T) {
 	w := newWatchWorld(t)
 	start := w.watch(t, kyle, map[string]any{"scope": w.repo})
@@ -316,14 +253,13 @@ func TestWatchResumesFromItsCursorWithoutDuplicatesOrGaps(t *testing.T) {
 			ev := w.emit(t, w.src, artifact, connector.KindIssue, openACL)
 			w.distil(t, w.src, artifact, []string{w.repo}, openACL, ev)
 			want = append(want, ev)
-			// Something on another scope between every two.
+
 			elsewhere := fmt.Sprintf("acme/other#%d", w.hour+1)
 			w.distil(t, w.src, elsewhere, []string{w.other}, openACL, w.emit(t, w.src, elsewhere, connector.KindIssue, openACL))
 		}
 		w.pumped(t)
 	}
-	// A page of the feed's worth of events nobody distilled, so that the
-	// first page read holds some notifications but fewer than a batch.
+
 	filler := func(n int) {
 		t.Helper()
 		for range n {
@@ -349,7 +285,6 @@ func TestWatchResumesFromItsCursorWithoutDuplicatesOrGaps(t *testing.T) {
 	}
 }
 
-// The filter narrows by kind and by source, and an empty one is everything.
 func TestWatchFiltersByKindAndSource(t *testing.T) {
 	w := newWatchWorld(t)
 	start := w.watch(t, kyle, map[string]any{"scope": w.repo})
@@ -387,8 +322,6 @@ func TestWatchFiltersByKindAndSource(t *testing.T) {
 	}
 }
 
-// Only an agent that may subscribe may watch — orchestrator and above — and
-// a person calling directly. The refusal is the same bytes over both.
 func TestWatchIsForOrchestratorsAndPeople(t *testing.T) {
 	w := newWatchWorld(t)
 	for _, tt := range []struct {
@@ -402,7 +335,7 @@ func TestWatchIsForOrchestratorsAndPeople(t *testing.T) {
 		{"an observer", peekForKyle, http.StatusForbidden},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			overHTTP, overMCP := w.both(t, tt.caller, map[string]any{"scope": w.repo})
+			overHTTP, overMCP := w.both(t, tt.caller, "watch", map[string]any{"scope": w.repo})
 			if overHTTP.status != tt.want || overMCP.isError != (tt.want != http.StatusOK) || overHTTP.body != overMCP.body {
 				t.Errorf("HTTP %d %s, MCP isError=%v %s; want %d over both with the same body",
 					overHTTP.status, overHTTP.body, overMCP.isError, overMCP.body, tt.want)
@@ -411,11 +344,6 @@ func TestWatchIsForOrchestratorsAndPeople(t *testing.T) {
 	}
 }
 
-// What a reader may not read — by the event's access list, the document's, or
-// reach — is never delivered to them, and Hearsay's own events and what is
-// never distilled are delivered to nobody, even when a document names them.
-// A notification carries its five handles and nothing that says where it was
-// in the feed.
 func TestWatchNeverShowsWhatTheReaderMayNotRead(t *testing.T) {
 	w := newWatchWorld(t)
 	start := w.watch(t, kyle, map[string]any{"scope": w.repo})
@@ -433,7 +361,7 @@ func TestWatchNeverShowsWhatTheReaderMayNotRead(t *testing.T) {
 	put(w.src, "acme/w#5", connector.KindToolCall, openACL, openACL, w.engine)
 	put(w.src, "acme/w#6", connector.KindAudit, openACL, openACL, w.engine)
 	put(connector.SelfSource, "acme/w#7", connector.KindIssue, openACL, openACL, w.engine)
-	// An artifact deleted at the source: neither it nor its tombstone.
+
 	put(w.src, "acme/w#9", connector.KindIssue, openACL, openACL, w.engine)
 	w.hour++
 	if _, err := w.events.Append(t.Context(), connector.Event{
@@ -446,8 +374,8 @@ func TestWatchNeverShowsWhatTheReaderMayNotRead(t *testing.T) {
 	}
 	engine := put(w.src, "acme/w#8", connector.KindIssue, openACL, openACL, w.engine)
 	w.pumped(t)
-	// And a bundle served, which is an audit event of Hearsay's own.
-	(&reachWorld{server: w.server}).both(t, kyle, "get_bundle", map[string]any{"scope": w.repo})
+
+	w.both(t, kyle, "get_bundle", map[string]any{"scope": w.repo})
 
 	for _, tt := range []struct {
 		name   string
@@ -464,7 +392,7 @@ func TestWatchNeverShowsWhatTheReaderMayNotRead(t *testing.T) {
 		{"kyle elsewhere", kyle, w.other, []string{}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			overHTTP, _ := w.both(t, tt.caller, map[string]any{"scope": tt.scope, "after": start.Cursor})
+			overHTTP, _ := w.both(t, tt.caller, "watch", map[string]any{"scope": tt.scope, "after": start.Cursor})
 			var shape struct {
 				Notifications []map[string]any `json:"notifications"`
 			}
@@ -484,8 +412,6 @@ func TestWatchNeverShowsWhatTheReaderMayNotRead(t *testing.T) {
 	}
 }
 
-// With nothing to deliver a watch waits, then returns an empty list; it holds
-// no database connection while it waits, and ends when its request does.
 func TestWatchWaitsThenReturnsEmpty(t *testing.T) {
 	w := newWatchWorld(t)
 	began := time.Now()
@@ -499,17 +425,17 @@ func TestWatchWaitsThenReturnsEmpty(t *testing.T) {
 	if again := w.watch(t, kyle, map[string]any{"scope": w.repo, "after": first.Cursor}); again.Cursor != first.Cursor {
 		t.Errorf("with nothing on the feed the cursor moved from %s to %s", first.Cursor, again.Cursor)
 	}
-	if overHTTP, overMCP := w.both(t, kyle, map[string]any{"scope": w.repo, "after": "not-a-cursor"}); overHTTP.status != http.StatusBadRequest || overHTTP.body != overMCP.body {
+	if overHTTP, overMCP := w.both(t, kyle, "watch", map[string]any{"scope": w.repo, "after": "not-a-cursor"}); overHTTP.status != http.StatusBadRequest || overHTTP.body != overMCP.body {
 		t.Errorf("a cursor no watch returned: HTTP %d %s, MCP %s; want a 400 and the same body", overHTTP.status, overHTTP.body, overMCP.body)
 	}
 
-	// A pool of its own, so what it holds is the watch's alone.
 	pool, err := db.Connect(t.Context(), w.pool.Config().ConnString())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	calls, err := api.NewCalls(pool, config.Repo{Principals: w.principals}, nil)
+	read := make(chan struct{}, 1)
+	calls, err := api.NewCalls(feedReadSignal{DB: pool, read: read}, config.Repo{Principals: w.principals}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -521,11 +447,13 @@ func TestWatchWaitsThenReturnsEmpty(t *testing.T) {
 		_, err := calls.Call(ctx, kyle, "watch", json.RawMessage(`{"scope":"`+w.repo+`"}`))
 		done <- err
 	}()
-	for range 5 {
-		time.Sleep(100 * time.Millisecond)
-		if held := pool.Stat().AcquiredConns(); held != 0 {
-			t.Errorf("a waiting watch holds %d connections", held)
-		}
+	select {
+	case <-read:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the watch never read the change feed")
+	}
+	if held := pool.Stat().AcquiredConns(); held != 0 {
+		t.Errorf("a waiting watch holds %d connections", held)
 	}
 	cancel()
 	select {
@@ -539,10 +467,61 @@ func TestWatchWaitsThenReturnsEmpty(t *testing.T) {
 	}
 }
 
-// A server that is stopping ends the watches waiting on it with what they
-// have, rather than hold its shutdown for their wait.
+const changeFeedRead = "(e.xact_id, e.seq) > ($1::xid8"
+
+type feedReadSignal struct {
+	api.DB
+	read chan<- struct{}
+}
+
+func (f feedReadSignal) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	rows, err := f.DB.Query(ctx, sql, args...)
+	if err != nil || !strings.Contains(sql, changeFeedRead) {
+		return rows, err
+	}
+	return feedReadRows{Rows: rows, read: f.read}, nil
+}
+
+type feedReadRows struct {
+	pgx.Rows
+	read chan<- struct{}
+}
+
+func (r feedReadRows) Close() {
+	r.Rows.Close()
+	select {
+	case r.read <- struct{}{}:
+	default:
+	}
+}
+
+type feedReadTracer struct{ read chan<- struct{} }
+
+type feedReadKey struct{}
+
+func (feedReadTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	return context.WithValue(ctx, feedReadKey{}, strings.Contains(data.SQL, changeFeedRead))
+}
+
+func (t feedReadTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
+	if isFeed, _ := ctx.Value(feedReadKey{}).(bool); isFeed {
+		select {
+		case t.read <- struct{}{}:
+		default:
+		}
+	}
+}
+
 func TestAWaitingWatchEndsWhenTheServerStops(t *testing.T) {
 	w := newWatchWorld(t)
+	read := make(chan struct{}, 1)
+	poolConfig := w.pool.Config()
+	poolConfig.ConnConfig.Tracer = feedReadTracer{read: read}
+	pool, err := pgxpool.NewWithConfig(t.Context(), poolConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
 	var lc net.ListenConfig
 	listener, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
@@ -552,7 +531,7 @@ func TestAWaitingWatchEndsWhenTheServerStops(t *testing.T) {
 	defer cancel()
 	stopped := make(chan error, 1)
 	go func() {
-		stopped <- api.Run(ctx, &config.Config{Repo: config.Repo{Principals: w.principals}}, api.Deps{Pool: w.pool, Listener: listener})
+		stopped <- api.Run(ctx, &config.Config{Repo: config.Repo{Principals: w.principals}}, api.Deps{Pool: pool, Listener: listener})
 	}()
 	answered := make(chan string, 1)
 	go func() {
@@ -569,7 +548,11 @@ func TestAWaitingWatchEndsWhenTheServerStops(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		answered <- fmt.Sprintf("%d %s", resp.StatusCode, body)
 	}()
-	time.Sleep(500 * time.Millisecond)
+	select {
+	case <-read:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the watch never read the change feed")
+	}
 	cancel()
 	select {
 	case err := <-stopped:
@@ -584,13 +567,11 @@ func TestAWaitingWatchEndsWhenTheServerStops(t *testing.T) {
 	}
 }
 
-// A debounced job counts as unfinished for watch even though the queue cannot
-// claim it yet. Exercise the real pump's cursor-and-enqueue transaction.
 func TestWatchWithholdsAnEventWhileItsDebouncedJobIsPending(t *testing.T) {
 	w := newWatchWorld(t)
 	start := w.watch(t, kyle, map[string]any{"scope": w.repo})
 	ev := w.emit(t, w.src, "acme/w#1", connector.KindIssue, openACL)
-	w.settled(t)
+	awaitFeed(t, w.pool)
 	pump := distiller.NewPump(w.pool, distiller.PumpOptions{Quiet: time.Minute, MaxDelay: 5 * time.Minute})
 	if got, err := pump.Once(t.Context()); err != nil || got.Events != 1 {
 		t.Fatalf("Once = %+v, %v, want one debounced event", got, err)

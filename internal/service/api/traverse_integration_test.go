@@ -13,6 +13,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
@@ -20,14 +21,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/principal"
 	"github.com/kpenfound/hearsay/internal/service/api"
 )
-
-// both uses the world's credentials and checks the shared HTTP/MCP bytes.
-func (w *world) both(t *testing.T, caller api.Caller, call string, args any) (answer, answer) {
-	t.Helper()
-	status, body := w.post(t, "/v1/"+call, caller, string(mustJSON(t, args)))
-	mcp, isError := w.mcp(t, caller, call, args)
-	return answer{status: status, body: string(body)}, answer{status: 200, isError: isError, body: string(mcp)}
-}
 
 func traverseArgs(typ, id string, steps ...map[string]any) map[string]any {
 	return map[string]any{"start": []map[string]string{{"type": typ, "id": id}}, "steps": steps}
@@ -112,7 +105,7 @@ func TestTraverseDownwardStateAndTiers(t *testing.T) {
 			want[tp.ID] = true
 		}
 	}
-	// A child without a subject never matches a state filter.
+
 	traverseEntity(t, w, "code:"+w.src+"-no-subject", w.scope)
 	args := traverseArgs("entity", w.scope, map[string]any{"edge": "has_part", "where": map[string]any{"state": "started"}}, map[string]any{"edge": "topics", "where": map[string]any{"tier": "inferred"}})
 	out, body := walk(t, w, sam, args)
@@ -169,7 +162,7 @@ func TestTraverseLedgerMergeSplitAndSupersession(t *testing.T) {
 		}
 	}
 	w.operate(t, l2.OperationRequest{Kind: l2.OperationUndo, Undoes: merge.ID})
-	// A split cuts b2's supersession edge to b1; the read must follow it both ways.
+
 	d3 := w.putIn(w.scope, w.project+"#42", l1.KindIssue, 42, "third decision", public)
 	b2 := traverseStance(t, w, b, d3, "newer", 42)
 	split := w.operate(t, l2.OperationRequest{Kind: l2.OperationSplit, Topic: b.ID, Stances: []string{b2.ID}, Name: "split decision"})
@@ -191,7 +184,7 @@ func TestTraverseHiddenNodesEqualAbsentAndNotFound(t *testing.T) {
 	private := connector.ACL{{Kind: connector.ACLIdentity, Source: w.src, NativeID: kyleNode}}
 	hiddenDoc := w.putIn(w.scope, w.project+"#60", l1.KindIssue, 60, "UNREADABLE CONTENT", private)
 	hidden := traverseTopic(t, w, hiddenDoc, "UNREADABLE TOPIC", w.scope)
-	// This stance's evidence is public, but reaching it via its hidden topic is forbidden.
+
 	visibleStance := traverseStance(t, w, hidden, w.issue, "VISIBLE ONLY THROUGH HIDDEN TOPIC", 61)
 	args := traverseArgs("entity", w.scope, map[string]any{"edge": "topics"}, map[string]any{"edge": "stances"})
 	_, present := walk(t, w, sam, args)
@@ -220,7 +213,7 @@ func TestTraverseHiddenNodesEqualAbsentAndNotFound(t *testing.T) {
 	if present != absent {
 		t.Fatalf("hidden-present != absent\n%s\n%s", present, absent)
 	}
-	// A hidden document also never consumes a visible limit or changes truncation.
+
 	docsArgs := traverseArgs("entity", w.scope, map[string]any{"edge": "documents"})
 	docsArgs["limit"] = 2
 	_, before := walk(t, w, sam, docsArgs)
@@ -233,7 +226,7 @@ func TestTraverseHiddenNodesEqualAbsentAndNotFound(t *testing.T) {
 
 func TestTraversePrincipalsAreTerminal(t *testing.T) {
 	w := newWorld(t)
-	// Configured names belong on handles; no principal grants or identity fields do.
+
 	r := repo(w.src)
 	r.Principals[0].Name = "Kyle"
 	calls, err := api.NewCalls(w.pool, r, nil)
@@ -270,7 +263,7 @@ func TestTraversePrincipalsAreTerminal(t *testing.T) {
 
 func TestTraverseReachByAgentClass(t *testing.T) {
 	w := newReachWorld(t)
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	if err := l2.New(pool).PutEntity(t.Context(), l2.Entity{ID: w.item, Type: l2.TypeTrackerItem, Origin: l2.OriginReference}); err != nil {
 		t.Fatal(err)
 	}
@@ -347,8 +340,7 @@ func TestTraverseLimitsAndRawCandidateCap(t *testing.T) {
 			t.Fatal("limit repeat differs")
 		}
 	}
-	// Hidden rows come first by activity, exhausting the raw cap before the
-	// readable documents. Removing those rows changes only truncation/missing nodes.
+
 	args = traverseArgs("entity", w.scope, map[string]any{"edge": "documents"})
 	absent, absentBytes := walk(t, w, sam, args)
 	if absent.Truncated {
@@ -487,7 +479,7 @@ func TestTraverseFiltersOrderingAndStoredDirections(t *testing.T) {
 			}
 		})
 	}
-	// Topic ordering uses readable history only, with newest-first and id ties.
+
 	a := traverseTopic(t, w, docs[1], "newest topic", w.scope)
 	traverseStance(t, w, a, docs[1], "position", 84)
 	b := traverseTopic(t, w, docs[2], "tied newest topic", w.scope)
@@ -499,8 +491,7 @@ func TestTraverseFiltersOrderingAndStoredDirections(t *testing.T) {
 	if !slices.Equal(nodeIDs(g)[1:], want) {
 		t.Fatalf("topics order=%s, want %v", body, want)
 	}
-	// A readable opener can have an unreadable current stance. Such a topic has
-	// no current position or tier and cannot match a tier filter.
+
 	hidden := w.putIn(w.scope, w.project+"#hidden-current", l1.KindPR, 90, "HIDDEN CURRENT", connector.ACL{{Kind: connector.ACLIdentity, Source: w.src, NativeID: kyleNode}})
 	traverseStance(t, w, tp, hidden, "HIDDEN POSITION", 90)
 	g, body = walk(t, w, sam, traverseArgs("topic", tp.ID, map[string]any{"edge": "about"}))
@@ -513,8 +504,6 @@ func TestTraverseFiltersOrderingAndStoredDirections(t *testing.T) {
 	}
 }
 
-// All document-target edges must carry activity into both the per-source cut
-// and the frontier-wide ordering, including edges that start with only IDs.
 func TestTraverseDocumentCandidateOrdering(t *testing.T) {
 	w := newWorld(t)
 	entity := "code:" + w.src + "-document-order"
@@ -607,8 +596,7 @@ func TestTraverseAnchorRawCandidateCap(t *testing.T) {
 			if absent.Truncated || !slices.Contains(nodeIDs(absent), doc) {
 				t.Fatalf("hidden-absent fixture=%s", absentBytes)
 			}
-			// Pin ordering is independent of activity: every hidden pin is older
-			// than the readable pin, even though its document is newer.
+
 			if _, err := w.pool.Exec(t.Context(), `INSERT INTO l1_docs (id,kind,artifact_class,source,source_native_id,l0_refs,created_at,updated_at,last_activity_at,scope,acl,text,raw_text,body,outcome_kind)
 SELECT 'l1:' || $1 || ':hidden-pin-' || i,'issue','issue',$1,'hidden-pin-' || i,ARRAY['evt:hidden-pin'],now(),now(),now(),ARRAY[$2],'[{"kind":"identity","source":"secret","native_id":"hidden"}]'::jsonb,'HIDDEN TEXT','HIDDEN TEXT','{"summary":"HIDDEN SUMMARY","outcome_kind":"none"}'::jsonb,'none' FROM generate_series(1,$3::int) i`, w.src, entity, hiddenCount); err != nil {
 				t.Fatal(err)
@@ -617,7 +605,7 @@ SELECT 'l1:' || $1 || ':hidden-pin-' || i,'issue','issue',$1,'hidden-pin-' || i,
 				t.Fatal(err)
 			}
 			capped, body := walk(t, w, sam, args)
-			// Only the later readable anchor and its edge can disappear.
+
 			want := absent
 			want.Nodes = slices.DeleteFunc(slices.Clone(absent.Nodes), func(n l3.Node) bool { return n.ID == doc })
 			want.Edges = slices.DeleteFunc(slices.Clone(absent.Edges), func(e l3.Edge) bool { return e.To.ID == doc })
@@ -634,7 +622,7 @@ SELECT 'l1:' || $1 || ':hidden-pin-' || i,'issue','issue',$1,'hidden-pin-' || i,
 			if again != body {
 				t.Fatal("anchor cap repeat differs")
 			}
-			// The bundle view remains unbounded by traversal's raw-row cap.
+
 			var bundle struct {
 				Anchors []struct {
 					L1 string `json:"l1"`
@@ -644,7 +632,7 @@ SELECT 'l1:' || $1 || ':hidden-pin-' || i,'issue','issue',$1,'hidden-pin-' || i,
 			if len(bundle.Anchors) != 1 || bundle.Anchors[0].L1 != doc {
 				t.Fatalf("bundle lost readable anchor: %+v", bundle.Anchors)
 			}
-			// Below the cap, hidden pins have no effect on any returned byte.
+
 			if _, err := w.pool.Exec(t.Context(), `DELETE FROM l2_pins WHERE scope=$1 AND l1 LIKE '%:hidden-pin-%' AND l1 <> $2`, entity, "l1:"+w.src+":hidden-pin-1"); err != nil {
 				t.Fatal(err)
 			}
@@ -656,8 +644,6 @@ SELECT 'l1:' || $1 || ':hidden-pin-' || i,'issue','issue',$1,'hidden-pin-' || i,
 	}
 }
 
-// Missing pins and duplicate fallback results still consume raw rows. In
-// particular, an inferred spec also read by the defaults must be charged twice.
 func TestTraverseAnchorFallbackBudget(t *testing.T) {
 	for _, inferred := range []bool{false, true} {
 		t.Run(fmt.Sprintf("inferred %v", inferred), func(t *testing.T) {
@@ -678,7 +664,7 @@ func TestTraverseAnchorFallbackBudget(t *testing.T) {
 				if _, err := w.pool.Exec(t.Context(), `UPDATE l1_docs SET refs=$1 WHERE id=$2`, refs, referrer); err != nil {
 					t.Fatal(err)
 				}
-				missing-- // Inference takes one slot before the duplicate default.
+				missing--
 			}
 			args := traverseArgs("entity", entity, map[string]any{"edge": "anchors"})
 			absent, absentBytes := walk(t, w, sam, args)
@@ -721,7 +707,7 @@ func TestTraverseDepthRangesCyclesAndLowestStep(t *testing.T) {
 			}
 		})
 	}
-	// Reaching a start again does not change its step; cycles terminate.
+
 	traverseEntity(t, w, root, c)
 	args := traverseArgs("entity", root, map[string]any{"edge": "has_part", "depth": "1..6"}, map[string]any{"edge": "part_of", "depth": "1..6"})
 	args["start"] = []map[string]string{{"type": "entity", "id": root}, {"type": "entity", "id": b}}
@@ -738,7 +724,7 @@ func TestTraverseDepthRangesCyclesAndLowestStep(t *testing.T) {
 
 func TestTraverseRawTopicRowsCountBeforeLedgerDeduplication(t *testing.T) {
 	w := newWorld(t)
-	// Use a separate entity so exactly 5,000 raw topic rows are candidates.
+
 	entity := "code:" + w.src + "-merged-cap"
 	traverseEntity(t, w, entity)
 	target := "topic:" + w.src + ":target"
@@ -783,8 +769,6 @@ func TestTraverseHiddenStandingMatchesHistory(t *testing.T) {
 				secret := w.putIn(entity, w.project+"#standing-secret", l1.KindPR, 101, "SECRET EVIDENCE CONTENT", private)
 				hidden = traverseStance(t, w, tp, secret, "SECRET POSITION", 101)
 			} else {
-				// Same fork as "a hidden stance hides only itself from the
-				// contest" in l2's TestStand: late changes a, b restates a.
 				secret := w.putIn(entity, w.project+"#standing-secret", l1.KindIssue, 99, "SECRET EVIDENCE CONTENT", private)
 				hidden = traverseStance(t, w, tp, secret, "SECRET POSITION", 99)
 				late := traverseStance(t, w, tp, doc, "readable change", 100)
@@ -824,7 +808,6 @@ func TestTraverseHiddenStandingMatchesHistory(t *testing.T) {
 			present := map[string]l3.Subgraph{}
 			for _, phase := range []string{"present", "absent"} {
 				if phase == "absent" {
-					// Remove incoming foreign keys with the absent ancestor.
 					if _, err := w.pool.Exec(t.Context(), `UPDATE l2_stances SET supersedes=NULL WHERE supersedes=$1`, hidden.ID); err != nil {
 						t.Fatal(err)
 					}
@@ -901,7 +884,6 @@ func TestTraverseHiddenStandingMatchesHistory(t *testing.T) {
 						if phase == "present" {
 							present[tt.name] = g
 						} else if tt.name == "all stances" {
-							// With no standing filter, only standing fields may differ.
 							normalize := func(graph l3.Subgraph) string {
 								for i := range graph.Nodes {
 									graph.Nodes[i].Current = nil

@@ -24,9 +24,6 @@ type authenticator struct {
 	kinds  map[string]principal.Kind
 }
 
-// newAuthenticator resolves secret names once, when the API starts. A missing
-// credential is a startup error, never a reason to fall back to trusting a
-// caller-supplied name. Teams do not act as callers.
 func newAuthenticator(principals []principal.Principal) (*authenticator, error) {
 	a := &authenticator{tokens: make(map[string][sha256.Size]byte), kinds: make(map[string]principal.Kind)}
 	seen := make(map[[sha256.Size]byte]string)
@@ -52,9 +49,6 @@ func newAuthenticator(principals []principal.Principal) (*authenticator, error) 
 	return a, nil
 }
 
-// authenticate checks both identities before an HTTP or MCP request can reach
-// Calls. The human token grants access as that person; an agent token proves
-// which configured agent is acting with that person's delegated credential.
 func (a *authenticator) authenticate(h http.Header) (Caller, *Error) {
 	if len(h.Values(PrincipalHeader)) != 1 || len(h.Values(AgentHeader)) > 1 || len(h.Values(SessionHeader)) > 1 {
 		return Caller{}, fail(http.StatusUnauthorized, "ambiguous caller headers")

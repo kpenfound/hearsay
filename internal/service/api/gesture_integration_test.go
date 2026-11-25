@@ -13,8 +13,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/l2"
 )
 
-// A person's ratify and demote are what the bundle, the L3 view and
-// stance_history serve, until an undo or a newer stance.
 func TestGesturesAreServedByEveryRead(t *testing.T) {
 	w := newWorld(t)
 	ctx := t.Context()
