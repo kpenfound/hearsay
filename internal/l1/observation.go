@@ -24,11 +24,12 @@ type PipelineObservation struct {
 	GenerativeCalls    *int64
 	GenerativeAttempts *int64
 	GenerativeUsage    llm.JudgmentUsage
-	JudgmentRequests   *int64 // logical observations, including zero-attempt fallbacks
-	JudgmentAttempts   *int64
-	JudgmentFallbacks  *int64
-	JudgmentUsage      llm.JudgmentUsage
-	CandidateCount     *int64
+	// JudgmentRequests counts logical observations, including zero-attempt fallbacks.
+	JudgmentRequests  *int64
+	JudgmentAttempts  *int64
+	JudgmentFallbacks *int64
+	JudgmentUsage     llm.JudgmentUsage
+	CandidateCount    *int64
 }
 
 // AddPipelineCount propagates missing, invalid and overflowing counts as

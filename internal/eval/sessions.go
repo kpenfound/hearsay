@@ -7,11 +7,8 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector"
 )
 
-// The sections of a bundle audit, in the order a report lists them: the keys
-// of a bundle audit record's `sections`.
 var bundleSections = []string{"scope.entities", "anchors", "stances", "recent", "open_questions", "conflicts"}
 
-// The verdicts a consumer gives a flagged conflict.
 const (
 	verdictReal     = "real"
 	verdictSpurious = "spurious"
@@ -108,9 +105,6 @@ type Action struct {
 	Share *float64 `json:"share"`
 }
 
-// auditRecord is the part of a bundle or handle audit's payload.native this
-// package reads (api.AuditRecord): ids and call names, and nothing that could
-// carry content.
 type auditRecord struct {
 	Call          string              `json:"call"`
 	Session       string              `json:"session"`
@@ -132,8 +126,6 @@ func (a auditIDs) all() []string {
 	return slices.Concat(a.L1, a.Topics, a.Entities)
 }
 
-// nextAction is the part of a `next_action` event's payload.native this
-// package reads (agent.Native).
 type nextAction struct {
 	Session  string `json:"session"`
 	Scope    string `json:"scope"`
@@ -144,14 +136,11 @@ type nextAction struct {
 	} `json:"verdicts"`
 }
 
-// session names one agent session: the source it was posted to and its id.
 type session struct{ source, id string }
 
-// served is one session-linked bundle in the window.
 type served struct {
 	scope    string
 	sections map[string]map[string]bool
-	// every is every id the bundle served, in any section.
 	every    map[string]bool
 	followed map[string]bool
 	flagged  map[string]bool
@@ -170,9 +159,7 @@ func SummarizeSessions(events []connector.Event, scope string) (DrillDown, Confl
 		flags   ConflictFlags
 		actions NextActions
 		bundles []*served
-		// latest is the latest bundle in the window on each scope of each
-		// session: the one a handle call or next action follows.
-		latest = map[session]map[string]*served{}
+		latest  = map[session]map[string]*served{}
 	)
 	calls := map[string]*Beyond{"search": &drill.LookedBeyond.Search, "resolve": &drill.LookedBeyond.Resolve, "traverse": &drill.LookedBeyond.Traverse}
 	counts := map[string]*Action{"asked": &actions.Asked, "proceeded": &actions.Proceeded, "asserted": &actions.Asserted}
@@ -213,13 +200,11 @@ func SummarizeSessions(events []connector.Event, scope string) (DrillDown, Confl
 				latest[s][rec.Scope] = b
 				continue
 			}
-			// A handle call. One that was refused names no id.
 			if rec.Session == "" || rec.Status != 0 || len(latest[s]) == 0 {
 				continue
 			}
 			targets := slices.Clone(rec.TargetIDs)
 			if rec.Call == "search" && rec.Scope != "" {
-				// A search within an entity is a step into it.
 				targets = append(targets, rec.Scope)
 			}
 			beyond := true

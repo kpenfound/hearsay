@@ -83,7 +83,6 @@ func DecodeEvaluation(r io.Reader, v any) error {
 	return nil
 }
 
-// classes is every task's label set: each judgment is a yes/no question.
 var classes = []string{"yes", "no"}
 
 func validExampleLabel(e Example) bool { return e.Task.Known() && slices.Contains(classes, e.Label) }
@@ -219,8 +218,6 @@ func CompareJudgments(c Corpus, predictions Predictions, split string) (map[llm.
 	return out, nil
 }
 
-// scoreJudgments counts an unanswered prediction as an error, and as a false
-// no for a gold yes: an unanswered judgment decides nothing.
 func scoreJudgments(es []Example, ps map[string]Prediction) JudgmentMetrics {
 	m := JudgmentMetrics{Confusion: map[string]map[string]int{}}
 	for _, gold := range classes {

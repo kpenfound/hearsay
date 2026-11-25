@@ -12,6 +12,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/deletion"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
@@ -24,7 +25,7 @@ func TestOperatorDeletionRemovesJudgmentsAndObservations(t *testing.T) {
 	}
 }
 func testJournalDeletion(t *testing.T, topology string) {
-	pool := scratch(t)
+	pool := dbtest.Scratch(t, "deletion")
 	ctx := t.Context()
 	event := connector.Event{Source: "chat", NativeID: "secret", Kind: connector.KindMessage, Time: time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC), Payload: connector.Payload{Artifact: "secret", Author: &connector.Identity{Source: "chat", Kind: connector.IdentityUser, NativeID: "alice"}, Container: connector.Container{Kind: connector.ContainerChannel, NativeID: "channel"}, Text: "private-source-evidence"}, ACL: connector.ACL{{Kind: connector.ACLPublic}}}
 	if _, err := l0.New(pool).Append(ctx, event); err != nil {
@@ -99,8 +100,6 @@ func testJournalDeletion(t *testing.T, topology string) {
 			_, e := deletion.Apply(deletionContext, pool, repo, deletion.Selector{Event: "evt:chat:secret"}, "remove evidence", "operator")
 			finished <- e
 		}()
-		// Observe the actual waiter, rather than sleeping and assuming that
-		// deletion has reached its lock or established its first snapshot.
 		deadline := time.NewTimer(3 * time.Second)
 		defer deadline.Stop()
 		ticker := time.NewTicker(time.Millisecond)

@@ -36,9 +36,6 @@ func (s *Store) ContainerAccess(ctx context.Context, source, container string) (
 	return lists, nil
 }
 
-// Find candidate artifacts by container, then take their current revision
-// across all containers. Filtering only before the revision fold would retain
-// an old revision of an artifact that has moved out of this container.
 const containerAccessSQL = `
 SELECT DISTINCT current.acl
   FROM (SELECT DISTINCT artifact FROM l0_events

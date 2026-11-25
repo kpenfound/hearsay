@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db"
 )
 
 // BackfillCursors is where the connector runtime keeps each source's position
@@ -25,11 +26,11 @@ import (
 // there is no "forwards" to enforce here, and a connector that re-reads a page
 // costs nothing: ingest is idempotent on the event id.
 type BackfillCursors struct {
-	db Querier
+	db db.Querier
 }
 
 // NewBackfillCursors returns the store over a pool or a transaction on one.
-func NewBackfillCursors(q Querier) *BackfillCursors { return &BackfillCursors{db: q} }
+func NewBackfillCursors(q db.Querier) *BackfillCursors { return &BackfillCursors{db: q} }
 
 // Load is where the source's backfill had got to, and the zero state — the
 // beginning of history — for a source that has never backfilled.
@@ -60,8 +61,6 @@ func (c *BackfillCursors) Save(ctx context.Context, source string, state connect
 	if err := validCursor(state.Cursor); err != nil {
 		return fmt.Errorf("saving the backfill cursor of source %s: %w", source, err)
 	}
-	// RETURNING, and QueryRow, because a Querier is a pool or a transaction and
-	// the read half is all the two have in common.
 	var saved string
 	err := c.db.QueryRow(ctx, `
 INSERT INTO l0_backfill_cursors (source, cursor, done, events)
@@ -76,8 +75,6 @@ RETURNING source`,
 	return nil
 }
 
-// validBackfillSource refuses a source id the column cannot hold, before any
-// SQL runs.
 func validBackfillSource(source string) error {
 	if !connector.ValidSourceID(source) {
 		return fmt.Errorf("%q is not a source id: lowercase letters, digits, - and _, up to %d bytes", source, connector.MaxSourceIDLen)
@@ -85,10 +82,6 @@ func validBackfillSource(source string) error {
 	return nil
 }
 
-// validCursor refuses a cursor the column cannot hold. A cursor is opaque, so
-// nothing here looks at what is in it — but it is stored as text, and a
-// connector that puts raw bytes in one finds out here rather than by aborting a
-// statement (docs/connector-contract.md).
 func validCursor(cursor connector.Cursor) error {
 	s := string(cursor)
 	switch {

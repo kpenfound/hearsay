@@ -145,9 +145,6 @@ SELECT ev.id, d.id, d.acl, d.scope
 	return out, nil
 }
 
-// artifactScopesSQL is the scope of every document built from any revision of
-// one artifact: its own document, a conversation's that holds it, or a
-// section's of it.
 const artifactScopesSQL = `
 SELECT scope FROM l1_docs
 WHERE source = $1 AND l0_refs && ARRAY(SELECT id FROM l0_events WHERE source = $1 AND artifact = $2)`
@@ -287,13 +284,6 @@ func (s *Store) ListFor(ctx context.Context, reader Reader, opts ListOptions) ([
 	return docs, nil
 }
 
-// mostReferencedSQL ranks the documents about one entity by how many other
-// documents about it point at them, both sides filtered by the reader first.
-// A reference points at a document when it names what the document is: an
-// issue, a pull request or a bare tracker item names an issue or pull request
-// by its artifact id, a commit a commit by its own, and a link a document by
-// its permalink. The ids are compared without the source, as L2's join keys
-// compare them: a chat that links an issue is in another source than the issue.
 const mostReferencedSQL = `
 WITH readable AS (
     SELECT id, kind, source_native_id, source_url, refs FROM l1_docs WHERE %s

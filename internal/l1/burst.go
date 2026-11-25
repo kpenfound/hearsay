@@ -52,8 +52,6 @@ func BuildChatBursts(threadKey string, messages []connector.Event, resolver *pri
 			if err != nil {
 				return nil, fmt.Errorf("building burst %s: %w", key, err)
 			}
-			// The ACL fold may omit a message with no common grant.
-			// A burst must quote its entire contiguous run or not exist.
 			if len(doc.L0Refs) == end-start {
 				out = append(out, doc)
 			}

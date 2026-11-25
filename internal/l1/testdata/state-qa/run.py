@@ -35,8 +35,6 @@ else:
         helper = Path(scratch) / 'state-filter'
         env = dict(os.environ, CGO_ENABLED='0', GOOS='linux')
         subprocess.run(['go', 'build', '-ldflags', '-s -w', '-o', str(helper), str(HERE / 'filter.go')], env=env, check=True)
-        # A static helper checks ListFor without a production endpoint or image
-        # change. The API sends this script without a process argument limit.
         encoded = base64.b64encode(helper.read_bytes()).decode()
         script = "base64 -d > /tmp/state-filter <<'HELPER'\n" + encoded + "\nHELPER\nchmod +x /tmp/state-filter\n" + (HERE / 'trial.sh').read_text()
         workspace = query('{ host { directory(path: ".") { asWorkspace { id moduleSource(path: ".dagger/modules/hearsay") { asModule { serve(entrypoint: true) } } } } } }')

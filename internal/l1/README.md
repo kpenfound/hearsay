@@ -200,8 +200,7 @@ marker log independently of the journal. **Any new table that changes
 effective inputs must join this trigger/guard protocol.**
 
 `PipelineObservation` is one stage run, `distill` or `assert`; its cohort is
-always `accepted` now, and `baseline` and `shadow` survive only on rows written
-before Jev was required. It includes handler/queue time in nanoseconds,
+`accepted`, `baseline` or `shadow`, and the workers write `accepted`. It includes handler/queue time in nanoseconds,
 generative calls/tokens/cost, judgment attempts/tokens/cost and candidate
 processing. Durations,
 counts and usage are pointers: nil means unknown, and a pointer to zero is
@@ -234,6 +233,6 @@ membership identities. Bursts, wiki sections, meeting segments and other
 SourceBuilt keys that cannot be tied to a captured root or window retain a
 conservative source-wide marker; event-pair markers alone cannot describe
 their membership. Stored candidate evidence uses conversation scopes too,
-with the same source fallback for derived shapes. The default remains a full L1 input
+with the same source fallback for derived shapes. The default is a full L1 input
 snapshot for assertion consumers. Do not use source-built identity when the
 question depends on previously generated L1 text.

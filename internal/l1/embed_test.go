@@ -8,19 +8,13 @@ import (
 	"github.com/kpenfound/hearsay/internal/l1"
 )
 
-// What is embedded is the document's text, whole, unless it is longer than the
-// bound — and then it is cut on a rune boundary, in the same place every time,
-// because a document that embedded to two different vectors on two runs would
-// rank differently for no reason anything could see.
 func TestEmbedTextIsBoundedAndDeterministic(t *testing.T) {
-	// A two-byte rune straddling the cut: the text is one byte short of the
-	// bound, then a rune that would be split by it.
 	straddling := strings.Repeat("a", l1.MaxEmbedBytes-1) + "é" + strings.Repeat("b", 10)
 
 	for _, tc := range []struct {
 		name string
 		text string
-		want int // the length of what is embedded
+		want int
 	}{
 		{name: "empty", text: "", want: 0},
 		{name: "short", text: "a distillation", want: len("a distillation")},

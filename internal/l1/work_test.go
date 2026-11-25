@@ -11,8 +11,6 @@ import (
 
 func touchCode() []config.CodeEntity {
 	return append(slices.Clone(pathCode), config.CodeEntity{
-		// The distiller also supplies repository projects seeded in L2 rather
-		// than configured in code/. These have no prose or path vocabulary.
 		ID: "code:acme/api", Type: config.TypeProject,
 		Repo: config.SourceRef{Source: source, Project: repo},
 	}, config.CodeEntity{
@@ -75,95 +73,109 @@ func TestUnnamedRepositoryProject(t *testing.T) {
 	}
 }
 
-func TestReferencesFromTouches(t *testing.T) {
-	tests := []struct {
-		name        string
-		touches     []connector.Touch
-		paths       []string
-		text        string
-		source      string
-		omitProject bool
-		want        []string
-	}{{
-		name:    "repository without paths",
-		touches: []connector.Touch{{Source: source, Project: repo}},
-		want:    []string{"code:acme/api"},
-	}, {
-		name:        "configured module alone does not invent a repository reference",
-		touches:     []connector.Touch{{Source: source, Project: repo}},
-		omitProject: true,
-	}, {
-		name:        "configured modules still match paths without a project entry",
-		touches:     []connector.Touch{{Source: source, Project: repo, Paths: []string{"engine/server/x.md"}}},
-		omitProject: true,
-		want:        []string{"code:acme/api:engine/server", "code:acme/api:engine"},
-	}, {
-		name:    "paths match most specific first across sources and containers",
-		touches: []connector.Touch{{Source: source, Project: repo, Paths: []string{"engine/server/x.go"}}},
-		want:    []string{"code:acme/api:engine/server", "code:acme/api:engine", "code:acme/api:golang", "code:acme/api"},
-	}, {
-		name: "multiple repositories and duplicate entries",
-		touches: []connector.Touch{
-			{Source: source, Project: "acme/other", Paths: []string{"engine/server/x.md"}},
-			{Source: source, Project: repo, Paths: []string{"engine/client/x.md", "engine/server/x.md"}},
-			{Source: source, Project: repo, Paths: []string{"engine/server/x.md"}},
-		},
-		want: []string{"code:acme/api:engine/client", "code:acme/api:engine/server", "code:acme/other:engine/server", "code:acme/api:engine", "code:acme/api", "code:acme/other"},
-	}, {
-		name:    "unknown repository produces no references",
-		touches: []connector.Touch{{Source: source, Project: "acme/missing", Paths: []string{"engine/server/x.go"}}},
-	}, {
-		name:    "same repository name in another source produces no references",
-		touches: []connector.Touch{{Source: "other-forge", Project: repo, Paths: []string{"engine/server/x.go"}}},
-	}, {
-		name:    "repository matching ignores case like ordinary paths",
-		touches: []connector.Touch{{Source: source, Project: "ACME/API", Paths: []string{"engine/server/x.md"}}},
-		want:    []string{"code:acme/api:engine/server", "code:acme/api:engine", "code:acme/api"},
-	}, {
-		name:    "unmatched paths still reference the repository",
-		touches: []connector.Touch{{Source: source, Project: repo, Paths: []string{"docs/README.md"}}},
-		want:    []string{"code:acme/api"},
-	}, {
-		name:    "generic touches work for a non-work source",
-		source:  "tracker",
-		touches: []connector.Touch{{Source: source, Project: repo, Paths: []string{"engine/server/x.md"}}},
-		want:    []string{"code:acme/api:engine/server", "code:acme/api:engine", "code:acme/api"},
-	}, {
-		name:    "text mentions deduplicate with path matches",
-		text:    "Engine server and queue",
-		touches: []connector.Touch{{Source: source, Project: repo, Paths: []string{"engine/server/x.md"}}},
-		want:    []string{"code:acme/api:engine/server", "code:acme/api:engine", "code:acme/api", "code:acme/api:queue"},
-	}, {
-		name:    "own paths cannot borrow an explicit touch repository",
-		touches: []connector.Touch{{Source: source, Project: repo}},
-		paths:   []string{"engine/server/x.go"},
-		want:    []string{"code:acme/api"},
-	}, {
-		name:  "own paths stay confined to the event repository",
-		paths: []string{"engine/server/x.go"},
-	}}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ev := workEvent(connector.KindIssue, "launch")
-			if tt.source != "" {
-				ev.Source = tt.source
-			}
-			if tt.text != "" {
-				ev.Payload.Text = tt.text
-			}
-			ev.Payload.Touches = tt.touches
-			ev.Payload.Paths = tt.paths
-			want := make([]l1.Reference, 0, len(tt.want))
-			for _, id := range tt.want {
-				want = append(want, l1.Reference{Type: l1.RefSystem, ID: id})
-			}
-			code := touchCode()
-			if tt.omitProject {
-				code = slices.DeleteFunc(code, func(e config.CodeEntity) bool { return e.ID == "code:acme/api" })
-			}
-			assertRefs(t, l1.References([]connector.Event{ev}, nil, code), want)
+type touchReferenceCase struct {
+	name        string
+	touches     []connector.Touch
+	paths       []string
+	text        string
+	source      string
+	omitProject bool
+	want        []string
+}
 
-			// Input order must not change the references or their specificity.
+var touchReferenceCases = []touchReferenceCase{{
+	name:    "repository without paths",
+	touches: []connector.Touch{{Source: source, Project: repo}},
+	want:    []string{"code:acme/api"},
+}, {
+	name:        "configured module alone does not invent a repository reference",
+	touches:     []connector.Touch{{Source: source, Project: repo}},
+	omitProject: true,
+}, {
+	name:        "configured modules still match paths without a project entry",
+	touches:     []connector.Touch{{Source: source, Project: repo, Paths: []string{"engine/server/x.md"}}},
+	omitProject: true,
+	want:        []string{"code:acme/api:engine/server", "code:acme/api:engine"},
+}, {
+	name:    "paths match most specific first across sources and containers",
+	touches: []connector.Touch{{Source: source, Project: repo, Paths: []string{"engine/server/x.go"}}},
+	want:    []string{"code:acme/api:engine/server", "code:acme/api:engine", "code:acme/api:golang", "code:acme/api"},
+}, {
+	name: "multiple repositories and duplicate entries",
+	touches: []connector.Touch{
+		{Source: source, Project: "acme/other", Paths: []string{"engine/server/x.md"}},
+		{Source: source, Project: repo, Paths: []string{"engine/client/x.md", "engine/server/x.md"}},
+		{Source: source, Project: repo, Paths: []string{"engine/server/x.md"}},
+	},
+	want: []string{"code:acme/api:engine/client", "code:acme/api:engine/server", "code:acme/other:engine/server", "code:acme/api:engine", "code:acme/api", "code:acme/other"},
+}, {
+	name:    "unknown repository produces no references",
+	touches: []connector.Touch{{Source: source, Project: "acme/missing", Paths: []string{"engine/server/x.go"}}},
+}, {
+	name:    "same repository name in another source produces no references",
+	touches: []connector.Touch{{Source: "other-forge", Project: repo, Paths: []string{"engine/server/x.go"}}},
+}, {
+	name:    "repository matching ignores case like ordinary paths",
+	touches: []connector.Touch{{Source: source, Project: "ACME/API", Paths: []string{"engine/server/x.md"}}},
+	want:    []string{"code:acme/api:engine/server", "code:acme/api:engine", "code:acme/api"},
+}, {
+	name:    "unmatched paths still reference the repository",
+	touches: []connector.Touch{{Source: source, Project: repo, Paths: []string{"docs/README.md"}}},
+	want:    []string{"code:acme/api"},
+}, {
+	name:    "generic touches work for a non-work source",
+	source:  "tracker",
+	touches: []connector.Touch{{Source: source, Project: repo, Paths: []string{"engine/server/x.md"}}},
+	want:    []string{"code:acme/api:engine/server", "code:acme/api:engine", "code:acme/api"},
+}, {
+	name:    "text mentions deduplicate with path matches",
+	text:    "Engine server and queue",
+	touches: []connector.Touch{{Source: source, Project: repo, Paths: []string{"engine/server/x.md"}}},
+	want:    []string{"code:acme/api:engine/server", "code:acme/api:engine", "code:acme/api", "code:acme/api:queue"},
+}, {
+	name:    "own paths cannot borrow an explicit touch repository",
+	touches: []connector.Touch{{Source: source, Project: repo}},
+	paths:   []string{"engine/server/x.go"},
+	want:    []string{"code:acme/api"},
+}, {
+	name:  "own paths stay confined to the event repository",
+	paths: []string{"engine/server/x.go"},
+}}
+
+func touchReferenceInputs(tt touchReferenceCase) (connector.Event, []config.CodeEntity, []l1.Reference) {
+	ev := workEvent(connector.KindIssue, "launch")
+	if tt.source != "" {
+		ev.Source = tt.source
+	}
+	if tt.text != "" {
+		ev.Payload.Text = tt.text
+	}
+	ev.Payload.Touches = tt.touches
+	ev.Payload.Paths = tt.paths
+	want := make([]l1.Reference, 0, len(tt.want))
+	for _, id := range tt.want {
+		want = append(want, l1.Reference{Type: l1.RefSystem, ID: id})
+	}
+	code := touchCode()
+	if tt.omitProject {
+		code = slices.DeleteFunc(code, func(e config.CodeEntity) bool { return e.ID == "code:acme/api" })
+	}
+	return ev, code, want
+}
+
+func TestReferencesFromTouches(t *testing.T) {
+	for _, tt := range touchReferenceCases {
+		t.Run(tt.name, func(t *testing.T) {
+			ev, code, want := touchReferenceInputs(tt)
+			assertRefs(t, l1.References([]connector.Event{ev}, nil, code), want)
+		})
+	}
+}
+
+func TestReferencesFromTouchesDoNotDependOnTheOrderOfTouchesOrEntities(t *testing.T) {
+	for _, tt := range touchReferenceCases {
+		t.Run(tt.name, func(t *testing.T) {
+			ev, code, want := touchReferenceInputs(tt)
 			slices.Reverse(ev.Payload.Touches)
 			slices.Reverse(code)
 			assertRefs(t, l1.References([]connector.Event{ev}, nil, code), want)

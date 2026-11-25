@@ -160,7 +160,6 @@ func Show(ctx context.Context, pool *pgxpool.Pool, id string) (Record, error) {
 	return rec, nil
 }
 
-// rebuilds is what became of each document a deletion queued, in id order.
 func rebuilds(ctx context.Context, tx pgx.Tx, id string, documents []string) ([]Rebuilt, error) {
 	rows, err := tx.Query(ctx, `
 SELECT doc, coalesce(r.outcome, $3), r.rebuilt_at
@@ -188,12 +187,6 @@ SELECT doc, coalesce(r.outcome, $3), r.rebuilt_at
 	return out, nil
 }
 
-// status is complete when every queued document has been rebuilt and no job
-// on what the rebuild touched is still to run: the `distill` job of each
-// document, the `assert` job that reads a re-distilled one again, and the
-// `assert` job that repairs each stance citing one. A job on one of those
-// targets enqueued later, for a reason of its own, holds the status at
-// rebuilding until it has run too.
 func status(ctx context.Context, tx pgx.Tx, docs []Rebuilt) (string, error) {
 	ids := make([]string, len(docs))
 	for i, d := range docs {

@@ -142,8 +142,6 @@ func Compute(ctx context.Context, q l2.Querier, authority config.Authority, opts
 	if err != nil {
 		return Report{}, err
 	}
-	// Every operation before the end, so an undo recorded after the window
-	// started but before it ended is found for an operation inside it.
 	ops, err := store.Operations(ctx, l2.OperationFilter{Scope: opts.Scope, Until: opts.Until})
 	if err != nil {
 		return Report{}, err
@@ -243,8 +241,6 @@ func SummarizeOperations(ops []l2.Operation, opened int, since time.Time) Operat
 	return out
 }
 
-// nearestRank is the p-th percentile of sorted durations: the smallest one at
-// least p of them are no greater than.
 func nearestRank(sorted []time.Duration, p float64) time.Duration {
 	i := int(math.Ceil(p*float64(len(sorted)))) - 1
 	return sorted[max(i, 0)]

@@ -68,11 +68,6 @@ const (
 	KindConversationSegment Kind = "conversation_segment"
 )
 
-// rootKinds maps the L0 kind of an artifact that makes a document of its own to
-// the kind of document it makes. An L0 kind that is not in it is either part of
-// somebody else's document — a `message` on an issue, a `review` on a pull
-// request — or a kind that produces a derived set, like `transcript`,
-// which the distiller routes separately.
 var rootKinds = map[connector.Kind]Kind{
 	connector.KindIssue:       KindIssue,
 	connector.KindPullRequest: KindPR,
@@ -161,16 +156,6 @@ func (o OutcomeKind) Asserts() bool {
 
 // String makes an OutcomeKind print as its name.
 func (o OutcomeKind) String() string { return string(o) }
-
-// ParseOutcomeKind reads an outcome kind, which is what a model answers and
-// what the column holds.
-func ParseOutcomeKind(s string) (OutcomeKind, error) {
-	o := OutcomeKind(s)
-	if !o.Valid() {
-		return "", fmt.Errorf("no such outcome kind %q: want one of %s", s, strings.Join(outcomeNames(), ", "))
-	}
-	return o, nil
-}
 
 func outcomeNames() []string {
 	names := make([]string, len(OutcomeKinds))

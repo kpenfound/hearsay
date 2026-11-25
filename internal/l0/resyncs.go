@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db"
 )
 
 // Resyncs is where the connector runtime keeps ACL re-syncs: one row per
@@ -18,11 +19,11 @@ import (
 // request between them: a request counts a generation, and a walk that
 // finishes only settles the generation it read.
 type Resyncs struct {
-	db Querier
+	db db.Querier
 }
 
 // NewResyncs returns the store over a pool or a transaction on one.
-func NewResyncs(q Querier) *Resyncs { return &Resyncs{db: q} }
+func NewResyncs(q db.Querier) *Resyncs { return &Resyncs{db: q} }
 
 // Owe implements [connector.ResyncStore].
 func (r *Resyncs) Owe(ctx context.Context, source, container string) error {
@@ -88,8 +89,6 @@ func (r *Resyncs) Save(ctx context.Context, source string, walk connector.Resync
 	if err := validCursor(walk.Cursor); err != nil {
 		return fmt.Errorf("saving the re-sync position of container %s of source %s: %w", container, source, err)
 	}
-	// Query rather than QueryRow: a walk another replica finished, or a request
-	// started again, updates no row, which is not an error.
 	rows, err := r.db.Query(ctx, `
 UPDATE l0_resyncs SET cursor = $4, updated_at = now()
  WHERE source = $1 AND container = $2 AND owed AND generation = $3
@@ -127,7 +126,6 @@ RETURNING owed`, source, done.Container, done.Generation).Scan(&owed)
 	return !owed, nil
 }
 
-// validResync refuses a key the table cannot hold, before any SQL runs.
 func validResync(source, container string) error {
 	if err := validBackfillSource(source); err != nil {
 		return err

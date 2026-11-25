@@ -6,13 +6,12 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 )
 
-// The record of a published distillation is replaced by the next, is written
-// only when it changes, and answers which distillation read a message revision.
 func TestAConversationDistillationRecordIsExactAndReplaced(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l1.New(pool)
 	src, thread, other := newSource(t), "c-1", "c-2"
 	first := l1.ConversationDistillation{Source: src, Thread: thread, Inputs: []string{"evt:b", "evt:a"}, Documents: []string{"l1:z", "l1:y"}}
@@ -34,7 +33,6 @@ func TestAConversationDistillationRecordIsExactAndReplaced(t *testing.T) {
 		t.Errorf("Read() disagrees with Inputs %v", got.Inputs)
 	}
 
-	// A distillation that produced no document is still a record.
 	second := l1.ConversationDistillation{Source: src, Thread: thread, Inputs: []string{"evt:a", "evt:c"}}
 	if changed, err := store.PutConversationDistillation(t.Context(), second); err != nil || !changed {
 		t.Fatalf("second = %v, %v", changed, err)

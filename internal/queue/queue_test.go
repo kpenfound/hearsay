@@ -39,11 +39,7 @@ func TestKindValidate(t *testing.T) {
 	}
 }
 
-// A channel name is a Postgres identifier, and Postgres truncates one at 63
-// bytes. Two kinds whose names differ only past that would share a channel and
-// wake each other's workers, so the length limit is on the kind, not on the
-// truncation.
-func TestAValidKindsChannelFitsAPostgresIdentifier(t *testing.T) {
+func TestLongestKindChannelFitsAPostgresIdentifier(t *testing.T) {
 	const namedatalen = 63
 	kind := queue.Kind{Name: "d" + strings.Repeat("x", queue.MaxKindLen-1)}
 	if err := kind.Validate(); err != nil {
@@ -52,6 +48,9 @@ func TestAValidKindsChannelFitsAPostgresIdentifier(t *testing.T) {
 	if got := len(kind.Channel()); got != namedatalen {
 		t.Errorf("len(Channel()) = %d for the longest valid kind, want exactly the identifier limit %d", got, namedatalen)
 	}
+}
+
+func TestKindChannelIsNamedAfterTheKind(t *testing.T) {
 	if got := (queue.Kind{Name: "distill"}).Channel(); got != "hearsay_job_distill" {
 		t.Errorf("Kind{distill}.Channel() = %q, want hearsay_job_distill", got)
 	}
@@ -83,10 +82,6 @@ func TestRequestValidate(t *testing.T) {
 		{name: "a delay into the past", req: queue.Request{Kind: distill, TargetID: "e1", Delay: -time.Second}, wantErr: true},
 		{name: "a priority the column cannot hold", req: queue.Request{Kind: distill, TargetID: "e1", Priority: 1 << 40}, wantErr: true},
 
-		// What Postgres would refuse mid-statement, and so abort the caller's
-		// transaction with. Refusing it here is the whole of the promise that
-		// an enqueue cannot be the thing that rolls back the write it belongs
-		// to.
 		{name: "a target id at the length limit", req: queue.Request{Kind: distill, TargetID: strings.Repeat("e", queue.MaxIDLen)}},
 		{name: "a target id past the length limit", req: queue.Request{Kind: distill, TargetID: strings.Repeat("e", queue.MaxIDLen+1)}, wantErr: true},
 		{name: "a target id that is not valid UTF-8", req: queue.Request{Kind: distill, TargetID: "evt-\xff"}, wantErr: true},
@@ -94,8 +89,6 @@ func TestRequestValidate(t *testing.T) {
 		{name: "a serial key that is not valid UTF-8", req: queue.Request{Kind: assert, TargetID: "l1-1", SerialKey: "scope-\xff"}, wantErr: true},
 		{name: "a serial key holding a NUL", req: queue.Request{Kind: assert, TargetID: "l1-1", SerialKey: "scope-\x00"}, wantErr: true},
 		{name: "a serial key past the length limit", req: queue.Request{Kind: assert, TargetID: "l1-1", SerialKey: strings.Repeat("s", queue.MaxIDLen+1)}, wantErr: true},
-		// jsonb refuses a \u0000 escape (22P05) as text refuses the byte, so
-		// the carrier is held to the same rule.
 		{name: "a trace context", req: queue.Request{Kind: distill, TargetID: "e1", TraceContext: map[string]string{"traceparent": "00-x-y-01"}}},
 		{name: "a trace context value holding a NUL", req: queue.Request{Kind: distill, TargetID: "e1", TraceContext: map[string]string{"traceparent": "00-\x00"}}, wantErr: true},
 		{name: "a trace context key holding a NUL", req: queue.Request{Kind: distill, TargetID: "e1", TraceContext: map[string]string{"trace\x00parent": "00-x"}}, wantErr: true},
@@ -107,14 +100,27 @@ func TestRequestValidate(t *testing.T) {
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("Request(%+v).Validate() = %v, want error: %v", tt.req, err, tt.wantErr)
 			}
-			if tt.wantErr {
-				// A nil Querier would panic if Enqueue tried any SQL.
-				if _, err := queue.Enqueue(t.Context(), nil, tt.req); !errors.Is(err, queue.ErrInvalidJob) {
-					t.Errorf("Enqueue = %v, want validation before SQL", err)
-				}
-			}
 			if err != nil && !errors.Is(err, queue.ErrInvalidJob) {
 				t.Errorf("Request(%+v).Validate() = %v, want it to wrap ErrInvalidJob", tt.req, err)
+			}
+		})
+	}
+}
+
+func TestEnqueueValidatesBeforeSQL(t *testing.T) {
+	distill := queue.Kind{Name: "distill"}
+	tests := []struct {
+		name string
+		req  queue.Request
+	}{
+		{name: "no target", req: queue.Request{Kind: distill}},
+		{name: "a target id holding a NUL", req: queue.Request{Kind: distill, TargetID: "evt-\x00-1"}},
+		{name: "a delay into the past", req: queue.Request{Kind: distill, TargetID: "e1", Delay: -time.Second}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := queue.Enqueue(t.Context(), nil, tt.req); !errors.Is(err, queue.ErrInvalidJob) {
+				t.Errorf("Enqueue = %v, want ErrInvalidJob before any SQL", err)
 			}
 		})
 	}
@@ -144,7 +150,6 @@ func TestConfigValidate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// A zero duration is a default, not a rejection.
 			err := tt.cfg.Validate()
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("Config(%+v).Validate() = %v, want error: %v", tt.cfg, err, tt.wantErr)
@@ -153,48 +158,44 @@ func TestConfigValidate(t *testing.T) {
 	}
 }
 
-// The defaults are what a service that configures nothing gets, so they have
-// to be the ones the queue is designed for rather than whatever the zero
-// value is.
-func TestConfigDefaults(t *testing.T) {
+func TestZeroConfigOfAValidKindValidates(t *testing.T) {
 	cfg := queue.Config{Kind: queue.Kind{Name: "distill"}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("the zero config for a valid kind does not validate: %v", err)
 	}
+}
 
-	if cfg.HeartbeatInterval() != queue.DefaultLease/3 {
-		// A zero lease means the default lease, and the heartbeat is a third
-		// of it: three heartbeats per lease, so two may be lost.
-		t.Errorf("HeartbeatInterval() on a zero config = %s, want %s", cfg.HeartbeatInterval(), queue.DefaultLease/3)
-	}
-	// A zero config is a working one: nothing here may divide by, or draw
-	// from, an interval of zero.
-	if d := cfg.RetryDelay(1); d <= 0 || d > queue.DefaultBackoff {
-		t.Errorf("RetryDelay(1) on a zero config = %s, want a delay in (0, %s]", d, queue.DefaultBackoff)
-	}
-
-	// A lease far below the heartbeat floor is renewed at the floor, which is
-	// after it has expired. That is a lease measured in tens of milliseconds,
-	// which is a test's rather than a deployment's, and the alternative — a
-	// heartbeat every few milliseconds — is worse.
-	short := queue.Config{Kind: queue.Kind{Name: "distill"}, Lease: 30 * time.Millisecond}
-	if hb := short.HeartbeatInterval(); hb < short.Lease {
-		t.Errorf("HeartbeatInterval() = %s for a %s lease, want the floor rather than something below it", hb, short.Lease)
-	}
-	long := queue.Config{Kind: queue.Kind{Name: "distill"}, Lease: 9 * time.Second}
-	if hb := long.HeartbeatInterval(); hb != 3*time.Second {
-		t.Errorf("HeartbeatInterval() = %s for a %s lease, want a third of it", hb, long.Lease)
+func TestHeartbeatIntervalDefaultsToAThirdOfTheDefaultLease(t *testing.T) {
+	cfg := queue.Config{Kind: queue.Kind{Name: "distill"}}
+	if got := cfg.HeartbeatInterval(); got != queue.DefaultLease/3 {
+		t.Errorf("HeartbeatInterval() on a zero config = %s, want %s", got, queue.DefaultLease/3)
 	}
 }
 
-// The jitter has to span the whole interval and the growth has to stop at the
-// cap: a retry storm that comes back together is the failure this exists to
-// avoid, and an unbounded doubling would park a job past the retention window.
+func TestHeartbeatIntervalIsAThirdOfTheLease(t *testing.T) {
+	cfg := queue.Config{Kind: queue.Kind{Name: "distill"}, Lease: 9 * time.Second}
+	if got := cfg.HeartbeatInterval(); got != 3*time.Second {
+		t.Errorf("HeartbeatInterval() = %s for a %s lease, want a third of it", got, cfg.Lease)
+	}
+}
+
+func TestHeartbeatIntervalHasAFloorForAShortLease(t *testing.T) {
+	cfg := queue.Config{Kind: queue.Kind{Name: "distill"}, Lease: 30 * time.Millisecond}
+	if got := cfg.HeartbeatInterval(); got < cfg.Lease {
+		t.Errorf("HeartbeatInterval() = %s for a %s lease, want the floor rather than something below it", got, cfg.Lease)
+	}
+}
+
+func TestRetryDelayDefaultsToTheDefaultBackoff(t *testing.T) {
+	cfg := queue.Config{Kind: queue.Kind{Name: "distill"}}
+	if d := cfg.RetryDelay(1); d <= 0 || d > queue.DefaultBackoff {
+		t.Errorf("RetryDelay(1) on a zero config = %s, want a delay in (0, %s]", d, queue.DefaultBackoff)
+	}
+}
+
 func TestRetryDelayGrowsToTheCapAndIsJittered(t *testing.T) {
 	cfg := queue.Config{Kind: queue.Kind{Name: "distill"}, Backoff: time.Second, MaxBackoff: 8 * time.Second}
 
-	// attempt 1 waits up to the base, and each attempt after it doubles that
-	// until the cap.
 	ceilings := map[int]time.Duration{
 		-1: time.Second, 0: time.Second, 1: time.Second, 2: 2 * time.Second,
 		3: 4 * time.Second, 4: 8 * time.Second, 5: 8 * time.Second,
@@ -209,9 +210,6 @@ func TestRetryDelayGrowsToTheCapAndIsJittered(t *testing.T) {
 			}
 			high = max(high, d)
 		}
-		// 200 draws over the interval land in its top decile with
-		// overwhelming probability; a fixed delay, or jitter over a fraction
-		// of the interval, would not.
 		if high < want/10*9 {
 			t.Errorf("the highest of 200 RetryDelay(%d) draws was %s, want the jitter to reach near %s", attempt, high, want)
 		}
@@ -234,8 +232,6 @@ func TestLimit(t *testing.T) {
 	}
 }
 
-// A job goes into log lines, and a log line must not carry what a job is
-// about beyond its ids.
 func TestJobStringNamesIdsOnly(t *testing.T) {
 	job := queue.Job{ID: 7, Kind: queue.Kind{Name: "assert", Serialized: true}, TargetID: "l1-42", SerialKey: "scope-payments", Attempt: 2}
 	want := "assert job 7 for l1-42 on scope-payments (attempt 2)"

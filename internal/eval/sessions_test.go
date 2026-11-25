@@ -10,7 +10,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/eval"
 )
 
-// ids is one section of a bundle audit, in the audit record's shape.
 type ids struct {
 	L1       []string `json:"l1,omitempty"`
 	Topics   []string `json:"topics,omitempty"`
@@ -26,8 +25,6 @@ func audit(t *testing.T, record map[string]any) connector.Event {
 	return connector.Event{Source: connector.SelfSource, Kind: connector.KindAudit, Payload: connector.Payload{Native: native}}
 }
 
-// bundle is a bundle audit in session s (none where empty) on scope, serving
-// sections.
 func bundle(t *testing.T, s, scope string, sections map[string]ids) connector.Event {
 	record := map[string]any{"call": "get_bundle", "scope": scope, "sections": sections}
 	if s != "" {
@@ -36,7 +33,6 @@ func bundle(t *testing.T, s, scope string, sections map[string]ids) connector.Ev
 	return audit(t, record)
 }
 
-// handle is a handle audit in session s.
 func handle(t *testing.T, s, call string, fields map[string]any) connector.Event {
 	record := map[string]any{"call": call, "session": s, "session_source": "agents"}
 	for k, v := range fields {
@@ -45,7 +41,6 @@ func handle(t *testing.T, s, call string, fields map[string]any) connector.Event
 	return audit(t, record)
 }
 
-// next is a next action in session s, with verdicts as topic, verdict pairs.
 func next(t *testing.T, s, scope, action string, verdicts ...string) connector.Event {
 	t.Helper()
 	native := map[string]any{"session": s, "next": "n", "scope": scope, "action": action}
@@ -70,8 +65,6 @@ func pct(f *float64) string {
 	return fmt.Sprintf("%.2f", *f)
 }
 
-// summary is the report's figures on one line: sections as followed/served,
-// looked beyond as beyond/calls, each with its share.
 func summary(d eval.DrillDown, f eval.ConflictFlags, a eval.NextActions) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "bundles=%d nosession=%d", d.Bundles, d.WithoutSession)
@@ -90,7 +83,6 @@ func summary(d eval.DrillDown, f eval.ConflictFlags, a eval.NextActions) string 
 }
 
 func TestSummarizeSessions(t *testing.T) {
-	// full serves one id in every section.
 	full := map[string]ids{
 		"scope.entities": {Entities: []string{"code:api"}, L1: []string{"l1:readme"}},
 		"anchors":        {L1: []string{"l1:anchor"}},
@@ -140,8 +132,6 @@ func TestSummarizeSessions(t *testing.T) {
 					handle(t, "s1", "search", map[string]any{"scope": "code:api", "returned_ids": []string{"l1:recent"}}),
 				}
 			},
-			// The search within code:api follows scope.entities, and
-			// returned an id the bundle served, so it did not look beyond.
 			want: "bundles=1 nosession=0 scope.entities=1/1(1.00) anchors=1/1(1.00) stances=0/1(0.00) recent=0/1(0.00)" +
 				" open_questions=0/1(0.00) conflicts=1/1(1.00) search=0/1(0.00) resolve=0/0(-)" +
 				" | flagged=2 verdicts=0 real=0 spurious=0 precision=- coverage=0.00 unflagged=0" +
@@ -175,8 +165,6 @@ func TestSummarizeSessions(t *testing.T) {
 					handle(t, "s2", "search", map[string]any{"returned_ids": []string{"l1:elsewhere"}}),
 				}
 			},
-			// The first search came before any bundle and the last in
-			// another session: neither is counted.
 			want: "bundles=1 nosession=0 anchors=0/1(0.00) search=2/3(0.67) resolve=1/1(1.00)" +
 				" | flagged=0 verdicts=0 real=0 spurious=0 precision=- coverage=- unflagged=0" +
 				" | actions=0 asked=0(-) proceeded=0(-) asserted=0(-) unattributed=0",
@@ -226,10 +214,6 @@ func TestSummarizeSessions(t *testing.T) {
 					next(t, "s1", "api", "asked", "topic:queue", "spurious"),
 				}
 			},
-			// Four conflicts flagged, two bundles of two; the first bundle's
-			// lock is real (its later verdict), the second's queue spurious.
-			// The cache was never flagged. Three actions have no bundle before
-			// them on their scope in their session.
 			want: "bundles=2 nosession=0 scope.entities=0/2(0.00) anchors=0/2(0.00) stances=0/2(0.00) recent=0/2(0.00)" +
 				" open_questions=0/2(0.00) conflicts=0/2(0.00) search=0/0(-) resolve=0/0(-)" +
 				" | flagged=4 verdicts=2 real=1 spurious=1 precision=0.50 coverage=0.50 unflagged=1" +

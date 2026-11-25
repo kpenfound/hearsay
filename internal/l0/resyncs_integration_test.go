@@ -8,13 +8,12 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 )
 
-// A re-sync is recorded, walked and settled across what could be separate
-// processes, and a request that arrives during a walk is not settled by it.
 func TestResyncsRoundTrip(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l0.NewResyncs(pool)
 	source := newSourceID(t)
 	get := func(container string) connector.Resync {
@@ -34,7 +33,6 @@ func TestResyncsRoundTrip(t *testing.T) {
 	if records, err := store.Resyncs(t.Context(), source); err != nil || len(records) != 0 {
 		t.Fatalf("Resyncs(new source) = %+v, %v, want none", records, err)
 	}
-	// Saving the position of a re-sync nobody owes writes nothing.
 	if err := store.Save(t.Context(), source, connector.Resync{Container: "acme/api", Generation: 1, Cursor: "nowhere"}); err != nil {
 		t.Fatalf("Save(not owed) = %v", err)
 	}
@@ -55,8 +53,6 @@ func TestResyncsRoundTrip(t *testing.T) {
 		t.Fatalf("after Owe and Save: %+v", walk)
 	}
 
-	// Asked again mid-walk: the walk starts again, the old walk's next page
-	// does not move it, and finishing the old walk does not settle it.
 	if err := store.Owe(t.Context(), source, "acme/api"); err != nil {
 		t.Fatalf("Owe(again) = %v", err)
 	}
@@ -89,8 +85,6 @@ func TestResyncsRoundTrip(t *testing.T) {
 		t.Fatalf("after Finish: %+v, want settled with a finish time", done)
 	}
 
-	// Owed again after it was settled: from the beginning, keeping when the last
-	// one finished.
 	if err := store.Owe(t.Context(), source, "acme/api"); err != nil {
 		t.Fatalf("Owe(after Finish) = %v", err)
 	}
@@ -98,7 +92,6 @@ func TestResyncsRoundTrip(t *testing.T) {
 		t.Errorf("owed again: %+v, want owed from the beginning with resynced_at %v", r, done.ResyncedAt)
 	}
 
-	// One row per container, in container order.
 	if err := store.Owe(t.Context(), source, "acme/aaa"); err != nil {
 		t.Fatalf("Owe(another container) = %v", err)
 	}
@@ -122,9 +115,6 @@ func TestResyncsRoundTrip(t *testing.T) {
 	}
 }
 
-// Exposed reads each artifact's current revision, in the contract's revision
-// order and past retractions: an artifact re-emitted private is not exposed, one
-// whose newest edit is public is, and a retracted one and a tombstone are not.
 func TestExposedReadsTheCurrentRevision(t *testing.T) {
 	store, fake, source := newStore(t)
 	private := func(ev connector.Event, token string) connector.Event {
@@ -148,7 +138,6 @@ func TestExposedReadsTheCurrentRevision(t *testing.T) {
 	gone := fake.NewEvent(connector.KindMessage, "gone", "x")
 	tombstone := fake.NewEvent(connector.KindTombstone, "gone:tombstone", "")
 	tombstone.Payload.Target = "gone"
-	// The newer edit arrives first, so arrival order and revision order differ.
 	newer := edited(fake.NewEvent(connector.KindMessage, "edited", "x"), "2", at.Add(time.Hour))
 	older := private(edited(fake.NewEvent(connector.KindMessage, "edited", "x"), "1", at), "1+perm:private")
 

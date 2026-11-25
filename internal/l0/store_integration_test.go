@@ -3,9 +3,7 @@
 package l0_test
 
 import (
-	"context"
 	"errors"
-	"os"
 	"slices"
 	"strconv"
 	"sync/atomic"
@@ -13,44 +11,20 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/connector"
-	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 )
 
-// newPool connects to the database the integration-test check brings up. It
-// uses db.Connect rather than Open, so a database the migrations have not been
-// run against fails here saying so: tests never build a schema of their own.
-func newPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	pool, err := db.Connect(context.Background(), url)
-	if err != nil {
-		t.Fatalf("connecting to postgres: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
-// sources is what keeps tests out of each other's way. L0 is append-only and
-// the database outlives one test, so a test gets a source id nothing else uses
-// rather than truncating a table other tests are reading.
 var sources atomic.Int64
 
-// newFake returns a connector that emits from a source nothing else uses, and
-// that source's id.
 func newFake(t *testing.T) (*connector.Fake, string) {
 	t.Helper()
 	id := newSourceID(t)
 	return connector.NewFake(connector.SourceConfig{ID: id, Type: connector.FakeType}), id
 }
 
-// newSourceID is a name nothing else in the suite uses.
 func newSourceID(t *testing.T) string {
 	t.Helper()
 	return "t" + strconv.FormatInt(time.Now().UnixNano(), 36) + "x" + strconv.FormatInt(sources.Add(1), 36)
@@ -59,10 +33,9 @@ func newSourceID(t *testing.T) string {
 func newStore(t *testing.T) (*l0.Store, *connector.Fake, string) {
 	t.Helper()
 	fake, source := newFake(t)
-	return l0.New(newPool(t)), fake, source
+	return l0.New(dbtest.Pool(t)), fake, source
 }
 
-// Writing the same event twice yields one row.
 func TestWritingTheSameEventTwiceYieldsOneRow(t *testing.T) {
 	store, fake, _ := newStore(t)
 	event := fake.NewEvent(connector.KindMessage, "m1", "hello")
@@ -86,16 +59,12 @@ func TestWritingTheSameEventTwiceYieldsOneRow(t *testing.T) {
 		t.Errorf("Append(again) = %+v, want the row the first call wrote, %+v", second, first)
 	}
 
-	// The id a connector never set is the derived one, and it is what Get takes.
 	if want := connector.EventID(event.Source, event.NativeID); first.ID != want {
 		t.Errorf("Append().ID = %q, want the derived id %q", first.ID, want)
 	}
 	assertCounts(t, store, event.Source, connector.KindMessage, 1, 1)
 }
 
-// A connector that re-emits an artifact it changed without changing the
-// revision token in its native id is breaking docs/connector-contract.md. L0 is
-// append-only, so the stored row wins and the caller is told.
 func TestAppendRefusesToRewriteAnEvent(t *testing.T) {
 	store, fake, _ := newStore(t)
 	event := fake.NewEvent(connector.KindMessage, "m1", "hello")
@@ -116,8 +85,6 @@ func TestAppendRefusesToRewriteAnEvent(t *testing.T) {
 	if stored.Payload.Text != "hello" {
 		t.Errorf("payload.text = %q, want the text that was stored first, %q", stored.Payload.Text, "hello")
 	}
-	// The instant survives the round trip, and comes back in UTC rather than in
-	// whatever zone the server's session happens to be in.
 	if !stored.Time.Equal(event.Time) {
 		t.Errorf("time = %s, want %s", stored.Time, event.Time)
 	}
@@ -127,9 +94,6 @@ func TestAppendRefusesToRewriteAnEvent(t *testing.T) {
 	assertCounts(t, store, event.Source, connector.KindMessage, 1, 1)
 }
 
-// The same payload spelled differently is a replay, not a rewrite: the
-// comparison is Postgres's jsonb equality, which ignores key order and
-// whitespace, rather than a hash of whatever bytes the connector marshalled.
 func TestAReplayWithADifferentSpellingOfOnePayloadIsStillAReplay(t *testing.T) {
 	store, fake, _ := newStore(t)
 	event := fake.NewEvent(connector.KindMessage, "m1", "hello")
@@ -149,12 +113,6 @@ func TestAReplayWithADifferentSpellingOfOnePayloadIsStillAReplay(t *testing.T) {
 	}
 }
 
-// An edit carries a new revision token in its native id, so it is a new event
-// beside the first appearance rather than an overwrite of it.
-//
-// The default order is oldest first, which is docs/connector-contract.md's
-// ordering of an artifact's revisions reversed; ListOptions.Newest is the
-// contract's own direction, with the current revision first.
 func TestAnEditIsANewEventAndTheHistoryIsOrdered(t *testing.T) {
 	store, fake, _ := newStore(t)
 	first := fake.NewEvent(connector.KindMessage, "m1", "hello")
@@ -165,16 +123,12 @@ func TestAnEditIsANewEventAndTheHistoryIsOrdered(t *testing.T) {
 	third.NativeID = "m1@r3"
 	third.Payload.Revision = &connector.Revision{Token: "r3", EditedAt: first.Time.Add(2 * time.Hour)}
 
-	// Out of order on the way in, to prove the order is the data's and not
-	// arrival's.
 	for _, event := range []connector.Event{third, first, second} {
 		if _, err := store.Append(t.Context(), event); err != nil {
 			t.Fatalf("Append(%s) = %v, want no error", event.NativeID, err)
 		}
 	}
 
-	// Oldest first, newest first, and a limit that cuts from the far end of
-	// whichever order is in force.
 	for _, tt := range []struct {
 		name string
 		opts l0.ListOptions
@@ -200,8 +154,6 @@ func TestAnEditIsANewEventAndTheHistoryIsOrdered(t *testing.T) {
 	assertCounts(t, store, first.Source, connector.KindMessage, 3, 3)
 }
 
-// Tombstoning hides an event from the feed and from a read by id, and keeps the
-// row.
 func TestATombstoneHidesTheEventAndKeepsTheRow(t *testing.T) {
 	store, fake, _ := newStore(t)
 	event := fake.NewEvent(connector.KindMessage, "m1", "a pasted secret")
@@ -234,14 +186,11 @@ func TestATombstoneHidesTheEventAndKeepsTheRow(t *testing.T) {
 		t.Errorf("List() = %v, want only the tombstone", got)
 	}
 
-	// The feed carries the tombstone and not what it retracts, which is how a
-	// consumer learns to re-derive without the event.
 	want := []string{"m1:tombstone"}
 	if got := feed(t, store, l0.Cursor{}, event.Source, want); !slices.Equal(got, want) {
 		t.Errorf("the feed after the tombstone = %v, want only the tombstone", got)
 	}
 
-	// And the row is still there: append-only means the count does not drop.
 	assertCounts(t, store, event.Source, connector.KindMessage, 1, 0)
 	assertCounts(t, store, event.Source, connector.KindTombstone, 1, 1)
 }
@@ -312,10 +261,6 @@ func TestRetractionAndReentryKeepHistoryAndCurrentState(t *testing.T) {
 	}
 }
 
-// Retracted is the one read past a tombstone, and it reads nothing else: an
-// artifact nothing retracted, one the source never held and one another source
-// retracted are all not found, and a retracted one comes back as its current
-// revision, with the conversation it was part of.
 func TestRetractedReadsOnlyWhatATombstoneHides(t *testing.T) {
 	store, fake, source := newStore(t)
 	other, otherSource := newFake(t)
@@ -327,11 +272,9 @@ func TestRetractedReadsOnlyWhatATombstoneHides(t *testing.T) {
 	edited.Payload.Text = "a pasted secret, edited"
 	edited.Payload.Revision = &connector.Revision{Token: "r2", EditedAt: first.Time.Add(time.Hour)}
 	kept := fake.NewEvent(connector.KindMessage, "m2", "still here")
-	// The same artifact id in another source, retracted there only.
 	elsewhere := other.NewEvent(connector.KindMessage, "m2", "somewhere else")
 	elsewhereTombstone := other.NewEvent(connector.KindTombstone, "m2:tombstone", "")
 	elsewhereTombstone.Payload.Target = "m2"
-	// Newest revision first on the way in, so the order is the data's.
 	for _, ev := range []connector.Event{edited, first, kept, elsewhere, elsewhereTombstone} {
 		if _, err := store.Append(t.Context(), ev); err != nil {
 			t.Fatalf("Append(%s) = %v, want no error", ev.NativeID, err)
@@ -373,8 +316,6 @@ func TestRetractedReadsOnlyWhatATombstoneHides(t *testing.T) {
 	}
 }
 
-// The change feed is what the distiller consumes, so a reader must be able to
-// stop, keep the cursor, and carry on where it was.
 func TestTheChangeFeedResumesFromACursor(t *testing.T) {
 	store, fake, source := newStore(t)
 	var marker l0.Cursor
@@ -394,29 +335,22 @@ func TestTheChangeFeedResumesFromACursor(t *testing.T) {
 		t.Errorf("reading the feed from the beginning saw %v, want %v", got, want)
 	}
 
-	// A cursor is exclusive: resuming after the first event does not repeat it.
 	want = []string{"m1", "m2"}
 	if got := feed(t, store, marker, source, want); !slices.Equal(got, want) {
 		t.Errorf("Changes(from the first event) = %v, want %v", got, want)
 	}
 }
 
-// The reason the cursor is a pair. A sequence number is handed out before the
-// transaction holding it commits, so a row can become readable *after* a row
-// with a higher number. A feed ordered on the number alone would hand out the
-// higher one, move the cursor past it, and never return the lower one at all.
 func TestTheChangeFeedDoesNotSkipASlowTransaction(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	fake, source := newFake(t)
 	store := l0.New(pool)
 
-	// A marker, so the assertions are about what happens after it.
 	marker, err := store.Append(t.Context(), fake.NewEvent(connector.KindMessage, "marker", "start"))
 	if err != nil {
 		t.Fatalf("Append(marker) = %v, want no error", err)
 	}
 
-	// `slow` takes its sequence number first and commits last.
 	tx, err := pool.Begin(t.Context())
 	if err != nil {
 		t.Fatalf("Begin() = %v, want no error", err)
@@ -429,8 +363,6 @@ func TestTheChangeFeedDoesNotSkipASlowTransaction(t *testing.T) {
 		t.Fatalf("Append(fast) = %v, want no error", err)
 	}
 
-	// While `slow` is in flight the feed holds at the marker rather than
-	// handing out `fast` and stranding `slow` behind the cursor.
 	held, err := store.Changes(t.Context(), marker.Cursor, l0.Filter{Source: source}, l0.MaxLimit)
 	if err != nil {
 		t.Fatalf("Changes(while a write is in flight) = %v, want no error", err)
@@ -448,10 +380,6 @@ func TestTheChangeFeedDoesNotSkipASlowTransaction(t *testing.T) {
 	}
 }
 
-// The feed takes the same filter a listing does, so an operator or a consumer
-// watching one source is handed that source and not the store. The cursor is a
-// position in the whole feed either way — the filter narrows what comes back,
-// not where a reader is.
 func TestTheChangeFeedTakesAFilter(t *testing.T) {
 	store, fake, source := newStore(t)
 	other, otherSource := newFake(t)
@@ -482,42 +410,19 @@ func TestTheChangeFeedTakesAFilter(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Patient for the same reason feed() is: a transaction in flight
-			// anywhere holds the feed back.
-			deadline := time.Now().Add(10 * time.Second)
-			var got []string
-			for {
-				changes, err := store.Changes(t.Context(), marker.Cursor, tt.filter, l0.MaxLimit)
-				if err != nil {
-					t.Fatalf("Changes(%+v) = %v, want no error", tt.filter, err)
-				}
-				got = nativeIDs(eventsOf(changes))
-				if slices.Equal(got, tt.want) || time.Now().After(deadline) {
-					break
-				}
-				time.Sleep(50 * time.Millisecond)
-			}
-			if !slices.Equal(got, tt.want) {
+			if got := feedWhere(t, store, marker.Cursor, tt.filter, tt.want); !slices.Equal(got, tt.want) {
 				t.Errorf("Changes(%+v) = %v, want %v", tt.filter, got, tt.want)
 			}
 		})
 	}
 
-	// An artifact id means nothing outside its source, on the feed as on a
-	// listing, and the same rule says so.
 	if _, err := store.Changes(t.Context(), marker.Cursor, l0.Filter{Artifact: "m1"}, l0.MaxLimit); err == nil {
 		t.Error("Changes(artifact without source) = nil, want an error")
 	}
 }
 
-// The other half of why the cursor is a pair: sequence order and transaction
-// order can disagree. A transaction that takes its id first can insert second,
-// so the row with the lower sequence number belongs to the later transaction.
-// The feed orders on the transaction, and a reader whose cursor is a sequence
-// number alone would be handed the later one first and then handed the earlier
-// one again on the next read.
 func TestTheChangeFeedOrdersOnTheTransactionNotTheSequence(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	fake, source := newFake(t)
 	store := l0.New(pool)
 	marker, err := store.Append(t.Context(), fake.NewEvent(connector.KindMessage, "marker", "start"))
@@ -525,7 +430,6 @@ func TestTheChangeFeedOrdersOnTheTransactionNotTheSequence(t *testing.T) {
 		t.Fatalf("Append(marker) = %v, want no error", err)
 	}
 
-	// `early` takes the lower transaction id and the higher sequence number.
 	early, err := pool.Begin(t.Context())
 	if err != nil {
 		t.Fatalf("Begin(early) = %v, want no error", err)
@@ -559,17 +463,13 @@ func TestTheChangeFeedOrdersOnTheTransactionNotTheSequence(t *testing.T) {
 	}
 }
 
-// The table refuses a row that breaks the contract even if something other than
-// the ingest path writes it, which is what the CHECK constraints are for. Each
-// case names the constraint it expects, so a row rejected for some other reason
-// — a typo in the statement, above all — is not mistaken for the rule holding.
 func TestTheTableRefusesARowThatBreaksTheContract(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	_, source := newFake(t)
 	token, edited := "r2", time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name       string
-		constraint string // empty means the row is a good one
+		constraint string
 		nativeID   string
 		artifact   string
 		token      *string
@@ -614,8 +514,6 @@ func TestTheTableRefusesARowThatBreaksTheContract(t *testing.T) {
 	}
 	for i, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// occurred_at is 2024 and the edit time above is 2020, so the
-			// case about an edit preceding its artifact really does.
 			_, err := pool.Exec(t.Context(), `
 INSERT INTO l0_events (id, source, native_id, kind, artifact, revision_token, revision_edited_at, target, occurred_at, payload, acl)
 VALUES ($1, $2, $3, 'message', $4, $5, $6, $7, '2024-01-01T00:00:00Z', '{}', $8)`,
@@ -661,24 +559,18 @@ func assertCounts(t *testing.T, store *l0.Store, source string, kind connector.K
 	}
 }
 
-// feed reads one source's events off the change feed until they are the ones
-// wanted, or a deadline passes.
-//
-// It waits because the feed deliberately holds an event back until the
-// transaction that wrote it has finished, and *any* transaction older than that
-// one holds it too — including one belonging to something else entirely, which
-// on a shared test database is every other package. Waiting is what a real
-// consumer does, and it is the difference between "not yet" and "never".
 func feed(t *testing.T, store *l0.Store, from l0.Cursor, source string, want []string) []string {
+	t.Helper()
+	return feedWhere(t, store, from, l0.Filter{Source: source}, want)
+}
+
+func feedWhere(t *testing.T, store *l0.Store, from l0.Cursor, filter l0.Filter, want []string) []string {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		// Filtered on the source, not filtered afterwards: the database
-		// outlives one test, and a page of somebody else's events would push
-		// this one's off the end.
-		changes, err := store.Changes(t.Context(), from, l0.Filter{Source: source}, l0.MaxLimit)
+		changes, err := store.Changes(t.Context(), from, filter, l0.MaxLimit)
 		if err != nil {
-			t.Fatalf("Changes() = %v, want no error", err)
+			t.Fatalf("Changes(%+v) = %v, want no error", filter, err)
 		}
 		got := nativeIDs(eventsOf(changes))
 		if slices.Equal(got, want) || time.Now().After(deadline) {
@@ -688,8 +580,6 @@ func feed(t *testing.T, store *l0.Store, from l0.Cursor, source string, want []s
 	}
 }
 
-// nativeIDs is the native id of each event, which is what every assertion in
-// this file compares.
 func nativeIDs(events []connector.Event) []string {
 	ids := make([]string, 0, len(events))
 	for _, event := range events {

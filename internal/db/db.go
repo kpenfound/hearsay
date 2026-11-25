@@ -5,7 +5,21 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// Querier is what a layer's store runs its statements on: a pgx pool, or a
+// transaction taken from one, so that a write and the work enqueued for it can
+// be one transaction.
+type Querier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+var (
+	_ Querier = (*pgxpool.Pool)(nil)
+	_ Querier = (pgx.Tx)(nil)
 )
 
 // ErrNoDatabaseURL is returned when a command that needs Postgres was given no
@@ -33,7 +47,6 @@ func Open(ctx context.Context, url string) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("connecting to postgres: %w", err)
 	}
 	if err := pool.Ping(ctx); err != nil {
-		// Nothing else holds the pool yet, so this is where it is closed.
 		pool.Close()
 		return nil, fmt.Errorf("connecting to postgres: %w", err)
 	}

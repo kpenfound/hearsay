@@ -8,13 +8,12 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 )
 
-// A command is recorded once, a command id on record with other content is
-// the command on record, and a command an operator deleted says so.
 func TestRecordCommandSaysWhenTheCommandWasDeleted(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	fake, source := newFake(t)
 	store := l0.New(pool)
 	ctx := t.Context()

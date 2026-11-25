@@ -10,11 +10,10 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 )
 
-// distilled is a document whose words are in its distillation and not in what
-// anybody said.
 func distilled(t *testing.T, src, artifact, summary, outcome string) l1.Document {
 	t.Helper()
 	doc := searchDoc(t, src, artifact, "an ordinary exchange about nothing in particular", nil)
@@ -23,10 +22,8 @@ func distilled(t *testing.T, src, artifact, summary, outcome string) l1.Document
 	return doc
 }
 
-// With no embed tier the full-text half is the whole search, and it reads the
-// distilled summary and outcome as well as the words that were said.
 func TestSearchFindsDistilledSummaryAndOutcomeWithoutEmbeddings(t *testing.T) {
-	store := l1.New(newPool(t))
+	store := l1.New(dbtest.Pool(t))
 	src := newSource(t)
 
 	inSummary := distilled(t, src, "conv#1", "The owner settled on the zephyrine migration path.", "")
@@ -63,10 +60,8 @@ func TestSearchFindsDistilledSummaryAndOutcomeWithoutEmbeddings(t *testing.T) {
 	}
 }
 
-// A document is in the window when it was created before until and last active
-// at or after since.
 func TestSearchWindow(t *testing.T) {
-	store := l1.New(newPool(t))
+	store := l1.New(dbtest.Pool(t))
 	src := newSource(t)
 	at := func(day int) time.Time { return time.Date(2026, 3, day, 12, 0, 0, 0, time.UTC) }
 	span := func(artifact string, created, last int) l1.Document {
@@ -117,7 +112,7 @@ func TestSearchWindow(t *testing.T) {
 }
 
 func TestSearchRefusesABadWindow(t *testing.T) {
-	store := l1.New(newPool(t))
+	store := l1.New(dbtest.Pool(t))
 	src := newSource(t)
 	for _, tc := range []struct{ name, since, until string }{
 		{name: "malformed since", since: "yesterday"},
@@ -135,11 +130,8 @@ func TestSearchRefusesABadWindow(t *testing.T) {
 	}
 }
 
-// A search says it stopped short when more documents matched than it returned,
-// or when a half had documents past its candidate cutoff, and says nothing of
-// the kind when it returned everything.
 func TestSearchReportsTruncation(t *testing.T) {
-	store := l1.New(newPool(t))
+	store := l1.New(dbtest.Pool(t))
 	src := newSource(t)
 	for i := range l1.SearchCandidates + 1 {
 		put(t, store, searchDoc(t, src, fmt.Sprintf("many#%03d", i), "the sprawling topic", nil))
@@ -176,10 +168,8 @@ func TestSearchReportsTruncation(t *testing.T) {
 	}
 }
 
-// A document the reader may not read is filtered inside both halves, so it
-// neither appears nor makes the search look cut off.
 func TestSearchTruncationIgnoresWhatTheReaderMayNotRead(t *testing.T) {
-	store := l1.New(newPool(t))
+	store := l1.New(dbtest.Pool(t))
 	src := newSource(t)
 	group := connector.ACLEntry{Kind: connector.ACLGroup, Source: src, NativeID: "t1"}
 	for i := range 3 {
@@ -205,8 +195,6 @@ func TestSearchTruncationIgnoresWhatTheReaderMayNotRead(t *testing.T) {
 		t.Errorf("Search(member) = %d hits, truncated %v, want 3 and truncated", len(member.Hits), member.Truncated)
 	}
 
-	// The same holds for the window: a private document outside it, or inside
-	// it, changes nothing for the reader who cannot see it.
 	windowed := opts
 	windowed.Since = time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
 	none, err := store.Search(t.Context(), reader(testScope(src), group), windowed)

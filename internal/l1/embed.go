@@ -9,12 +9,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// EmbeddingDimensions is the width of the vectors this table holds: the N of
-// the `vector(N)` column migration 7 adds.
-//
-// It is a constant here and a number in a migration, and the two are one
-// number. An `embed` tier producing anything else is refused before a vector is
-// written — by [Store.Embed] here, and by llm.CheckDimensions at the startup of
+// EmbeddingDimensions is the width of the vectors the document table holds: the
+// N of its `vector(N)` column. An `embed` tier producing anything else is
+// refused before a vector is written — by [Store.Embed] here, and by llm.CheckDimensions at the startup of
 // whatever process does the writing — because a model of another width means
 // re-embedding every row behind a migration, not a configuration edit
 // (docs/config.md).
@@ -56,8 +53,6 @@ func EmbedText(text string) string {
 		return text
 	}
 	cut := MaxEmbedBytes
-	// Half a rune is not a character, and cutting one differently on each run
-	// would embed the same document to two different vectors.
 	for cut > 0 && text[cut]&0xC0 == 0x80 {
 		cut--
 	}
@@ -96,8 +91,6 @@ func (s *Store) Embed(ctx context.Context, e Embedder, id string) (bool, error) 
 	}
 	vectors, err := e.Embed(ctx, []string{EmbedText(text)})
 	if err != nil {
-		// The error is a log line and a queue_job.last_error column: it names
-		// the document and never a word of what was sent.
 		return false, fmt.Errorf("embedding %s: %w", id, err)
 	}
 	if len(vectors) != 1 {
@@ -132,10 +125,6 @@ func (s *Store) SetEmbedding(ctx context.Context, id, text string, vector []floa
 	return true, nil
 }
 
-// vectorLiteral is a vector as pgvector's input function reads it. It goes to
-// Postgres as text and is cast there, which is what keeps this package off a
-// pgvector driver: the values are float32 and are formatted to the shortest
-// decimal that reads back as the same float32, so the round trip is exact.
 func vectorLiteral(vector []float32) string {
 	out := make([]byte, 0, 2+len(vector)*8)
 	out = append(out, '[')

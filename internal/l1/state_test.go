@@ -11,33 +11,69 @@ import (
 	"github.com/kpenfound/hearsay/internal/l1"
 )
 
-func TestBuildCopiesCurrentRootState(t *testing.T) {
+var rootStateCases = func() []struct {
+	name  string
+	state *connector.State
+} {
 	label := " In review "
-	for _, tt := range []struct {
+	return []struct {
 		name  string
 		state *connector.State
 	}{
 		{"absent", nil},
 		{"core only", &connector.State{Core: connector.CoreStateStarted}},
 		{"native verbatim", &connector.State{Core: connector.CoreStateBlocked, Native: &label}},
-	} {
+	}
+}()
+
+func buildWithRootState(t *testing.T, state *connector.State) (connector.Event, l1.Document) {
+	t.Helper()
+	root, children := pullRequest()
+	root.Payload.State = &connector.State{Core: connector.CoreStateProposed}
+	current := revised(root, "current", at(8))
+	current.Payload.State = state
+	doc, err := l1.Build(l1.Input{Root: current, Children: children, Repo: testRepo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return current, doc
+}
+
+func TestBuildCopiesTheCurrentRootRevisionsState(t *testing.T) {
+	for _, tt := range rootStateCases {
 		t.Run(tt.name, func(t *testing.T) {
-			root, children := pullRequest()
-			root.Payload.State = &connector.State{Core: connector.CoreStateProposed}
-			// Input takes current revisions only: supply a newer revision replacing
-			// the earlier state, including removal of that state.
-			current := revised(root, "current", at(8))
-			current.Payload.State = tt.state
-			doc, err := l1.Build(l1.Input{Root: current, Children: children, Repo: testRepo})
-			if err != nil {
-				t.Fatal(err)
-			}
+			current, doc := buildWithRootState(t, tt.state)
 			if !reflect.DeepEqual(doc.State, tt.state) {
 				t.Fatalf("state = %+v, want %+v", doc.State, tt.state)
 			}
 			if doc.L0Refs[0] != connector.EventID(current.Source, current.NativeID) {
 				t.Fatal("did not use current root revision")
 			}
+		})
+	}
+}
+
+func TestBuildDoesNotAliasTheRootState(t *testing.T) {
+	for _, tt := range rootStateCases {
+		if tt.state == nil {
+			continue
+		}
+		t.Run(tt.name, func(t *testing.T) {
+			_, doc := buildWithRootState(t, tt.state)
+			if doc.State == tt.state {
+				t.Fatal("state aliases source")
+			}
+			if tt.state.Native != nil && doc.State.Native == tt.state.Native {
+				t.Fatal("native aliases source")
+			}
+		})
+	}
+}
+
+func TestWithBodyLeavesTheState(t *testing.T) {
+	for _, tt := range rootStateCases {
+		t.Run(tt.name, func(t *testing.T) {
+			_, doc := buildWithRootState(t, tt.state)
 			for _, fixture := range []string{`{"summary":"Work proposed","outcome_kind":"proposed"}`, `{"summary":"Work resolved","outcome_kind":"resolved"}`, `{"summary":"Unrelated body","outcome_kind":"none"}`} {
 				var body l1.Body
 				if err := json.Unmarshal([]byte(fixture), &body); err != nil {
@@ -49,14 +85,6 @@ func TestBuildCopiesCurrentRootState(t *testing.T) {
 				}
 				if !reflect.DeepEqual(result.State, tt.state) {
 					t.Fatalf("body %s changed state", fixture)
-				}
-			}
-			if tt.state != nil {
-				if doc.State == tt.state {
-					t.Fatal("state aliases source")
-				}
-				if tt.state.Native != nil && doc.State.Native == tt.state.Native {
-					t.Fatal("native aliases source")
 				}
 			}
 		})

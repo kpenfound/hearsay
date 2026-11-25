@@ -13,7 +13,7 @@ func TestCursorRoundTrips(t *testing.T) {
 	tests := []struct {
 		name string
 		s    string
-		want string // what String gives back; empty means the zero cursor
+		want string
 	}{
 		{name: "the zero cursor is the empty string", s: "", want: ""},
 		{name: "a position", s: "1234.7", want: "1234.7"},
@@ -83,9 +83,6 @@ func TestLimit(t *testing.T) {
 	}
 }
 
-// An event the contract rejects never reaches the database: the store validates
-// first, so the table holds only events docs/connector-contract.md allows. The
-// store here has no database at all, which is what proves nothing was sent.
 func TestAppendValidatesBeforeItTouchesTheDatabase(t *testing.T) {
 	fake := connector.NewFake(connector.SourceConfig{ID: "unit", Type: connector.FakeType})
 	tests := []struct {
@@ -122,9 +119,6 @@ func TestAppendValidatesBeforeItTouchesTheDatabase(t *testing.T) {
 	}
 }
 
-// An artifact id only means something inside the source that minted it, so a
-// listing that names one without the other is refused rather than answered
-// across every source at once. Again: no database, so the check is first.
 func TestListRefusesAnArtifactWithoutASource(t *testing.T) {
 	store := l0.New(nil)
 	if _, err := store.List(t.Context(), l0.ListOptions{Artifact: "acme/api#1"}); err == nil {
@@ -133,14 +127,6 @@ func TestListRefusesAnArtifactWithoutASource(t *testing.T) {
 }
 
 func TestCursorsCompareInFeedOrder(t *testing.T) {
-	parse := func(s string) l0.Cursor {
-		t.Helper()
-		c, err := l0.ParseCursor(s)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return c
-	}
 	tests := []struct {
 		name string
 		a, b string
@@ -156,56 +142,92 @@ func TestCursorsCompareInFeedOrder(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := parse(tt.a).Compare(parse(tt.b)); got != tt.want {
+			if got := parseCursor(t, tt.a).Compare(parseCursor(t, tt.b)); got != tt.want {
 				t.Errorf("Compare(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestMarksRoundTripAndPassWhatHadCommitted(t *testing.T) {
-	parse := func(s string) l0.Cursor {
-		t.Helper()
-		c, err := l0.ParseCursor(s)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return c
-	}
-	m, err := l0.ParseMark("100.3+104,107")
+func parseCursor(t *testing.T, s string) l0.Cursor {
+	t.Helper()
+	c, err := l0.ParseCursor(s)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := m.String(); got != "100.3+104,107" {
-		t.Errorf("String() = %q, want it back", got)
+	return c
+}
+
+func parseMark(t *testing.T, s string) l0.Mark {
+	t.Helper()
+	m, err := l0.ParseMark(s)
+	if err != nil {
+		t.Fatalf("ParseMark(%q) = %v, want no error", s, err)
 	}
-	for _, tt := range []struct {
-		at   string
-		want bool
-	}{{"101.0", false}, {"104.0", true}, {"104.9", true}, {"105.2", false}, {"107.1", true}, {"108.0", false}} {
-		if got := m.Committed(parse(tt.at)); got != tt.want {
-			t.Errorf("Committed(%s) = %v, want %v", tt.at, got, tt.want)
+	return m
+}
+
+func TestMarkRoundTrips(t *testing.T) {
+	for _, s := range []string{"", "100.3+104,107"} {
+		if got := parseMark(t, s).String(); got != s {
+			t.Errorf("ParseMark(%q).String() = %q, want it back", s, got)
 		}
 	}
-	for _, tt := range []struct{ at, want string }{
+}
+
+func TestMarkCommitted(t *testing.T) {
+	m := parseMark(t, "100.3+104,107")
+	tests := []struct {
+		at   string
+		want bool
+	}{
+		{"101.0", false},
+		{"104.0", true},
+		{"104.9", true},
+		{"105.2", false},
+		{"107.1", true},
+		{"108.0", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.at, func(t *testing.T) {
+			if got := m.Committed(parseCursor(t, tt.at)); got != tt.want {
+				t.Errorf("Committed(%s) = %v, want %v", tt.at, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMarkPastDropsTheCommittedTransactionsItPassed(t *testing.T) {
+	m := parseMark(t, "100.3+104,107")
+	tests := []struct{ at, want string }{
 		{"101.0", "101.0+104,107"},
 		{"104.2", "104.2+104,107"},
 		{"105.0", "105.0+107"},
 		{"108.0", "108.0"},
-	} {
-		if got := m.Past(parse(tt.at)).String(); got != tt.want {
-			t.Errorf("Past(%s) = %q, want %q", tt.at, got, tt.want)
-		}
 	}
+	for _, tt := range tests {
+		t.Run(tt.at, func(t *testing.T) {
+			if got := m.Past(parseCursor(t, tt.at)).String(); got != tt.want {
+				t.Errorf("Past(%s) = %q, want %q", tt.at, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMarkPastLeavesTheMarkItWasCalledOn(t *testing.T) {
+	m := parseMark(t, "100.3+104,107")
+	m.Past(parseCursor(t, "108.0"))
 	if got := m.String(); got != "100.3+104,107" {
-		t.Errorf("Past changed the mark it was called on: %q", got)
+		t.Errorf("String() = %q after Past, want 100.3+104,107", got)
 	}
+}
+
+func TestParseMarkRejects(t *testing.T) {
 	for _, bad := range []string{"100.3+", "100.3+99", "100.3+104,104", "100.3+107,104", "100.3+x", "+"} {
-		if _, err := l0.ParseMark(bad); err == nil {
-			t.Errorf("ParseMark(%q) = no error, want one", bad)
-		}
-	}
-	if m, err := l0.ParseMark(""); err != nil || m.String() != "" {
-		t.Errorf("ParseMark(\"\") = %q, %v; want the beginning of the feed", m.String(), err)
+		t.Run(bad, func(t *testing.T) {
+			if _, err := l0.ParseMark(bad); err == nil {
+				t.Errorf("ParseMark(%q) = no error, want one", bad)
+			}
+		})
 	}
 }

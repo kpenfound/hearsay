@@ -10,6 +10,6 @@
 //
 // Requests may debounce a pending target until a quiet period or maximum delay
 // expires. A due job stays due, and Expedite makes pending work due immediately.
-// Non-debounced duplicates still do nothing. See the package README for timing
+// Non-debounced duplicates do nothing. See the package README for timing
 // and Enqueued.Stored semantics.
 package queue

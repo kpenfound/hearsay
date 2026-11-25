@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db"
 )
 
 // Limits on how much one read returns.
@@ -29,27 +29,13 @@ const (
 // It is safe for concurrent use, and every operation is one statement, so
 // nothing here holds a transaction open.
 type Store struct {
-	db Querier
+	db db.Querier
 }
-
-// Querier is what a Store runs its statements on: a pgx pool, or a transaction
-// taken from one, so that writing a document and enqueueing the work that
-// follows from it can be one transaction.
-type Querier interface {
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-}
-
-// Both of pgx's are one.
-var (
-	_ Querier = (*pgxpool.Pool)(nil)
-	_ Querier = (pgx.Tx)(nil)
-)
 
 // New returns a store over an open pool or a transaction on one. The caller
 // owns it and closes it; the schema is the caller's to have checked
 // (internal/db.Connect).
-func New(q Querier) *Store { return &Store{db: q} }
+func New(q db.Querier) *Store { return &Store{db: q} }
 
 // PRsByReference finds current pull request documents with the native key a
 // structured PR reference names. A repository may be mirrored by several
@@ -104,26 +90,10 @@ type Stored struct {
 	DistilledAt time.Time
 }
 
-// docColumns is a document as columns, in the order scanDoc reads them.
 const docColumns = `id, kind, artifact_class, source, source_native_id, source_url, l0_refs,
 	created_at, updated_at, last_activity_at, participants, scope, refs, acl,
 	text, raw_text, body, outcome_kind, state, state_native, distilled_at`
 
-// putSQL writes a document, and does nothing at all when the row already there
-// is the same document.
-//
-// The WHERE on the update is what makes re-distilling free and checkable: the
-// distiller is idempotent, so the ordinary outcome of running it again is a row
-// that does not change, and a row that does not change keeps its distilled_at.
-// Comparing the columns rather than the whole row is deliberate — comparing the
-// whole row would compare distilled_at with now() and always differ.
-//
-// The comparison is Postgres's own, so the jsonb columns compare by value
-// rather than by the bytes Go happened to marshal.
-//
-// The embedding is not one of the columns compared, because it is not part of
-// the document: it is derived from `text`, and it is cleared here exactly when
-// `text` changes.
 const putSQL = `
 INSERT INTO l1_docs (` + docColumns + `)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, now())
@@ -147,11 +117,6 @@ ON CONFLICT (id) DO UPDATE SET
     outcome_kind = excluded.outcome_kind,
  state = excluded.state,
  state_native = excluded.state_native,
-    -- A vector is a function of the text it was made from, so text that
-    -- changes takes its embedding with it rather than leaving a stale one
-    -- standing: search's vector half would otherwise rank this document by
-    -- words it no longer holds. NULL is "not embedded yet", which is what
-    -- l1.Store.Embed looks for and what the full-text half is unaffected by.
     embedding = CASE WHEN l1_docs.text IS DISTINCT FROM excluded.text THEN NULL ELSE l1_docs.embedding END,
     distilled_at = now()
 WHERE (l1_docs.kind, l1_docs.artifact_class, l1_docs.source, l1_docs.source_native_id, l1_docs.source_url,
@@ -336,7 +301,6 @@ func Limit(limit int) int {
 	}
 }
 
-// row is the parts of a document that are stored as JSON.
 type row struct {
 	participants []byte
 	references   []byte
@@ -347,9 +311,6 @@ type row struct {
 func rowOf(doc Document) (row, error) {
 	var r row
 	var err error
-	// A nil slice marshals as `null`, and the column holds an array: encoding
-	// an empty document's participants as null would fail the constraint that
-	// says these columns are arrays.
 	if r.participants, err = json.Marshal(orEmpty(doc.Participants)); err != nil {
 		return row{}, fmt.Errorf("encoding the participants of %s: %w", doc.ID, err)
 	}
@@ -365,8 +326,6 @@ func rowOf(doc Document) (row, error) {
 	return r, nil
 }
 
-// orEmpty is what keeps a nil slice out of a NOT NULL column: pgx writes one as
-// NULL, and a jsonb column here holds an array while a text[] holds a list.
 func orEmpty[T any](s []T) []T {
 	if s == nil {
 		return []T{}
@@ -374,12 +333,10 @@ func orEmpty[T any](s []T) []T {
 	return s
 }
 
-// scanner is what both reads hand to scanDoc: a single row or one of many.
 type scanner interface {
 	Scan(dest ...any) error
 }
 
-// scanDoc reads one row back into a document.
 func scanDoc(s scanner) (Stored, error) {
 	var d docScan
 	if err := s.Scan(d.dests()...); err != nil {
@@ -388,12 +345,6 @@ func scanDoc(s scanner) (Stored, error) {
 	return d.done()
 }
 
-// docScan is one row of [docColumns] as Postgres hands it over: the columns
-// that map straight onto a field, and the ones that have to be decoded.
-//
-// It is split from [scanDoc] because a read that selects more than a document —
-// search, which returns the ranks a document was found at — has to scan the
-// document's columns and its own in one call.
 type docScan struct {
 	doc           Stored
 	kind          string
@@ -407,7 +358,6 @@ type docScan struct {
 	body          []byte
 }
 
-// dests is where each of [docColumns] is read into, in that order.
 func (d *docScan) dests() []any {
 	return []any{&d.doc.ID, &d.kind, &d.artifactClass, &d.doc.Source.System, &d.doc.Source.NativeID, &d.doc.Source.URL,
 		&d.doc.L0Refs, &d.doc.Time.Created, &d.doc.Time.Updated, &d.doc.Time.LastActivity,
@@ -415,13 +365,6 @@ func (d *docScan) dests() []any {
 		&d.doc.Text, &d.doc.RawText, &d.body, &d.outcome, &d.state, &d.native, &d.doc.DistilledAt}
 }
 
-// done turns a scanned row into a document.
-//
-// The times come back in UTC. Postgres hands a timestamptz back in the
-// session's time zone, which is the server's and has nothing to do with the
-// artifact; the instant is the same either way, and reading it in one zone is
-// what keeps a document that was written once from looking different when it is
-// read somewhere else.
 func (d *docScan) done() (Stored, error) {
 	doc := d.doc
 	if d.state != nil {
@@ -446,9 +389,6 @@ func (d *docScan) done() (Stored, error) {
 		return Stored{}, fmt.Errorf("decoding the body of %s: %w", doc.ID, err)
 	}
 	if d.outcome != string(doc.Body.OutcomeKind) {
-		// The column is a copy of a field of the body, held to it by the write
-		// path. A row where they disagree was written by something else, and
-		// the L2 trigger reads the column while everything else reads the body.
 		return Stored{}, fmt.Errorf("document %s: outcome_kind is %q and body.outcome_kind is %q", doc.ID, d.outcome, doc.Body.OutcomeKind)
 	}
 	if doc.Participants == nil {
@@ -460,8 +400,6 @@ func (d *docScan) done() (Stored, error) {
 	return doc, nil
 }
 
-// query builds a statement with numbered placeholders, so that a filter nobody
-// set contributes no predicate.
 type query struct {
 	sql  string
 	args []any

@@ -14,33 +14,16 @@ import (
 // is noise to them and short to a person waiting on a command.
 const HoldPoll = 250 * time.Millisecond
 
-// runningSQL is the ids of the jobs already running under a serial key: the
-// ones a hold has to wait for. It runs under the kind's claim lock
-// (claimSerialLockSQL), in a statement of its own after the lock, for the
-// reason claimSerialized gives: so what it reads includes every claim
-// committed before the lock was granted.
 const runningSQL = `
 SELECT coalesce(array_agg(id), '{}') FROM queue_job
 WHERE kind = $1 AND state = 'running' AND serial_key = $2`
 
-// holdSQL writes the caller's job as already running, under the same lock.
-//
-// The row goes in running whether or not the key is busy. That is what keeps
-// a hold from starving behind a backlog: from the moment it commits, no claim
-// takes the key, so the caller waits for the jobs already running and for
-// nothing enqueued after them.
 const holdSQL = `
 INSERT INTO queue_job (kind, target_id, serial_key, state, attempt, started_at, lease_expires_at)
 VALUES ($1, $3, $2, 'running', 1, now(), now() + make_interval(secs => $4))
 RETURNING ` + jobColumns + `
 `
 
-// aheadSQL counts the jobs a hold waits for that are still running. A job
-// that stops running cannot run again under the key while the hold stands: a
-// claim skips a key with a running job, and the hold is one. A job whose lease
-// has expired is not waited for: the queue has stopped believing its worker is
-// alive, and a hold should not wait on a reclaimer when the kind's worker is
-// down.
 const aheadSQL = `SELECT count(*) FROM queue_job WHERE id = ANY($1) AND state = 'running' AND lease_expires_at > now()`
 
 // Hold takes a serial key of a serialized kind for the caller rather than for
@@ -72,8 +55,6 @@ func (c *Client) Hold(ctx context.Context, serialKey, target string) (Job, error
 		return Job{}, err
 	}
 	if err := c.waitFor(ctx, job, ahead); err != nil {
-		// The key goes back whatever the context says: the caller has not
-		// started, and a hold left running blocks the key for a lease.
 		if _, done := c.Complete(context.WithoutCancel(ctx), job); done != nil {
 			return Job{}, errors.Join(err, done)
 		}
@@ -86,9 +67,6 @@ func (c *Client) hold(ctx context.Context, req Request) (Job, []int64, error) {
 	fail := func(err error) error {
 		return fmt.Errorf("holding %s key %q: %w", c.cfg.Kind.Name, req.SerialKey, err)
 	}
-	// READ COMMITTED by name, as claimSerialized asks for it and for the same
-	// reason: the running jobs are read by a statement that starts after the
-	// lock is granted.
 	tx, err := c.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return Job{}, nil, fail(err)
@@ -116,8 +94,6 @@ func (c *Client) hold(ctx context.Context, req Request) (Job, []int64, error) {
 	return jobs[0], ahead, nil
 }
 
-// waitFor returns once none of the jobs ahead is running, renewing the hold's
-// lease as a worker renews a claim's.
 func (c *Client) waitFor(ctx context.Context, job Job, ahead []int64) error {
 	if len(ahead) == 0 {
 		return nil

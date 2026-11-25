@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/queue"
 )
 
@@ -27,13 +29,21 @@ func holdAsync(ctx context.Context, client *queue.Client, key, target string) <-
 	return out
 }
 
-// stillWaiting fails the test if the hold returned within a few polls.
-func stillWaiting(t *testing.T, h <-chan held, why string) {
+func stillWaiting(t *testing.T, pool *pgxpool.Pool, kind queue.Kind, h <-chan held, target, why string) {
 	t.Helper()
+	waitFor(t, "the hold to write its job", func() bool {
+		var written bool
+		if err := pool.QueryRow(t.Context(),
+			`SELECT EXISTS (SELECT 1 FROM queue_job WHERE kind = $1 AND target_id = $2 AND state = 'running')`,
+			kind.Name, target).Scan(&written); err != nil {
+			t.Fatal(err)
+		}
+		return written
+	})
 	select {
 	case got := <-h:
 		t.Fatalf("Hold returned %v, %v while %s", got.job, got.err, why)
-	case <-time.After(4 * queue.HoldPoll):
+	default:
 	}
 }
 
@@ -51,13 +61,10 @@ func receive(t *testing.T, h <-chan held) queue.Job {
 	return queue.Job{}
 }
 
-// A hold waits for the job running under its key and for nothing enqueued
-// after it: from the moment it is taken no claim takes the key, while other
-// keys run on.
 func TestAHoldWaitsForTheRunningJobAndBlocksItsKey(t *testing.T) {
 	kind := newKind(t, true)
 	client := newClient(t, queue.Config{Kind: kind, Lease: 30 * time.Second})
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	enqueue(t, pool, queue.Request{Kind: kind, TargetID: "a1", SerialKey: "a"})
 	enqueue(t, pool, queue.Request{Kind: kind, TargetID: "a2", SerialKey: "a"})
 	enqueue(t, pool, queue.Request{Kind: kind, TargetID: "b1", SerialKey: "b"})
@@ -67,7 +74,7 @@ func TestAHoldWaitsForTheRunningJobAndBlocksItsKey(t *testing.T) {
 		t.Fatalf("the first claim = %v, want a1", running)
 	}
 	h := holdAsync(t.Context(), client, "a", "hold")
-	stillWaiting(t, h, "a1 is running on its key")
+	stillWaiting(t, pool, kind, h, "hold", "a1 is running on its key")
 
 	if other := claim(t, client); len(other) != 1 || other[0].TargetID != "b1" {
 		t.Fatalf("a claim while key a is held = %v, want b1: other keys are not held", other)
@@ -83,7 +90,6 @@ func TestAHoldWaitsForTheRunningJobAndBlocksItsKey(t *testing.T) {
 		t.Fatalf("a claim while the hold stands = %v, want nothing: a2 waits for it", next)
 	}
 
-	// The hold ends with the transaction that did the work.
 	tx, err := pool.Begin(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -102,16 +108,16 @@ func TestAHoldWaitsForTheRunningJobAndBlocksItsKey(t *testing.T) {
 	}
 }
 
-// Two holds on one key take turns, in the order they were taken.
 func TestTwoHoldsOnOneKeyTakeTurns(t *testing.T) {
 	kind := newKind(t, true)
 	client := newClient(t, queue.Config{Kind: kind, Lease: 30 * time.Second})
+	pool := dbtest.Pool(t)
 	first, err := client.Hold(t.Context(), "a", "first")
 	if err != nil {
 		t.Fatalf("Hold(first) = %v", err)
 	}
 	second := holdAsync(t.Context(), client, "a", "second")
-	stillWaiting(t, second, "the first hold stands")
+	stillWaiting(t, pool, kind, second, "second", "the first hold stands")
 	if ok, err := client.Complete(t.Context(), first); err != nil || !ok {
 		t.Fatalf("Complete(first) = %v, %v", ok, err)
 	}
@@ -120,12 +126,10 @@ func TestTwoHoldsOnOneKeyTakeTurns(t *testing.T) {
 	}
 }
 
-// A caller that gives up waiting lets the key go rather than blocking it for a
-// lease.
 func TestAHoldGivenUpLetsTheKeyGo(t *testing.T) {
 	kind := newKind(t, true)
 	client := newClient(t, queue.Config{Kind: kind, Lease: 30 * time.Second})
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	enqueue(t, pool, queue.Request{Kind: kind, TargetID: "a1", SerialKey: "a"})
 	enqueue(t, pool, queue.Request{Kind: kind, TargetID: "a2", SerialKey: "a"})
 	running := claim(t, client)
@@ -143,19 +147,16 @@ func TestAHoldGivenUpLetsTheKeyGo(t *testing.T) {
 	}
 }
 
-// A hold whose lease lapsed has lost the key: completing it in the work's
-// transaction says so, which is the caller's signal to roll the work back, and
-// the reclaimed row is a job like any other.
 func TestAHoldWhoseLeaseLapsedCannotComplete(t *testing.T) {
 	const lease = 50 * time.Millisecond
 	kind := newKind(t, true)
 	client := newClient(t, queue.Config{Kind: kind, Lease: lease})
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	job, err := client.Hold(t.Context(), "a", "hold")
 	if err != nil {
 		t.Fatalf("Hold = %v", err)
 	}
-	expireLeases(lease)
+	expireLeases(t, job)
 	if r := reclaim(t, client); r.Pending != 1 {
 		t.Fatalf("Reclaim = %+v, want the hold back in the queue", r)
 	}
@@ -185,20 +186,18 @@ func TestOnlyASerializedKindIsHeld(t *testing.T) {
 	}
 }
 
-// A job whose lease expired is one the queue no longer believes is running,
-// and a hold does not wait for a reclaimer to say so: the kind's worker may be
-// the thing that is down.
 func TestAHoldDoesNotWaitOnAnExpiredLease(t *testing.T) {
 	const lease = 50 * time.Millisecond
 	kind := newKind(t, true)
 	dead := newClient(t, queue.Config{Kind: kind, Lease: lease})
 	client := newClient(t, queue.Config{Kind: kind, Lease: 30 * time.Second})
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	enqueue(t, pool, queue.Request{Kind: kind, TargetID: "a1", SerialKey: "a"})
-	if running := claim(t, dead); len(running) != 1 {
+	running := claim(t, dead)
+	if len(running) != 1 {
 		t.Fatalf("the claim = %v, want a1", running)
 	}
-	expireLeases(lease)
+	expireLeases(t, running...)
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	if _, err := client.Hold(ctx, "a", "hold"); err != nil {

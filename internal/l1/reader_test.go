@@ -9,14 +9,11 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
-// The grants a reader holds are the ones the identity mapping gives them: their
-// own identities as `identity` entries, their teams' as `group` entries, and
-// nothing else — an agent reading on their behalf adds nothing and takes
-// nothing away here.
 func TestReaderForDerivesTheGrantsAPrincipalHolds(t *testing.T) {
 	res := testPrincipals(t)
 	agent, _ := res.Principal("shed")
@@ -25,7 +22,6 @@ func TestReaderForDerivesTheGrantsAPrincipalHolds(t *testing.T) {
 	entry := func(kind connector.ACLKind, native string) connector.ACLEntry {
 		return connector.ACLEntry{Kind: kind, Source: source, NativeID: native}
 	}
-	// kyle is `u1`/`kpenfound` and is in `api-team`, which is `t1`/`acme/api-team`.
 	kylesGrants := []connector.ACLEntry{
 		entry(connector.ACLGroup, "acme/api-team"),
 		entry(connector.ACLGroup, "t1"),
@@ -79,16 +75,13 @@ func TestReaderForDerivesTheGrantsAPrincipalHolds(t *testing.T) {
 	}
 }
 
-// Reads fail closed: a principal the mapping does not hold, or one that is not
-// a person, is refused rather than given an empty audience, which would be a
-// reader that silently sees only public documents.
 func TestReaderForRefusesAPrincipalThatCannotRead(t *testing.T) {
 	res := testPrincipals(t)
 	for _, tc := range []struct {
 		name string
 		res  *principal.Resolver
 		eff  principal.Effective
-		says string // what the error has to name, so it says which of these it was
+		says string
 	}{
 		{name: "no identity mapping", res: nil, eff: principal.Effective{Human: "kyle"}, says: "no identity mapping"},
 		{name: "nobody", res: res, eff: principal.Effective{}, says: "not a configured principal"},
@@ -111,9 +104,6 @@ func TestReaderForRefusesAPrincipalThatCannotRead(t *testing.T) {
 	}
 }
 
-// A group the mapping spells one way and a source spells another still matches,
-// because every spelling of a configured identity is taken — as long as nobody
-// else answers to it. What is not taken is a spelling nobody configured.
 func TestReaderForTakesEverySpellingNobodyElseAnswersTo(t *testing.T) {
 	res, err := principal.NewResolver([]principal.Principal{{
 		ID:   "kyle",
@@ -121,9 +111,6 @@ func TestReaderForTakesEverySpellingNobodyElseAnswersTo(t *testing.T) {
 		Identities: []principal.Identity{
 			{Source: source, NativeID: "u1", Handle: "KPenfound"},
 			{Source: "discord-acme", Handle: "kyle"},
-			// An identity in no source is not a grant anywhere: the mapping
-			// never indexes it, and a grant with no source to scope it to
-			// would match an entry from any source at all.
 			{Source: "", NativeID: "u9", Handle: "ghost"},
 		},
 	}})
@@ -145,25 +132,15 @@ func TestReaderForTakesEverySpellingNobodyElseAnswersTo(t *testing.T) {
 	}
 }
 
-// A handle and a native id are different namespaces and may collide
-// (internal/principal), but an access list entry carries one string with no
-// namespace on it. A spelling two principals answer to is therefore a grant to
-// neither: taking it would hand one person's documents to another, which is the
-// one direction this filter may not fail in
-// (docs/design.md#access-control).
 func TestReaderForRefusesASpellingTwoPrincipalsAnswerTo(t *testing.T) {
 	res, err := principal.NewResolver([]principal.Principal{{
 		ID:   "alice",
 		Kind: principal.KindHuman,
 		Identities: []principal.Identity{
 			{Source: source, NativeID: "u1", Handle: "alice"},
-			// The source's id for her happens to be the slug of a team.
 			{Source: source, NativeID: "acme/owners"},
 		},
 	}, {
-		// The mapping accepts this: nothing else claims the native id `u2`,
-		// and nothing else claims the handle `U1` — alice's `u1` is a native
-		// id, which is a different namespace.
 		ID:         "mallory",
 		Kind:       principal.KindHuman,
 		Identities: []principal.Identity{{Source: source, NativeID: "u2", Handle: "U1"}},
@@ -181,10 +158,6 @@ func TestReaderForRefusesASpellingTwoPrincipalsAnswerTo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReaderFor(mallory) = %v, want no error", err)
 	}
-	// `U1` folds to `u1`, which is alice's native id: neither spelling of the
-	// handle is a grant. Nor is the team's own name, which is a native id of
-	// alice's — otherwise every member of the team would read her documents.
-	// What is left is what nobody else answers to.
 	want := []connector.ACLEntry{
 		{Kind: connector.ACLGroup, Source: source, NativeID: "t1"},
 		{Kind: connector.ACLIdentity, Source: source, NativeID: "U1"},
@@ -194,9 +167,6 @@ func TestReaderForRefusesASpellingTwoPrincipalsAnswerTo(t *testing.T) {
 		t.Errorf("mallory holds %v, want %v", mallory.Audience, want)
 	}
 
-	// The positive control: the collision costs alice nothing. Her native id is
-	// hers whatever anybody's handle folds to, and her own handle is hers
-	// because nothing else answers to it.
 	alice, err := l1.ReaderFor(t.Context(), emptyReaderDB{}, res, principal.Effective{Human: "alice"})
 	if err != nil {
 		t.Fatalf("ReaderFor(alice) = %v, want no error", err)
@@ -211,8 +181,7 @@ func TestReaderForRefusesASpellingTwoPrincipalsAnswerTo(t *testing.T) {
 	}
 }
 
-// No L1 documents carry deferred grants in these identity-mapping tests.
-type emptyReaderDB struct{ l1.Querier }
+type emptyReaderDB struct{ db.Querier }
 
 func (emptyReaderDB) Query(context.Context, string, ...any) (pgx.Rows, error) {
 	return emptyReaderRows{}, nil
@@ -260,7 +229,7 @@ func TestReaderForAddsEveryWorkIdentity(t *testing.T) {
 func TestReaderForRefusesUnprovenDatabaseAccess(t *testing.T) {
 	for _, tt := range []struct {
 		name string
-		q    l1.Querier
+		q    db.Querier
 	}{
 		{"no database", nil}, {"query failure", &recorder{}},
 	} {

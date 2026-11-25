@@ -39,12 +39,18 @@ func TestClassFor(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestEveryKindHasAValidClass(t *testing.T) {
 	for _, kind := range l1.Kinds() {
 		got, err := l1.ClassFor(kind, connector.Event{})
 		if err != nil || !got.Valid() {
 			t.Errorf("kind %s has no valid class: %q, %v", kind, got, err)
 		}
 	}
+}
+
+func TestClassForRefusesAnUnmappedKind(t *testing.T) {
 	if _, err := l1.ClassFor("future_kind", connector.Event{}); err == nil {
 		t.Fatal("unmapped kind accepted")
 	}

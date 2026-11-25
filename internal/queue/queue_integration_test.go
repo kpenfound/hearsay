@@ -18,31 +18,10 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/queue"
 )
 
-// newPool connects to the database the integration-test check brings up. It
-// uses db.Connect rather than Open, so a database the migrations have not been
-// run against fails here saying so: tests never build a schema of their own.
-func newPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	pool, err := db.Connect(context.Background(), url)
-	if err != nil {
-		t.Fatalf("connecting to postgres: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
-// kinds is what keeps tests out of each other's way. The queue table outlives
-// one test and every operation is scoped to a kind, so a test takes a kind
-// name nothing else uses rather than truncating a table another test is
-// claiming from.
 var kinds atomic.Int64
 
 func newKind(t *testing.T, serialized bool) queue.Kind {
@@ -51,11 +30,9 @@ func newKind(t *testing.T, serialized bool) queue.Kind {
 	return queue.Kind{Name: name, Serialized: serialized}
 }
 
-// newClient returns a client on a kind of its own. Only Kind is taken from
-// cfg's caller — the rest is theirs to set.
 func newClient(t *testing.T, cfg queue.Config) *queue.Client {
 	t.Helper()
-	client, err := queue.New(newPool(t), cfg)
+	client, err := queue.New(dbtest.Pool(t), cfg)
 	if err != nil {
 		t.Fatalf("queue.New = %v, want no error", err)
 	}
@@ -89,14 +66,11 @@ func stats(t *testing.T, client *queue.Client) queue.Stats {
 	return s
 }
 
-// A job is enqueued in the transaction that causes it, so a rollback takes the
-// job with it. That is the whole reason the queue is in the same Postgres as
-// the data.
 func TestEnqueueRollsBackWithTheTransactionThatWroteIt(t *testing.T) {
 	kind := newKind(t, false)
 	client := newClient(t, queue.Config{Kind: kind})
 
-	tx, err := newPool(t).Begin(t.Context())
+	tx, err := dbtest.Pool(t).Begin(t.Context())
 	if err != nil {
 		t.Fatalf("beginning a transaction: %v", err)
 	}
@@ -116,13 +90,10 @@ func TestEnqueueRollsBackWithTheTransactionThatWroteIt(t *testing.T) {
 	}
 }
 
-// Enqueueing twice for one target while a job is pending collapses, and — the
-// part that matters — does not surface a unique violation into the caller's
-// transaction, which would abort the L0 or L1 write that was the point of it.
 func TestADuplicateEnqueueCollapsesWithoutAbortingTheTransaction(t *testing.T) {
 	kind := newKind(t, false)
 	client := newClient(t, queue.Config{Kind: kind})
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 
 	first := enqueue(t, pool, queue.Request{Kind: kind, TargetID: "evt-1"})
 	if !first.Stored {
@@ -140,9 +111,6 @@ func TestADuplicateEnqueueCollapsesWithoutAbortingTheTransaction(t *testing.T) {
 		t.Errorf("the second Enqueue = %+v, want it to collapse into the pending job", second)
 	}
 
-	// The transaction is still usable, which is what "never aborts the
-	// caller's transaction" means: a failed statement would have poisoned it
-	// and this query would report so.
 	var one int
 	if err := tx.QueryRow(t.Context(), `SELECT 1`).Scan(&one); err != nil {
 		t.Fatalf("the transaction is unusable after a duplicate enqueue: %v", err)
@@ -156,8 +124,6 @@ func TestADuplicateEnqueueCollapsesWithoutAbortingTheTransaction(t *testing.T) {
 	}
 }
 
-// Debounce inserts behind the quiet period, or updates just the schedule of
-// the existing pending row. The database's transaction time drives the formula.
 func TestDebouncedEnqueue(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -175,7 +141,7 @@ func TestDebouncedEnqueue(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			kind := newKind(t, false)
-			pool := newPool(t)
+			pool := dbtest.Pool(t)
 			client := newClient(t, queue.Config{Kind: kind})
 			var before queue.Job
 			if tt.firstQuiet != 0 || tt.running {
@@ -267,7 +233,7 @@ func TestADebouncedEnqueueKeepsADueJobDue(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			kind := newKind(t, false)
-			pool := newPool(t)
+			pool := dbtest.Pool(t)
 			client := newClient(t, queue.Config{Kind: kind})
 			req := queue.Request{Kind: kind, TargetID: "doc-1"}
 			if tt.expedite {
@@ -281,7 +247,6 @@ func TestADebouncedEnqueueKeepsADueJobDue(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer tx.Rollback(context.WithoutCancel(t.Context()))
-			// Force the transaction timestamp to precede the expedite.
 			if _, err := tx.Exec(t.Context(), "SELECT now()"); err != nil {
 				t.Fatal(err)
 			}
@@ -298,7 +263,10 @@ func TestADebouncedEnqueueKeepsADueJobDue(t *testing.T) {
 				}
 			}
 			if tt.expired {
-				time.Sleep(1100 * time.Millisecond)
+				if _, err := pool.Exec(t.Context(),
+					`UPDATE queue_job SET enqueued_at = enqueued_at - interval '2 seconds', run_after = run_after - interval '2 seconds' WHERE kind = $1`, kind.Name); err != nil {
+					t.Fatal(err)
+				}
 			}
 			before := listJobs(t, client, queue.StatePending)[0]
 			if !tt.oldTx {
@@ -329,11 +297,9 @@ func TestADebouncedEnqueueKeepsADueJobDue(t *testing.T) {
 	}
 }
 
-// An enqueue in an older transaction must respect the due committed row it
-// re-reads after waiting for an in-flight expedite to release its lock.
 func TestADebouncedEnqueueWaitingOnExpediteKeepsTheJobDue(t *testing.T) {
 	kind := newKind(t, false)
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	client := newClient(t, queue.Config{Kind: kind})
 	req := queue.Request{Kind: kind, TargetID: "doc-1", Debounce: &queue.Debounce{Quiet: time.Hour, Max: 2 * time.Hour}}
 	enqueue(t, pool, req)
@@ -399,7 +365,7 @@ func TestExpedite(t *testing.T) {
 			for _, state := range []string{"delayed", "due", "missing", "running", "done", "rollback"} {
 				t.Run(state, func(t *testing.T) {
 					kind := newKind(t, false)
-					pool := newPool(t)
+					pool := dbtest.Pool(t)
 					client := newClient(t, queue.Config{Kind: kind})
 					if state != "missing" {
 						req := queue.Request{Kind: kind, TargetID: "doc-1"}
@@ -419,7 +385,6 @@ func TestExpedite(t *testing.T) {
 							}
 						}
 					}
-					// Other targets and kinds must remain delayed.
 					enqueue(t, pool, queue.Request{Kind: kind, TargetID: "other-doc", Delay: time.Hour})
 					otherKind := newKind(t, false)
 					enqueue(t, pool, queue.Request{Kind: otherKind, TargetID: "doc-1", Delay: time.Hour})
@@ -454,7 +419,6 @@ func TestExpedite(t *testing.T) {
 					want := state == "delayed" || state == "due" || state == "rollback"
 					var ok bool
 					if form == "client" {
-						// The explicit kind may differ from this client's own kind.
 						caller, beginErr := pool.Begin(t.Context())
 						if beginErr != nil {
 							t.Fatal(beginErr)
@@ -471,7 +435,7 @@ func TestExpedite(t *testing.T) {
 						}
 						defer tx.Rollback(context.WithoutCancel(t.Context()))
 						ok, err = queue.Expedite(t.Context(), tx, kind, "doc-1")
-						expectNotification(false) // not before commit
+						expectNotification(false)
 						if state == "rollback" {
 							if err := tx.Rollback(t.Context()); err != nil {
 								t.Fatal(err)
@@ -484,8 +448,6 @@ func TestExpedite(t *testing.T) {
 						t.Fatalf("Expedite = %v, %v, want %v, nil", ok, err, want)
 					}
 					expectNotification(want && (state != "rollback" || form == "client"))
-					// Claim uses a different transaction: the client form must have
-					// committed before returning, while rollback must leave it delayed.
 					wantJobs := 0
 					if want && (state != "rollback" || form == "client") {
 						wantJobs = 1
@@ -509,12 +471,11 @@ func TestExpedite(t *testing.T) {
 	}
 }
 
-// Debounce notifications, like inserts, are visible only after commit.
 func TestADebouncedUpdateNotifiesOnCommit(t *testing.T) {
 	for _, commit := range []bool{true, false} {
 		t.Run(strconv.FormatBool(commit), func(t *testing.T) {
 			kind := newKind(t, false)
-			pool := newPool(t)
+			pool := dbtest.Pool(t)
 			client := newClient(t, queue.Config{Kind: kind})
 			req := queue.Request{Kind: kind, TargetID: "doc-1", Debounce: &queue.Debounce{Quiet: time.Hour, Max: 3 * time.Hour}}
 			enqueue(t, pool, req)
@@ -567,14 +528,9 @@ func TestADebouncedUpdateNotifiesOnCommit(t *testing.T) {
 	}
 }
 
-// The property the queue will not trade, stated as behaviour rather than as a
-// comment: an enqueue cannot be the thing that aborts the caller's
-// transaction. Invalid debounce settings and bytes that Postgres would refuse
-// mid-transaction (22021, 22P05) are rejected before SQL. The transaction
-// survives and the write that was the point of it still commits.
 func TestARefusedEnqueueLeavesTheCallersTransactionUsable(t *testing.T) {
 	kind := newKind(t, false)
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 
 	tests := []struct {
 		name string
@@ -603,9 +559,6 @@ func TestARefusedEnqueueLeavesTheCallersTransactionUsable(t *testing.T) {
 				t.Fatalf("Enqueue = %v, want it to wrap ErrInvalidJob rather than come back from the database", err)
 			}
 
-			// An aborted transaction answers every further statement with
-			// 25P02, so a second enqueue and a commit that both work are the
-			// evidence that nothing reached Postgres.
 			survivor := queue.Request{Kind: kind, TargetID: "evt-survivor-" + strconv.Itoa(i)}
 			if _, err := queue.Enqueue(t.Context(), tx, survivor); err != nil {
 				t.Fatalf("enqueueing after a refused request = %v, want the caller's transaction still usable", err)
@@ -616,7 +569,6 @@ func TestARefusedEnqueueLeavesTheCallersTransactionUsable(t *testing.T) {
 		})
 	}
 
-	// And the writes that shared those transactions are on the table.
 	client := newClient(t, queue.Config{Kind: kind})
 	pending, err := client.List(t.Context(), queue.StatePending, 0)
 	if err != nil {
@@ -627,20 +579,17 @@ func TestARefusedEnqueueLeavesTheCallersTransactionUsable(t *testing.T) {
 	}
 }
 
-// Identity is only "pending", on purpose: once a job is running it may already
-// have read the state a new event is about, so the new event is new work
-// rather than the same work.
 func TestEnqueueingForARunningJobIsANewJob(t *testing.T) {
 	kind := newKind(t, false)
 	client := newClient(t, queue.Config{Kind: kind})
 
-	enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
+	enqueue(t, dbtest.Pool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
 	jobs := claim(t, client)
 	if len(jobs) != 1 {
 		t.Fatalf("Claim = %d jobs, want 1", len(jobs))
 	}
 
-	second := enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
+	second := enqueue(t, dbtest.Pool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
 	if !second.Stored {
 		t.Error("enqueueing for a target whose job is running did not store a job, want a new one")
 	}
@@ -649,15 +598,13 @@ func TestEnqueueingForARunningJobIsANewJob(t *testing.T) {
 	}
 }
 
-// On an unserialized kind, workers claiming the same backlog step over each
-// other's rows rather than taking them twice.
 func TestConcurrentWorkersNeverClaimOneRowTwice(t *testing.T) {
 	const (
 		jobs    = 60
 		workers = 6
 	)
 	kind := newKind(t, false)
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	for i := range jobs {
 		enqueue(t, pool, queue.Request{Kind: kind, TargetID: "evt-" + strconv.Itoa(i)})
 	}
@@ -708,9 +655,6 @@ func TestConcurrentWorkersNeverClaimOneRowTwice(t *testing.T) {
 	}
 }
 
-// The acceptance criterion that must be tested directly: two jobs
-// sharing a serial key are never running at the same time, however many
-// workers are claiming.
 func TestConcurrentWorkersNeverRunTwoJobsOfOneSerialKey(t *testing.T) {
 	const (
 		keys       = 3
@@ -719,7 +663,7 @@ func TestConcurrentWorkersNeverRunTwoJobsOfOneSerialKey(t *testing.T) {
 		jobRuntime = 15 * time.Millisecond
 	)
 	kind := newKind(t, true)
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	for k := range keys {
 		for i := range perKey {
 			enqueue(t, pool, queue.Request{
@@ -749,8 +693,6 @@ func TestConcurrentWorkersNeverRunTwoJobsOfOneSerialKey(t *testing.T) {
 					return
 				}
 				if len(batch) == 0 {
-					// Every key is busy, or the queue is empty; either way,
-					// come back.
 					time.Sleep(time.Millisecond)
 					continue
 				}
@@ -766,8 +708,6 @@ func TestConcurrentWorkersNeverRunTwoJobsOfOneSerialKey(t *testing.T) {
 				}
 				mu.Unlock()
 
-				// Hold the key long enough that a claim which ignored the
-				// invariant would overlap with this one.
 				time.Sleep(jobRuntime)
 
 				mu.Lock()
@@ -791,34 +731,18 @@ func TestConcurrentWorkersNeverRunTwoJobsOfOneSerialKey(t *testing.T) {
 	}
 }
 
-// The serialized claim's *other* guard, and the one a race between two workers
-// only rarely reaches: the claim takes an advisory lock on its kind, so that
-// two claims cannot both read a snapshot in which one serial key is free. The
-// window that needs is about a millisecond wide, which the
-// test above hits by luck rather than by design — so the lock is held here by
-// the test instead, and a claim that did not take it is caught every run.
-//
-// The lock's name is spelled out rather than taken from the package because it
-// is a contract between workers and not an implementation detail: two workers
-// hashing different strings would each serialize against nobody, and neither
-// would notice.
 func TestTheSerializedClaimTakesTheKindsAdvisoryLock(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	serialized := newKind(t, true)
 	unserialized := newKind(t, false)
 	enqueue(t, pool, queue.Request{Kind: serialized, TargetID: "l1-a", SerialKey: "scope"})
 	enqueue(t, pool, queue.Request{Kind: unserialized, TargetID: "evt-a"})
 
-	// A connection of its own, because an advisory lock without `xact` in its
-	// name belongs to a session: this one holds both kinds' claim locks until
-	// the test hands them back.
 	holder, err := pool.Acquire(t.Context())
 	if err != nil {
 		t.Fatalf("acquiring a connection to hold the claim lock: %v", err)
 	}
 	t.Cleanup(func() {
-		// Not t.Context(): it is cancelled before cleanup runs, and a lock
-		// left behind would outlive the test on a pooled connection.
 		_, _ = holder.Exec(context.Background(), `SELECT pg_advisory_unlock_all()`)
 		holder.Release()
 	})
@@ -828,9 +752,6 @@ func TestTheSerializedClaimTakesTheKindsAdvisoryLock(t *testing.T) {
 		}
 	}
 
-	// With the lock held the serialized claim cannot reach its UPDATE, so it
-	// waits rather than deciding the key is free, and comes back with the
-	// deadline it was given and no job.
 	const wait = time.Second
 	client := newClient(t, queue.Config{Kind: serialized})
 	blocked, giveUp := context.WithTimeout(t.Context(), wait)
@@ -845,15 +766,10 @@ func TestTheSerializedClaimTakesTheKindsAdvisoryLock(t *testing.T) {
 		t.Errorf("Claim came back after %s, want it to have waited on the lock until its context ran out at %s", waited, wait)
 	}
 
-	// The positive control. Only the serialized path takes this lock, so
-	// holding an unserialized kind's claims nothing — without this, a Claim
-	// that failed for some entirely other reason would read as the lock
-	// working.
 	if got := claim(t, newClient(t, queue.Config{Kind: unserialized})); len(got) != 1 {
 		t.Fatalf("an unserialized claim with that kind's lock held = %v, want the one pending job: it does not take the lock", got)
 	}
 
-	// And once the lock is released, the job that was waiting on it is taken.
 	if _, err := holder.Exec(t.Context(), `SELECT pg_advisory_unlock_all()`); err != nil {
 		t.Fatalf("releasing the claim locks: %v", err)
 	}
@@ -862,10 +778,6 @@ func TestTheSerializedClaimTakesTheKindsAdvisoryLock(t *testing.T) {
 	}
 }
 
-// repeatableReadPool is a pool whose sessions start at REPEATABLE READ, which
-// is what an operator gets by putting `default_transaction_isolation` in
-// postgresql.conf, on the database, on the role, or in the connection URL.
-// db.Open is not used here precisely because it does not set the level.
 func repeatableReadPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	url := os.Getenv("HEARSAY_DATABASE_URL")
@@ -883,9 +795,6 @@ func repeatableReadPool(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 
-	// The pool is only evidence if the sessions really came up at that level:
-	// a runtime parameter that stopped being applied would make every
-	// assertion below pass for the wrong reason.
 	var level string
 	if err := pool.QueryRow(context.Background(), `SHOW default_transaction_isolation`).Scan(&level); err != nil {
 		t.Fatalf("reading the pool's default isolation level: %v", err)
@@ -896,19 +805,6 @@ func repeatableReadPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// The serialized claim is correct under READ COMMITTED and nowhere above it,
-// so it names the level rather than inheriting the server's — nothing else
-// pins one.
-//
-// The failure is not something concurrency reaches by luck, so it is built by
-// hand. A claim is made to wait on the kind's advisory lock, which is where a
-// REPEATABLE READ transaction registers its snapshot; while it waits, a job of
-// the same serial key is set running and committed. Against a transaction
-// snapshot taken before that commit, `NOT EXISTS` passes and the claim takes a
-// second job on a key that is already running — the invariant broken with the
-// lock held throughout. Against the per-statement snapshot READ COMMITTED
-// takes after the lock is granted, the running row is there and the claim
-// takes nothing.
 func TestTheSerializedClaimRefusesABusyKeyOnARepeatableReadServer(t *testing.T) {
 	kind := newKind(t, true)
 	pool := repeatableReadPool(t)
@@ -941,10 +837,6 @@ func TestTheSerializedClaimRefusesABusyKeyOnARepeatableReadServer(t *testing.T) 
 		claimed <- claimResult{jobs, err}
 	}()
 
-	// The claim is now inside its first statement, waiting for the lock —
-	// which is the moment a REPEATABLE READ transaction has taken its
-	// snapshot. The lock is matched by its key so that nothing else waiting on
-	// an advisory lock can stand in for it.
 	waitFor(t, "the serialized claim to block on the kind's advisory lock", func() bool {
 		var waiting bool
 		err := pool.QueryRow(t.Context(), `
@@ -959,11 +851,6 @@ SELECT count(*) > 0 FROM pg_locks
 		return waiting
 	})
 
-	// A second job of the same key starts running and commits while the claim
-	// waits. It is written directly because it has to land between the waiting
-	// claim's snapshot and its UPDATE, which no sequence of Claim calls can
-	// arrange; TestTheSchemaRefusesRowsTheQueueWouldNeverWrite is the only
-	// other test that writes these tables itself, and says so too.
 	if _, err := pool.Exec(t.Context(), `
 INSERT INTO queue_job (kind, target_id, serial_key, state, attempt, started_at, lease_expires_at)
 VALUES ($1, 'l1-running', 'scope', 'running', 1, now(), now() + interval '30 seconds')`, kind.Name); err != nil {
@@ -987,12 +874,10 @@ VALUES ($1, 'l1-running', 'scope', 'running', 1, now(), now() + interval '30 sec
 	}
 }
 
-// A serialized claim must not be starved by a key that is busy: the other
-// keys keep running.
 func TestASerializedClaimSkipsABusyKeyAndTakesAnother(t *testing.T) {
 	kind := newKind(t, true)
 	client := newClient(t, queue.Config{Kind: kind, Lease: 30 * time.Second})
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	enqueue(t, pool, queue.Request{Kind: kind, TargetID: "a1", SerialKey: "a"})
 	enqueue(t, pool, queue.Request{Kind: kind, TargetID: "a2", SerialKey: "a"})
 	enqueue(t, pool, queue.Request{Kind: kind, TargetID: "b1", SerialKey: "b"})
@@ -1018,14 +903,12 @@ func TestASerializedClaimSkipsABusyKeyAndTakesAnother(t *testing.T) {
 	}
 }
 
-// A job that runs out of attempts lands in failed and stays there, queryable,
-// with what went wrong on it.
 func TestAJobThatRunsOutOfAttemptsFailsAndStays(t *testing.T) {
 	kind := newKind(t, false)
 	client := newClient(t, queue.Config{
 		Kind: kind, MaxAttempts: 2, Backoff: time.Second, MaxBackoff: time.Second,
 	})
-	enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
+	enqueue(t, dbtest.Pool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
 
 	first := claim(t, client)
 	if len(first) != 1 || first[0].Attempt != 1 {
@@ -1042,15 +925,11 @@ func TestAJobThatRunsOutOfAttemptsFailsAndStays(t *testing.T) {
 	if retry.In <= 0 || retry.In > time.Second || retry.At.IsZero() {
 		t.Errorf("Fail returned retry %+v, want a delay inside the configured backoff and a time", retry)
 	}
-	// The delay is not only reported, it is when the job actually runs again.
-	// The jitter can draw almost nothing, so this asserts run_after is the
-	// delay that was drawn into the future — not that the delay is long.
 	if earliest := before.Add(retry.In - 20*time.Millisecond); retry.At.Before(earliest) {
 		t.Errorf("the retry is scheduled for %s but the backoff applied was %s from %s: run_after did not move",
 			retry.At, retry.In, before)
 	}
 
-	// Wait out the backoff rather than assuming it has passed.
 	var second []queue.Job
 	for deadline := time.Now().Add(5 * time.Second); len(second) == 0 && time.Now().Before(deadline); {
 		second = claim(t, client)
@@ -1091,19 +970,16 @@ func TestAJobThatRunsOutOfAttemptsFailsAndStays(t *testing.T) {
 	}
 }
 
-// A worker that dies leaves a running row. The lease is what turns it back
-// into work, and it is why delivery is at-least-once.
 func TestAnExpiredLeaseIsReclaimedAndRunAgain(t *testing.T) {
 	kind := newKind(t, false)
 	client := newClient(t, queue.Config{Kind: kind, Lease: 100 * time.Millisecond})
-	enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
+	enqueue(t, dbtest.Pool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
 
 	dead := claim(t, client)
 	if len(dead) != 1 {
 		t.Fatalf("Claim = %d jobs, want 1", len(dead))
 	}
 
-	// Nothing heartbeats: this is the worker that died.
 	var reclaimed queue.Reclaimed
 	for deadline := time.Now().Add(5 * time.Second); reclaimed.Total() == 0 && time.Now().Before(deadline); {
 		var err error
@@ -1123,8 +999,6 @@ func TestAnExpiredLeaseIsReclaimedAndRunAgain(t *testing.T) {
 		t.Errorf("the reclaimed job is on attempt %d, want %d", again[0].Attempt, dead[0].Attempt+1)
 	}
 
-	// The worker that died must not be able to finish the run somebody else
-	// is now doing.
 	if ok, err := client.Complete(t.Context(), dead[0]); err != nil || ok {
 		t.Errorf("Complete from the dead worker = %v, %v, want false and no error", ok, err)
 	}
@@ -1133,19 +1007,16 @@ func TestAnExpiredLeaseIsReclaimedAndRunAgain(t *testing.T) {
 	}
 }
 
-// The other half of the lease: a job that is slow but alive is not taken away
-// from the worker running it.
 func TestAHeartbeatKeepsALongJobFromBeingReclaimed(t *testing.T) {
 	kind := newKind(t, false)
 	client := newClient(t, queue.Config{Kind: kind, Lease: 300 * time.Millisecond})
-	enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
+	enqueue(t, dbtest.Pool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
 
 	jobs := claim(t, client)
 	if len(jobs) != 1 {
 		t.Fatalf("Claim = %d jobs, want 1", len(jobs))
 	}
 
-	// Longer than the lease, heartbeating as a worker would.
 	for range 6 {
 		time.Sleep(100 * time.Millisecond)
 		held, err := client.Heartbeat(t.Context(), jobs[0])
@@ -1165,13 +1036,10 @@ func TestAHeartbeatKeepsALongJobFromBeingReclaimed(t *testing.T) {
 	}
 }
 
-// A job whose worker keeps dying must not be handed round for ever: the
-// reclaimer fails it once its attempts are spent, the same as a handler that
-// keeps returning an error.
 func TestReclaimingFailsAJobThatHasNoAttemptsLeft(t *testing.T) {
 	kind := newKind(t, false)
 	client := newClient(t, queue.Config{Kind: kind, Lease: 50 * time.Millisecond, MaxAttempts: 1})
-	enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
+	enqueue(t, dbtest.Pool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
 
 	if jobs := claim(t, client); len(jobs) != 1 {
 		t.Fatalf("Claim = %d jobs, want 1", len(jobs))
@@ -1191,12 +1059,10 @@ func TestReclaimingFailsAJobThatHasNoAttemptsLeft(t *testing.T) {
 	}
 }
 
-// Retention: done jobs go, failed jobs stay. A failed job is the record of
-// what did not happen.
 func TestPurgeDeletesDoneJobsAndKeepsFailedOnes(t *testing.T) {
 	kind := newKind(t, false)
 	client := newClient(t, queue.Config{Kind: kind, Concurrency: 2, MaxAttempts: 1, Retention: time.Nanosecond})
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	enqueue(t, pool, queue.Request{Kind: kind, TargetID: "done-1"})
 	enqueue(t, pool, queue.Request{Kind: kind, TargetID: "failed-1"})
 
@@ -1219,8 +1085,6 @@ func TestPurgeDeletesDoneJobsAndKeepsFailedOnes(t *testing.T) {
 		}
 	}
 
-	// A listing is of one state, which is what makes a failed job findable
-	// among the finished ones rather than alongside them.
 	for state, want := range map[queue.State]string{queue.StateDone: "done-1", queue.StateFailed: "failed-1"} {
 		listed, err := client.List(t.Context(), state, 0)
 		if err != nil {
@@ -1231,7 +1095,6 @@ func TestPurgeDeletesDoneJobsAndKeepsFailedOnes(t *testing.T) {
 		}
 	}
 
-	// Retention is a nanosecond, so both are past it; only the done one may go.
 	purged, err := client.Purge(t.Context())
 	if err != nil {
 		t.Fatalf("Purge = %v, want no error", err)
@@ -1245,11 +1108,10 @@ func TestPurgeDeletesDoneJobsAndKeepsFailedOnes(t *testing.T) {
 	}
 }
 
-// A retention window that has not passed keeps the job.
 func TestPurgeKeepsDoneJobsInsideTheRetentionWindow(t *testing.T) {
 	kind := newKind(t, false)
 	client := newClient(t, queue.Config{Kind: kind, Retention: time.Hour})
-	enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
+	enqueue(t, dbtest.Pool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
 	for _, job := range claim(t, client) {
 		if ok, err := client.Complete(t.Context(), job); err != nil || !ok {
 			t.Fatalf("Complete = %v, %v", ok, err)
@@ -1267,14 +1129,11 @@ func TestPurgeKeepsDoneJobsInsideTheRetentionWindow(t *testing.T) {
 	}
 }
 
-// Scheduling is FIFO within a kind, and priority is what jumps the queue.
-// Jobs enqueued in one transaction share run_after to the microsecond, so
-// something has to break that tie for FIFO to mean anything.
 func TestClaimTakesJobsByPriorityThenInOrder(t *testing.T) {
 	kind := newKind(t, false)
 	client := newClient(t, queue.Config{Kind: kind, Concurrency: 2})
 
-	tx, err := newPool(t).Begin(t.Context())
+	tx, err := dbtest.Pool(t).Begin(t.Context())
 	if err != nil {
 		t.Fatalf("beginning a transaction: %v", err)
 	}
@@ -1290,8 +1149,6 @@ func TestClaimTakesJobsByPriorityThenInOrder(t *testing.T) {
 		t.Fatalf("committing: %v", err)
 	}
 
-	// Two claims of two, so the test pins which jobs a claim takes and not
-	// only how the batch it took is sorted.
 	for _, want := range [][]string{{"urgent", "first"}, {"second", "third"}} {
 		var order []string
 		for _, job := range claim(t, client) {
@@ -1303,12 +1160,10 @@ func TestClaimTakesJobsByPriorityThenInOrder(t *testing.T) {
 	}
 }
 
-// A delayed job is not work until it is due, and the delay is measured by
-// Postgres rather than by the enqueuing process's clock.
 func TestADelayedJobIsNotClaimedBeforeItIsDue(t *testing.T) {
 	kind := newKind(t, false)
 	client := newClient(t, queue.Config{Kind: kind})
-	enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-1", Delay: 400 * time.Millisecond})
+	enqueue(t, dbtest.Pool(t), queue.Request{Kind: kind, TargetID: "evt-1", Delay: 400 * time.Millisecond})
 
 	if jobs := claim(t, client); len(jobs) != 0 {
 		t.Fatalf("Claim = %v, want nothing: the job is not due", jobs)
@@ -1326,13 +1181,11 @@ func TestADelayedJobIsNotClaimedBeforeItIsDue(t *testing.T) {
 	}
 }
 
-// What the enqueuing side attaches to a job comes back to the worker: that is
-// how the work joins the trace that caused it.
 func TestTheTraceContextReachesTheWorker(t *testing.T) {
 	kind := newKind(t, false)
 	client := newClient(t, queue.Config{Kind: kind})
 	carrier := map[string]string{"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}
-	enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-1", TraceContext: carrier})
+	enqueue(t, dbtest.Pool(t), queue.Request{Kind: kind, TargetID: "evt-1", TraceContext: carrier})
 
 	jobs := claim(t, client)
 	if len(jobs) != 1 {
@@ -1342,9 +1195,7 @@ func TestTheTraceContextReachesTheWorker(t *testing.T) {
 		t.Errorf("the claimed job's traceparent = %q, want %q", got, carrier["traceparent"])
 	}
 
-	// A job with nothing attached comes back with an empty carrier rather
-	// than a null the worker has to guard.
-	enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-2"})
+	enqueue(t, dbtest.Pool(t), queue.Request{Kind: kind, TargetID: "evt-2"})
 	plain := claim(t, client)
 	if len(plain) != 1 {
 		t.Fatalf("Claim = %d jobs, want 1", len(plain))
@@ -1354,16 +1205,11 @@ func TestTheTraceContextReachesTheWorker(t *testing.T) {
 	}
 }
 
-// A handler's error is written to the row and logged, so it is bounded: an
-// error that carried a whole document would put the document in both. The cut
-// is on a rune boundary, which Postgres would refuse if it
-// were not — text is UTF-8 and half a rune is not.
 func TestAnOversizedErrorIsStoredBoundedAndStillValidText(t *testing.T) {
 	kind := newKind(t, false)
 	client := newClient(t, queue.Config{Kind: kind, MaxAttempts: 1})
-	enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
+	enqueue(t, dbtest.Pool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
 
-	// A three-byte rune, so that a cut taken at a byte count lands inside one.
 	huge := strings.Repeat("☃", 5000)
 	jobs := claim(t, client)
 	if len(jobs) != 1 {
@@ -1389,36 +1235,22 @@ func TestAnOversizedErrorIsStoredBoundedAndStillValidText(t *testing.T) {
 	}
 }
 
-// A handler's error is the least controlled string this package writes: it is
-// whatever a provider, a decoder or an HTTP body put in it. text refuses a NUL
-// byte and invalid UTF-8 (22021) wherever it is written, and this write is not
-// in a caller's transaction, so nothing else is damaged — but Fail comes back
-// with an error and writes nothing, which is worse than it sounds. The row
-// stays `running` on a lease nobody renews, the cause never reaches the row an
-// operator reads, and only a reclaim moves it: up to Lease +
-// MaintenanceInterval later, with the backoff bypassed, because a reclaim
-// deliberately leaves run_after alone.
 func TestAnErrorHoldingBytesPostgresRefusesIsStillRecorded(t *testing.T) {
 	tests := []struct {
-		name  string
-		cause error
-		// readable is what must survive into the row: sanitising the bytes is
-		// not allowed to cost the message.
+		name     string
+		cause    error
 		readable string
 	}{
 		{name: "a NUL byte", cause: errors.New("provider said: \x00 truncated"), readable: "provider said:"},
 		{name: "invalid UTF-8", cause: errors.New("provider said: \xff\xfe"), readable: "provider said:"},
 		{name: "a NUL and invalid UTF-8 together", cause: errors.New("boom\x00\xff"), readable: "boom"},
-		// Long enough to be cut, and invalid throughout, so that the cut
-		// cannot be what makes it valid: RuneStart reads one byte's top bits,
-		// which says nothing about bytes that were never a rune.
 		{name: "invalid UTF-8 past the length bound", cause: errors.New(strings.Repeat("\xff", 3000))},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			kind := newKind(t, false)
 			client := newClient(t, queue.Config{Kind: kind, MaxAttempts: 1})
-			enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
+			enqueue(t, dbtest.Pool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
 			jobs := claim(t, client)
 			if len(jobs) != 1 {
 				t.Fatalf("Claim = %d jobs, want 1", len(jobs))
@@ -1449,13 +1281,6 @@ func TestAnErrorHoldingBytesPostgresRefusesIsStillRecorded(t *testing.T) {
 			if tt.readable != "" && !strings.Contains(stored, tt.readable) {
 				t.Errorf("the stored error is %q, want the cause %q still readable in it", stored, tt.readable)
 			}
-			// None of these is long enough to cut once its bytes have been
-			// made storable — a run of invalid bytes collapses to a single
-			// replacement character — so none may be marked as truncated.
-			// This is what makes the order load-bearing: bounding the raw
-			// bytes first and coercing afterwards stores three bytes with an
-			// ellipsis on the end, telling an operator that a message was cut
-			// short when nothing was.
 			if strings.HasSuffix(stored, "…") {
 				t.Errorf("the stored error %q is marked truncated, but it fits the bound once coerced: the bound is counting bytes nobody will read", stored)
 			}
@@ -1463,30 +1288,9 @@ func TestAnErrorHoldingBytesPostgresRefusesIsStillRecorded(t *testing.T) {
 	}
 }
 
-// The defaults are filled in when the client is built, so a service that
-// configures nothing still has the default numbers.
-func TestAClientFillsInTheDefaults(t *testing.T) {
-	client := newClient(t, queue.Config{Kind: newKind(t, false)})
-	got := client.Config()
-	if got.Concurrency != 1 || got.Lease != queue.DefaultLease || got.MaxAttempts != queue.DefaultMaxAttempts ||
-		got.PollInterval != queue.DefaultPollInterval || got.Retention != queue.DefaultRetention {
-		t.Errorf("Config() = %+v, want the defaults filled in", got)
-	}
-}
-
-// The table is the last line of defence, and these are the rows the package's
-// own API cannot produce — which is the point of asserting them here: a
-// constraint is what stops a path added later from producing one quietly.
-//
-// Tests go through the package's API like every other caller — the README's
-// rule about SQL from outside it — and exactly two break that on purpose: this
-// one, whose subject is the constraints themselves, and
-// TestTheSerializedClaimRefusesABusyKeyOnARepeatableReadServer, which has to
-// commit a running row at a moment no sequence of Claim calls can reach. A
-// third would need a reason of that kind.
 func TestTheSchemaRefusesRowsTheQueueWouldNeverWrite(t *testing.T) {
 	kind := newKind(t, false)
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 
 	const insert = `
 INSERT INTO queue_job (kind, target_id, serial_key, state, attempt, started_at, lease_expires_at, finished_at)
@@ -1495,19 +1299,15 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
 	now := time.Now()
 	noKey := ""
 	tests := []struct {
-		name string
-		// The row, column by column, so that every case inserts a whole one
-		// and a case can only fail on the constraint it is about.
+		name       string
 		serialKey  *string
 		state      string
 		attempt    int
 		startedAt  *time.Time
 		leaseUntil *time.Time
 		finishedAt *time.Time
-		// wantCode is the SQLSTATE, and wantName the constraint or column it
-		// names. Empty wantCode is a row the table must accept.
-		wantCode string
-		wantName string
+		wantCode   string
+		wantName   string
 	}{
 		{name: "a pending job", serialKey: &noKey, state: "pending"},
 		{name: "a running job with a lease", serialKey: &noKey, state: "running", attempt: 1, startedAt: &now, leaseUntil: &now},
@@ -1560,8 +1360,6 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
 			if !errors.As(err, &pgErr) {
 				t.Fatalf("inserting %s = %v, want a Postgres error", tt.name, err)
 			}
-			// Both, so that a case cannot pass on some other error: a
-			// statement that is simply malformed reports neither of these.
 			if pgErr.Code != tt.wantCode {
 				t.Errorf("SQLSTATE = %s (%s), want %s", pgErr.Code, pgErr.Message, tt.wantCode)
 			}
@@ -1572,10 +1370,16 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
 	}
 }
 
-// expireLeases waits out a lease measured in milliseconds, so that the jobs
-// claimed under it are what a worker that died leaves behind.
-func expireLeases(lease time.Duration) {
-	time.Sleep(3 * lease)
+func expireLeases(t *testing.T, jobs ...queue.Job) {
+	t.Helper()
+	ids := make([]int64, 0, len(jobs))
+	for _, job := range jobs {
+		ids = append(ids, job.ID)
+	}
+	if _, err := dbtest.Pool(t).Exec(t.Context(),
+		`UPDATE queue_job SET lease_expires_at = now() - interval '1 second' WHERE id = ANY($1) AND state = 'running'`, ids); err != nil {
+		t.Fatalf("expiring the leases of %v: %v", ids, err)
+	}
 }
 
 func reclaim(t *testing.T, client *queue.Client) queue.Reclaimed {
@@ -1596,10 +1400,6 @@ func listJobs(t *testing.T, client *queue.Client, state queue.State) []queue.Job
 	return jobs
 }
 
-// A target can have a job running and another pending, because a running job
-// does not occupy the pending-target index. A retry of the running one is
-// superseded by the pending job rather than moved back to pending, unless its
-// attempts are spent.
 func TestARetryOfATargetThatIsAlreadyPending(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -1620,12 +1420,12 @@ func TestARetryOfATargetThatIsAlreadyPending(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			kind := newKind(t, false)
 			client := newClient(t, queue.Config{Kind: kind, MaxAttempts: tt.maxAttempts})
-			enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
+			enqueue(t, dbtest.Pool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
 			running := claim(t, client)
 			if len(running) != 1 {
 				t.Fatalf("Claim = %d jobs, want 1", len(running))
 			}
-			pending := enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
+			pending := enqueue(t, dbtest.Pool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
 
 			state, retry, err := client.Fail(t.Context(), running[0], errors.New("the model timed out"))
 			if err != nil {
@@ -1646,21 +1446,19 @@ func TestARetryOfATargetThatIsAlreadyPending(t *testing.T) {
 	}
 }
 
-// The reclaim sweep is one statement over the kind: an expired job whose target
-// is already pending is superseded, and every other expired job of the kind is
-// still reclaimed.
 func TestReclaimSweepsTheKindWhenOneTargetIsAlreadyPending(t *testing.T) {
 	const lease = 50 * time.Millisecond
 	kind := newKind(t, false)
 	client := newClient(t, queue.Config{Kind: kind, Lease: lease, Concurrency: 10})
 	for _, target := range []string{"evt-1", "evt-2", "evt-3"} {
-		enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: target})
+		enqueue(t, dbtest.Pool(t), queue.Request{Kind: kind, TargetID: target})
 	}
-	if jobs := claim(t, client); len(jobs) != 3 {
-		t.Fatalf("Claim = %d jobs, want 3", len(jobs))
+	claimed := claim(t, client)
+	if len(claimed) != 3 {
+		t.Fatalf("Claim = %d jobs, want 3", len(claimed))
 	}
-	enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-2"})
-	expireLeases(lease)
+	enqueue(t, dbtest.Pool(t), queue.Request{Kind: kind, TargetID: "evt-2"})
+	expireLeases(t, claimed...)
 
 	if got := reclaim(t, client); got != (queue.Reclaimed{Pending: 2, Superseded: 1}) {
 		t.Errorf("Reclaim = %+v, want two jobs requeued and evt-2's superseded", got)
@@ -1680,18 +1478,12 @@ func TestReclaimSweepsTheKindWhenOneTargetIsAlreadyPending(t *testing.T) {
 	}
 }
 
-// Two jobs for one target can both be running — the second was enqueued while
-// the first ran — and both leases can expire. Requeueing both in one statement
-// would collide with each other rather than with anything already pending.
 func TestReclaimOfTwoExpiredJobsForOneTarget(t *testing.T) {
 	const short = 50 * time.Millisecond
 	tests := []struct {
-		name string
-		// newerLease is the lease the newer job is claimed under.
-		newerLease time.Duration
-		// failNewer spends the newer job's attempts before its lease expires.
-		failNewer bool
-		// wantPending is which job ends up pending: "older" or "newer".
+		name        string
+		newerLease  time.Duration
+		failNewer   bool
 		wantPending string
 		want        queue.Reclaimed
 	}{
@@ -1717,12 +1509,12 @@ func TestReclaimOfTwoExpiredJobsForOneTarget(t *testing.T) {
 			client := newClient(t, shortCfg)
 			newerClient := newClient(t, newerCfg)
 
-			enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
+			enqueue(t, dbtest.Pool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
 			older := claim(t, client)
 			if len(older) != 1 {
 				t.Fatalf("Claim = %d jobs, want the older job", len(older))
 			}
-			enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
+			enqueue(t, dbtest.Pool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
 			var newer []queue.Job
 			if tt.failNewer {
 				first := claim(t, newerClient)
@@ -1739,7 +1531,10 @@ func TestReclaimOfTwoExpiredJobsForOneTarget(t *testing.T) {
 			if len(newer) != 1 {
 				t.Fatalf("Claim = %d jobs, want the newer job", len(newer))
 			}
-			expireLeases(short)
+			expireLeases(t, older...)
+			if tt.newerLease == short {
+				expireLeases(t, newer...)
+			}
 
 			if got := reclaim(t, client); got != tt.want {
 				t.Errorf("Reclaim = %+v, want %+v", got, tt.want)
@@ -1762,10 +1557,6 @@ func waitForClaim(t *testing.T, client *queue.Client, into *[]queue.Job) {
 	}
 }
 
-// The pending job can also be enqueued while the fail or the reclaim is
-// running, after the statement took its snapshot: then the statement cannot
-// see the job it collides with, and waits on the index for the enqueue to
-// commit. That is a 23505 the statement is run again for, rather than an error.
 func TestAFailOrReclaimThatLosesARaceToAnEnqueueIsSuperseded(t *testing.T) {
 	const lease = 50 * time.Millisecond
 	tests := []struct {
@@ -1781,8 +1572,8 @@ func TestAFailOrReclaimThatLosesARaceToAnEnqueueIsSuperseded(t *testing.T) {
 		},
 		{
 			name: "reclaim",
-			op: func(t *testing.T, client *queue.Client, _ queue.Job) (queue.State, error) {
-				expireLeases(lease)
+			op: func(t *testing.T, client *queue.Client, job queue.Job) (queue.State, error) {
+				expireLeases(t, job)
 				got, err := client.Reclaim(t.Context())
 				if got != (queue.Reclaimed{Superseded: 1}) {
 					return queue.StatePending, err
@@ -1794,7 +1585,7 @@ func TestAFailOrReclaimThatLosesARaceToAnEnqueueIsSuperseded(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			kind := newKind(t, false)
-			pool := newPool(t)
+			pool := dbtest.Pool(t)
 			client := newClient(t, queue.Config{Kind: kind, Lease: lease})
 			enqueue(t, pool, queue.Request{Kind: kind, TargetID: "evt-1"})
 			running := claim(t, client)
@@ -1844,13 +1635,11 @@ func TestAFailOrReclaimThatLosesARaceToAnEnqueueIsSuperseded(t *testing.T) {
 	}
 }
 
-// A target is unfinished while its job is pending or running, and not once it
-// is done, nor for a target of another kind or with no job.
 func TestUnfinishedIsWhatIsPendingOrRunning(t *testing.T) {
 	kind := newKind(t, false)
 	other := newKind(t, false)
 	client := newClient(t, queue.Config{Kind: kind})
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 
 	enqueue(t, pool, queue.Request{Kind: kind, TargetID: "done"})
 	done := claim(t, client)

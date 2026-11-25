@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -22,6 +21,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/agent"
 	"github.com/kpenfound/hearsay/internal/connector/conversation"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/deletion"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/principal"
@@ -29,9 +29,6 @@ import (
 
 const chat = "kern"
 
-// chatWorld is a conversation source over a database of its own: the
-// connector's handler behind the gate the runtime gives it, and the
-// configuration an operator deletion reads the source's type from.
 type chatWorld struct {
 	pool  *pgxpool.Pool
 	store *l0.Store
@@ -39,8 +36,6 @@ type chatWorld struct {
 	url   string
 }
 
-// slowStore is the L0 store with a pause between what a serialized write
-// does and its commit, so that a test can hold a post inside its lock.
 type slowStore struct {
 	*l0.Store
 	hold func(artifact string)
@@ -61,7 +56,7 @@ func (s slowStore) SerializeArtifact(ctx context.Context, source, artifact strin
 func newChatWorld(t *testing.T, hold func(artifact string)) *chatWorld {
 	t.Helper()
 	t.Setenv("DELETION_KERN_TOKEN", "kern-secret")
-	pool := scratch(t)
+	pool := dbtest.Scratch(t, "deletion")
 	identity := func(id string) []principal.Identity { return []principal.Identity{{Source: chat, NativeID: id}} }
 	principals := []principal.Principal{
 		{ID: "kyle", Kind: principal.KindHuman, Identities: identity("kyle")},
@@ -86,7 +81,6 @@ func newChatWorld(t *testing.T, hold func(artifact string)) *chatWorld {
 		repo: config.Repo{Principals: principals, Sources: []connector.SourceConfig{src}}}
 }
 
-// post sends one message of conversation c-1 and returns the status and body.
 func (w *chatWorld) post(t *testing.T, exchange, role, text string) (int, string) {
 	t.Helper()
 	body, _ := json.Marshal(map[string]any{"owner": "kyle", "conversation": "c-1", "exchange": exchange, "role": role,
@@ -137,8 +131,6 @@ const (
 	answerOf   = "c-1/x-1:assistant"
 )
 
-// A deleted message stays deleted: the same words and changed ones are
-// refused, other messages are not, and nothing is written.
 func TestAMessageStaysDeletedOnceItIsDeleted(t *testing.T) {
 	w := newChatWorld(t, nil)
 	w.stored(t, "x-1", "owner", "Let's use Postgres.")
@@ -167,8 +159,6 @@ func TestAMessageStaysDeletedOnceItIsDeleted(t *testing.T) {
 	}
 }
 
-// A post that overlaps a deletion of its artifact leaves no readable revision,
-// whichever of them gets the artifact first.
 func TestAPostThatOverlapsADeletionLeavesNothingReadable(t *testing.T) {
 	t.Run("the deletion first", func(t *testing.T) {
 		w := newChatWorld(t, nil)
@@ -192,10 +182,11 @@ func TestAPostThatOverlapsADeletionLeavesNothingReadable(t *testing.T) {
 		}
 		posted := make(chan reply, 1)
 		go func() { s, b := w.post(t, "x-1", "owner", "Let's use SQLite."); posted <- reply{s, b} }()
+		dbtest.WaitForLockWait(t, w.pool)
 		select {
 		case r := <-posted:
 			t.Fatalf("the post was answered while the deletion held the message: %d %s", r.status, r.body)
-		case <-time.After(300 * time.Millisecond):
+		default:
 		}
 		close(release)
 		if err := <-deleted; err != nil {
@@ -210,7 +201,6 @@ func TestAPostThatOverlapsADeletionLeavesNothingReadable(t *testing.T) {
 	})
 }
 
-// A deletion that is waiting for a post covers the revision the post wrote.
 func TestADeletionThatWaitsForAPostCoversItsRevision(t *testing.T) {
 	var (
 		armed   sync.Mutex
@@ -245,10 +235,11 @@ func TestADeletionThatWaitsForAPostCoversItsRevision(t *testing.T) {
 		}
 		deleted <- a
 	}()
+	dbtest.WaitForLockWait(t, w.pool)
 	select {
 	case <-deleted:
 		t.Fatal("the deletion finished while a post held the message")
-	case <-time.After(300 * time.Millisecond):
+	default:
 	}
 	close(release)
 	if s := <-posted; s != http.StatusAccepted {
@@ -266,8 +257,6 @@ func TestADeletionThatWaitsForAPostCoversItsRevision(t *testing.T) {
 	}
 }
 
-// A request that fails after some of its artifacts are processed leaves
-// every one of them, the record, the event and the jobs as they were.
 func TestARequestFailedPartWayDeletesNothing(t *testing.T) {
 	w := newChatWorld(t, nil)
 	ctx := t.Context()
@@ -286,7 +275,6 @@ VALUES('l1:kern:' || $1::text,'chat_thread','kern',$1,ARRAY[$2],now(),now(),now(
 		failing := w.request("", ownerWords, answerOf)
 		calls := 0
 		failing.After = func(s string) error {
-			// The second document's queueing is the last thing before the commit.
 			if s == step {
 				calls++
 				if step != deletion.StepEnqueued || calls == 2 {
@@ -303,7 +291,6 @@ VALUES('l1:kern:' || $1::text,'chat_thread','kern',$1,ARRAY[$2],now(),now(),now(
 		}
 	}
 
-	// A guard that refuses stops it before anything is written.
 	guarded := w.request("", ownerWords, answerOf)
 	guarded.Guard = func(context.Context, pgx.Tx, deletion.Preview) error { return errors.New("not yours") }
 	if _, err := deletion.ApplyRequest(ctx, w.pool, w.repo, guarded); err == nil || err.Error() != "not yours" {
@@ -337,8 +324,6 @@ func sorted(ids ...string) []string {
 	return ids
 }
 
-// A request under an id a deletion already holds is answered with that
-// deletion, whether it comes after it, or at the same time as others.
 func TestARequestUnderARecordedIDIsAnsweredWithTheOriginal(t *testing.T) {
 	w := newChatWorld(t, nil)
 	ctx := t.Context()
@@ -385,12 +370,9 @@ func TestARequestUnderARecordedIDIsAnsweredWithTheOriginal(t *testing.T) {
 	}
 }
 
-// The agent session source is not closed by a deletion: its posts after an
-// operator deletion are what they were. A re-sent copy of a covered event is
-// dropped and counted, and a new event of the session is stored.
 func TestAgentSessionPostsAfterAnOperatorDeletionBehaveAsBefore(t *testing.T) {
 	t.Setenv("DELETION_SHED_TOKEN", "shed-secret")
-	pool := scratch(t)
+	pool := dbtest.Scratch(t, "deletion")
 	principals := []principal.Principal{
 		{ID: "kyle", Kind: principal.KindHuman},
 		{ID: "shed", Kind: principal.KindAgent, Class: principal.ClassWorker, TokenEnv: "DELETION_SHED_TOKEN"},

@@ -34,8 +34,6 @@ llm:
       model: qa-fixture
       base_url: http://127.0.0.1:8999
 YAML
-# A local recorded answer exercises the production provider adapter without
-# calling a model provider. It verifies state is absent from the model input.
 cat > /tmp/state-model.py <<'PY'
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer

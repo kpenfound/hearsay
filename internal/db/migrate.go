@@ -11,18 +11,11 @@ import (
 	"path/filepath"
 	"time"
 
-	// stdlib registers pgx as a database/sql driver. goose is a database/sql
-	// library, and this is the only place in Hearsay that opens one: every
-	// query outside migrations goes through pgx natively.
-	_ "github.com/jackc/pgx/v5/stdlib"
+	_ "github.com/jackc/pgx/v5/stdlib" //nolint:revive // registers pgx as the database/sql driver goose opens
 	"github.com/pressly/goose/v3"
 	"github.com/pressly/goose/v3/lock"
 )
 
-// migrationsFS is the schema, compiled into the binary. Embedding it is what
-// makes the binary and the schema it expects impossible to mismatch:
-// there is no directory in the image that can drift from the code.
-//
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
@@ -30,9 +23,6 @@ var migrationsFS embed.FS
 func Migrations() fs.FS {
 	sub, err := fs.Sub(migrationsFS, "migrations")
 	if err != nil {
-		// The path is a constant that go:embed has already resolved, so this
-		// cannot happen; returning the whole FS keeps the signature honest
-		// without a panic outside main.
 		return migrationsFS
 	}
 	return sub
@@ -63,10 +53,6 @@ func NewMigrator(ctx context.Context, url string, log *slog.Logger) (*Migrator, 
 		return nil, errors.Join(fmt.Errorf("connecting to postgres: %w", err), sqlDB.Close())
 	}
 
-	// Hearsay turns goose's session-level advisory lock on, which is not its
-	// default: it is what makes two `migrate up` invocations during a flaky
-	// deploy safe, because one applies and the other waits rather than both
-	// trying. The lock is held on one session, so the pool is one connection.
 	sqlDB.SetMaxOpenConns(1)
 	locker, err := lock.NewPostgresSessionLocker()
 	if err != nil {
@@ -165,9 +151,6 @@ func applied(results []*goose.MigrationResult) []Applied {
 	return out
 }
 
-// migrateErr names the action and, where goose reports a partial run, the
-// migration that failed — which is the thing an operator staring at a
-// half-migrated database needs first.
 func migrateErr(action string, err error) error {
 	if err == nil {
 		return nil

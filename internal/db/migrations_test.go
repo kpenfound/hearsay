@@ -9,9 +9,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/db"
 )
 
-// The rules internal/db/migrations/README.md states, checked against the files
-// rather than trusted. A migration goose cannot version, or one with no down
-// section, is only discovered at a deployment otherwise.
 func TestEveryMigrationIsWellFormed(t *testing.T) {
 	entries, err := fs.ReadDir(db.Migrations(), ".")
 	if err != nil {
@@ -52,12 +49,23 @@ func TestEveryMigrationIsWellFormed(t *testing.T) {
 			}
 		})
 	}
+}
 
-	version, err := db.EmbeddedVersion()
+func TestEmbeddedVersionIsTheNewestMigration(t *testing.T) {
+	entries, err := fs.ReadDir(db.Migrations(), ".")
+	if err != nil {
+		t.Fatalf("reading the embedded migrations: %v", err)
+	}
+	digits, _, _ := strings.Cut(entries[len(entries)-1].Name(), "_")
+	want, err := strconv.ParseInt(digits, 10, 64)
+	if err != nil {
+		t.Fatalf("newest migration %q has no version: %v", entries[len(entries)-1].Name(), err)
+	}
+	got, err := db.EmbeddedVersion()
 	if err != nil {
 		t.Fatalf("EmbeddedVersion() = %v, want no error", err)
 	}
-	if version != previous {
-		t.Errorf("EmbeddedVersion() = %d, want %d, the newest migration on disk", version, previous)
+	if got != want {
+		t.Errorf("EmbeddedVersion() = %d, want %d, the newest migration on disk", got, want)
 	}
 }

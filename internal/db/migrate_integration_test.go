@@ -16,9 +16,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/db"
 )
 
-// scratchDatabase makes an empty database of its own and returns its URL, so
-// that a test can migrate from nothing — and roll back — without touching the
-// database every other test is reading.
 func scratchDatabase(t *testing.T) string {
 	t.Helper()
 	adminURL := os.Getenv("HEARSAY_DATABASE_URL")
@@ -27,7 +24,6 @@ func scratchDatabase(t *testing.T) string {
 	}
 
 	name := "hearsay_scratch_" + strconv.FormatInt(time.Now().UnixNano(), 36) + "_" + strconv.FormatInt(scratches.Add(1), 36)
-	// A context of its own: the cleanup runs after the test's is cancelled.
 	ctx := context.Background()
 	admin, err := db.Open(ctx, adminURL)
 	if err != nil {
@@ -35,8 +31,6 @@ func scratchDatabase(t *testing.T) string {
 	}
 	defer admin.Close()
 
-	// CREATE DATABASE cannot run inside a transaction, and the name is one this
-	// function built out of digits, so there is nothing here to interpolate.
 	if _, err := admin.Exec(ctx, `CREATE DATABASE `+name); err != nil {
 		t.Fatalf("creating the scratch database: %v", err)
 	}
@@ -56,8 +50,6 @@ func scratchDatabase(t *testing.T) string {
 
 var scratches atomic.Int64
 
-// swapDatabaseName points a connection URL at another database on the same
-// server.
 func swapDatabaseName(url, name string) string {
 	base, query, hasQuery := strings.Cut(url, "?")
 	slash := strings.LastIndex(base, "/")
@@ -68,8 +60,6 @@ func swapDatabaseName(url, name string) string {
 	return swapped
 }
 
-// Migration application, status and schema checks start with an empty
-// database. Reversible history and refused rollbacks are exercised separately.
 func TestMigrateUpFromAnEmptyDatabase(t *testing.T) {
 	url := scratchDatabase(t)
 	migrator, err := db.NewMigrator(t.Context(), url, nil)
@@ -83,7 +73,6 @@ func TestMigrateUpFromAnEmptyDatabase(t *testing.T) {
 		t.Fatalf("EmbeddedVersion() = %v, want no error", err)
 	}
 
-	// A database nothing has migrated is behind every binary.
 	if _, err := db.Connect(t.Context(), url); !errors.Is(err, db.ErrSchemaBehind) {
 		t.Fatalf("Connect(unmigrated) = %v, want db.ErrSchemaBehind", err)
 	}
@@ -102,7 +91,6 @@ func TestMigrateUpFromAnEmptyDatabase(t *testing.T) {
 		t.Fatalf("Version(migrated) = %d, %v, want %d and no error", version, err, newest)
 	}
 
-	// A second up is a no-op, which is what makes re-running a deploy job safe.
 	again, err := migrator.Up(t.Context())
 	if err != nil {
 		t.Fatalf("Up(again) = %v, want no error", err)
@@ -111,7 +99,6 @@ func TestMigrateUpFromAnEmptyDatabase(t *testing.T) {
 		t.Errorf("Up(again) applied %d migrations, want none", len(again))
 	}
 
-	// Now the schema check passes, and the events table is there.
 	pool, err := db.Connect(t.Context(), url)
 	if err != nil {
 		t.Fatalf("Connect(migrated) = %v, want no error", err)
@@ -156,8 +143,6 @@ func TestMigrateUpFromAnEmptyDatabase(t *testing.T) {
 	}
 }
 
-// Scoped marker history is intentionally irreversible. Exercise the earlier
-// reversible schema history independently.
 func TestReversibleMigrationHistory(t *testing.T) {
 	const newest int64 = 35
 	url := scratchDatabase(t)
@@ -175,11 +160,6 @@ func TestReversibleMigrationHistory(t *testing.T) {
 	}
 	defer pool.Close()
 	var events int64
-	// Down reverses one migration at a time, and what each one created goes
-	// with it. This list ends before the irreversible scoped-marker migration.
-	// A migration that creates
-	// no table of its own — an index on an existing one — has no table here and
-	// is only checked for rolling back cleanly.
 	for i, table := range []string{"", "judgment_journal", "", "", "", "", "github_command_replies", "", "l2_gestures", "", "l2_topic_operations", "l0_deletion_rebuilds", "l0_deletions", "", "", "bundle_changes", "l2_alias_candidates", "", "l2_pins", "", "", "", "", "l0_resyncs", "l2_stances", "l0_backfill_cursors", "", "", "", "", "l0_feed_cursors", "l1_docs", "queue_job", "l0_events"} {
 		want := newest - int64(i) - 1
 		if _, err := migrator.Down(t.Context()); err != nil {
@@ -264,8 +244,6 @@ func TestReversibleMigrationHistory(t *testing.T) {
 		}
 	}
 
-	// And up again, so that a down migration that leaves the schema in a state
-	// up cannot re-apply fails here rather than in someone's afternoon.
 	if _, err := migrator.UpTo(t.Context(), newest); err != nil {
 		t.Fatalf("Up(after down) = %v, want no error", err)
 	}
@@ -274,8 +252,6 @@ func TestReversibleMigrationHistory(t *testing.T) {
 	}
 }
 
-// A down migration that would destroy data says so and fails rather
-// than pretending to reverse. The vector extension may predate this schema.
 func TestTheVectorExtensionRefusesToBeRolledBack(t *testing.T) {
 	url := scratchDatabase(t)
 	migrator, err := db.NewMigrator(t.Context(), url, nil)
@@ -296,8 +272,6 @@ func TestTheVectorExtensionRefusesToBeRolledBack(t *testing.T) {
 	}
 }
 
-// up-to stops where it was told, which is what a deployment rolling forward in
-// steps needs.
 func TestMigrateUpTo(t *testing.T) {
 	url := scratchDatabase(t)
 	migrator, err := db.NewMigrator(t.Context(), url, nil)
@@ -312,7 +286,6 @@ func TestMigrateUpTo(t *testing.T) {
 	if version, err := migrator.Version(t.Context()); err != nil || version != 1 {
 		t.Fatalf("Version(after up-to 1) = %d, %v, want 1", version, err)
 	}
-	// Stopping short of the newest migration is a database this binary refuses.
 	if _, err := db.Connect(t.Context(), url); !errors.Is(err, db.ErrSchemaBehind) {
 		t.Errorf("Connect(behind) = %v, want db.ErrSchemaBehind", err)
 	}
@@ -325,8 +298,6 @@ func TestMigrateUpTo(t *testing.T) {
 	}
 }
 
-// A database ahead of the binary is allowed: a rollout is migrated forward
-// before every replica has been replaced.
 func TestADatabaseAheadOfTheBinaryIsAllowed(t *testing.T) {
 	url := scratchDatabase(t)
 	migrator, err := db.NewMigrator(t.Context(), url, nil)
@@ -347,7 +318,6 @@ func TestADatabaseAheadOfTheBinaryIsAllowed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedVersion() = %v, want no error", err)
 	}
-	// A migration from a newer binary, as a rolling deploy would leave it.
 	if _, err := pool.Exec(t.Context(),
 		`INSERT INTO goose_db_version (version_id, is_applied) VALUES ($1, true)`, newest+1); err != nil {
 		t.Fatalf("recording a newer migration: %v", err)
@@ -367,8 +337,6 @@ func format(statuses []db.Status) string {
 	return b.String()
 }
 
-// Existing documents must acquire authority from their retained root events,
-// even when the model's outcome would suggest a different PR state.
 func TestArtifactClassBackfill(t *testing.T) {
 	url := scratchDatabase(t)
 	migrator, err := db.NewMigrator(t.Context(), url, nil)
@@ -403,8 +371,6 @@ func TestArtifactClassBackfill(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// A missing provenance row makes the migration fail atomically. Supplying
-	// that retained event and retrying must backfill every row once.
 	if _, err := pool.Exec(t.Context(), `INSERT INTO l1_docs (id, kind, source, source_native_id, l0_refs, created_at, updated_at, last_activity_at, acl, text, raw_text, body, outcome_kind) VALUES ('l1:backfill:late-root', 'issue', 'backfill', 'late-root', ARRAY['evt:backfill:late-root'], now(), now(), now(), '[{"kind":"public"}]'::jsonb, 'text', 'raw', '{"outcome_kind":"none"}'::jsonb, 'none')`); err != nil {
 		t.Fatal(err)
 	}
@@ -440,8 +406,6 @@ func TestArtifactClassBackfill(t *testing.T) {
 	}
 }
 
-// Marker counts must never be reset while journal results retain their input
-// identities. Refusing down preserves both instead of pretending to reverse.
 func TestScopedJudgmentHistoryRefusesRollback(t *testing.T) {
 	url := scratchDatabase(t)
 	migrator, err := db.NewMigrator(t.Context(), url, nil)
