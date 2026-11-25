@@ -22,7 +22,6 @@ func requestBody(cfg llm.JudgmentConfig, r llm.JudgmentRequest) ([]byte, error) 
 	state, _ := json.Marshal(r.State)
 	total := len(state) + len(cfg.Model)
 	for _, q := range r.Questions {
-		// Refuse giant raw strings before allocating their escaped JSON.
 		rawSize := len(r.State)
 		for _, part := range append([]string{q.ID, q.Question, q.Rubric}, q.Options...) {
 			if len(part) > cfg.MaxStateQuestionTokens-rawSize {
@@ -34,7 +33,7 @@ func requestBody(cfg llm.JudgmentConfig, r llm.JudgmentRequest) ([]byte, error) 
 		switch q.Kind {
 		case llm.JudgmentChoice:
 			w.Type = "choice"
-			// The order of choice criteria is significant to System One.
+
 			var b bytes.Buffer
 			b.WriteByte('{')
 			for i, option := range q.Options {
@@ -60,9 +59,7 @@ func requestBody(cfg llm.JudgmentConfig, r llm.JudgmentRequest) ([]byte, error) 
 			w.Type = "noul"
 		}
 		encoded, _ := json.Marshal(w)
-		// UTF-8 bytes of serialized JSON conservatively bound model tokens,
-		// including escaped text and schema overhead. This may refuse some
-		// requests a vendor tokenizer would admit, but never guesses a ratio.
+
 		if len(state)+len(encoded)+len(q.ID)+32 > cfg.MaxStateQuestionTokens {
 			return nil, llm.ErrJudgmentOversize
 		}

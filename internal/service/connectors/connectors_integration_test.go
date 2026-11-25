@@ -23,7 +23,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/connectors"
 )
 
-// newPool connects to the database the integration-test check brings up.
 func newPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	url := os.Getenv("HEARSAY_DATABASE_URL")
@@ -38,16 +37,11 @@ func newPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// newSourceID is a source id nothing else in the suite uses: the database
-// outlives one test and the packages run in parallel, so an assertion is scoped
-// to a source rather than to a table.
 func newSourceID(t *testing.T) string {
 	t.Helper()
 	return "t" + strconv.FormatInt(time.Now().UnixNano(), 36) + "conn"
 }
 
-// pager records the cursor every Backfill call was given, which is how a
-// restarted process is asked where it resumed from.
 type pager struct {
 	*connector.Fake
 
@@ -68,9 +62,6 @@ func (p *pager) cursors() []connector.Cursor {
 	return slices.Clone(p.from)
 }
 
-// The service against the real thing: what a connector polls, backfills and is
-// pushed lands in L0, the backfill's position is in the database, and a second
-// process started against the same database does not walk the history again.
 func TestTheServiceIngestsIntoL0AndKeepsItsPosition(t *testing.T) {
 	pool := newPool(t)
 	id := newSourceID(t)
@@ -92,7 +83,6 @@ func TestTheServiceIngestsIntoL0AndKeepsItsPosition(t *testing.T) {
 		Registry: fakeRegistry(t, map[string]connector.Connector{id: first}),
 	})
 
-	// The push path, through the mounted handler and the same gate.
 	body, err := json.Marshal(fake.NewEvent(connector.KindMessage, "p1", "pushed"))
 	if err != nil {
 		t.Fatalf("marshalling the event: %v", err)
@@ -119,9 +109,7 @@ func TestTheServiceIngestsIntoL0AndKeepsItsPosition(t *testing.T) {
 	if got, want := artifactsIn(t, store, id), []string{"h1", "h2", "m1", "p1"}; !slices.Equal(got, want) {
 		t.Errorf("L0 holds %v, want the polled, backfilled and pushed artifacts %v", got, want)
 	}
-	// The backfill saves its position after the last page's events reach L0, so
-	// the position is final a moment after L0 holds everything. Stopping before
-	// that would cancel the save.
+
 	waitFor(t, "the backfill to store its final position", func() bool {
 		state, err := cursors.Load(t.Context(), id)
 		return err == nil && state.Done && state.Events == 2
@@ -138,9 +126,6 @@ func TestTheServiceIngestsIntoL0AndKeepsItsPosition(t *testing.T) {
 		t.Errorf("the stored position is %+v, want done after two events", state)
 	}
 
-	// A second process against the same database. History is walked once: the
-	// position says it is done, so the restarted process asks for no page at
-	// all.
 	second := &pager{Fake: connector.NewFake(src)}
 	second.Pages = fake.Pages
 	addr, stop = run(t, cfg, connectors.Deps{
@@ -162,13 +147,9 @@ func TestTheServiceIngestsIntoL0AndKeepsItsPosition(t *testing.T) {
 	}
 }
 
-// Ready is not the same as up: a process whose database has gone away is
-// running and cannot ingest.
 func TestReadyzFailsWhenTheDatabaseIsUnreachable(t *testing.T) {
-	newPool(t) // skips the test when there is no database
+	newPool(t)
 
-	// A pool of its own, closed: that is a database this process cannot reach,
-	// without taking the one every other test is using away from them.
 	pool, err := db.Connect(t.Context(), os.Getenv("HEARSAY_DATABASE_URL"))
 	if err != nil {
 		t.Fatalf("Connect() = %v, want no error", err)
@@ -184,8 +165,7 @@ func TestReadyzFailsWhenTheDatabaseIsUnreachable(t *testing.T) {
 	if code != http.StatusServiceUnavailable {
 		t.Errorf("GET /readyz with an unreachable database = %d, want 503: %s", code, body)
 	}
-	// What went wrong is in the log. The body says that something is, and names
-	// no host, no user and no password.
+
 	for _, secret := range []string{"127.0.0.1", "hearsay@", "closed"} {
 		if strings.Contains(body, secret) {
 			t.Errorf("the readiness body carries %q, which is the operator's to read in the log: %s", secret, body)
@@ -196,15 +176,9 @@ func TestReadyzFailsWhenTheDatabaseIsUnreachable(t *testing.T) {
 	}
 }
 
-// A database this binary is ahead of is one this process cannot ingest into,
-// and that is a readiness failure — which is what turns the schema
-// version check into a deployment that stops rather than one that half-works.
 func TestReadyzFailsWhenTheSchemaIsBehindTheBinary(t *testing.T) {
-	newPool(t) // skips the test when there is no database
+	newPool(t)
 
-	// The maintenance database every Postgres server has, which nothing
-	// migrates. db.Open rather than db.Connect: Connect is the startup check
-	// and would refuse it here, which is the other half of the same rule.
 	pool, err := db.Open(t.Context(), swapDatabaseName(os.Getenv("HEARSAY_DATABASE_URL"), "postgres"))
 	if err != nil {
 		t.Fatalf("Open() = %v, want no error", err)
@@ -228,8 +202,6 @@ func TestReadyzFailsWhenTheSchemaIsBehindTheBinary(t *testing.T) {
 	}
 }
 
-// swapDatabaseName points a connection URL at another database on the same
-// server.
 func swapDatabaseName(url, name string) string {
 	base, query, hasQuery := strings.Cut(url, "?")
 	swapped := base[:strings.LastIndex(base, "/")+1] + name
@@ -239,8 +211,6 @@ func swapDatabaseName(url, name string) string {
 	return swapped
 }
 
-// artifactsIn is what L0 holds for one source, sorted, which is what a test
-// compares.
 func artifactsIn(t *testing.T, store *l0.Store, source string) []string {
 	t.Helper()
 	events, err := store.List(t.Context(), l0.ListOptions{Filter: l0.Filter{Source: source}})
@@ -255,10 +225,6 @@ func artifactsIn(t *testing.T, store *l0.Store, source string) []string {
 	return out
 }
 
-// A command a connector receives is recorded in L0 as a `command` event and
-// applied through the applier the service builds over the database, and the
-// connector gets the result to answer with; a read-only source records,
-// applies and answers nothing.
 func TestTheServiceRecordsAndAppliesACommand(t *testing.T) {
 	pool := newPool(t)
 	store := l0.New(pool)

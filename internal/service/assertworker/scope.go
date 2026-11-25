@@ -8,8 +8,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/l0"
 )
 
-// scopeRoot follows a control event to its artifact's root before computing a
-// scope key. Commands and reactions need the root's touches, like distillation.
 func scopeRoot(ctx context.Context, events *l0.Store, ev connector.Event) (connector.Event, error) {
 	if ev.Kind == connector.KindTombstone {
 		retracted, err := events.Retracted(ctx, ev.Source, ev.Payload.Target)

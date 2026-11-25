@@ -39,7 +39,7 @@ can be edited for prompt iteration without exposing real meeting content.
 
 A `conversation` source's messages (`conversation.message`, thread = Kern's
 conversation id) are distilled as the transcript is, but from many events. The
-pump already enqueues one job per conversation: a message's target is the
+pump enqueues one job per conversation: a message's target is the
 document id of its thread, so a burst of messages costs one job under the
 usual debounce. A job for a conversation reads the current message revisions
 that share the thread, orders them by when they were said (then artifact id),
@@ -137,8 +137,7 @@ records no observation.
 The document transaction calls `l1.CommitJudgments` before any L1 write, with
 all judgments and observations for the batch. A refusal is the write's error:
 the transaction rolls back and the job is retried, so no outcome survives
-without its committed records. The existing provenance re-read still drops
-superseded answers before writing.
+without its committed records. The provenance re-read drops superseded answers before writing.
 
 Each modeled document records a `distill` observation. Generative call counts
 come from the shared per-context accounting seam, which includes registry

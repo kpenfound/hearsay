@@ -3,8 +3,10 @@
 package assertworker_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"slices"
 	"strconv"
@@ -22,7 +24,9 @@ import (
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/llm"
+	"github.com/kpenfound/hearsay/internal/queue"
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
+	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
 func newPool(t *testing.T) *pgxpool.Pool {
@@ -39,7 +43,6 @@ func newPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// scratchPool is a migrated database of this test's own.
 func scratchPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	admin := newPool(t)
@@ -76,8 +79,6 @@ func scratchPool(t *testing.T) *pgxpool.Pool {
 
 var sources atomic.Int64
 
-// newSource is a source id, and so a scope id, nothing else in the shared
-// database uses.
 func newSource(t *testing.T) string {
 	t.Helper()
 	return "t" + strconv.FormatInt(time.Now().UnixNano(), 36) + "x" + strconv.FormatInt(sources.Add(1), 36)
@@ -89,8 +90,6 @@ func testConfig(src string) *config.Config {
 	return &cfg
 }
 
-// store writes the fixture into L0 and its two documents into L1, the way the
-// connectors and the distiller would have.
 func store(t *testing.T, pool *pgxpool.Pool, src string) fixture {
 	t.Helper()
 	f := newFixture(src)
@@ -109,9 +108,6 @@ func store(t *testing.T, pool *pgxpool.Pool, src string) fixture {
 	return f
 }
 
-// newAsserter is an asserter whose Jev answers by the default rules
-// (newRuleJev): a position continues the topic its question names, and
-// restates a position only word for word.
 func newAsserter(t *testing.T, pool *pgxpool.Pool, src string, fx *llm.Fixtures) *assertworker.Asserter {
 	t.Helper()
 	return newJevAsserter(t, pool, src, fx, newRuleJev())
@@ -126,9 +122,6 @@ func assertDoc(t *testing.T, a *assertworker.Asserter, docID, scope string) asse
 	return result
 }
 
-// An issue that proposes X and a later merged pull request that does Y yield
-// one topic and two stances, the second superseding the first, with evidence
-// pointing at both documents.
 func TestAnIssueThenAMergedPullRequestIsOneTopicWithTwoStances(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
@@ -192,7 +185,6 @@ func TestAnIssueThenAMergedPullRequestIsOneTopicWithTwoStances(t *testing.T) {
 		t.Errorf("second stance = %+v, want the merged pull request's change, ratified, superseding %s", second, first.ID)
 	}
 
-	// The tracker items the two documents name exist as entities now.
 	for _, id := range []string{f.issueTrackerID, f.prTrackerItemID} {
 		e, err := graph.Entity(t.Context(), id)
 		if err != nil || e.Type != l2.TypeTrackerItem || e.Origin != l2.OriginReference {
@@ -201,17 +193,41 @@ func TestAnIssueThenAMergedPullRequestIsOneTopicWithTwoStances(t *testing.T) {
 	}
 }
 
-// The worker offers a document only the topics, and the positions,
-// everyone who may read it may read now — decided by the documents they rest
-// on, not the access lists the topic and stance were written with. What Jev is
-// shown is what was offered.
+func TestHandlingAJobLogsIdsAndNoContentAtInfoLevel(t *testing.T) {
+	pool := newPool(t)
+	src := newSource(t)
+	f := store(t, pool, src)
+	scope := l2.ScopeKey(testRepo(src), src, repo, nil)
+	a := newAsserter(t, pool, src, loadFixtures(t))
+
+	var logs bytes.Buffer
+	ctx := telemetry.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	if err := a.Handle(ctx, queue.Job{Kind: l2.AssertKind(), TargetID: f.issueID, SerialKey: scope}); err != nil {
+		t.Fatalf("Handle() = %v", err)
+	}
+
+	out := logs.String()
+	if !strings.Contains(out, "document asserted") || !strings.Contains(out, f.issueID) {
+		t.Fatalf("the assertion was not logged by id:\n%s", out)
+	}
+	stored, err := l1.New(pool).Get(t.Context(), f.issueID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{"the raw text": stored.RawText, "the distilled text": stored.Text, "the position": issuePosition, "the topic name": topicName} {
+		if content != "" && strings.Contains(out, content) {
+			t.Errorf("info-level output carries %s:\n%s", name, out)
+		}
+	}
+}
+
 func TestTheWorkerOffersOnlyWhatTheDocumentsReadersMayReadNow(t *testing.T) {
 	private := connector.ACL{{Kind: connector.ACLIdentity, Source: "gh", NativeID: "kyle-node"}}
 	tests := []struct {
 		name string
-		// hide makes something private after the issue opened its topic.
+
 		hide func(t *testing.T, pool *pgxpool.Pool, src string, topic l2.Topic)
-		// shown is what Jev is shown of the issue's topic, if anything.
+
 		shown  []shownCandidate
 		opened int
 	}{
@@ -244,7 +260,7 @@ func TestTheWorkerOffersOnlyWhatTheDocumentsReadersMayReadNow(t *testing.T) {
 				if _, err := l1.New(pool).Put(t.Context(), note); err != nil {
 					t.Fatal(err)
 				}
-				// Stated after the issue, so it is the topic's current position.
+
 				stated := note.Time.LastActivity.Add(time.Hour)
 				if _, _, err := l2.New(pool).AppendStance(t.Context(), l2.Stance{
 					ID: l2.StanceID(topic.ID, note.ID, "what only kyle saw", stated, l2.TierInferred), TopicID: topic.ID,
@@ -274,8 +290,7 @@ func TestTheWorkerOffersOnlyWhatTheDocumentsReadersMayReadNow(t *testing.T) {
 				t.Fatalf("Topics() = %+v, %v, want the issue's", topics, err)
 			}
 			tt.hide(t, pool, src, topics[0])
-			// Were the hidden topic still offered, Jev would match the pull
-			// request's position to it and nothing would open.
+
 			if r := assertDoc(t, a, f.prID, scope); r.TopicsOpened != tt.opened || r.StancesWritten != 1 {
 				t.Errorf("Assert(pull request) = %+v, want %d topics opened and one stance", r, tt.opened)
 			}
@@ -286,8 +301,7 @@ func TestTheWorkerOffersOnlyWhatTheDocumentsReadersMayReadNow(t *testing.T) {
 			if !slices.Equal(got, tt.shown) {
 				t.Errorf("Jev was shown %+v, want %+v", got, tt.shown)
 			}
-			// A position Jev was not shown is compared to nothing, and the
-			// stance records no comparison.
+
 			if n := len(jev.asked("same_answer")); n != 0 {
 				t.Errorf("Jev was asked %d stance comparisons, want none", n)
 			}
@@ -311,7 +325,7 @@ func TestAProposedPullRequestBecomesRatifiedWithTheSamePosition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Before it merged, the source said it was an open pull request.
+
 	proposed.ArtifactClass = config.ArtifactPullRequest
 	if changed, err := l1.New(pool).Put(t.Context(), proposed); err != nil || !changed {
 		t.Fatalf("Put(proposed PR) = %v, %v", changed, err)
@@ -360,8 +374,6 @@ func TestAProposedPullRequestBecomesRatifiedWithTheSamePosition(t *testing.T) {
 	}
 }
 
-// Re-running over the same documents — a restart, a job run twice — does not
-// duplicate stances, and does not ask the model again.
 func TestTheWorkerIsIdempotentAcrossRestarts(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
@@ -371,8 +383,6 @@ func TestTheWorkerIsIdempotentAcrossRestarts(t *testing.T) {
 	assertDoc(t, first, f.issueID, scope)
 	assertDoc(t, first, f.prID, scope)
 
-	// A new process, with a registry that has nothing recorded: any model call
-	// fails, so passing here means none was made.
 	restarted := newAsserter(t, pool, src, llm.NewFixtures())
 	for _, id := range []string{f.issueID, f.prID} {
 		if r := assertDoc(t, restarted, id, scope); !r.Unchanged || r.StancesWritten != 0 || r.TopicsOpened != 0 {
@@ -392,8 +402,6 @@ func TestTheWorkerIsIdempotentAcrossRestarts(t *testing.T) {
 	}
 }
 
-// Losing the assertion checkpoint makes the same L1 version run again. It
-// asks the model, but the identical reading writes no second stance.
 func TestRetryingTheSameVersionWritesNothingTwice(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
@@ -407,8 +415,6 @@ func TestRetryingTheSameVersionWritesNothingTwice(t *testing.T) {
 		t.Fatalf("moving the recorded version: %v", err)
 	}
 
-	// The sweep finds it again, and with nothing recorded the read must fail:
-	// the version moved, so it is read again rather than skipped.
 	pending, err := l2.New(pool).Unasserted(t.Context())
 	if err != nil {
 		t.Fatalf("Unasserted() = %v", err)
@@ -439,11 +445,6 @@ func TestRetryingTheSameVersionWritesNothingTwice(t *testing.T) {
 	}
 }
 
-// The fixture plus one comment: the issue proposes (S1), the merged
-// pull request does otherwise (S2), and the issue, commented on after the merge
-// and re-distilled, is read again and restated in other words (S3). S3 replaces
-// the issue's own S1; it is not recorded as reversing the merged pull request,
-// and the issue is left with one live stance on the topic.
 func TestARedistilledDocumentReplacesItsOwnStance(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
@@ -504,9 +505,6 @@ func TestARedistilledDocumentReplacesItsOwnStance(t *testing.T) {
 		t.Errorf("the issue has %d unsuperseded stances on the topic, want 1", live)
 	}
 
-	// The comment is deleted and the issue re-distilled without it, so its
-	// last activity moves back before the merge. Read again (S4), it replaces
-	// S3 and retires it, though S3 is still the newest stated on the topic.
 	tombstone := event(src, connector.KindTombstone, comment.NativeID+":tombstone", at(9), "", "", "", "")
 	tombstone.Payload.Author, tombstone.Payload.Target = nil, comment.NativeID
 	if _, err := l0.New(pool).Append(t.Context(), tombstone); err != nil {
@@ -536,9 +534,6 @@ func TestARedistilledDocumentReplacesItsOwnStance(t *testing.T) {
 		t.Errorf("the reading without the comment = %+v, want the issue's proposal again, changing and superseding its restatement %s", s4, s3.ID)
 	}
 
-	// The pull request read again is compared to the topic's current stance,
-	// the merged pull request's own, not to the newest stated: Jev is shown
-	// that position, and finds the same answer.
 	if _, err := pool.Exec(t.Context(),
 		`UPDATE l2_asserted SET distilled_at = distilled_at - interval '1 second' WHERE doc_id = $1`, f.prID); err != nil {
 		t.Fatalf("moving the recorded version: %v", err)
@@ -552,10 +547,6 @@ func TestARedistilledDocumentReplacesItsOwnStance(t *testing.T) {
 	}
 }
 
-// What a model writes is held to what L1 holds a person's words to: an email
-// address is scrubbed out of a position, and an assertion with nothing left in
-// its position, or a new topic with nothing left in its name, is dropped rather
-// than failing the document.
 func TestWhatTheModelWroteIsCleanedBeforeItIsStored(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
@@ -579,8 +570,6 @@ func TestWhatTheModelWroteIsCleanedBeforeItIsStored(t *testing.T) {
 	}
 }
 
-// A document whose outcome does not enter the pipeline, and one that is gone,
-// are skipped without a model call.
 func TestDocumentsOutsideThePipelineAreSkipped(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
@@ -601,20 +590,12 @@ func TestDocumentsOutsideThePipelineAreSkipped(t *testing.T) {
 	}
 }
 
-// The service end to end: jobs the distiller would have enqueued, and documents
-// it wrote before the worker existed, are all read by Run, which stops cleanly.
-//
-// It runs on a database of its own: Run's sweep enqueues every unread document
-// it can see, and on the shared database that is every other test's, which its
-// worker would then read while those tests are reading them too.
 func TestRunReadsWhatIsEnqueuedAndWhatWasMissed(t *testing.T) {
 	pool := scratchPool(t)
 	src := newSource(t)
 	store(t, pool, src)
 	issue, _ := documents(t, src)
 
-	// The issue's job, as the distiller enqueues it; the pull request has none,
-	// and is only found by the sweep at startup.
 	if ok, err := l2.EnqueueAssertion(t.Context(), pool, testRepo(src), issue, repo, nil); err != nil || !ok {
 		t.Fatalf("EnqueueAssertion() = %v, %v", ok, err)
 	}
@@ -649,7 +630,6 @@ func TestRunReadsWhatIsEnqueuedAndWhatWasMissed(t *testing.T) {
 	assertOneTopicTwoStances(t, pool, src)
 }
 
-// Jev is required: a worker given model tiers and no Jev does not start.
 func TestRunRefusesWithoutJev(t *testing.T) {
 	pool := newPool(t)
 	registry, err := llm.NewFake(llm.Default(), llm.NewFixtures())
@@ -662,8 +642,6 @@ func TestRunRefusesWithoutJev(t *testing.T) {
 	}
 }
 
-// The distiller writes a document and its assert job together, and only for an
-// outcome that enters the pipeline.
 func TestEnqueueAssertionOnlyForOutcomesThatAssert(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)

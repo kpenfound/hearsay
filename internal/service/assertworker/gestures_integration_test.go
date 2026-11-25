@@ -235,7 +235,7 @@ func TestDiscordReactionGestures(t *testing.T) {
 		target string
 		want   int
 	}{
-		{"gesture:" + ratify.ID, 0}, // L0's feed hides a reaction already tombstoned.
+		{"gesture:" + ratify.ID, 0},
 		{"gesture:" + tombstone.ID, 1},
 		{"gesture:" + connector.EventID(src, message.NativeID), 0},
 	} {
@@ -252,11 +252,6 @@ func TestDiscordReactionGestures(t *testing.T) {
 	}
 }
 
-// A read-only Discord source's reactions are ingested and are not gestures:
-// the follower enqueues nothing for them, a job for one enqueued before the
-// source became read-only records nothing, and removing a reaction that was
-// recorded as a gesture before then undoes nothing. The same reactions on a
-// source that is not read-only are TestDiscordReactionGestures.
 func TestReadOnlyDiscordReactionsAreNotGestures(t *testing.T) {
 	pool := scratchPool(t)
 	src := newSource(t)
@@ -331,7 +326,6 @@ func TestReadOnlyDiscordReactionsAreNotGestures(t *testing.T) {
 		}
 	}
 
-	// Recorded while the source was not read-only.
 	before, _ := appendEvent(reaction("✅"))
 	handle(asserter(repo), before)
 	gs, err := graph.Gestures(t.Context(), src)
@@ -360,9 +354,6 @@ func TestReadOnlyDiscordReactionsAreNotGestures(t *testing.T) {
 	}
 }
 
-// readThrough runs a feed follower until its cursor is last, the cursor of the
-// last event appended. The feed holds events back while any transaction in
-// the cluster is open, so one read may return nothing.
 func readThrough(t *testing.T, pool *pgxpool.Pool, consumer string, once func(context.Context) (int, error), last l0.Cursor) {
 	t.Helper()
 	waitFor(t, consumer+" to read through "+last.String(), func() bool {
@@ -377,8 +368,6 @@ func readThrough(t *testing.T, pool *pgxpool.Pool, consumer string, once func(co
 	})
 }
 
-// Wait before following so a single read can see the event being asserted.
-// L0's safe feed horizon can be held by transactions in other databases.
 func waitForGestureFeed(t *testing.T, pool *pgxpool.Pool, id string) {
 	t.Helper()
 	from, err := l0.NewCursors(pool).Load(t.Context(), "assert-worker:gestures")
@@ -386,22 +375,13 @@ func waitForGestureFeed(t *testing.T, pool *pgxpool.Pool, id string) {
 		t.Fatal(err)
 	}
 	events := l0.New(pool)
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+	waitFor(t, "the gesture feed to show event "+id, func() bool {
 		changes, err := events.Changes(t.Context(), from, l0.Filter{}, 100)
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, change := range changes {
-			if change.Event.ID == id {
-				return
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("gesture feed did not show event %s", id)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return slices.ContainsFunc(changes, func(c l0.Change) bool { return c.Event.ID == id })
+	})
 }
 
 func gestureRegistry(t *testing.T) *connector.Registry {

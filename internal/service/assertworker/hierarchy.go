@@ -18,7 +18,7 @@ import (
 // the tracker and work hierarchy. One name for every replica, as the distiller's.
 const HierarchyConsumer = "assert-worker:hierarchy"
 
-// The follower's defaults: the distiller's pump's, for the same reasons.
+// The follower's defaults.
 const (
 	DefaultFollowInterval = 2 * time.Second
 	DefaultFollowBatch    = 200

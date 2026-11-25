@@ -12,47 +12,31 @@ import (
 )
 
 // Schema is the shape a structured answer has to take: a name, and a JSON
-// Schema object describing the JSON the caller wants back. Structured output is
-// part of the abstraction rather than the caller's problem, so what
-// a provider is told to make this happen — a tool definition, a response
-// format, a retry on a parse failure — never reaches the caller, and the answer
-// is checked against the schema here before it is returned.
+// Schema object describing the JSON the caller wants back. The answer is
+// checked against the schema before it is returned.
 type Schema struct {
-	// Name names the shape. Providers that get structured output out of a tool
-	// call use it as the tool's name, so it is written the way an identifier
-	// is: letters, digits, `_` and `-`, up to 64 of them.
+	// Name names the shape: letters, digits, `_` and `-`, up to 64 of them.
 	Name string `json:"name"`
 	// Description says what the shape is for. It reaches the model.
 	Description string `json:"description,omitempty"`
-	// Definition is the JSON Schema, which has to describe an object: every
-	// provider's structured output is an object at the top level, and a bare
-	// string or array would be a shape that works on one provider and not the
-	// next.
+	// Definition is the JSON Schema, which has to describe an object.
 	//
 	// Only the keywords in [SchemaKeywords] are understood. A schema using
-	// anything else is refused rather than sent, because a constraint this
-	// package cannot check is a constraint the caller would believe was
-	// enforced.
+	// anything else is refused rather than sent.
 	Definition json.RawMessage `json:"definition"`
 }
 
 // SchemaKeywords is every JSON Schema keyword this package understands, sorted.
-// The set is deliberately small: it is what a distillation or an extraction
-// prompt needs to pin an answer's shape, and every one of them is enforced on
-// the answer.
-//
-// `title`, `description` and `default` are in it and constrain nothing; they
-// are documentation, and they reach the model.
+// Every one of them is enforced on the answer except `title`, `description`
+// and `default`, which constrain nothing.
 var SchemaKeywords = []string{
 	"additionalProperties", "const", "default", "description", "enum", "items",
 	"maxItems", "maxLength", "maximum", "minItems", "minLength", "minimum",
 	"properties", "required", "title", "type",
 }
 
-// schemaTypes is every value of `type` this package understands.
 var schemaTypes = []string{"array", "boolean", "integer", "null", "number", "object", "string"}
 
-// node is one level of a parsed schema.
 type node struct {
 	types      []string
 	properties map[string]*node
@@ -86,7 +70,6 @@ func (s *Schema) Validate() error {
 	return nil
 }
 
-// parse reads the definition, rejecting a keyword this package cannot enforce.
 func (s *Schema) parse() (*node, error) {
 	if len(s.Definition) == 0 {
 		return nil, fmt.Errorf("the definition is empty")
@@ -95,8 +78,7 @@ func (s *Schema) parse() (*node, error) {
 }
 
 // ValidateJSON reports whether data satisfies the schema. The message names the
-// field, in JSON Pointer form, so that a fixture or a model that answered the
-// wrong shape can be fixed without reading the schema alongside it.
+// field in JSON Pointer form.
 func (s *Schema) ValidateJSON(data []byte) error {
 	root, err := s.parse()
 	if err != nil {
@@ -114,8 +96,6 @@ func (s *Schema) ValidateJSON(data []byte) error {
 	return root.validate(v, "")
 }
 
-// validSchemaName holds a schema's name to what a provider will take as the
-// name of a tool.
 func validSchemaName(name string) error {
 	if name == "" {
 		return fmt.Errorf("the schema has no name: it names the shape, and a provider that gets JSON out of a tool call uses it as the tool's name")
@@ -133,10 +113,6 @@ func validSchemaName(name string) error {
 	return nil
 }
 
-// parseNode reads one schema object. path is the JSON Pointer of the value it
-// describes, so an unknown keyword is reported where it is. Problems here are
-// with the schema rather than with an answer, and say so: the two are read by
-// different people.
 func parseNode(raw json.RawMessage, path string) (*node, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
@@ -183,7 +159,7 @@ func parseNode(raw json.RawMessage, path string) (*node, error) {
 		case "maxItems":
 			n.maxItems, err = parseInt(v)
 		case "title", "description", "default":
-			// Documentation. It reaches the model and constrains nothing.
+
 		default:
 			err = fmt.Errorf("the keyword %q is not understood: %s only, because a constraint this package cannot check is one the caller would believe was enforced",
 				key, strings.Join(SchemaKeywords, ", "))
@@ -250,17 +226,13 @@ func parseInt(v json.RawMessage) (*int, error) {
 	return &i, nil
 }
 
-// validate checks one value against one level of the schema.
 func (n *node) validate(v any, path string) error {
 	if len(n.types) > 0 {
 		if !slices.ContainsFunc(n.types, func(t string) bool { return isType(v, t) }) {
 			return fmt.Errorf("%s: want %s, found %s", at(path), strings.Join(n.types, " or "), kindOf(v))
 		}
 	}
-	// These two say what the schema allows and what kind of thing came back,
-	// and never the value that came back. An enum on a field of a distillation
-	// schema is matched against a completion, and an error string reaches a
-	// log line and a queue job's last_error.
+
 	if n.constant != nil && !equalJSON(*n.constant, v) {
 		return fmt.Errorf("%s: want the constant %s, found %s", at(path), *n.constant, kindOf(v))
 	}
@@ -344,9 +316,6 @@ func (n *node) validateArray(items []any, path string) error {
 	return nil
 }
 
-// isType reports whether v is of the named JSON Schema type. An integer is a
-// number whose value is whole, which is what JSON Schema says and what a model
-// answering `4` for a count relies on.
 func isType(v any, t string) bool {
 	switch t {
 	case "object":
@@ -380,15 +349,6 @@ func isType(v any, t string) bool {
 	return false
 }
 
-// boundedField cuts a field name from an answer down to the size of an
-// identifier.
-//
-// The name is the one thing a model produced that this package puts in an error
-// (README.md says so beside the rule): it is what tells a prompt's author that
-// the model wrote `outcome` where the schema says `outcome_kind`, and a schema
-// only closes its properties when it has named them all. It is bounded because
-// a name is still something a model chose, and nothing else about the answer
-// goes anywhere near an error.
 func boundedField(name string) string {
 	const max = 64
 	if len(name) <= max {
@@ -404,7 +364,6 @@ func boundedField(name string) string {
 	return name[:cut] + "…"
 }
 
-// kindOf names what a value is, for an error message.
 func kindOf(v any) string {
 	switch value := v.(type) {
 	case map[string]any:
@@ -426,16 +385,6 @@ func kindOf(v any) string {
 	return "something else"
 }
 
-// equalJSON compares a schema's literal — a `const`, or one member of an
-// `enum` — with a decoded answer.
-//
-// Both sides go through [canonicalJSON], because they arrive by different
-// routes: the schema as bytes somebody typed, the answer as a value the decoder
-// produced. Comparing the two encodings would make a correct answer fail on any
-// difference in spelling — an `&` in a string, the order the keys of an object
-// were written in, `1` against `1.0` — and by the abstraction's rules a schema
-// violation is final, so the model would be refused for answering exactly
-// right.
 func equalJSON(raw json.RawMessage, v any) bool {
 	answer, ok := canonicalValue(v)
 	if !ok {
@@ -444,10 +393,6 @@ func equalJSON(raw json.RawMessage, v any) bool {
 	return string(canonicalJSON(raw)) == string(answer)
 }
 
-// canonicalJSON rewrites JSON into the one form this package compares and
-// hashes: object keys sorted, whitespace gone, strings escaped the way
-// [json.Marshal] escapes them, and every number in one spelling. JSON that does
-// not parse is returned unchanged, which compares equal to nothing.
 func canonicalJSON(raw json.RawMessage) json.RawMessage {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
@@ -462,7 +407,6 @@ func canonicalJSON(raw json.RawMessage) json.RawMessage {
 	return canonical
 }
 
-// canonicalValue renders a decoded value in that same form.
 func canonicalValue(v any) (json.RawMessage, bool) {
 	encoded, err := json.Marshal(canonicalNumbers(v))
 	if err != nil {
@@ -471,9 +415,6 @@ func canonicalValue(v any) (json.RawMessage, bool) {
 	return encoded, true
 }
 
-// canonicalNumbers rewrites every number in a decoded value into one spelling,
-// at every depth. A number is a number wherever it appears: `1` and `1.0` and
-// `1e0` are one constant, in an object, in an array, or on its own.
 func canonicalNumbers(v any) any {
 	switch value := v.(type) {
 	case map[string]any:
@@ -494,10 +435,6 @@ func canonicalNumbers(v any) any {
 	return v
 }
 
-// canonicalNumber is one number's spelling: the integer where the literal is
-// one that fits, and the shortest form that round-trips otherwise. Integers go
-// through [strconv.ParseInt] rather than float64 so that an id beyond a
-// float64's exact range is not silently moved.
 func canonicalNumber(n json.Number) string {
 	if i, err := strconv.ParseInt(n.String(), 10, 64); err == nil {
 		return strconv.FormatInt(i, 10)
@@ -509,7 +446,6 @@ func canonicalNumber(n json.Number) string {
 	return strconv.FormatFloat(f, 'g', -1, 64)
 }
 
-// enumList renders an enum for an error message.
 func enumList(enum []json.RawMessage) string {
 	parts := make([]string, len(enum))
 	for i, e := range enum {
@@ -518,9 +454,6 @@ func enumList(enum []json.RawMessage) string {
 	return strings.Join(parts, ", ")
 }
 
-// in names where in the schema a problem is. A schema is written by the caller,
-// so a problem with it is reported against the schema and not against the
-// answer nothing has produced yet.
 func in(path string) string {
 	if path == "" {
 		return "the schema"
@@ -528,9 +461,6 @@ func in(path string) string {
 	return "the schema at " + path
 }
 
-// at names where in the answer a problem is, in JSON Pointer form. The root is
-// named rather than left empty, because "want a string" with no subject reads
-// like a bug in the caller.
 func at(path string) string {
 	if path == "" {
 		return "the answer"
@@ -538,8 +468,6 @@ func at(path string) string {
 	return path
 }
 
-// sortedKeys is the keys of a map, sorted, so that two runs report the same
-// problem first.
 func sortedKeys[V any](m map[string]V) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {

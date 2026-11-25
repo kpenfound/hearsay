@@ -49,15 +49,12 @@ const DefaultListen = ":8082"
 // whatever enqueues one, and with an operator reading `queue_job`.
 const JobKindName = "distill"
 
-// DefaultConcurrency is how many documents one process distils at once. Each is
-// a model call measured in seconds, so the number is about how much of a
-// provider's rate limit one replica takes rather than about CPU.
+// DefaultConcurrency is how many documents one process distils at once.
 const DefaultConcurrency = 4
 
-// JobKind is the kind both ends of a distill job share. It is not serialized:
-// two documents have nothing to do with each other, and the ordering that does
-// matter — a burst of events on one document — is handled by the queue's
-// per-target debounce and deduplication rather than a serial key.
+// JobKind is the kind both ends of a distill job share. Distill jobs are not
+// serialized: a burst of events on one document is handled by the queue's
+// per-target debounce and deduplication.
 func JobKind() queue.Kind { return queue.Kind{Name: JobKindName} }
 
 // Deps are what the process builds and hands to [Run].
@@ -68,24 +65,16 @@ type Deps struct {
 	Listen string
 	// Pool is the database. The caller owns it and closes it.
 	Pool *pgxpool.Pool
-	// LLM is the model tier registry. The distiller uses the
-	// `distill` tier and resolves it at startup, so a configuration that names
-	// no `distill` tier is a startup failure rather than a job that fails an
-	// hour later.
-	//
-	// A nil registry is a process that was given no configuration at all: it
-	// starts, says there is nothing to distil, and waits to be stopped, the
-	// same as every other service without one. A process with a
-	// configuration always has a registry, because the loader merges the
-	// shipped tiers in.
+	// LLM is the model tier registry. The distiller resolves the `distill`
+	// tier at startup, so a configuration that names none is a startup
+	// failure. A nil registry is a process given no configuration: it starts,
+	// says there is nothing to distil, and waits to be stopped.
 	LLM llm.Registry
 	// Judgments is Jev, which decides every document's outcome. It is
-	// required whenever LLM is set; readiness reports it without depending on
-	// it, because a job whose judgment fails is retried.
+	// required whenever LLM is set. Readiness reports it without depending on
+	// it.
 	Judgments llm.Judgments
-	// Pump is what the feed reader is turned down to, for a deployment that
-	// wants it quieter and for a test that wants it immediate. The zero value
-	// is the defaults.
+	// Pump tunes the feed reader. The zero value is the defaults.
 	Pump PumpOptions
 	// Concurrency is how many jobs this process runs at once. Zero is
 	// [DefaultConcurrency].
@@ -111,9 +100,6 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 		return service.RunProbes(ctx, Name, addr, deps.Listener, deps.Pool, deps.Judgments)
 	}
 	if deps.LLM == nil {
-		// No configuration, so there is nothing to distil and no tier to
-		// distil it with. Idling rather than exiting is what makes
-		// `hearsay all` on an empty machine something a person can look at.
 		log := telemetry.Logger(ctx)
 		log.WarnContext(ctx, "no model tiers: nothing is distilled, pass --config")
 		if err := probes(ctx); err != nil {
@@ -144,9 +130,6 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 		"concurrency", concurrency, "config_digest", cfg.Repo.Digest,
 		"embedding", distiller.embedder != nil)
 	if distiller.embedder == nil {
-		// Without it every document is written with no vector, so search finds
-		// documents by the words in them and never by what they are about
-		// (docs/config.md).
 		log.WarnContext(ctx, "no embed tier: documents are not embedded and search runs on full text alone")
 	}
 

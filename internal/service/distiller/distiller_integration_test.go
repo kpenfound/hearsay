@@ -3,8 +3,12 @@
 package distiller_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"slices"
 	"strconv"
@@ -26,16 +30,51 @@ import (
 	"github.com/kpenfound/hearsay/internal/queue"
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
 	"github.com/kpenfound/hearsay/internal/service/distiller"
+	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
-// testConfig is what the distiller is built from. It lives here rather than
-// beside testRepo in fixtures_test.go because the integration tests are its
-// only callers: declared in an untagged file it is dead code to every lint and
-// vet run that does not set the `integration` tag, which is all of them.
 func testConfig(src string) *config.Config {
 	cfg := config.Default()
 	cfg.Repo = testRepo(src)
 	return &cfg
+}
+
+func waitFor(t *testing.T, what string, timeout time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func startDistiller(t *testing.T, pool *pgxpool.Pool, src string) (stop func() error) {
+	t.Helper()
+	registry, err := llm.NewFake(testRepo(src).LLM, loadFixtures(t))
+	if err != nil {
+		t.Fatalf("building the fake registry: %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		done <- distiller.Run(ctx, testConfig(src), distiller.Deps{
+			Pool:      pool,
+			LLM:       registry,
+			Judgments: fixtureJev(t).judgments(),
+			Pump:      distiller.PumpOptions{Quiet: 0, Interval: 100 * time.Millisecond, Batch: l0.MaxLimit},
+		})
+	}()
+	return func() error {
+		cancel()
+		select {
+		case err := <-done:
+			return err
+		case <-time.After(30 * time.Second):
+			return errors.New("Run() did not return within 30s of cancellation")
+		}
+	}
 }
 
 func newPool(t *testing.T) *pgxpool.Pool {
@@ -98,9 +137,6 @@ func newScratchPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// sources keeps tests out of each other's way: the database outlives one test,
-// and L0 is append-only, so a test takes a source id nothing else uses rather
-// than truncating a table another test is reading.
 var sources atomic.Int64
 
 func newSource(t *testing.T) string {
@@ -108,7 +144,6 @@ func newSource(t *testing.T) string {
 	return "t" + strconv.FormatInt(time.Now().UnixNano(), 36) + "x" + strconv.FormatInt(sources.Add(1), 36)
 }
 
-// ingest writes the fixture repository into L0, the way a connector would.
 func ingest(t *testing.T, pool *pgxpool.Pool, events []connector.Event) {
 	t.Helper()
 	store := l0.New(pool)
@@ -119,8 +154,6 @@ func ingest(t *testing.T, pool *pgxpool.Pool, events []connector.Event) {
 	}
 }
 
-// newDistiller builds the distiller over the fake registry, which answers from
-// the recorded fixtures and reaches no network.
 func newDistiller(t *testing.T, pool *pgxpool.Pool, src string) *distiller.Distiller {
 	t.Helper()
 	registry, err := llm.NewFake(testRepo(src).LLM, loadFixtures(t))
@@ -134,13 +167,6 @@ func newDistiller(t *testing.T, pool *pgxpool.Pool, src string) *distiller.Disti
 	return d
 }
 
-// Distilling a fixture repository twice produces identical L1 rows.
-//
-// It is the whole of what "the distiller is stateless and idempotent" means. A
-// second run rebuilds every document from the same events and writes nothing,
-// so a re-distillation costs a model call and no row churn — and anything that
-// crept into a document from outside its events, an iteration order or a clock,
-// would show up here as a row that moved.
 func TestDistillingTwiceProducesIdenticalRows(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
@@ -185,6 +211,37 @@ func TestDistillingTwiceProducesIdenticalRows(t *testing.T) {
 	}
 }
 
+func TestHandlingAJobLogsIdsAndNoContentAtInfoLevel(t *testing.T) {
+	pool := newPool(t)
+	src := newSource(t)
+	ingest(t, pool, fixtureEvents(src))
+	d := newDistiller(t, pool, src)
+	id := l1.DocID(src, repo+"#12")
+
+	var logs bytes.Buffer
+	ctx := telemetry.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	if err := d.Handle(ctx, queue.Job{Kind: distiller.JobKind(), TargetID: id}); err != nil {
+		t.Fatalf("Handle() = %v", err)
+	}
+
+	out := logs.String()
+	if !strings.Contains(out, "document distilled") || !strings.Contains(out, id) {
+		t.Fatalf("the distillation was not logged by id:\n%s", out)
+	}
+	stored, err := l1.New(pool).Get(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{"the raw text": stored.RawText, "the distilled text": stored.Text, "the summary": stored.Body.Summary} {
+		if content != "" && strings.Contains(out, content) {
+			t.Errorf("info-level output carries %s:\n%s", name, out)
+		}
+	}
+	if strings.Contains(out, "The engine writes before it takes the lock") {
+		t.Errorf("info-level output carries the L0 payload:\n%s", out)
+	}
+}
+
 func TestPRMergeRefreshesArtifactClass(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
@@ -225,9 +282,6 @@ func TestPRMergeRefreshesArtifactClass(t *testing.T) {
 	}
 }
 
-// The document the distiller wrote is embedded, by the tier the configuration
-// names, once — and with no such tier the document is written anyway and search
-// finds it by its words alone.
 func TestDistillingEmbedsTheDocumentItWrote(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
@@ -235,7 +289,6 @@ func TestDistillingEmbedsTheDocumentItWrote(t *testing.T) {
 	docs := l1.New(pool)
 	id := l1.DocID(src, repo+"#31")
 
-	// The shipped configuration names no embed tier.
 	result, err := newDistiller(t, pool, src).Distill(t.Context(), id)
 	if err != nil {
 		t.Fatalf("Distill(%s) = %v", id, err)
@@ -247,8 +300,6 @@ func TestDistillingEmbedsTheDocumentItWrote(t *testing.T) {
 		t.Error("a document was embedded with no embed tier configured")
 	}
 
-	// Now with one, recorded against the text the distillation produced: what
-	// is embedded is the distillation and never the team's own words.
 	stored, err := docs.Get(t.Context(), id)
 	if err != nil {
 		t.Fatalf("Get(%s) = %v", id, err)
@@ -266,8 +317,6 @@ func TestDistillingEmbedsTheDocumentItWrote(t *testing.T) {
 		t.Fatal("the distiller reported an embedding and the row has none")
 	}
 
-	// And it does not embed again what has not changed, which is what stops a
-	// re-distillation costing an embedding call.
 	result, err = d.Distill(t.Context(), id)
 	if err != nil {
 		t.Fatalf("Distill(%s, again) = %v", id, err)
@@ -277,9 +326,6 @@ func TestDistillingEmbedsTheDocumentItWrote(t *testing.T) {
 	}
 }
 
-// A tier whose vectors are not the width of the column stops the process at
-// startup: the fix is a migration and a re-embed of every row, not a job that
-// fails every time it runs.
 func TestADistillerRefusesAnEmbedTierOfTheWrongWidth(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
@@ -294,8 +340,6 @@ func TestADistillerRefusesAnEmbedTierOfTheWrongWidth(t *testing.T) {
 	}
 }
 
-// embeddingDistiller is the distiller with an embed tier that answers, from a
-// recording of exactly the text the store will send it.
 func embeddingDistiller(t *testing.T, pool *pgxpool.Pool, src, text string) *distiller.Distiller {
 	t.Helper()
 	fixtures := loadFixtures(t)
@@ -332,8 +376,6 @@ func embedded(t *testing.T, pool *pgxpool.Pool, id string) bool {
 	return has
 }
 
-// Every document the fixture repository makes has an outcome kind, and it is
-// one of the design's five.
 func TestEveryDocumentCarriesAnOutcomeKind(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
@@ -365,8 +407,6 @@ func TestEveryDocumentCarriesAnOutcomeKind(t *testing.T) {
 		}
 	}
 
-	// The change proposal is one document with its review and its review
-	// comment in it, which is what grouping a conversation means.
 	pr, err := l1.New(pool).Get(t.Context(), l1.DocID(src, repo+"#31"))
 	if err != nil {
 		t.Fatalf("Get(the change proposal) = %v", err)
@@ -384,8 +424,7 @@ func TestEveryDocumentCarriesAnOutcomeKind(t *testing.T) {
 	if !slices.Equal(pr.Participants, wantParticipants) {
 		t.Errorf("Participants = %v, want %v", pr.Participants, wantParticipants)
 	}
-	// The tracker item the artifact is, and the code entities the scope and the
-	// conversation name.
+
 	if !slices.Contains(pr.Scope, "tracker:"+src+":"+repo+"#31") {
 		t.Errorf("Scope = %v, want the tracker item the artifact is", pr.Scope)
 	}
@@ -394,8 +433,6 @@ func TestEveryDocumentCarriesAnOutcomeKind(t *testing.T) {
 	}
 }
 
-// A new event on an artifact that already has a document re-distils it: the
-// document grows the event, and the row is written again.
 func TestANewEventRedistillsTheDocument(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
@@ -433,7 +470,7 @@ func TestANewEventRedistillsTheDocument(t *testing.T) {
 	if !after.DistilledAt.After(before.DistilledAt) {
 		t.Errorf("DistilledAt = %s, want it to have moved past %s", after.DistilledAt, before.DistilledAt)
 	}
-	// The artifact's own time does not move: it happened when it happened.
+
 	if !after.Time.Created.Equal(before.Time.Created) {
 		t.Errorf("Created moved from %s to %s", before.Time.Created, after.Time.Created)
 	}
@@ -470,7 +507,7 @@ func TestRedistillingToNoneWithdrawsTheOldStance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The old asserting job represents the stance recorded above.
+
 	jobs, err := client.Claim(t.Context())
 	if err != nil || len(jobs) != 1 || jobs[0].TargetID != docID {
 		t.Fatalf("first assertion jobs = %+v, %v", jobs, err)
@@ -525,8 +562,6 @@ func TestRedistillingToNoneWithdrawsTheOldStance(t *testing.T) {
 	}
 }
 
-// An artifact retracted at the source leaves L1. The events stay in L0 behind
-// the tombstone, and the document derived from them goes.
 func TestATombstonedArtifactLosesItsDocument(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
@@ -556,11 +591,11 @@ func TestATombstonedArtifactLosesItsDocument(t *testing.T) {
 	if _, err := docs.Get(t.Context(), id); err == nil {
 		t.Error("the document for a retracted artifact is still there")
 	}
-	// And running it again is not an error: the job is at-least-once.
+
 	if _, err := d.Distill(t.Context(), id); err != nil {
 		t.Errorf("Distill(retracted, again) = %v", err)
 	}
-	// A later revision of the stable artifact restores its derived document.
+
 	reentry := fixtureEvents(src)[0]
 	reentry.NativeID = reentry.Payload.Artifact + "@reentry"
 	reentry.Payload.Revision = &connector.Revision{Token: "reentry", EditedAt: at(10)}
@@ -574,37 +609,16 @@ func TestATombstonedArtifactLosesItsDocument(t *testing.T) {
 	}
 }
 
-// A comment deleted at the source leaves the document that quoted it. The
-// tombstone is shaped the way docs/connector-contract.md's GitHub row specifies
-// — a target and no thread or parent — so nothing in it names the issue: the
-// distiller has to work that out, and then the issue has to be re-distilled
-// without the comment in its text, its raw text or its provenance.
 func TestATombstoneForACommentRedistillsTheDocumentThatQuotedIt(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
 	ingest(t, pool, fixtureEvents(src))
 	commentEvent := connector.EventID(src, retractedComment)
 
-	registry, err := llm.NewFake(testRepo(src).LLM, loadFixtures(t))
-	if err != nil {
-		t.Fatalf("building the fake registry: %v", err)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() {
-		done <- distiller.Run(ctx, testConfig(src), distiller.Deps{
-			Pool:      pool,
-			LLM:       registry,
-			Judgments: fixtureJev(t).judgments(),
-			Pump:      distiller.PumpOptions{Quiet: 0, Interval: 100 * time.Millisecond, Batch: l0.MaxLimit},
-		})
-	}()
+	stop := startDistiller(t, pool, src)
 	defer func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(30 * time.Second):
-			t.Error("Run() did not return within 30s of cancellation")
+		if err := stop(); err != nil {
+			t.Error(err)
 		}
 	}()
 
@@ -612,25 +626,20 @@ func TestATombstoneForACommentRedistillsTheDocumentThatQuotedIt(t *testing.T) {
 	id := l1.DocID(src, repo+"#12")
 	waitForIssue := func(what string, ok func(l1.Stored) bool) l1.Stored {
 		t.Helper()
-		deadline := time.Now().Add(60 * time.Second)
-		for {
+		var found l1.Stored
+		waitFor(t, "the issue's document to be "+what, 60*time.Second, func() bool {
 			doc, err := docs.Get(t.Context(), id)
-			if err == nil && ok(doc) {
-				return doc
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("the issue's document never %s (last read: %v)", what, err)
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
+			found = doc
+			return err == nil && ok(doc)
+		})
+		return found
 	}
 
 	before := waitForIssue("was distilled", func(doc l1.Stored) bool { return slices.Contains(doc.L0Refs, commentEvent) })
 	if !strings.Contains(before.RawText, "Seen it twice this week") {
 		t.Fatalf("the issue's raw text does not quote the comment before it is deleted:\n%s", before.RawText)
 	}
-	// Read the version with the comment into L2 using a recorded answer. The
-	// second answer below is for the same document after the tombstone.
+
 	assertFixtures := llm.NewFixtures()
 	budget, ok := llm.Default().Tier(llm.TierAssert)
 	if !ok {
@@ -690,9 +699,6 @@ func TestATombstoneForACommentRedistillsTheDocumentThatQuotedIt(t *testing.T) {
 	}
 }
 
-// assertJev is the fake Jev the tombstone test asserts with: every candidate
-// topic asks the same question, and no position restates another, so the
-// re-read document's position continues the topic and changes its answer.
 type assertJev struct{}
 
 func (assertJev) Judge(_ context.Context, req llm.JudgmentRequest) (llm.JudgmentResponse, error) {
@@ -709,14 +715,10 @@ func (assertJev) Judge(_ context.Context, req llm.JudgmentRequest) (llm.Judgment
 	return out, nil
 }
 
-// The pump turns the change feed into jobs: one per document, whatever a burst
-// of events on one document looks like.
 func TestThePumpEnqueuesOneJobPerDocument(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
 
-	// A cursor of its own, so that what this test reads is what it wrote and
-	// not what another test left on the shared feed.
 	pump := distiller.NewPump(pool, distiller.PumpOptions{Quiet: 0, Batch: l0.MaxLimit})
 	if _, err := pump.Once(t.Context()); err != nil {
 		t.Fatalf("Once(catching up) = %v", err)
@@ -728,15 +730,10 @@ func TestThePumpEnqueuesOneJobPerDocument(t *testing.T) {
 	before := pendingTargets(t, client)
 
 	ingest(t, pool, fixtureEvents(src))
-	// The feed serves rows only once the transaction that wrote them has
-	// finished, so read until it has caught up rather than once. The last read
-	// that actually returned events is the one whose position has to have been
-	// saved; the feed is shared, so another package's test may add to it while
-	// this runs, and only this source's jobs are this test's.
-	deadline := time.Now().Add(30 * time.Second)
+
 	var targets []string
 	var lastRead distiller.Progress
-	for {
+	waitFor(t, "the pump to enqueue a job per document", 30*time.Second, func() bool {
 		progress, err := pump.Once(t.Context())
 		if err != nil {
 			t.Fatalf("Once() = %v", err)
@@ -745,11 +742,8 @@ func TestThePumpEnqueuesOneJobPerDocument(t *testing.T) {
 			lastRead = progress
 		}
 		targets = fromSource(newTargets(pendingTargets(t, client), before), src)
-		if len(targets) >= 3 || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
+		return len(targets) >= 3
+	})
 
 	want := []string{l1.DocID(src, commit), l1.DocID(src, repo+"#12"), l1.DocID(src, repo+"#31")}
 	slices.Sort(want)
@@ -758,10 +752,6 @@ func TestThePumpEnqueuesOneJobPerDocument(t *testing.T) {
 		t.Fatalf("the pump enqueued %v, want one job per document: %v", targets, want)
 	}
 
-	// The cursor was saved with the jobs. Counting jobs would not say this — a
-	// re-enqueue collapses onto the job that is already pending, so a cursor
-	// that never moved would look exactly like one that did, and every restart
-	// would re-read the whole feed.
 	saved, err := l0.NewCursors(pool).Load(t.Context(), distiller.Consumer)
 	if err != nil {
 		t.Fatalf("Load() = %v", err)
@@ -771,72 +761,48 @@ func TestThePumpEnqueuesOneJobPerDocument(t *testing.T) {
 	}
 }
 
-// The two halves together: events in, documents out, through the queue.
 func TestRunDistillsWhatArrivesAndStopsWhenCancelled(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
 	ingest(t, pool, fixtureEvents(src))
 
-	registry, err := llm.NewFake(testRepo(src).LLM, loadFixtures(t))
-	if err != nil {
-		t.Fatalf("building the fake registry: %v", err)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() {
-		done <- distiller.Run(ctx, testConfig(src), distiller.Deps{
-			Pool:      pool,
-			LLM:       registry,
-			Judgments: fixtureJev(t).judgments(),
-			Pump:      distiller.PumpOptions{Quiet: 0, Interval: 100 * time.Millisecond, Batch: l0.MaxLimit},
-		})
-	}()
+	stop := startDistiller(t, pool, src)
 
 	docs := l1.New(pool)
-	deadline := time.Now().Add(60 * time.Second)
-	var stored []l1.Stored
-	for time.Now().Before(deadline) {
-		stored, err = docs.List(t.Context(), l1.ListOptions{Source: src})
+	waitFor(t, "the distiller to write the three documents the fixture repository makes", 60*time.Second, func() bool {
+		stored, err := docs.List(t.Context(), l1.ListOptions{Source: src})
 		if err != nil {
 			t.Fatalf("List() = %v", err)
 		}
-		if len(stored) == 3 {
-			break
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	if len(stored) != 3 {
-		t.Errorf("the distiller wrote %d documents, want the three the fixture repository makes", len(stored))
-	}
+		return len(stored) == 3
+	})
 
-	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Errorf("Run() after cancellation = %v, want nil", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("Run() did not return within 30s of cancellation")
+	if err := stop(); err != nil {
+		t.Errorf("Run() after cancellation = %v, want nil", err)
 	}
 }
 
-// A process with no configuration has no model tiers, so there is nothing to
-// distil and nothing to distil it with. It starts and waits to be stopped,
-// which is what every other service does without a configuration —
-// and it is what makes `hearsay all` on a machine with nothing set up
-// something a person can look at.
 func TestRunWithNoConfigurationIdlesUntilItIsStopped(t *testing.T) {
 	pool := newPool(t)
-	cfg := config.Default() // no configuration repository
+	cfg := config.Default()
 
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
-	go func() { done <- distiller.Run(ctx, &cfg, distiller.Deps{Pool: pool}) }()
+	go func() { done <- distiller.Run(ctx, &cfg, distiller.Deps{Pool: pool, Listener: listener}) }()
 
+	resp, err := http.Get("http://" + listener.Addr().String() + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
 	select {
 	case err := <-done:
 		t.Fatalf("Run() returned %v before it was stopped", err)
-	case <-time.After(200 * time.Millisecond):
+	default:
 	}
 	cancel()
 	select {
@@ -862,8 +828,6 @@ func pendingTargets(t *testing.T, client *queue.Client) []string {
 	return targets
 }
 
-// fromSource keeps the targets that name one source, because the feed is shared
-// with whatever else is running against this database.
 func fromSource(targets []string, src string) []string {
 	var out []string
 	for _, target := range targets {
@@ -884,8 +848,6 @@ func newTargets(now, before []string) []string {
 	return out
 }
 
-// assertSameStoredDocument compares two readings of one row, field by field, so
-// that a column nothing else looks at is still checked.
 func assertSameStoredDocument(t *testing.T, got, want l1.Stored) {
 	t.Helper()
 	if !got.DistilledAt.Equal(want.DistilledAt) {
@@ -926,10 +888,6 @@ func assertSameStoredDocument(t *testing.T, got, want l1.Stored) {
 	}
 }
 
-// interleaving wraps a registry so that something happens while the model is
-// answering. It is how a test gets at the window the provenance check exists
-// for: the model call is the only slow part of a distillation, so it is where a
-// concurrent job's events land.
 type interleaving struct {
 	llm.Registry
 	during func()
@@ -953,14 +911,6 @@ func (c interleavingCompleter) Complete(ctx context.Context, req llm.Request) (l
 	return c.Completer.Complete(ctx, req)
 }
 
-// A distillation built from a read of L0 that is no longer current is dropped
-// rather than written.
-//
-// The queue dedupes distill jobs on (kind, target) only while a job is still
-// pending, so an event that arrives while a job is running gets a job of its
-// own and the two run at once. Both end in an upsert, so without this check the
-// slower one wins — and if the slower one is the one that read L0 first, the
-// document loses the newer events with nothing left pending to put them back.
 func TestADistillationBuiltFromAStaleReadIsNotWritten(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
@@ -968,7 +918,6 @@ func TestADistillationBuiltFromAStaleReadIsNotWritten(t *testing.T) {
 	docs := l1.New(pool)
 	docID := "l1:" + src + ":" + repo + "#31"
 
-	// The document as it stands, distilled the ordinary way.
 	if _, err := newDistiller(t, pool, src).Distill(t.Context(), docID); err != nil {
 		t.Fatalf("the first Distill() = %v", err)
 	}
@@ -977,10 +926,6 @@ func TestADistillationBuiltFromAStaleReadIsNotWritten(t *testing.T) {
 		t.Fatalf("Get() = %v", err)
 	}
 
-	// Now distil it again, with a whole second job happening while the model is
-	// answering: a reply lands and the job that reply enqueued distils the
-	// conversation including it, writing a document with newer provenance. What
-	// this call has in hand describes the conversation before that reply.
 	late := reply(event(src, connector.KindMessage, repo+"#31:comment:99", at(9), who(src, "u2", "samr"),
 		"", "One more thing before this merges."), repo+"#31")
 	registry, err := llm.NewFake(testRepo(src).LLM, loadFixtures(t))
@@ -1009,9 +954,6 @@ func TestADistillationBuiltFromAStaleReadIsNotWritten(t *testing.T) {
 		t.Error("Result.Written is true: a distillation of a conversation that has moved was stored")
 	}
 
-	// The row is the one the concurrent job wrote, still naming the late reply.
-	// Overwriting it with this call's older reading would lose that reply from
-	// the document with nothing pending to put it back.
 	after, err := docs.Get(t.Context(), docID)
 	if err != nil {
 		t.Fatalf("Get() = %v", err)
@@ -1026,10 +968,6 @@ func TestADistillationBuiltFromAStaleReadIsNotWritten(t *testing.T) {
 	}
 }
 
-// writeNewerDocument stands in for the job the late reply enqueued: it builds
-// the document from L0 as it now stands and stores it, with a body written by
-// hand rather than by a model, because what this test needs from it is newer
-// provenance and not a distillation.
 func writeNewerDocument(t *testing.T, pool *pgxpool.Pool, src, docID string) {
 	t.Helper()
 	source, artifact, err := l1.ParseDocID(docID)

@@ -22,8 +22,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
-// CallTimeout bounds one document's model call, retries included: shorter than
-// anything that would let a rate-limited call outlive its job (internal/llm).
+// CallTimeout bounds one document's model call, retries included.
 const CallTimeout = 2 * time.Minute
 
 // Topic matching's bounds.
@@ -35,11 +34,8 @@ const (
 	// MinTextSimilarity and MinSharedTerms are how much of a document's
 	// distillation a topic's evidence must share, as lexeme sets
 	// (l2.Store.TopicsByText), to be offered. Reference overlap is the first
-	// matcher and a precise one; this is the second, for a document that cites
-	// nothing the topic does, and the one a deployment with no `embed` tier
-	// relies on. On distillations of one decision written two ways the
-	// similarity runs 0.4 to 0.5, and unrelated decisions share a word or two at
-	// under 0.1; a lower bar would offer every topic in a scope.
+	// matcher; this is the second, and the one a deployment with no `embed`
+	// tier relies on.
 	MinTextSimilarity = 0.2
 	MinSharedTerms    = 3
 	// MaxSimilarityDistance is the cosine distance within which a topic's
@@ -72,8 +68,7 @@ func (a *Asserter) WithReplies(replies Replies) *Asserter {
 }
 
 // New builds the asserter. The `assert` tier is resolved here, so a
-// configuration that names none is a startup failure rather than a job that
-// fails an hour later.
+// configuration that names none is a startup failure.
 func New(pool *pgxpool.Pool, registry llm.Registry, cfg *config.Config, registries ...*connector.Registry) (*Asserter, error) {
 	if pool == nil {
 		return nil, errors.New("the assertion worker needs a database")
@@ -118,19 +113,15 @@ type Result struct {
 	Positions int
 }
 
-// Handle is the queue handler for the `assert` kind. The job's serial key is the
-// scope it runs under, and it is the scope used — not one recomputed from a
-// configuration that may have changed since the job was enqueued — because it
-// is the key the queue is actually serializing on.
+// Handle is the queue handler for the `assert` kind. The job's serial key is
+// the scope it runs under.
 //
 // A job whose target is an `assertion` event is an agent's stance, appended
 // with no model call ([AppendAssertion]). One whose target is a gesture's
 // event ([l2.GestureTarget]) is a configured reaction or GitHub `/hearsay`
 // command, or the deletion of one, handled by its source with no model call.
-// One whose
-// target is a topic
-// operation's ([l2.OperationTarget]) or a gesture's ([l2.GestureHoldTarget]) is
-// a hold that outlived its process, and is done.
+// One whose target is a topic operation's ([l2.OperationTarget]) or a gesture's
+// ([l2.GestureHoldTarget]) is a hold that outlived its process, and is done.
 func (a *Asserter) Handle(ctx context.Context, job queue.Job) error {
 	log := telemetry.Logger(ctx)
 	if strings.HasPrefix(job.TargetID, l2.GestureTarget) {
@@ -159,9 +150,6 @@ func (a *Asserter) Handle(ctx context.Context, job queue.Job) error {
 		return nil
 	}
 	if strings.HasPrefix(job.TargetID, l2.OperationTarget) || strings.HasPrefix(job.TargetID, l2.GestureHoldTarget) {
-		// A topic operation or a gesture held the scope under this job and
-		// died holding it. It committed with the job's completion or not at
-		// all, so there is nothing left to do (l2.Operate, l2.RecordGesture).
 		log.InfoContext(ctx, "released a lapsed hold", "scope", job.SerialKey, "target", job.TargetID)
 		return nil
 	}
@@ -209,12 +197,11 @@ func (a *Asserter) Handle(ctx context.Context, job queue.Job) error {
 // `assert` tier, finds the topics it may continue by reference overlap, then
 // shared words, then embedding similarity, has Jev judge which topic each
 // position continues and whether it changes the position there, and appends a
-// stance or opens a topic (docs/design.md#l2-write-path).
+// stance or opens a topic.
 //
-// It is safe to run again. A document whose current version has been read is
-// not read twice, and one read again after a crash between the model call and
-// the write writes the rows it would have — topics and stances have ids derived
-// from what produced them, and a stance the topic already holds is not added.
+// It is safe to run again: a document whose current version has been read is
+// not read twice, and topics and stances have ids derived from what produced
+// them.
 func (a *Asserter) Assert(ctx context.Context, docID, scope string) (Result, error) {
 	return a.assert(ctx, docID, scope, nil)
 }
@@ -251,9 +238,7 @@ func (a *Asserter) assert(ctx context.Context, docID, scope string, queueDelay *
 		return Result{}, err
 	}
 	batch.observation.GenerativeCalls, batch.observation.GenerativeAttempts, batch.observation.GenerativeUsage = accounting.Snapshot()
-	// The judgments are committed before the stances they decided, against the
-	// inputs they were asked about: a change since is a refusal, and the job is
-	// retried against what is there now.
+
 	err = pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) error {
 		if err := a.commitJudgments(ctx, tx, batch.records, nil, l1.JournalCommitOptions{}); err != nil {
 			return err
@@ -269,12 +254,6 @@ func (a *Asserter) assert(ctx context.Context, docID, scope string, queueDelay *
 	return result, nil
 }
 
-// candidates is the topics a document may be continuing: reference overlap
-// first, then shared words, then embedding similarity for what is left of
-// [MaxCandidates], each only among topics everyone who may read the document may read — decided by the
-// opener while it exists, then by a surviving live stance. They are topics as
-// the ledger makes them now: a topic merged away is offered as the topic it
-// went into, and only once.
 func (a *Asserter) candidates(ctx context.Context, graph *l2.Store, scope string, doc l1.Document, keys []string) ([]l2.Topic, error) {
 	limit := MaxCandidates
 	byKeys, err := graph.TopicsByJoinKeys(ctx, scope, keys, doc.ACL, limit)
@@ -301,12 +280,6 @@ func (a *Asserter) candidates(ctx context.Context, graph *l2.Store, scope string
 	return append(found, near...), nil
 }
 
-// extract calls the generative assert tier, which extracts the document's
-// positions and the question each answers.
-//
-// The error it returns is a log line and a queue_job.last_error column, so it
-// names the document and the tier and never a word of what was sent or what
-// came back.
 func (a *Asserter) extract(ctx context.Context, doc l1.Document) (answer, error) {
 	call, done := context.WithTimeout(ctx, a.timeout)
 	defer done()
@@ -321,17 +294,11 @@ func (a *Asserter) extract(ctx context.Context, doc l1.Document) (answer, error)
 	return ans, nil
 }
 
-// clean is a model's string made fit to store: trimmed, and scrubbed the way
-// every string a person or a model wrote is before L1 stores it. The document
-// the model read was scrubbed already; this is the net for a model that
-// reconstructs something anyway.
 func clean(s string) string {
 	s, _ = l1.Scrub(strings.TrimSpace(s))
 	return strings.TrimSpace(s)
 }
 
-// authorOf is the principal who authored the document, empty where nobody
-// resolved.
 func authorOf(doc l1.Document) string {
 	for _, p := range doc.Participants {
 		if p.Role == connector.RoleAuthor {

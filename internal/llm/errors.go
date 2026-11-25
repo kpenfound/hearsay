@@ -8,33 +8,25 @@ import (
 )
 
 var (
-	// ErrTierNotConfigured is a tier no configuration names. The embed tier is
-	// the one this happens to in practice: there is no shipped embedding
-	// provider yet, so a configuration that does not name one has no embedder.
+	// ErrTierNotConfigured is a tier no configuration names.
 	ErrTierNotConfigured = errors.New("model tier is not configured")
 	// ErrTruncated is an answer cut off at the token budget. It is returned
-	// rather than a parse failure when a schema was asked for, because
-	// truncated JSON is a budget problem and reads like a broken model.
+	// rather than a parse failure when a schema was asked for.
 	ErrTruncated = errors.New("the answer was cut off at the token budget")
-	// ErrRefused is a model declining to answer. It is the model's answer
-	// rather than a failure of the call, and it is an error because it is
-	// never the answer the caller asked for.
+	// ErrRefused is a model declining to answer.
 	ErrRefused = errors.New("the model declined to answer")
 	// ErrDimensions is an embed tier whose vectors are not the width the
 	// column holds. See [CheckDimensions].
 	ErrDimensions = errors.New("embedding width does not match the column")
 	// ErrNoFixture is the fake being asked something nothing was recorded for.
-	// It is the error a test that would otherwise call a provider gets.
 	ErrNoFixture = errors.New("no recorded fixture for this request")
 )
 
 // Error is a call that a provider refused or could not answer, in terms the
 // abstraction can act on: whether trying again could work, and how long to wait
-// before it does. Adapters return it; the retry loop reads it with [errors.As];
-// callers mostly just print it.
+// before it does. Adapters return it; the retry loop reads it with [errors.As].
 //
-// It carries no request content — a message that quoted the prompt would put
-// L1 text in a log line, which is access control rather than style.
+// It carries no request content: a message never quotes the prompt.
 type Error struct {
 	// Provider and Model are what was called, and Tier is what for.
 	Provider string
@@ -42,8 +34,7 @@ type Error struct {
 	Tier     Tier
 	// Status is the HTTP status where there was one, and 0 otherwise.
 	Status int
-	// Kind is the provider's own name for the failure, kept as text because it
-	// is a provider's vocabulary and this package does not model it.
+	// Kind is the provider's own name for the failure.
 	Kind string
 	// Msg is what the provider said, or what went wrong locally.
 	Msg string
@@ -83,8 +74,7 @@ func (e *Error) Error() string {
 func (e *Error) Unwrap() error { return e.Err }
 
 // Retryable reports whether trying err again could work. Anything that is not
-// an [*Error] is not retried: an error this package does not recognise is one
-// it cannot say that about.
+// an [*Error] is not retried.
 func Retryable(err error) bool {
 	var e *Error
 	return errors.As(err, &e) && e.Retryable

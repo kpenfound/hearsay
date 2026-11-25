@@ -27,7 +27,6 @@ func TestWorkTouchesSeededRepositoryProject(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Isolate the fixed code id from other integration tests' seeds.
 			pool := newScratchPool(t)
 			src := newSource(t)
 			cfg := config.Default()
@@ -53,8 +52,6 @@ func TestWorkTouchesSeededRepositoryProject(t *testing.T) {
 			root.Payload.Touches = []connector.Touch{{Source: "github", Project: repo}}
 			ingest(t, pool, []connector.Event{root})
 
-			// Build the expected model request from the intended vocabulary. The
-			// distiller itself must discover the project through the L2 store.
 			vocabulary := cfg.Repo
 			vocabulary.Code = slices.Clone(cfg.Repo.Code)
 			if tt.want {

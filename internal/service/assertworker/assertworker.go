@@ -1,30 +1,26 @@
 // Package assertworker turns L1 documents into L2: entities, topics, stances
 // and the edges between them. It runs on the `assert` model tier, which
 // extracts a document's positions, and on Jev, whose yes/no judgments decide
-// which topic each continues and whether it changes the position there. It
-// is serialized per scope, because two workers deciding the current stance for
-// one topic at the same time is how supersession chains get corrupted. The
-// queue's serial_key is what enforces that.
+// which topic each continues and whether it changes the position there. It is
+// serialized per scope by the queue's serial_key.
 //
 // The distiller enqueues an `assert` job in the transaction that writes a
 // document whose outcome enters the pipeline, and the API one in the
 // transaction that writes an agent's L0 `assertion` event, keyed by its topic's
 // scope; this package claims them. An assertion becomes a stance with no model
-// call. At
-// startup it seeds the entity map from configuration, the repositories it
-// names ([Repos]) and the tracker and work declarations L0 holds
-// ([Placements]), and
-// enqueues every such document it has not read yet, so documents written
-// before it was deployed, and jobs that ran out of attempts, are picked up by a
-// restart. Between startups the [Follower] keeps the tracker and work hierarchy in step
+// call. At startup it seeds the entity map from configuration, the
+// repositories it names ([Repos]) and the tracker and work declarations L0
+// holds ([Placements]), and enqueues every such document it has not read yet.
+// Between startups the [Follower] keeps the tracker and work hierarchy in step
 // with the L0 change feed, and the [CommandFollower] puts each GitHub
-// `/hearsay` comment command, and each deletion of one, on the queue, where
-// it is run under its scope's key and answered with one reply comment.
+// `/hearsay` comment command, and each deletion of one, on the queue, where it
+// is run under its scope's key and answered with one reply comment.
 //
 // What a topic and a stance are is internal/l2's. What this package owns is the
 // prompt, the schema an answer has to satisfy, the questions Jev is asked, the
 // code that decides from its answers, and the loop. A failed model or Jev call
 // fails the job, and the queue retries it.
+//
 // Health probes are served on :8083 by default; readiness checks the database
 // and schema.
 package assertworker
@@ -136,8 +132,6 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 	commands := NewCommandFollower(deps.Pool, cfg.Repo, 0, 0)
 	log.InfoContext(ctx, "assertion worker started", "config_digest", cfg.Repo.Digest, "swept", enqueued)
 
-	// The loops stop together, as the distiller's do: the first to return
-	// stops the other.
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()
 	loops := map[string]func(context.Context) error{
@@ -166,8 +160,6 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 	return errors.Join(errs...)
 }
 
-// stopping turns a failure caused by the process being stopped into a clean
-// stop.
 func stopping(ctx context.Context, err error) error {
 	if ctx.Err() != nil {
 		return nil
@@ -176,12 +168,9 @@ func stopping(ctx context.Context, err error) error {
 }
 
 // SeedEntities writes the entity map configuration describes, with the tracker
-// and work hierarchy L0 holds now ([l2.Seed], [Placements]), in one transaction, and
-// returns how many entities it holds.
-//
-// A `code/` entry that names a CODEOWNERS file with no reader to read it is
-// said out loud: configuration asked for something this process cannot do, and
-// a warning is the difference between that and a silently ignored field.
+// and work hierarchy L0 holds ([l2.Seed], [Placements]), in one transaction, and
+// returns how many entities it holds. A `code/` entry that names a CODEOWNERS
+// file with no reader to read it is logged as a warning.
 func SeedEntities(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, reader l2.RepoReader) (int, error) {
 	log := telemetry.Logger(ctx)
 	if reader == nil {
@@ -239,10 +228,8 @@ func SeedEntities(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, rea
 // Sweep enqueues an assert job for every document whose outcome enters the
 // pipeline and whose current version has not been read, and for every
 // `assertion` event no stance was appended from, and for every GitHub command
-// whose reply is still owed, and returns how many it asked for. It is what makes a restart pick up documents written before the
-// worker was deployed and jobs that failed for good. A pending job for a
-// document collapses the enqueue, so sweeping twice costs a
-// statement per document and no model call.
+// whose reply is still owed, and returns how many it asked for. A pending job
+// for a document collapses the enqueue, so sweeping twice makes no model call.
 func Sweep(ctx context.Context, pool *pgxpool.Pool, repo config.Repo) (int, error) {
 	pending, err := l2.New(pool).Unasserted(ctx)
 	if err != nil {
@@ -253,8 +240,6 @@ func Sweep(ctx context.Context, pool *pgxpool.Pool, repo config.Repo) (int, erro
 	for _, doc := range pending {
 		root, err := events.Get(ctx, doc.RootEvent)
 		if errors.Is(err, l0.ErrNotFound) || errors.Is(err, l0.ErrRetracted) || errors.Is(err, l0.ErrDeleted) {
-			// The distiller removes the document of a retracted artifact; until
-			// it has, there is nothing to read from it.
 			continue
 		}
 		if err != nil {
@@ -283,8 +268,6 @@ func Sweep(ctx context.Context, pool *pgxpool.Pool, repo config.Repo) (int, erro
 	return enqueued + assertions + replies, err
 }
 
-// sweepAssertions enqueues a job for every `assertion` event no stance was
-// appended from, under its topic's scope.
 func sweepAssertions(ctx context.Context, pool *pgxpool.Pool) (int, error) {
 	graph := l2.New(pool)
 	ids, err := graph.UnappendedAssertions(ctx)
@@ -318,10 +301,6 @@ func sweepAssertions(ctx context.Context, pool *pgxpool.Pool) (int, error) {
 	return enqueued, nil
 }
 
-// sweepDecisions enqueues a placement job for every decision document whose
-// current version was not placed, on the project's decision key
-// ([l2.DecisionKey]) — the key the distiller enqueues them under, so a restart
-// serializes them with the live ones.
 func sweepDecisions(ctx context.Context, pool *pgxpool.Pool, repo config.Repo) (int, error) {
 	ids, err := l2.New(pool).UnplacedDecisions(ctx)
 	if err != nil {

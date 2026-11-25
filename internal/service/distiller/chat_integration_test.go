@@ -22,11 +22,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
-// A burst is reconciled with its thread's edits and tombstones, and asks Jev
-// nothing: the containing thread owns any conclusion, so a burst is none.
 func TestChatBurstReconcilesEditAndTombstone(t *testing.T) {
-	// Keep exact reconciliation and provider-count assertions isolated from
-	// other packages' concurrent input-guard contention.
 	pool := newScratchPool(t)
 	src := newSource(t)
 	authors := "AAABCBDE"
@@ -131,8 +127,7 @@ func TestChatBurstReconcilesEditAndTombstone(t *testing.T) {
 	if _, err := store.Get(t.Context(), firstBurst.ID); !errors.Is(err, l1.ErrNotFound) {
 		t.Fatalf("retracted burst remains: %v", err)
 	}
-	// One request per new thread state, none for its repeat, and none ever for
-	// a burst.
+
 	if jev.Calls() != 3 {
 		t.Fatalf("chat judgment calls=%d, want 3: one per thread state", jev.Calls())
 	}
@@ -404,27 +399,19 @@ func TestChatPumpCollapsesMessagesInOneWindow(t *testing.T) {
 		chatMessage(src, "m2", "Second", day.Add(2*time.Minute)),
 		chatMessage(src, "m3", "Third", day.Add(4*time.Minute)),
 	})
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+	var targets []string
+	waitFor(t, "the pump to enqueue the chat window job", 30*time.Second, func() bool {
 		if _, err := pump.Once(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		targets := fromSource(newTargets(pendingTargets(t, client), before), src)
-		if len(targets) == 1 {
-			if targets[0] != l1.DocID(src, l1.ChatWindowKey(chatMessage(src, "m1", "", day))) {
-				t.Errorf("target = %v", targets)
-			}
-			return
-		}
-		if len(targets) > 1 || time.Now().After(deadline) {
-			t.Fatalf("pump enqueued %v, want one chat window job", targets)
-		}
-		time.Sleep(100 * time.Millisecond)
+		targets = fromSource(newTargets(pendingTargets(t, client), before), src)
+		return len(targets) > 0
+	})
+	if len(targets) != 1 || targets[0] != l1.DocID(src, l1.ChatWindowKey(chatMessage(src, "m1", "", day))) {
+		t.Fatalf("pump enqueued %v, want one chat window job", targets)
 	}
 }
 
-// replyTo is a reply on a two-level chat source such as Slack: its thread and
-// its parent are the message it answers.
 func replyTo(root connector.Event, id, body string, when time.Time) connector.Event {
 	ev := chatMessage(root.Source, id, body, when)
 	ev.Payload.Parent, ev.Payload.Thread = root.Payload.Artifact, root.Payload.Artifact
@@ -439,9 +426,6 @@ func chatTombstone(src, target string, when time.Time) connector.Event {
 	return ev
 }
 
-// TestChatRepliesDistilUnderTheMessageTheyAnswer: a message whose replies
-// name it as their thread heads a chat_thread keyed by its own artifact, which
-// follows the message's edit and goes when its replies do.
 func TestChatRepliesDistilUnderTheMessageTheyAnswer(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
@@ -506,9 +490,6 @@ func TestChatRepliesDistilUnderTheMessageTheyAnswer(t *testing.T) {
 	}
 }
 
-// TestChatPumpEnqueuesTheConversationAMessageHeads: an edit to a message that
-// replies answer, or its deletion, changes the conversation it heads as well
-// as its channel window.
 func TestChatPumpEnqueuesTheConversationAMessageHeads(t *testing.T) {
 	pool := newPool(t)
 	pump := distiller.NewPump(pool, distiller.PumpOptions{Quiet: 0, Batch: l0.MaxLimit})
@@ -545,26 +526,19 @@ func TestChatPumpEnqueuesTheConversationAMessageHeads(t *testing.T) {
 		{"an edit to the message nobody answered", []connector.Event{revised(editedLone, "edit-2", day.Add(3*time.Minute))}, []string{window}},
 		{"the answered message deleted", []connector.Event{chatTombstone(src, root.Payload.Artifact, day.Add(4*time.Minute))}, []string{window, head}},
 	} {
-		// What an earlier step enqueued is out of the way, so a job pending
-		// from it cannot stand in for one this step owes.
 		if _, err := pool.Exec(t.Context(), `DELETE FROM queue_job WHERE target_id LIKE $1`, l1.DocID(src, "")+"%"); err != nil {
 			t.Fatal(err)
 		}
 		ingest(t, pool, step.events)
-		deadline := time.Now().Add(30 * time.Second)
 		var targets []string
-		for {
+		waitFor(t, "the pump to enqueue "+step.name, 30*time.Second, func() bool {
 			if _, err := pump.Once(t.Context()); err != nil {
 				t.Fatal(err)
 			}
 			targets = fromSource(pendingTargets(t, client), src)
-			if len(targets) >= len(step.want) || time.Now().After(deadline) {
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-		// One more pass, so a job the step should not have caused has had its
-		// chance to appear.
+			return len(targets) >= len(step.want)
+		})
+
 		if _, err := pump.Once(t.Context()); err != nil {
 			t.Fatal(err)
 		}

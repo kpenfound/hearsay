@@ -13,8 +13,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
-// debugLog makes the process logger one that records every level, as a process
-// run with --log-level debug has, and returns what it writes.
 func debugLog(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	var buf bytes.Buffer
@@ -24,9 +22,6 @@ func debugLog(t *testing.T) *bytes.Buffer {
 	return &buf
 }
 
-// No failure puts claude's result text, which can quote the prompt or the
-// answer, in the returned error or in a log record at any level, debug
-// included.
 func TestAFailureLeaksNoResultTextToErrorsOrLogs(t *testing.T) {
 	reset := time.Now().Add(time.Hour).Truncate(time.Second)
 	for _, tt := range []struct {
@@ -65,8 +60,7 @@ func TestAFailureLeaksNoResultTextToErrorsOrLogs(t *testing.T) {
 			if strings.Contains(out, leak) || strings.Contains(out, "session limit") || strings.Contains(out, "fell over") {
 				t.Errorf("a log record carries result text:\n%s", out)
 			}
-			// The line still says what happened: the class, in fields that are
-			// not text.
+
 			for _, want := range []string{`"tier":"distill"`, `"class":`, `"error_type":`} {
 				if !strings.Contains(out, want) {
 					t.Errorf("the failure's log line lacks %s:\n%s", want, out)

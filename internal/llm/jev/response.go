@@ -9,8 +9,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/llm"
 )
 
-// System One allows rounded distributions within this tolerance. Accepted
-// distributions are normalized for the shared capability's strict contract.
 const distributionTolerance = 0.02
 
 type wireAnswer struct {
@@ -30,8 +28,7 @@ func decode(data []byte, req llm.JudgmentRequest) (llm.JudgmentResponse, error) 
 	out := llm.JudgmentResponse{}
 	var valid bool
 	out.Usage, valid = reportedUsage(wire.Usage)
-	// Decode accounting independently: a wrong model/answer type must not
-	// erase otherwise valid partial usage. Invalid JSON is never salvaged.
+
 	if json.Unmarshal(wire.Model, &out.ModelVersion) != nil || strings.TrimSpace(out.ModelVersion) == "" || len(out.ModelVersion) > 128 {
 		out.ModelVersion = ""
 		return out, llm.ErrJudgmentResponse
@@ -75,8 +72,7 @@ func checkAnswer(q llm.JudgmentQuestion, a wireAnswer) (llm.JudgmentAnswer, bool
 		yes := p >= 0.5
 		out.Yes = &yes
 		out.Probabilities = map[string]float64{"yes": p, "no": 1 - p}
-		// Noul has no vendor confidence field. The larger of the two
-		// probabilities is the confidence in the selected Boolean answer.
+
 		out.Confidence = math.Max(p, 1-p)
 		return out, true
 	}
@@ -95,7 +91,7 @@ func checkAnswer(q llm.JudgmentQuestion, a wireAnswer) (llm.JudgmentAnswer, bool
 			key = strconv.Itoa(i)
 		}
 		p := a.Probabilities[key]
-		// Pointers distinguish explicit numeric zero from JSON null/missing.
+
 		if p == nil || !unit(*p) {
 			return out, false
 		}

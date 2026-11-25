@@ -142,8 +142,7 @@ func TestThreadAliasVotesFromTouchedPR(t *testing.T) {
 	if !slices.Contains(rebuilt.References, l1.Reference{Type: l1.RefSystem, ID: learned.ID}) {
 		t.Errorf("re-distilled references = %+v", rebuilt.References)
 	}
-	// A later ACL resync can narrow evidence. Candidate reads must honor the
-	// current L1 grant as well as the snapshot taken when votes were cast.
+
 	prDoc.ACL = connector.ACL{{Kind: connector.ACLGroup, Source: src, NativeID: "other"}}
 	if _, err := l1.New(pool).Put(t.Context(), prDoc); err != nil {
 		t.Fatal(err)

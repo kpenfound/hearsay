@@ -16,14 +16,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/llm/claudesbx/claudesbxtest"
 )
 
-// No test here makes a model call or needs a real sbx. What the adapter runs is
-// agentcore's fake sbx and a fake claude that prints a recorded answer out of
-// testdata, which is what makes both what the adapter asked for and how it read
-// the answer checkable.
-
-// A sentinel in a fixture's text. No error the adapter returns may contain it:
-// agentcore's errors carry claude's result text, which can quote the prompt or
-// the answer.
 const leak = "LEAK-"
 
 func fixture(t *testing.T, name string, replace ...string) string {
@@ -47,7 +39,6 @@ func request(schema *llm.Schema) llm.Request {
 	return llm.Request{System: "You distill team chat.", Messages: user("Why Postgres?"), Schema: schema}
 }
 
-// registry builds the registry the way a process does, over this adapter alone.
 func registry(t *testing.T, tiers map[llm.Tier]llm.TierConfig, opts ...llm.Option) (llm.Registry, error) {
 	t.Helper()
 	cfg := llm.Config{Tiers: map[llm.Tier]llm.TierConfig{}}
@@ -82,32 +73,42 @@ func cmpOr(a, b string) string {
 	return b
 }
 
-func TestCapabilities(t *testing.T) {
-	p := claudesbx.New()
-	if p.Name() != "claude-sbx" {
-		t.Errorf("Name() = %q", p.Name())
+func TestTheProviderIsCalledClaudeSbx(t *testing.T) {
+	if name := claudesbx.New().Name(); name != "claude-sbx" {
+		t.Errorf("Name() = %q", name)
 	}
-	caps := p.Capabilities()
+}
+
+func TestCapabilitiesCompleteWithASystemPromptAndStructuredOutputButNoEmbedding(t *testing.T) {
+	caps := claudesbx.New().Capabilities()
 	if !caps.Complete || !caps.SystemPrompt || !caps.StructuredOutput || caps.Embed {
 		t.Errorf("Capabilities() = %+v, want complete, system prompt and structured output, and no embedding", caps)
 	}
+}
+
+func TestCapabilitiesRefuseTemperatureBaseURLAndKeyEnv(t *testing.T) {
+	caps := claudesbx.New().Capabilities()
 	if !caps.NoTemperature || !caps.NoBaseURL || !caps.NoAPIKeyEnv {
 		t.Errorf("Capabilities() = %+v, want temperature, base_url and api_key_env refused", caps)
 	}
+}
+
+func TestTheDefaultTimeoutIsLongerThanTheRegistrysAndInsideTheCallersBound(t *testing.T) {
+	caps := claudesbx.New().Capabilities()
 	if caps.DefaultTimeout <= llm.DefaultTimeout {
 		t.Errorf("DefaultTimeout = %s, want more than the registry's %s: a call starts a sandbox first", caps.DefaultTimeout, llm.DefaultTimeout)
 	}
 	if caps.DefaultTimeout >= 2*time.Minute {
 		t.Errorf("DefaultTimeout = %s, want less than the two minutes a caller bounds a call to", caps.DefaultTimeout)
 	}
-	if _, err := p.Embedder(llm.Build{}); err == nil || !strings.Contains(err.Error(), "no embedding model") {
+}
+
+func TestTheProviderHasNoEmbedder(t *testing.T) {
+	if _, err := claudesbx.New().Embedder(llm.Build{}); err == nil || !strings.Contains(err.Error(), "no embedding model") {
 		t.Errorf("Embedder() = %v, want it to say the provider has no embedding model", err)
 	}
 }
 
-// What the configuration sets and the provider has no use for is refused, by
-// the registry, naming the tier and the setting; an embed tier is refused for
-// having no embedding model. max_tokens is never refused.
 func TestRegistryRefusesWhatTheProviderCannotServe(t *testing.T) {
 	claudesbxtest.Install(t, "")
 	temp := 0.2
@@ -143,8 +144,6 @@ func TestRegistryRefusesWhatTheProviderCannotServe(t *testing.T) {
 	}
 }
 
-// Building a tier checks that sbx answers, which is where the anthropic adapter
-// checks that its key is set. It reads no credential: it builds with none set.
 func TestCompleterChecksSbxWhenTheRegistryIsBuilt(t *testing.T) {
 	rig := claudesbxtest.Install(t, "")
 	tiers := map[llm.Tier]llm.TierConfig{llm.TierDistill: {Model: "m"}, llm.TierAssert: {Model: "m"}}
@@ -172,12 +171,7 @@ func TestCompleterChecksSbxWhenTheRegistryIsBuilt(t *testing.T) {
 	}
 }
 
-// One Complete is one sandboxed call, carrying the configured model, the
-// request's system prompt as the replacing prompt and the schema, with no tools,
-// in an empty temporary working folder, and the answer comes back validated.
 func TestCompleteStructuredIsOneSandboxedCall(t *testing.T) {
-	// The fakes must lie under the temporary directory, so it is the test's
-	// own root and anything the call makes there is what the test checks.
 	tmp := filepath.Dir(t.TempDir())
 	t.Setenv("TMPDIR", tmp)
 	rig := claudesbxtest.Install(t, fixture(t, "structured_answer.jsonl"))
@@ -234,9 +228,6 @@ func TestCompleteStructuredIsOneSandboxedCall(t *testing.T) {
 	}
 }
 
-// Every sandbox create asks Docker Hub for the claude kit, and a create per
-// call spent a Docker Personal account's pull limit within an hour of a first
-// backfill. A tier's calls reuse its sandbox.
 func TestCallsReuseTheTiersSandbox(t *testing.T) {
 	rig := claudesbxtest.Install(t, fixture(t, "structured_answer.jsonl"))
 	reg, err := registry(t, map[llm.Tier]llm.TierConfig{llm.TierDistill: {Model: "m"}})
@@ -252,7 +243,7 @@ func TestCallsReuseTheTiersSandbox(t *testing.T) {
 	if rig.Runs(t) != 3 || rig.Creates(t) != 1 || rig.Removes(t) != 0 {
 		t.Errorf("runs, creates, removes = %d, %d, %d, want three calls in one sandbox kept for the next", rig.Runs(t), rig.Creates(t), rig.Removes(t))
 	}
-	// A kept sandbox is a VM on the owner's machine: its memory is bounded.
+
 	if create := strings.Join(rig.Lines(t, "sbx-create.txt"), " "); !strings.Contains(create, "--memory "+claudesbx.SandboxMemory) {
 		t.Errorf("sbx create %q, want --memory %s", create, claudesbx.SandboxMemory)
 	}
@@ -267,8 +258,6 @@ func TestCallsReuseTheTiersSandbox(t *testing.T) {
 	}
 }
 
-// Docker Hub refusing the sandbox's kit is a rate limit: retrying at once is
-// another request against it, so the call asks to be left alone.
 func TestDockerHubsPullLimitIsARateLimit(t *testing.T) {
 	rig := claudesbxtest.Install(t, fixture(t, "structured_answer.jsonl"))
 	rig.Mark(t, "rate-limit-create")
@@ -290,7 +279,6 @@ func TestDockerHubsPullLimitIsARateLimit(t *testing.T) {
 	}
 }
 
-// A conversation is one prompt, each turn labelled by its role, in order.
 func TestCompleteLabelsEveryTurnOfAConversation(t *testing.T) {
 	rig := claudesbxtest.Install(t, fixture(t, "text_answer.jsonl"))
 	c := distill(t, llm.TierConfig{})
@@ -329,8 +317,6 @@ func TestCompleteTextIsTheFinalText(t *testing.T) {
 	}
 }
 
-// An answer that breaks the caller's schema is refused, and a turn that ends
-// with no structured output is an error and not an empty success.
 func TestCompleteRefusesWhatIsNotAnAnswer(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
@@ -372,9 +358,6 @@ func TestCompleteRefusesWhatIsNotAnAnswer(t *testing.T) {
 	}
 }
 
-// What the CLI reports of a call lands in the response's reported usage and in
-// the registry's snapshot, summed exactly as reported; a reported zero is not
-// the same as no cost.
 func TestUsageCarriesTokensAndReportedCost(t *testing.T) {
 	rig := claudesbxtest.Install(t, "")
 	reg, err := registry(t, map[llm.Tier]llm.TierConfig{
@@ -431,7 +414,6 @@ func TestUsageCarriesTokensAndReportedCost(t *testing.T) {
 	}
 }
 
-// A call that reports no cost leaves the row with none, which is not a zero.
 func TestUsageWithNoCostReportedShowsNone(t *testing.T) {
 	claudesbxtest.Install(t, fixture(t, "no_cost.jsonl"))
 	reg, err := registry(t, map[llm.Tier]llm.TierConfig{llm.TierDistill: {Model: "m"}})
@@ -448,8 +430,6 @@ func TestUsageWithNoCostReportedShowsNone(t *testing.T) {
 	}
 }
 
-// The subscription's limit is retryable, with the wait the time until the
-// reset, and nothing of what claude said about it is in the error.
 func TestUsageLimitIsRetryableUntilTheReset(t *testing.T) {
 	reset := time.Now().Add(90 * time.Minute).Truncate(time.Second)
 	rig := claudesbxtest.Install(t, fixture(t, "usage_limit.jsonl", "@RESETS_AT@", strconv.FormatInt(reset.Unix(), 10)))
@@ -477,7 +457,6 @@ func TestUsageLimitIsRetryableUntilTheReset(t *testing.T) {
 	}
 }
 
-// The registry waits out a usage limit, and the caller's deadline ends the wait.
 func TestACallersDeadlineEndsTheWaitForAUsageLimit(t *testing.T) {
 	reset := time.Now().Add(time.Hour)
 	rig := claudesbxtest.Install(t, fixture(t, "usage_limit.jsonl", "@RESETS_AT@", strconv.FormatInt(reset.Unix(), 10)))
@@ -501,8 +480,6 @@ func TestACallersDeadlineEndsTheWaitForAUsageLimit(t *testing.T) {
 	}
 }
 
-// The tier's max_tokens is the output-token budget the CLI is given, and a
-// request's own budget replaces it.
 func TestMaxTokensIsTheOutputTokenBudget(t *testing.T) {
 	rig := claudesbxtest.Install(t, fixture(t, "text_answer.jsonl"))
 	t.Setenv("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "999")
@@ -529,9 +506,6 @@ func TestMaxTokensIsTheOutputTokenBudget(t *testing.T) {
 	}
 }
 
-// With no timeout configured an attempt is allowed longer than the registry's
-// default; one that is configured wins. A sandbox that never starts is what
-// shows the difference without waiting a minute.
 func TestConfiguredTimeoutWins(t *testing.T) {
 	rig := claudesbxtest.Install(t, fixture(t, "text_answer.jsonl"))
 	c := distill(t, llm.TierConfig{Timeout: 300 * time.Millisecond, MaxRetries: -1})
@@ -552,8 +526,6 @@ func TestConfiguredTimeoutWins(t *testing.T) {
 	}
 }
 
-// A request with no system prompt is refused before anything runs: the prompt
-// replaces the CLI's own, so there has to be one.
 func TestCompleteNeedsASystemPrompt(t *testing.T) {
 	rig := claudesbxtest.Install(t, fixture(t, "text_answer.jsonl"))
 	c := distill(t, llm.TierConfig{})
@@ -566,8 +538,6 @@ func TestCompleteNeedsASystemPrompt(t *testing.T) {
 	}
 }
 
-// spy hands the registry's build of a tier to the test, then builds it as the
-// adapter does.
 type spy struct {
 	*claudesbx.Provider
 	builds *[]llm.Build
@@ -578,9 +548,6 @@ func (s spy) Completer(b llm.Build) (llm.Completer, error) {
 	return s.Provider.Completer(b)
 }
 
-// A claude-sbx tier with no configured timeout is built with one longer than
-// the registry's default, because a call starts a sandbox first; a configured
-// timeout is what it is built with.
 func TestDefaultTimeoutIsLongerAndAConfiguredOneWins(t *testing.T) {
 	claudesbxtest.Install(t, "")
 	for _, tt := range []struct {
@@ -607,8 +574,6 @@ func TestDefaultTimeoutIsLongerAndAConfiguredOneWins(t *testing.T) {
 	}
 }
 
-// The login is the sandbox's: a credential in this process's environment does
-// not reach the sandboxed claude.
 func TestNoCredentialReachesClaude(t *testing.T) {
 	rig := claudesbxtest.Install(t, fixture(t, "text_answer.jsonl"))
 	c := distill(t, llm.TierConfig{})

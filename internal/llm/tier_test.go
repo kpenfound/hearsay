@@ -2,6 +2,7 @@ package llm_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/llm"
@@ -9,14 +10,13 @@ import (
 
 func TestParseTier(t *testing.T) {
 	for _, tt := range []struct {
-		name       string
-		in         string
-		want       llm.Tier
-		completion bool
-		wantErr    bool
+		name    string
+		in      string
+		want    llm.Tier
+		wantErr bool
 	}{
-		{name: "distill", in: "distill", want: llm.TierDistill, completion: true},
-		{name: "assert", in: "assert", want: llm.TierAssert, completion: true},
+		{name: "distill", in: "distill", want: llm.TierDistill},
+		{name: "assert", in: "assert", want: llm.TierAssert},
 		{name: "embed", in: "embed", want: llm.TierEmbed},
 		{name: "unknown", in: "summarize", wantErr: true},
 		{name: "empty", in: "", wantErr: true},
@@ -36,26 +36,31 @@ func TestParseTier(t *testing.T) {
 			if got != tt.want {
 				t.Errorf("ParseTier(%q) = %q, want %q", tt.in, got, tt.want)
 			}
-			if got.Completion() != tt.completion {
-				t.Errorf("%q.Completion() = %v, want %v", got, got.Completion(), tt.completion)
-			}
 		})
 	}
 }
 
-func TestCheckDimensions(t *testing.T) {
-	e := fixedEmbedder(1024)
-	if err := llm.CheckDimensions(e, 1024); err != nil {
+func TestOnlyTheCompletionTiersAreServedByACompleter(t *testing.T) {
+	for tier, want := range map[llm.Tier]bool{llm.TierDistill: true, llm.TierAssert: true, llm.TierEmbed: false} {
+		if got := tier.Completion(); got != want {
+			t.Errorf("%q.Completion() = %v, want %v", tier, got, want)
+		}
+	}
+}
+
+func TestCheckDimensionsAcceptsTheWidthTheEmbedderHas(t *testing.T) {
+	if err := llm.CheckDimensions(fixedEmbedder(1024), 1024); err != nil {
 		t.Errorf("CheckDimensions(1024, 1024) = %v, want no error", err)
 	}
-	err := llm.CheckDimensions(e, 1536)
+}
+
+func TestCheckDimensionsRefusesAnotherWidthAndNamesBoth(t *testing.T) {
+	err := llm.CheckDimensions(fixedEmbedder(1024), 1536)
 	if !errors.Is(err, llm.ErrDimensions) {
 		t.Fatalf("CheckDimensions(1024, 1536) = %v, want ErrDimensions", err)
 	}
-	// The message has to say which is which: the fix is either a migration or
-	// a configuration edit, and they are not the same fix.
 	for _, want := range []string{"1024", "1536"} {
-		if !contains(err.Error(), want) {
+		if !strings.Contains(err.Error(), want) {
 			t.Errorf("CheckDimensions error = %q, want it to name %s", err, want)
 		}
 	}

@@ -4,14 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"testing/fstest"
 
 	"github.com/kpenfound/hearsay/internal/llm"
 )
 
-// fixtureConfig is the configuration the checked-in fixtures were recorded
-// against: the shipped defaults, plus the embed tier they exercise.
 func fixtureConfig() llm.Config {
 	config := llm.Default().Clone()
 	config.Tiers[llm.TierEmbed] = llm.TierConfig{Provider: "voyage", Model: "voyage-3", Dimensions: 8}
@@ -27,29 +26,51 @@ func loadFixtures(t *testing.T) *llm.Fixtures {
 	return fixtures
 }
 
-// The distill and assert tiers answer from what was recorded, and the answer to
-// a structured request is JSON satisfying the schema that was asked for.
-func TestFakeReplaysCompletions(t *testing.T) {
+func fixtureRegistry(t *testing.T) llm.Registry {
+	t.Helper()
 	registry, err := llm.NewFake(fixtureConfig(), loadFixtures(t))
 	if err != nil {
 		t.Fatalf("NewFake() = %v", err)
 	}
+	return registry
+}
 
+func replayDistill(t *testing.T, registry llm.Registry) llm.Response {
+	t.Helper()
 	distill, err := registry.Completer(llm.TierDistill)
 	if err != nil {
 		t.Fatalf("Completer(distill) = %v", err)
 	}
-	req := llm.Request{
+	resp, err := distill.Complete(t.Context(), llm.Request{
 		System:   "You distil one artifact into one document.",
 		Messages: []llm.Message{{Role: llm.RoleUser, Text: "PR #62: the job queue moves to Postgres. Reviewed by robin, merged on Friday."}},
 		Schema:   schema(distillSchema),
-	}
-	resp, err := distill.Complete(t.Context(), req)
+	})
 	if err != nil {
 		t.Fatalf("Complete() = %v", err)
 	}
+	return resp
+}
+
+func replayAssert(t *testing.T, registry llm.Registry) llm.Response {
+	t.Helper()
+	assert, err := registry.Completer(llm.TierAssert)
+	if err != nil {
+		t.Fatalf("Completer(assert) = %v", err)
+	}
+	resp, err := assert.Complete(t.Context(), llm.Request{
+		System:   "You extract one stance and the topic it is about.",
+		Messages: []llm.Message{{Role: llm.RoleUser, Text: "The job queue moves to Postgres; robin reviewed and it merged on Friday."}},
+	})
+	if err != nil {
+		t.Fatalf("Complete() = %v", err)
+	}
+	return resp
+}
+
+func TestFakeReplaysTheRecordedAnswer(t *testing.T) {
+	resp := replayDistill(t, fixtureRegistry(t))
 	var answer struct {
-		Summary     string `json:"summary"`
 		OutcomeKind string `json:"outcome_kind"`
 	}
 	if err := json.Unmarshal(resp.JSON, &answer); err != nil {
@@ -58,27 +79,25 @@ func TestFakeReplaysCompletions(t *testing.T) {
 	if answer.OutcomeKind != "decided" {
 		t.Errorf("outcome_kind = %q, want decided", answer.OutcomeKind)
 	}
+}
+
+func TestFakeReportsWhatTheRecordedCallCost(t *testing.T) {
+	resp := replayDistill(t, fixtureRegistry(t))
 	if resp.Tokens != (llm.Tokens{Input: 412, Output: 96}) {
 		t.Errorf("Tokens = %+v, want what the recording says it cost", resp.Tokens)
 	}
+}
 
-	assert, err := registry.Completer(llm.TierAssert)
-	if err != nil {
-		t.Fatalf("Completer(assert) = %v", err)
-	}
-	resp, err = assert.Complete(t.Context(), llm.Request{
-		System:   "You extract one stance and the topic it is about.",
-		Messages: []llm.Message{{Role: llm.RoleUser, Text: "The job queue moves to Postgres; robin reviewed and it merged on Friday."}},
-	})
-	if err != nil {
-		t.Fatalf("Complete() = %v", err)
-	}
-	if resp.Model != "claude-sonnet-5" {
+func TestFakeReportsTheModelTheRecordingWasMadeWith(t *testing.T) {
+	if resp := replayAssert(t, fixtureRegistry(t)); resp.Model != "claude-sonnet-5" {
 		t.Errorf("Model = %q, want the model the recording was made with", resp.Model)
 	}
+}
 
-	// The two tiers have different budgets, and both were spent through one
-	// registry, so the accounting has a row each.
+func TestFakeCountsUsagePerTier(t *testing.T) {
+	registry := fixtureRegistry(t)
+	replayDistill(t, registry)
+	replayAssert(t, registry)
 	usage := registry.Usage()
 	if len(usage) != 2 {
 		t.Fatalf("Usage() = %+v, want one row per tier", usage)
@@ -88,96 +107,112 @@ func TestFakeReplaysCompletions(t *testing.T) {
 	}
 }
 
-// One vector per input, in order, of the width the tier is configured for.
-func TestFakeReplaysEmbeddings(t *testing.T) {
-	registry, err := llm.NewFake(fixtureConfig(), loadFixtures(t))
-	if err != nil {
-		t.Fatalf("NewFake() = %v", err)
-	}
-	embedder, err := registry.Embedder()
+var embeddingTexts = []string{"The job queue moves to Postgres.", "The distiller calls the cheap tier once per artifact."}
+
+func fixtureEmbedder(t *testing.T) llm.Embedder {
+	t.Helper()
+	embedder, err := fixtureRegistry(t).Embedder()
 	if err != nil {
 		t.Fatalf("Embedder() = %v", err)
 	}
-	if got := embedder.Dimensions(); got != 8 {
+	return embedder
+}
+
+func TestFakeEmbedderHasTheRecordedWidth(t *testing.T) {
+	if got := fixtureEmbedder(t).Dimensions(); got != 8 {
 		t.Errorf("Dimensions() = %d, want the 8 the fixture holds", got)
 	}
-	texts := []string{"The job queue moves to Postgres.", "The distiller calls the cheap tier once per artifact."}
-	vectors, err := embedder.Embed(t.Context(), texts)
+}
+
+func TestFakeReplaysEmbeddingsInTheOrderOfTheTexts(t *testing.T) {
+	vectors, err := fixtureEmbedder(t).Embed(t.Context(), embeddingTexts)
 	if err != nil {
 		t.Fatalf("Embed() = %v", err)
 	}
-	if len(vectors) != len(texts) {
-		t.Fatalf("Embed() returned %d vectors for %d texts", len(vectors), len(texts))
+	if len(vectors) != len(embeddingTexts) {
+		t.Fatalf("Embed() returned %d vectors for %d texts", len(vectors), len(embeddingTexts))
 	}
 	if vectors[0][0] != 0.011 || vectors[1][0] != -0.24 {
 		t.Errorf("Embed() = %v, want the recorded vectors in the order the texts were given", vectors)
 	}
-	// The same texts the other way round are a different call, and nothing
-	// recorded one.
-	if _, err := embedder.Embed(t.Context(), []string{texts[1], texts[0]}); !errors.Is(err, llm.ErrNoFixture) {
+}
+
+func TestFakeRefusesEmbeddingsInAnOrderNobodyRecorded(t *testing.T) {
+	_, err := fixtureEmbedder(t).Embed(t.Context(), []string{embeddingTexts[1], embeddingTexts[0]})
+	if !errors.Is(err, llm.ErrNoFixture) {
 		t.Errorf("Embed(the texts reversed) = %v, want ErrNoFixture", err)
 	}
+}
 
-	// A tier whose configured width is not the recording's is refused rather
-	// than written into a column that does not fit it.
+func TestFakeRefusesEmbeddingsOfAnotherWidth(t *testing.T) {
 	config := fixtureConfig()
 	config.Tiers[llm.TierEmbed] = llm.TierConfig{Provider: "voyage", Model: "voyage-3", Dimensions: 1024}
 	wrong, err := llm.NewFake(config, loadFixtures(t))
 	if err != nil {
 		t.Fatalf("NewFake() = %v", err)
 	}
-	embedder, _ = wrong.Embedder()
-	if _, err := embedder.Embed(t.Context(), texts); !errors.Is(err, llm.ErrDimensions) {
+	embedder, _ := wrong.Embedder()
+	if _, err := embedder.Embed(t.Context(), embeddingTexts); !errors.Is(err, llm.ErrDimensions) {
 		t.Errorf("Embed() with the wrong width configured = %v, want ErrDimensions", err)
 	}
 }
 
-// A request nothing recorded is the error a test that would otherwise reach a
-// provider gets, and it says how to fix it without printing the prompt.
+func missFor(t *testing.T, prompt string) error {
+	t.Helper()
+	completer, _ := fixtureRegistry(t).Completer(llm.TierDistill)
+	_, err := completer.Complete(t.Context(), ask(prompt))
+	return err
+}
+
 func TestFakeRefusesWhatWasNotRecorded(t *testing.T) {
-	registry, err := llm.NewFake(fixtureConfig(), loadFixtures(t))
-	if err != nil {
-		t.Fatalf("NewFake() = %v", err)
-	}
-	completer, _ := registry.Completer(llm.TierDistill)
-	secret := "the payload nobody may log"
-	_, err = completer.Complete(t.Context(), ask(secret))
-	if !errors.Is(err, llm.ErrNoFixture) {
+	if err := missFor(t, "unrecorded"); !errors.Is(err, llm.ErrNoFixture) {
 		t.Fatalf("Complete() = %v, want ErrNoFixture", err)
 	}
-	if contains(err.Error(), secret) {
-		t.Errorf("the miss quotes the prompt: %q", err)
-	}
-	if !contains(err.Error(), "sha256:") {
+}
+
+func TestAMissNamesTheKeyToRecord(t *testing.T) {
+	if err := missFor(t, "unrecorded"); !strings.Contains(err.Error(), "sha256:") {
 		t.Errorf("the miss = %q, want it to name the key to record", err)
 	}
 }
 
-// The key is the request, canonicalised: the same call is the same key however
-// the schema was written out, and any difference that changes the answer is a
-// different key.
-func TestFixtureKey(t *testing.T) {
-	base := llm.Request{
+func TestAMissNeverQuotesThePrompt(t *testing.T) {
+	secret := "the payload nobody may log"
+	if err := missFor(t, secret); strings.Contains(err.Error(), secret) {
+		t.Errorf("the miss quotes the prompt: %q", err)
+	}
+}
+
+func keyedRequest() llm.Request {
+	return llm.Request{
 		System:    "s",
 		Messages:  []llm.Message{{Role: llm.RoleUser, Text: "a"}},
 		MaxTokens: 100,
 		Schema:    &llm.Schema{Name: "x", Definition: json.RawMessage(`{"type":"object","properties":{"a":{"type":"string"}}}`)},
 	}
+}
+
+func TestFixtureKeyIgnoresHowTheSchemaIsWritten(t *testing.T) {
+	base := keyedRequest()
 	reordered := base
 	reordered.Schema = &llm.Schema{Name: "x", Definition: json.RawMessage("{\n  \"properties\": {\"a\": {\"type\": \"string\"}},\n  \"type\": \"object\"\n}")}
 	if llm.FixtureKey(llm.TierDistill, base) != llm.FixtureKey(llm.TierDistill, reordered) {
 		t.Error("the same schema written differently keys differently")
 	}
-	// The same, for a number and a byte an encoder escapes: a fixture is
-	// written by hand and so is the schema it answers.
-	spelled := llm.Request{System: "s", Messages: base.Messages, MaxTokens: base.MaxTokens,
-		Schema: &llm.Schema{Name: "x", Definition: json.RawMessage(`{"type":"object","maxProperties":0,"properties":{"a":{"type":"string","maxLength":4,"enum":["a & b"]}}}`)}}
+}
+
+func TestFixtureKeyIgnoresHowSchemaNumbersAreSpelled(t *testing.T) {
+	spelled := keyedRequest()
+	spelled.Schema = &llm.Schema{Name: "x", Definition: json.RawMessage(`{"type":"object","maxProperties":0,"properties":{"a":{"type":"string","maxLength":4,"enum":["a & b"]}}}`)}
 	respelled := spelled
 	respelled.Schema = &llm.Schema{Name: "x", Definition: json.RawMessage(`{"properties":{"a":{"enum":["a & b"],"maxLength":4.0,"type":"string"}},"maxProperties":0,"type":"object"}`)}
 	if llm.FixtureKey(llm.TierDistill, spelled) != llm.FixtureKey(llm.TierDistill, respelled) {
 		t.Error("a schema whose numbers are spelled differently keys differently")
 	}
+}
 
+func TestFixtureKeyChangesWithTheRequest(t *testing.T) {
+	base := keyedRequest()
 	for _, tt := range []struct {
 		name   string
 		change func(*llm.Request)
@@ -198,14 +233,15 @@ func TestFixtureKey(t *testing.T) {
 			}
 		})
 	}
-	// The tier is part of the key: the same prompt to two tiers is two calls.
+}
+
+func TestFixtureKeyChangesWithTheTier(t *testing.T) {
+	base := keyedRequest()
 	if llm.FixtureKey(llm.TierDistill, base) == llm.FixtureKey(llm.TierAssert, base) {
 		t.Error("the same request keys the same on two tiers")
 	}
 }
 
-// A fixture that does not describe something this abstraction could have done
-// is refused when it is loaded, rather than replaying something impossible.
 func TestLoadFixturesRefusesMalformedRecordings(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
@@ -268,19 +304,18 @@ func TestLoadFixturesRefusesMalformedRecordings(t *testing.T) {
 			if err == nil {
 				t.Fatalf("LoadFixtures() = nil, want an error about %q", tt.wantErr)
 			}
-			if !contains(err.Error(), tt.wantErr) {
+			if !strings.Contains(err.Error(), tt.wantErr) {
 				t.Errorf("LoadFixtures() = %q, want it to mention %q", err, tt.wantErr)
 			}
-			if !contains(err.Error(), "recorded.json") {
+			if !strings.Contains(err.Error(), "recorded.json") {
 				t.Errorf("LoadFixtures() = %q, want it to name the file", err)
 			}
 		})
 	}
 }
 
-// Fixtures can also be built in a test, for a case that is about the shape of
-// an answer rather than about a real recording.
-func TestFixturesAddedByHand(t *testing.T) {
+func handRecorded(t *testing.T) (*llm.Fixtures, llm.Request, llm.Completer) {
+	t.Helper()
 	fixtures := llm.NewFixtures()
 	req := ask("what did they decide?")
 	if err := fixtures.Add(llm.CompletionFixture{
@@ -290,20 +325,30 @@ func TestFixturesAddedByHand(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Add() = %v", err)
 	}
-	if got := fixtures.Len(); got != 1 {
-		t.Errorf("Len() = %d, want 1", got)
-	}
-	// The recording is keyed by the request as the tier will send it, budget
-	// and all, so it has to be built with the same budget.
-	config := cfg(llm.TierDistill, llm.TierConfig{Provider: "anthropic", Model: "small"})
-	registry, err := llm.NewFake(config, fixtures)
+	registry, err := llm.NewFake(cfg(llm.TierDistill, llm.TierConfig{Provider: "anthropic", Model: "small"}), fixtures)
 	if err != nil {
 		t.Fatalf("NewFake() = %v", err)
 	}
 	completer, _ := registry.Completer(llm.TierDistill)
+	return fixtures, req, completer
+}
+
+func TestAHandRecordedFixtureIsCounted(t *testing.T) {
+	fixtures, _, _ := handRecorded(t)
+	if got := fixtures.Len(); got != 1 {
+		t.Errorf("Len() = %d, want 1", got)
+	}
+}
+
+func TestTheTiersBudgetIsPartOfTheFixtureKey(t *testing.T) {
+	_, req, completer := handRecorded(t)
 	if _, err := completer.Complete(t.Context(), req); !errors.Is(err, llm.ErrNoFixture) {
 		t.Fatalf("Complete() = %v, want the miss: the tier's budget is part of the key", err)
 	}
+}
+
+func TestAFixtureRecordedWithTheTiersBudgetIsReplayed(t *testing.T) {
+	fixtures, req, completer := handRecorded(t)
 	withBudget := req
 	withBudget.MaxTokens = llm.DefaultMaxTokens
 	if err := fixtures.Add(llm.CompletionFixture{Tier: llm.TierDistill, Request: withBudget,
@@ -316,6 +361,20 @@ func TestFixturesAddedByHand(t *testing.T) {
 	}
 	if resp.Text != "they decided to ship" {
 		t.Errorf("Complete() = %q", resp.Text)
+	}
+}
+
+func TestARecordingWithNoStopReasonReadsAsACompleteAnswer(t *testing.T) {
+	fixtures, req, completer := handRecorded(t)
+	withBudget := req
+	withBudget.MaxTokens = llm.DefaultMaxTokens
+	if err := fixtures.Add(llm.CompletionFixture{Tier: llm.TierDistill, Request: withBudget,
+		Response: llm.Response{Text: "they decided to ship"}}); err != nil {
+		t.Fatalf("Add() = %v", err)
+	}
+	resp, err := completer.Complete(t.Context(), req)
+	if err != nil {
+		t.Fatalf("Complete() = %v", err)
 	}
 	if resp.StopReason != llm.StopEnd {
 		t.Errorf("StopReason = %q, want a recording with no stop reason to read as a complete answer", resp.StopReason)

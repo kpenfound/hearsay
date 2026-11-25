@@ -36,8 +36,7 @@ func TestOutcomeJournalReusedAcrossConcurrentUnrelatedIngestion(t *testing.T) {
 	src := newSource(t)
 	ingest(t, pool, fixtureEvents(src))
 	entered, ingested := make(chan struct{}), make(chan error, 1)
-	// A real L0 append commits on another connection while the judgment is in
-	// flight, in the same source but on a different artifact/conversation.
+
 	unrelated := event(src, connector.KindIssue, repo+"#999", at(9), who(src, "u1", "kpenfound"), "Unrelated issue", "A separate discussion.")
 	go func() {
 		select {
@@ -64,7 +63,7 @@ func TestOutcomeJournalReusedAcrossConcurrentUnrelatedIngestion(t *testing.T) {
 			t.Fatalf("record=%+v", r)
 		}
 	}
-	// Restart with a fresh capability and no judgment response available.
+
 	restartFake := llm.NewFakeJudgmentProvider()
 	restart := jevDistiller(t, pool, src, jevOver(t, restartFake, llm.JudgmentConfig{}))
 	result, err = restart.Distill(t.Context(), id)

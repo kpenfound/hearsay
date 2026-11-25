@@ -44,29 +44,8 @@ func ConversationSegmentationRequest(lines []l1.ConversationLine, budget int) ll
 	}
 }
 
-// The outcome of a conversation segment is the owner's, or it is nothing.
-//
-// This is the one place that rule lives. A conversation's lines are the owner's
-// words and the assistant's answers, and only the owner's own words can become
-// the owner's stance. Both ways a document enters the assertion pipeline come
-// through here: the outcome sentence the stance takes its position from, and
-// the judgments that classify it.
-//
-//   - [ownerOutcome] keeps the model's outcome sentence only when it cites
-//     Owner lines and nothing else. A sentence resting on a Kern line, or on
-//     none, is dropped, and a document with no outcome sentence is not
-//     decided, proposed or resolved ([decideOutcome]).
-//   - [ownerView] is what Jev judges: the owner's lines as the evidence, and
-//     the assistant's lines apart, as context.
-//
-// The assertion worker reads a stance's position from [l1.Document.StanceText],
-// which for a conversation segment is that sentence alone.
-
-// ownerRule is the sentence every outcome question of a conversation segment
-// begins with.
 const ownerRule = "Judge only what the Owner's own lines say, under \"Owner's words\". The lines under \"Context from Kern\" are context only and never count: something only Kern decided, proposed or concluded is not an outcome. "
 
-// ownerView is a conversation segment as Jev reads it for its outcome.
 func ownerView(doc l1.Document) string {
 	owner := l1.OwnerLines(doc.RawText)
 	var said, aside []string
@@ -88,9 +67,6 @@ func ownerView(doc l1.Document) string {
 	return view
 }
 
-// ownerOutcome is the body a conversation segment's answer makes, with the
-// outcome sentence kept only where it rests on the owner's lines: at least one
-// cited line, and every cited line an Owner line of this segment.
 func ownerOutcome(doc l1.Document, a answer) l1.Body {
 	body := a.body()
 	owner := l1.OwnerLines(doc.RawText)
@@ -105,10 +81,6 @@ func ownerOutcome(doc l1.Document, a answer) l1.Body {
 	return body
 }
 
-// isConversation reports whether a thread with no artifact of its own is a
-// conversation a conversation source holds: it has current messages of that
-// kind, or a distillation was published for it, which is what a conversation
-// whose every message was deleted still has.
 func (d *Distiller) isConversation(ctx context.Context, source, thread string) (bool, error) {
 	events, err := d.events.Current(ctx, l0.ListOptions{Filter: l0.Filter{Source: source, Thread: thread}, Limit: 1})
 	if err != nil {
@@ -121,17 +93,12 @@ func (d *Distiller) isConversation(ctx context.Context, source, thread string) (
 	return published, err
 }
 
-// conversationLines reads a conversation's current messages as the lines the
-// documents quote, and the event ids they are: the revisions this attempt read.
 func conversationLines(ctx context.Context, events *l0.Store, source, thread string) ([]l1.ConversationLine, []string, error) {
 	current, err := events.Current(ctx, l0.ListOptions{Filter: l0.Filter{Source: source, Thread: thread}, Limit: l0.MaxLimit})
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading the conversation %s: %w", thread, err)
 	}
 	if len(current) >= l0.MaxLimit {
-		// A document that claims to be the whole conversation and is not would
-		// stay wrong on every rebuild, and a record naming only some messages
-		// would leave the rest pending for good. A failed job is visible.
 		return nil, nil, fmt.Errorf("conversation %s has at least %d messages, which is more than one read returns", thread, l0.MaxLimit)
 	}
 	lines := l1.ConversationLines(current)
@@ -143,17 +110,6 @@ func conversationLines(ctx context.Context, events *l0.Store, source, thread str
 	return lines, ids, nil
 }
 
-// distillConversation distils one conversation the way distillMeeting distils a
-// transcript: a segmentation call over its numbered lines, one document per
-// topic, and one transaction that reconciles the set. It also publishes the
-// completion record, in that transaction, of exactly the message revisions this
-// attempt read.
-//
-// An attempt that fails before the transaction records nothing. One whose
-// inputs changed while it ran writes nothing either — not a record of what it
-// read, which would name revisions no document was built from, and not
-// documents built from messages that have since moved — and asks for another
-// attempt, so the newer message is distilled afterwards.
 func (d *Distiller) distillConversation(ctx context.Context, result Result, source, thread string) (Result, error) {
 	lines, inputs, err := conversationLines(ctx, d.events, source, thread)
 	if err != nil {
@@ -194,8 +150,6 @@ func (d *Distiller) distillConversation(ctx context.Context, result Result, sour
 			return Result{}, err
 		}
 		if err == nil && previous.Kind == l1.KindConversationSegment && previous.RawText == segments[i].RawText {
-			// The model already read these very lines. Its body stands, and the
-			// store writes nothing if the envelope is the one already there.
 			segments[i], _, err = segments[i].WithBody(previous.Body)
 			if err != nil {
 				return Result{}, err
@@ -214,17 +168,13 @@ func (d *Distiller) distillConversation(ctx context.Context, result Result, sour
 	for i, segment := range segments {
 		ids[i], documents[i] = segment.ID, segment.ID
 	}
-	// The first line's container and touches pick the scope key, as a
-	// transcript's root does.
+
 	container := ""
 	var touches []connector.Touch
 	if len(lines) > 0 {
 		container, touches = lines[0].Event.Payload.Container.NativeID, lines[0].Event.Payload.Touches
 	}
 	err = pgx.BeginFunc(ctx, d.pool, func(tx pgx.Tx) error {
-		// The inputs are read again where they are written. A message that was
-		// rewritten, or arrived, since this attempt read them is not in what the
-		// documents quote or the record names, so none of it is published.
 		_, now, err := conversationLines(ctx, l0.New(tx), source, thread)
 		if err != nil {
 			return err

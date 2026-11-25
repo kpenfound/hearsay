@@ -149,11 +149,6 @@ func (f *CommandFollower) Once(ctx context.Context) (int, error) {
 	return len(changes), nil
 }
 
-// commandScope is the serial key a command runs under: the scope of the two
-// topics a merge names, where they exist and share one, and otherwise the
-// scope of the issue or pull request it was written on, which is the scope of
-// every stance drawn from it. A topic never changes scope, so the command and
-// the tombstone that undoes it are keyed alike.
 func commandScope(ctx context.Context, events *l0.Store, graph *l2.Store, repo config.Repo, ev connector.Event, cmd github.Command) (string, error) {
 	root, err := scopeRoot(ctx, events, ev)
 	if err != nil {
@@ -180,9 +175,6 @@ func commandScope(ctx context.Context, events *l0.Store, graph *l2.Store, repo c
 	return scopes[0], nil
 }
 
-// follow is a feed follower's loop: once until a batch comes back short, then
-// wait for the next tick. A read that fails is logged as the named follower's
-// and retried at the next tick.
 func follow(ctx context.Context, interval time.Duration, batch int, once func(context.Context) (int, error), follower string) error {
 	log := telemetry.Logger(ctx)
 	tick := time.NewTicker(interval)
@@ -208,8 +200,6 @@ func follow(ctx context.Context, interval time.Duration, batch int, once func(co
 	}
 }
 
-// commandRecord is a row of github_command_replies: what a command did and
-// the reply that says so.
 type commandRecord struct {
 	Event, Source, Artifact string
 	Scope                   string
@@ -225,8 +215,6 @@ type commandRecord struct {
 	UndoRevised             bool
 }
 
-// text is what the reply says: what the command did, and what its deletion
-// did, if it has been deleted.
 func (r commandRecord) text() string {
 	if r.UndoBody == "" {
 		return r.Body
@@ -238,8 +226,6 @@ const commandColumns = `event, source, artifact, scope, repository, issue, comme
     coalesce(gesture, 0), coalesce(operation, 0), body, coalesce(reply, 0), coalesce(undo_event, ''),
     coalesce(undo_body, ''), undo_revised`
 
-// commandRun is the record of the command a comment ran, and false where it
-// ran none.
 func commandRun(ctx context.Context, q l2.Querier, source, artifact string, lock bool) (commandRecord, bool, error) {
 	sql := `SELECT ` + commandColumns + ` FROM github_command_replies WHERE source = $1 AND artifact = $2`
 	if lock {
@@ -265,13 +251,8 @@ func nullable[T comparable](v T) *T {
 	return &v
 }
 
-// errWaiting is a command whose target is still being distilled or asserted:
-// the job is retried, and answered from what is there on its last attempt.
 var errWaiting = errors.New("waiting for the document the command acts on")
 
-// runCommand runs a `/hearsay` comment and answers it. A comment that has run
-// is not run again — a retried job only posts the reply it still owes — and an
-// edit of one runs nothing.
 func (a *Asserter) runCommand(ctx context.Context, job queue.Job, ev connector.Event) error {
 	cmd, err := github.CommandOf(ev)
 	if err != nil {
@@ -307,8 +288,6 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 			return nil
 		})
 		if errors.Is(err, errWaiting) {
-			// BeginFunc has rolled back the waiting attempt. Commit the
-			// expedite independently, without any command effect or reply.
 			client, expediteErr := queue.New(a.pool, queue.Config{Kind: distiller.JobKind()})
 			if expediteErr != nil {
 				return errors.Join(err, expediteErr)
@@ -328,13 +307,6 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 	return a.answer(ctx, rec)
 }
 
-// apply does what a command asks, in the transaction that records it, and
-// returns the reply: the result, or why nothing was done. The L2 write is made
-// under a savepoint, so a refusal leaves the transaction whole to record it.
-//
-// The reply names ids and never quotes a topic, a position or anything else
-// read from a document: it is read by everyone who can read the issue, who
-// may not be able to read what the commenter can.
 func (a *Asserter) apply(ctx context.Context, tx pgx.Tx, job queue.Job, ev connector.Event, cmd github.Command, rec *commandRecord) (string, error) {
 	switch cmd.Name {
 	case CommandRatify, CommandDemote, CommandPin:
@@ -363,8 +335,6 @@ func (a *Asserter) apply(ctx context.Context, tx pgx.Tx, job queue.Job, ev conne
 	return a.gesture(ctx, tx, job, view, human, ev, cmd, rec)
 }
 
-// commenter is the configured human a comment's author maps to, or the reply
-// that explains why there is none.
 func (a *Asserter) commenter(ev connector.Event) (principal.Principal, string, error) {
 	const unmapped = "Your GitHub account is not mapped to a Hearsay principal, so Hearsay changed nothing. Ask whoever configures Hearsay to add it to your principal's `identities`."
 	if ev.Payload.Author == nil {
@@ -388,8 +358,6 @@ func (a *Asserter) commenter(ev connector.Event) (principal.Principal, string, e
 	return res.Principal, "", nil
 }
 
-// gesture ratifies, demotes or pins the document of the issue or pull request
-// the command was written on.
 func (a *Asserter) gesture(ctx context.Context, tx pgx.Tx, job queue.Job, view *l2.View, human principal.Principal, ev connector.Event, cmd github.Command, rec *commandRecord) (string, error) {
 	doc := l1.DocID(ev.Source, ev.Payload.Parent)
 	notYet := "Hearsay has not distilled this conversation into anything you can read yet, so it changed nothing. Try again once it has."
@@ -416,7 +384,6 @@ func (a *Asserter) gesture(ctx context.Context, tx pgx.Tx, job queue.Job, view *
 		return err
 	})
 	if errors.Is(err, l2.ErrNotFound) && cmd.Name != CommandPin {
-		// No live stance is drawn from it: perhaps not yet.
 		if err := a.wait(ctx, tx, job, doc); err != nil {
 			return "", err
 		}
@@ -443,8 +410,6 @@ func stances(n int) string {
 	return fmt.Sprintf("%d stances", n)
 }
 
-// merge merges the first topic the command names into the second, when the
-// commenter may read both.
 func (a *Asserter) merge(ctx context.Context, tx pgx.Tx, job queue.Job, view *l2.View, human principal.Principal, cmd github.Command, rec *commandRecord) (string, error) {
 	from, into := cmd.Args[0], cmd.Args[1]
 	for _, id := range []string{from, into} {
@@ -469,8 +434,6 @@ func (a *Asserter) merge(ctx context.Context, tx pgx.Tx, job queue.Job, view *l2
 	return fmt.Sprintf("Merged topic `%s` into topic `%s` in scope `%s`, as operation %d. To undo it, delete your `/hearsay merge` comment, or run `hearsay topics undo %d`.", from, into, op.Scope, op.ID, op.ID), nil
 }
 
-// wait returns errWaiting while the document a command acts on is still being
-// distilled or asserted, unless this is the job's last attempt.
 func (a *Asserter) wait(ctx context.Context, tx pgx.Tx, job queue.Job, doc string) error {
 	if job.Attempt >= queue.DefaultMaxAttempts {
 		return nil
@@ -487,8 +450,6 @@ func (a *Asserter) wait(ctx context.Context, tx pgx.Tx, job queue.Job, doc strin
 	return nil
 }
 
-// savepoint runs fn in a savepoint of tx, and rolls it back if fn fails, so
-// that the failure is one tx can still record.
 func savepoint(ctx context.Context, tx pgx.Tx, fn func(pgx.Tx) error) error {
 	sp, err := tx.Begin(ctx)
 	if err != nil {
@@ -503,8 +464,6 @@ func savepoint(ctx context.Context, tx pgx.Tx, fn func(pgx.Tx) error) error {
 	return sp.Commit(ctx)
 }
 
-// refusal explains an error from a ledger as a reply: a refusal says why, and
-// anything else is returned to be retried.
 func refusal(what string, err error) (string, error) {
 	switch {
 	case err == nil:
@@ -517,8 +476,6 @@ func refusal(what string, err error) (string, error) {
 	return "", err
 }
 
-// undoCommand undoes what a deleted command comment did, and says so in its
-// reply. A command that was refused, or never ran, has nothing to undo.
 func (a *Asserter) undoCommand(ctx context.Context, job queue.Job, tomb connector.Event) error {
 	rec, found, err := commandRun(ctx, a.pool, tomb.Source, tomb.Payload.Target, false)
 	if err != nil || !found || (rec.Gesture == 0 && rec.Operation == 0) {
@@ -547,8 +504,6 @@ func (a *Asserter) undoCommand(ctx context.Context, job queue.Job, tomb connecto
 	return a.answer(ctx, rec)
 }
 
-// undo reverses a command's gesture or operation and returns what its reply
-// now says about it.
 func (a *Asserter) undo(ctx context.Context, tx pgx.Tx, job queue.Job, tomb connector.Event, rec commandRecord) (string, error) {
 	const deleted = "**Update:** the command comment was deleted, "
 	if rec.Gesture != 0 {
@@ -586,9 +541,6 @@ func (a *Asserter) undo(ctx context.Context, tx pgx.Tx, job queue.Job, tomb conn
 	return fmt.Sprintf(deleted+"so Hearsay undid operation %d, as operation %d.", rec.Operation, op.ID), nil
 }
 
-// answer posts the reply a command owes, or finds the one already posted, and
-// revises it once the command's deletion has been applied. What it did is
-// recorded, so a retry makes no write it has made.
 func (a *Asserter) answer(ctx context.Context, rec commandRecord) error {
 	log := telemetry.Logger(ctx)
 	replier := a.replies[rec.Source]
@@ -622,10 +574,6 @@ func (a *Asserter) answer(ctx context.Context, rec commandRecord) error {
 	return nil
 }
 
-// sweepReplies enqueues the job again for every command whose reply is still
-// owed — not posted, or not revised since the command was deleted — because
-// its job ran out of attempts, perhaps while GitHub was down. A pending job
-// collapses the enqueue. A source that has become read-only is owed nothing.
 func sweepReplies(ctx context.Context, pool *pgxpool.Pool, repo config.Repo) (int, error) {
 	rows, err := pool.Query(ctx, `
 SELECT CASE WHEN reply IS NULL THEN event ELSE undo_event END, scope, source
@@ -660,14 +608,10 @@ SELECT CASE WHEN reply IS NULL THEN event ELSE undo_event END, scope, source
 	return len(all), nil
 }
 
-// githubGesture is the assert job for a GitHub command event or the tombstone
-// of one: `gesture:<event id>`.
 func (a *Asserter) githubGesture(ctx context.Context, job queue.Job) error {
 	id := strings.TrimPrefix(job.TargetID, l2.GestureTarget)
 	ev, err := a.events.Get(ctx, id)
 	if errors.Is(err, l0.ErrNotFound) || errors.Is(err, l0.ErrRetracted) || errors.Is(err, l0.ErrDeleted) {
-		// A command deleted before it ran runs nothing; its tombstone's job
-		// finds nothing to undo.
 		return nil
 	}
 	if err != nil {

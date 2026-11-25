@@ -26,13 +26,11 @@ func WithEnv(f func(string) string) Option {
 }
 
 // WithHTTPClient makes provider adapters use c. The registry applies its own
-// per-attempt timeout, so a client with a timeout of its own would be a second
-// bound on the same call: leave it unset.
+// per-attempt timeout, so c should set none.
 func WithHTTPClient(c *http.Client) Option {
 	return func(r *registry) { r.http = c }
 }
 
-// registry is the configured tiers, each already built.
 type registry struct {
 	completers map[Tier]Completer
 	embedder   Embedder
@@ -43,17 +41,12 @@ type registry struct {
 }
 
 // NewRegistry builds every tier the configuration names, from the providers it
-// is given, and fails if any of them cannot be built. Everything that can be
-// known before a call is checked here — an unknown provider, a missing
-// credential, a provider that cannot take a system prompt or produce structured
-// output — because configuration is read once at startup and a process that
-// cannot make a model call should not be serving.
+// is given, and fails if any of them cannot be built: an unknown provider, a
+// missing credential, a provider that cannot take a system prompt or produce
+// structured output.
 //
-// A tier the configuration does not name is not built and not defaulted to
-// something else: asking for it is [ErrTierNotConfigured].
-//
-// Every problem is reported, not the first, so that one run of
-// `hearsay config validate` or one failed startup lists everything to fix.
+// A tier the configuration does not name is not built: asking for it is
+// [ErrTierNotConfigured]. Every problem is reported, not the first.
 func NewRegistry(cfg Config, providers []Provider, opts ...Option) (Registry, error) {
 	r := &registry{completers: map[Tier]Completer{}, usage: newUsageTable(), http: &http.Client{}}
 	for _, opt := range opts {
@@ -85,8 +78,7 @@ func NewRegistry(cfg Config, providers []Provider, opts ...Option) (Registry, er
 			errs = append(errs, fmt.Errorf("%s tier: no provider called %q was given to the registry", tier, configured.Provider))
 			continue
 		}
-		// What is refused is what the configuration set, so it is checked
-		// before the defaults are filled in.
+
 		if err := CanServe(provider.Name(), provider.Capabilities(), tier, configured); err != nil {
 			errs = append(errs, fmt.Errorf("%s tier: %w", tier, err))
 			continue
@@ -102,8 +94,6 @@ func NewRegistry(cfg Config, providers []Provider, opts ...Option) (Registry, er
 	return r, nil
 }
 
-// build constructs one tier's client and wraps it in the retries, timeout and
-// accounting every call gets.
 func (r *registry) build(tier Tier, tc TierConfig, p Provider) error {
 	build := Build{Tier: tier, Config: tc, Env: r.env, HTTPClient: r.http}
 	client := &tierClient{tier: tier, provider: p.Name(), cfg: tc, usage: r.usage}
@@ -130,12 +120,9 @@ func (r *registry) build(tier Tier, tc TierConfig, p Provider) error {
 // configuration as written, before any default is filled in: only a setting
 // somebody set is refused.
 //
-// Hearsay asks every completion tier for a system prompt and for structured
-// output, so a provider without either cannot back one. The answer is the same
-// wherever it is asked: [NewRegistry] asks it when a process starts, and
-// `hearsay config validate` asks it about a file in a pull request, which is
-// where a capability gap should surface — when configuration is
-// read, rather than as a degraded call in production.
+// Every completion tier needs a system prompt and structured output, so a
+// provider without either cannot back one. [NewRegistry] asks it when a process
+// starts, and `hearsay config validate` asks it about a file.
 func CanServe(name string, caps Capabilities, tier Tier, tc TierConfig) error {
 	if !tier.Completion() {
 		if !caps.Embed {
@@ -154,8 +141,6 @@ func CanServe(name string, caps Capabilities, tier Tier, tc TierConfig) error {
 	return refuseSettings(name, caps, tc)
 }
 
-// refuseSettings is the settings a provider has no use for, which a tier
-// configuring them is refused for.
 func refuseSettings(name string, caps Capabilities, tc TierConfig) error {
 	var errs []error
 	refuse := func(setting, why string) {
@@ -173,7 +158,6 @@ func refuseSettings(name string, caps Capabilities, tc TierConfig) error {
 	return errors.Join(errs...)
 }
 
-// Completer implements [Registry].
 func (r *registry) Completer(t Tier) (Completer, error) {
 	if !t.Valid() {
 		return nil, fmt.Errorf("no such model tier %q: want %s or %s", t, TierDistill, TierAssert)
@@ -188,7 +172,6 @@ func (r *registry) Completer(t Tier) (Completer, error) {
 	return c, nil
 }
 
-// Embedder implements [Registry].
 func (r *registry) Embedder() (Embedder, error) {
 	if r.embedder == nil {
 		return nil, fmt.Errorf("%s: %w", TierEmbed, ErrTierNotConfigured)
@@ -196,11 +179,8 @@ func (r *registry) Embedder() (Embedder, error) {
 	return r.embedder, nil
 }
 
-// Usage implements [Registry].
 func (r *registry) Usage() []Usage { return r.usage.snapshot() }
 
-// Close implements [Registry]: it closes every provider client that is a
-// [Closer], and reports every failure.
 func (r *registry) Close(ctx context.Context) error {
 	var errs []error
 	for tier, c := range r.completers {
@@ -223,8 +203,6 @@ func closeInner(ctx context.Context, inner any) error {
 	return nil
 }
 
-// tierClient is what every tier's client shares: what it is, how it is
-// configured, and where its usage is counted.
 type tierClient struct {
 	tier     Tier
 	provider string
@@ -232,14 +210,11 @@ type tierClient struct {
 	usage    *usageTable
 }
 
-// completer is one tier's completer, with the abstraction's own concerns around
-// the provider's client.
 type completer struct {
 	*tierClient
 	inner Completer
 }
 
-// Complete implements [Completer].
 func (c *completer) Complete(ctx context.Context, req Request) (Response, error) {
 	if err := req.Validate(); err != nil {
 		return Response{}, fmt.Errorf("%s tier: %w", c.tier, err)
@@ -273,19 +248,13 @@ func (c *completer) Complete(ctx context.Context, req Request) (Response, error)
 	return resp, nil
 }
 
-// embedder is the embed tier's client, wrapped the same way.
 type embedder struct {
 	*tierClient
 	inner Embedder
 }
 
-// Dimensions implements [Embedder].
 func (e *embedder) Dimensions() int { return e.inner.Dimensions() }
 
-// Embed implements [Embedder]. The width of what comes back is checked here:
-// a vector of the wrong length is what would be written into the vector(N)
-// column as garbage, and a provider that quietly changed a model's width is
-// exactly the case to refuse rather than absorb.
 func (e *embedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
@@ -318,17 +287,13 @@ func (e *embedder) Embed(ctx context.Context, texts []string) ([][]float32, erro
 	return vectors, nil
 }
 
-// outcome is what one attempt cost, for the accounting the caller does not do.
 type outcome struct {
 	tokens Tokens
 	model  string
-	// cost is the cost the provider reported, nil when it reported none.
+
 	cost *float64
 }
 
-// reportedCost is the cost a provider reported for an attempt, if it did and
-// the figure is usable. A reported zero is a cost; an unusable figure (negative,
-// NaN or infinite) is treated as none rather than poisoning the sum.
 func reportedCost(u *JudgmentUsage) *float64 {
 	if u == nil || u.CostUSD == nil {
 		return nil
@@ -340,10 +305,6 @@ func reportedCost(u *JudgmentUsage) *float64 {
 	return &c
 }
 
-// call runs one model call: the per-attempt timeout, the retries with backoff,
-// the wait a rate-limited provider asked for, and the token accounting. It is
-// the single place that knows how a model call behaves, which is what keeps all
-// of it out of the distiller and the assertion worker.
 func call[T any](ctx context.Context, t *tierClient, run func(context.Context) (T, outcome, error)) (T, error) {
 	var zero T
 	log := telemetry.Logger(ctx)
@@ -392,19 +353,6 @@ func call[T any](ctx context.Context, t *tierClient, run func(context.Context) (
 	}
 }
 
-// backoff is how long to wait before the next attempt: what the provider asked
-// for if it asked, and otherwise the tier's backoff doubled per attempt and
-// capped, with the jitter spread over the whole interval rather than a fraction
-// of it, so that a fleet of workers rate-limited at once does not come back in
-// step.
-//
-// What the provider asked for is **not** capped, and [TierConfig.Timeout] bounds
-// an attempt rather than the wait between two, so a `Retry-After` of an hour is
-// an hour. The provider knows its own rate limit better than a constant here
-// does; the price is that the caller owes this package a deadline. A caller
-// inside a queue handler holding a lease has to bound the call to less than the
-// lease or have its job reclaimed underneath it — README.md carries the
-// obligation.
 func (t *tierClient) backoff(attempt int, err error) time.Duration {
 	var e *Error
 	if errors.As(err, &e) && e.RetryAfter > 0 {
@@ -424,7 +372,6 @@ func (t *tierClient) backoff(attempt int, err error) time.Duration {
 	return time.Duration(rand.Int64N(int64(d)))
 }
 
-// sleep waits, or gives up when the caller's context is done.
 func sleep(ctx context.Context, d time.Duration) error {
 	if d <= 0 {
 		return ctx.Err()
@@ -439,7 +386,6 @@ func sleep(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// The registry's own clients satisfy the interfaces callers see.
 var (
 	_ Registry  = (*registry)(nil)
 	_ Completer = (*completer)(nil)

@@ -31,14 +31,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
-// The recorded conversations in testdata/conversations: the messages Kern
-// posted, the segmentation and distill answers the model gave, and what Jev
-// answered the outcome questions, by state. A state is the conversation at one
-// moment: a message reworded, one that arrived, a topic the model no longer
-// finds. The requests those answers were recorded against are not copied
-// here; they are built from the same code the distiller runs, so a prompt that
-// changes without the recording fails here and not in production.
-
 type convMessage struct {
 	Exchange    string    `json:"exchange"`
 	Role        string    `json:"role"`
@@ -63,8 +55,6 @@ type convScenario struct {
 	States       map[string]convState `json:"states"`
 }
 
-// conversationOwner and conversationAgent are the principals the recordings
-// were made for.
 const (
 	conversationOwner = "kyle"
 	conversationAgent = "kern"
@@ -83,7 +73,6 @@ func loadScenario(t *testing.T, name string) convScenario {
 	return s
 }
 
-// resolved is one state with its messages, answers and judgments settled.
 type resolved struct {
 	name     string
 	thread   string
@@ -121,9 +110,6 @@ func (s convScenario) state(t *testing.T, name string) resolved {
 	return r
 }
 
-// event is a message as the conversation source stores it
-// (docs/connector-contract.md, "Conversation (Kern)"): one event per message,
-// a revision whose token follows its words.
 func (m convMessage) event(src, thread string) connector.Event {
 	author := connector.Identity{Source: src, Kind: connector.IdentityUser, NativeID: conversationOwner}
 	if m.Role == conversation.RoleAssistant {
@@ -154,7 +140,6 @@ func (r resolved) events(src string) []connector.Event {
 
 func (r resolved) lines(src string) []l1.ConversationLine { return l1.ConversationLines(r.events(src)) }
 
-// eventID is the id of a message in this state.
 func (r resolved) eventID(src, exchange, role string) string {
 	for _, m := range r.messages {
 		if m.Exchange == exchange && m.Role == role {
@@ -169,7 +154,6 @@ func topicLabel(topic string) string {
 	return strings.ToLower(strings.Join(strings.Fields(topic), " "))
 }
 
-// documents are the segments the state's recorded boundaries make, by label.
 func (r resolved) documents(t *testing.T, src string) map[string]l1.Document {
 	t.Helper()
 	docs, err := l1.BuildConversationSegments(src, r.thread, r.lines(src), r.segments, nil, testRepo(src))
@@ -189,7 +173,6 @@ func (r resolved) documents(t *testing.T, src string) map[string]l1.Document {
 	return out
 }
 
-// recording is the model and Jev answers of the states a test distils.
 type recording struct {
 	fixtures *llm.Fixtures
 	jev      *outcomeJev
@@ -216,7 +199,6 @@ func (rec *recording) add(t *testing.T, req llm.Request, response any) {
 	}
 }
 
-// state records the answers of one state of a conversation.
 func (rec *recording) state(t *testing.T, src string, r resolved) {
 	t.Helper()
 	rec.add(t, distiller.ConversationSegmentationRequest(r.lines(src), distillBudget()), map[string]any{"segments": r.segments})
@@ -248,8 +230,6 @@ func (rec *recording) distiller(t *testing.T, pool *pgxpool.Pool, src string) *d
 	return d
 }
 
-// hookRegistry runs a function before each completion, which is how a test
-// makes something happen while an attempt is in the middle of a model call.
 type hookRegistry struct {
 	llm.Registry
 	before func(llm.Request) error
@@ -322,11 +302,6 @@ func storedDocuments(t *testing.T, pool *pgxpool.Pool, src string) map[string]l1
 	return out
 }
 
-// A conversation with two interleaved topics is one document per topic. The
-// topic that resumes is one document; each document's L0 references are exactly
-// the messages whose lines it quotes; a message no segment quotes is cited by
-// none; an interrupted exchange's owner line is marked; and the documents carry
-// the owner's access list alone with no chat document beside them.
 func TestInterleavedTopicsAreOneConversationDocumentEach(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
@@ -402,8 +377,6 @@ func TestInterleavedTopicsAreOneConversationDocumentEach(t *testing.T) {
 		}
 	}
 
-	// None of these messages also made a chat document, and the one
-	// assertion job is the decided topic's, under the owner's stream.
 	var kinds []string
 	for _, doc := range docs {
 		kinds = append(kinds, string(doc.Kind))
@@ -419,10 +392,6 @@ func TestInterleavedTopicsAreOneConversationDocumentEach(t *testing.T) {
 	}
 }
 
-// Re-distilling an unchanged conversation rewrites no row. A changed rendering
-// of one answer updates only the documents quoting it, and the record names the
-// new revision. A topic that disappears loses its document, in the same
-// transaction as the record that says so.
 func TestRedistillingAConversationWritesOnlyWhatChanged(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
@@ -432,8 +401,7 @@ func TestRedistillingAConversationWritesOnlyWhatChanged(t *testing.T) {
 	for _, st := range []resolved{base, reworded} {
 		rec.state(t, src, st)
 	}
-	// The model answers differently about the same lines later, so that answer
-	// is a recording of its own.
+
 	later := newRecording(t)
 	later.state(t, src, gone)
 	ingest(t, pool, base.events(src))
@@ -467,8 +435,6 @@ func TestRedistillingAConversationWritesOnlyWhatChanged(t *testing.T) {
 		t.Errorf("a row was rewritten: %v -> %v; record %v -> %v", before, after, publishedBefore, publishedAfter)
 	}
 
-	// The answer to the retry question is reworded: a new revision of one
-	// artifact, quoted by the retry topic alone.
 	ingest(t, pool, reworded.events(src))
 	result, err := d.Distill(t.Context(), target)
 	if err != nil || !result.Written || !result.Recorded || result.Deleted {
@@ -490,7 +456,6 @@ func TestRedistillingAConversationWritesOnlyWhatChanged(t *testing.T) {
 		t.Errorf("record = %+v, want the reworded revision and not the one it replaced", record)
 	}
 
-	// The model no longer finds the retry topic.
 	result, err = d.Distill(t.Context(), target)
 	if err != nil || result.Written {
 		t.Fatalf("a repeat: %+v, %v", result, err)
@@ -509,8 +474,6 @@ func TestRedistillingAConversationWritesOnlyWhatChanged(t *testing.T) {
 	}
 }
 
-// A segmentation that selects nothing leaves a record that every message was
-// read and no document.
 func TestAConversationThatSelectsNothingStillLeavesARecord(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
@@ -532,9 +495,6 @@ func TestAConversationThatSelectsNothingStillLeavesARecord(t *testing.T) {
 	}
 }
 
-// A failed attempt leaves no record, and neither does one whose process was
-// stopped in the middle of a model call. After a restart the conversation is
-// distilled and its record published.
 func TestAFailedOrStoppedConversationAttemptRecordsNothing(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
@@ -554,7 +514,6 @@ func TestAFailedOrStoppedConversationAttemptRecordsNothing(t *testing.T) {
 		}
 	}
 
-	// Nothing was recorded for the model to answer.
 	empty, err := llm.NewFake(testRepo(src).LLM, llm.NewFixtures())
 	if err != nil {
 		t.Fatal(err)
@@ -568,7 +527,6 @@ func TestAFailedOrStoppedConversationAttemptRecordsNothing(t *testing.T) {
 	}
 	none()
 
-	// The segmentation answers, then the first topic's distillation fails.
 	distils := 0
 	partial, err := distiller.New(pool, hookRegistry{rec.registry(t, src), func(req llm.Request) error {
 		if !isSegmentation(req) {
@@ -586,7 +544,6 @@ func TestAFailedOrStoppedConversationAttemptRecordsNothing(t *testing.T) {
 	}
 	none()
 
-	// The process is stopped while the model is answering.
 	stopped, cancel := context.WithCancel(t.Context())
 	killed, err := distiller.New(pool, hookRegistry{rec.registry(t, src), func(llm.Request) error {
 		cancel()
@@ -600,7 +557,6 @@ func TestAFailedOrStoppedConversationAttemptRecordsNothing(t *testing.T) {
 	}
 	none()
 
-	// Jev fails after the model answered.
 	mute := newOutcomeJev(t)
 	mute.failWith(errors.New("jev is down"))
 	judged, err := distiller.New(pool, rec.registry(t, src), mute.judgments(), testConfig(src))
@@ -612,7 +568,6 @@ func TestAFailedOrStoppedConversationAttemptRecordsNothing(t *testing.T) {
 	}
 	none()
 
-	// A restart: a new process, with everything answering.
 	result, err := rec.distiller(t, pool, src).Distill(t.Context(), target)
 	if err != nil || !result.Recorded || !result.Written {
 		t.Fatalf("after the restart: %+v, %v", result, err)
@@ -623,15 +578,11 @@ func TestAFailedOrStoppedConversationAttemptRecordsNothing(t *testing.T) {
 	}
 }
 
-// A message rewritten, or a new one arriving, while an attempt runs is not in
-// what the attempt read. Its record is never published naming revisions it did
-// not read, nothing it built from the old read is published, and the newer
-// message is distilled and recorded afterwards.
 func TestAConversationThatMovesWhileItIsDistilledIsNotPublishedFromTheOldRead(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		state string
-		// moved is the message revision the second attempt must record.
+
 		moved func(r resolved, src string) string
 	}{
 		{"a message is rewritten", "reworded", func(r resolved, src string) string { return r.eventID(src, "x-2", "assistant") }},
@@ -686,8 +637,6 @@ func TestAConversationThatMovesWhileItIsDistilledIsNotPublishedFromTheOldRead(t 
 	}
 }
 
-// The pump enqueues one distill job per conversation however many messages
-// arrive, which is what the debounce collapses.
 func TestTheChangeFeedEnqueuesOneJobPerConversation(t *testing.T) {
 	pool := newScratchPool(t)
 	src := newSource(t)
@@ -717,10 +666,6 @@ func TestTheChangeFeedEnqueuesOneJobPerConversation(t *testing.T) {
 	}
 }
 
-// Only the owner's own words become the owner's stance. A decision only Kern's
-// answer makes produces none, whatever the model cited and whatever Jev
-// answered; the same decision in the owner's words produces a stance whose
-// evidence is the conversation document.
 func TestOnlyTheOwnersWordsBecomeTheOwnersStance(t *testing.T) {
 	cases := []struct {
 		state  string
@@ -759,8 +704,6 @@ func TestOnlyTheOwnersWordsBecomeTheOwnersStance(t *testing.T) {
 				t.Errorf("assert jobs = %v, want one = %v", jobs, tc.stance)
 			}
 
-			// The assertion worker reads the outcome sentence and nothing the
-			// agent said around it.
 			request := assertworker.RequestFor(stored.Document, 0)
 			if text := request.Messages[0].Text; strings.Contains(text, "Kern") || strings.Contains(text, "Memcached") {
 				t.Errorf("the assertion worker is shown what the agent said: %q", text)
@@ -776,9 +719,6 @@ func TestOnlyTheOwnersWordsBecomeTheOwnersStance(t *testing.T) {
 	}
 }
 
-// stancesFromOwner runs the assertion worker over a conversation document with
-// a recorded answer and checks that it wrote one stance whose evidence is the
-// document.
 func stancesFromOwner(t *testing.T, pool *pgxpool.Pool, src string, stored l1.Stored, position string) {
 	t.Helper()
 	fixtures := llm.NewFixtures()
@@ -814,9 +754,6 @@ func stancesFromOwner(t *testing.T, pool *pgxpool.Pool, src string, stored l1.St
 	}
 }
 
-// The rebuild an operator deletion queues keeps working for conversation
-// documents: the job names a topic, the whole conversation is rebuilt from what
-// is still readable, and the record follows.
 func TestADeletionRebuildsTheConversationDocumentsThatQuotedIt(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
@@ -843,8 +780,7 @@ func TestADeletionRebuildsTheConversationDocumentsThatQuotedIt(t *testing.T) {
 	if !slices.Equal(applied.Documents, []string{queueID}) {
 		t.Fatalf("the deletion queued %v, want only the topic that quoted the answer", applied.Documents)
 	}
-	// The queued job is for the topic's document; the distiller rebuilds the
-	// conversation from it.
+
 	if err := d.Handle(ctx, queue.Job{TargetID: queueID}); err != nil {
 		t.Fatalf("Handle(%s) = %v", queueID, err)
 	}

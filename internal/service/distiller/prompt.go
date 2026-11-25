@@ -9,37 +9,13 @@ import (
 	"github.com/kpenfound/hearsay/internal/llm"
 )
 
-// The prompts belong to this package, not to internal/l1: what a document is,
-// and what may be stored in one, is the layer's; how a model is asked to
-// produce one is the distiller's. A second consumer of L1 does not
-// inherit these words.
-//
-// Both halves of the ask are here — the system prompt and the schema the answer
-// has to satisfy — because they say the same thing twice and drift apart if
-// they are written in two places. The schema is enforced by internal/llm before
-// an answer is returned, so what the prompt asks for and what is accepted
-// cannot differ.
-
 // MaxPromptBytes bounds how much of a document is sent to the model. A
-// conversation longer than this is truncated on a rune boundary with a marker,
-// deterministically, so that the same artifact always produces the same
-// request — a prompt that is cut differently on each run would miss its
-// recorded fixture and, worse, distil differently each time.
-//
-// It is bytes rather than tokens because tokens are the provider's unit and
-// this abstraction does not model them. Roughly 30,000 tokens of English, which
-// is well inside the context window of any model a `distill` tier would name
-// and far beyond any pull request a person would read.
+// conversation longer than this is truncated deterministically on a rune
+// boundary, with a marker.
 const MaxPromptBytes = 120_000
 
-// truncated is what the marker says. It is in the document the model reads, so
-// it is written as something a reader would understand rather than as a code.
 const truncated = "\n\n[the rest of this conversation was left out: it is longer than the distiller sends]"
 
-// systemPrompt is what the distill tier is told it is doing. There is one per
-// document kind: a commit and a pull request want different questions asked,
-// and a single prompt with three branches in it is a prompt that does none of
-// them well.
 func systemPrompt(kind l1.Kind) string {
 	return preamble + "\n\n" + kindPrompts[kind] + "\n\n" + outcomeRules
 }
@@ -50,8 +26,6 @@ Write for someone who has to make a decision and has not read any of this. Say w
 
 Never quote a credential, a token, a key or a personal email address, even if the document contains one.`
 
-// kindPrompts is what each kind of artifact is for, and what is worth keeping
-// from it.
 var kindPrompts = map[l1.Kind]string{
 	l1.KindMeetingSegment: `This is one topic of a meeting transcript. Use only the transcript lines in this segment.
 
@@ -110,15 +84,8 @@ Do not repeat the containing thread's conclusion.`,
 - open_questions: usually empty. A commit message rarely leaves a question.`,
 }
 
-// outcomeRules is how the outcome is written, the same for every kind. The model
-// does not classify it: whether an outcome was resolved, decided, proposed,
-// still open or nothing at all is Jev's judgment and code's decision
-// ([OutcomeRequest]). So the sentence states the substance alone, and reads
-// true whichever way it is classified.
 const outcomeRules = `outcome is one sentence stating the substance of what the artifact concluded, settled or put forward, such as "take the lock before the write". Do not say whether anyone agreed to it or whether it was carried out; that is judged separately. Leave it empty when the artifact states nothing of the kind. An outcome you had to infer is not an outcome.`
 
-// answer is the JSON the model returns, which internal/llm has already checked
-// against [schemaFor] by the time this package decodes it.
 type answer struct {
 	Summary       string   `json:"summary"`
 	Question      string   `json:"question,omitempty"`
@@ -126,12 +93,10 @@ type answer struct {
 	OpenQuestions []string `json:"open_questions,omitempty"`
 	Change        string   `json:"change,omitempty"`
 	CodeNames     []string `json:"code_names,omitempty"`
-	// OutcomeLines are the lines of a conversation segment its outcome rests on.
+
 	OutcomeLines []int `json:"outcome_lines,omitempty"`
 }
 
-// body turns an answer into the document body. Its outcome kind is unset:
-// [decideOutcome] sets it from the judgments.
 func (a answer) body() l1.Body {
 	return l1.Body{
 		Summary:       a.Summary,
@@ -143,9 +108,6 @@ func (a answer) body() l1.Body {
 	}
 }
 
-// The bounds the schema puts on an answer. They are the shape of a distillation
-// — a paragraph, not a page — and they are enforced rather than requested: an
-// answer over them is refused by internal/llm before this package sees it.
 const (
 	maxSummary  = 2000
 	maxOutcome  = 1000
@@ -153,14 +115,10 @@ const (
 	maxChange   = 1000
 	maxOpen     = 8
 	maxOpenLen  = 400
-	// maxOutcomeLines bounds the lines one outcome cites.
+
 	maxOutcomeLines = 16
 )
 
-// schemaFor is the shape a kind's answer has to take. The per-kind fields are
-// present only on the kinds that have them, so a model cannot answer with a
-// `change` for an issue: `additionalProperties` is false and the field is not
-// declared, and the answer is refused rather than quietly dropped.
 func schemaFor(kind l1.Kind) *llm.Schema {
 	properties := map[string]schemaNode{
 		"summary": {
@@ -220,9 +178,6 @@ func schemaFor(kind l1.Kind) *llm.Schema {
 		AdditionalProperties: &closed,
 	})
 	if err != nil {
-		// The tree is this file's and holds no channel, function or NaN, so
-		// this cannot happen; a schema that did not encode would be a request
-		// with no shape at all, which is worse than a panic in a constructor.
 		panic(fmt.Sprintf("encoding the %s schema: %v", kind, err))
 	}
 	return &llm.Schema{
@@ -232,9 +187,6 @@ func schemaFor(kind l1.Kind) *llm.Schema {
 	}
 }
 
-// schemaNode is one level of a JSON Schema, in the subset internal/llm enforces.
-// Writing it as a type rather than as a string is what keeps the enum and the
-// bounds above from drifting from the values the rest of the package uses.
 type schemaNode struct {
 	Type                 string                `json:"type"`
 	Description          string                `json:"description,omitempty"`
@@ -252,14 +204,8 @@ type schemaNode struct {
 // owns, the document in the team's own words, and the schema the answer has to
 // satisfy.
 //
-// It is exported so that whatever records a fixture asks for exactly what the
-// distiller asks for rather than a copy of it that can drift: a recording is
-// keyed on the request, so a prompt edited in one of two places would be a
-// recording of a call that never happens.
-//
 // budget is the answer budget. A call leaves it zero and lets the registry fill
-// in the tier's; a recording cannot, because what the recording is keyed on is
-// the request the adapter sees, and by then the budget is resolved.
+// in the tier's; a recording passes the resolved budget.
 func RequestFor(doc l1.Document, budget int) llm.Request {
 	return llm.Request{
 		System:    systemPrompt(doc.Kind),
@@ -269,8 +215,6 @@ func RequestFor(doc l1.Document, budget int) llm.Request {
 	}
 }
 
-// promptFor is the document as the model reads it: the team's own words, already
-// scrubbed of secrets and personal data, truncated to what this package sends.
 func promptFor(doc l1.Document) string {
 	text := doc.RawText
 	if doc.Kind == l1.KindConversationSegment {
@@ -280,16 +224,13 @@ func promptFor(doc l1.Document) string {
 		return text
 	}
 	cut := MaxPromptBytes
-	// Cut on a rune boundary: half a rune is not a character, and it would make
-	// the request differ from a re-run that cut the same place.
+
 	for cut > 0 && !utf8ValidCut(text, cut) {
 		cut--
 	}
 	return text[:cut] + truncated
 }
 
-// numbered is a conversation segment's lines as the model reads them, each with
-// its number, which is what an outcome cites.
 func numbered(raw string) string {
 	lines := strings.Split(raw, "\n")
 	for i, line := range lines {
@@ -298,7 +239,6 @@ func numbered(raw string) string {
 	return strings.Join(lines, "\n")
 }
 
-// utf8ValidCut reports whether cutting the string here lands between runes.
 func utf8ValidCut(s string, at int) bool {
 	if at <= 0 || at >= len(s) {
 		return true

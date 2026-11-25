@@ -7,18 +7,15 @@ import (
 	"time"
 )
 
-// ProviderAnthropic is the first provider, and the shipped default.
-// The adapter is internal/llm/anthropic.
+// ProviderAnthropic is the shipped default provider. The adapter is
+// internal/llm/anthropic.
 const ProviderAnthropic = "anthropic"
 
-// ProviderClaudeSbx is the second provider: the Claude Code CLI run inside a
-// Docker Sandbox, on the host. The adapter is internal/llm/claudesbx.
+// ProviderClaudeSbx is the Claude Code CLI run inside a Docker Sandbox, on the
+// host. The adapter is internal/llm/claudesbx.
 const ProviderClaudeSbx = "claude-sbx"
 
-// The defaults a tier takes for everything its configuration leaves out. They
-// are the shape of the work the tiers do: one call per artifact, seconds
-// rather than minutes, on an API that asks to be backed off rather than
-// hammered.
+// The defaults a tier takes for everything its configuration leaves out.
 const (
 	// DefaultTimeout bounds one attempt, not the call: a retried call may take
 	// this long several times over. A provider whose attempt takes longer by
@@ -29,9 +26,8 @@ const (
 	// DefaultBackoff is the first retry's delay, doubled per attempt and
 	// jittered over the whole interval.
 	DefaultBackoff = 500 * time.Millisecond
-	// MaxBackoff caps that doubling. A provider that asks for longer with a
-	// Retry-After header gets it: the cap is on this package's guess, not on
-	// what the provider said.
+	// MaxBackoff caps that doubling. A Retry-After from the provider is
+	// honoured beyond it.
 	MaxBackoff = 30 * time.Second
 	// DefaultMaxTokens is the answer budget of a completion tier that does not
 	// set one.
@@ -39,13 +35,10 @@ const (
 )
 
 // TierConfig is what backs one tier: a provider, a model, and the parameters
-// the abstraction applies around them. It is configuration rather than code,
-// so every field here can be set in the `llm:` section of the
-// configuration repository (docs/config.md).
-//
-// A zero value of every field but Provider and Model is a working tier: the
-// defaults above are filled in when the registry is built, so only a value
-// somebody set can be refused.
+// the abstraction applies around them, set in the `llm:` section of the
+// configuration repository. A zero value of every field but Provider and Model
+// is a working tier: the defaults above are filled in when the registry is
+// built, so only a value somebody set can be refused.
 type TierConfig struct {
 	// Provider names the adapter that answers this tier, such as `anthropic`.
 	Provider string
@@ -58,19 +51,13 @@ type TierConfig struct {
 	// Nil leaves it to the provider.
 	Temperature *float64
 	// Dimensions is the width of the vectors an embed tier produces. It is
-	// required there, because it has to match the vector(N) column L1 stores
-	// them in and the mismatch is checked before anything is written
-	// ([CheckDimensions]).
+	// required there and checked against the L1 column ([CheckDimensions]).
 	Dimensions int
-	// BaseURL replaces the provider's own endpoint. An operator who wants a
-	// gateway in front of a provider points a tier at it here, and
-	// a test points one at a server replaying recorded responses.
+	// BaseURL replaces the provider's own endpoint.
 	BaseURL string
 	// APIKeyEnv is the name of the environment variable holding this
 	// provider's credential, where it is not the provider's usual one.
-	// Credentials are never in the configuration repository, which is checked
-	// into git: this is the name of a variable, never a
-	// value.
+	// It is the name of a variable, never a credential.
 	APIKeyEnv string
 	// Timeout bounds one attempt.
 	Timeout time.Duration
@@ -82,22 +69,16 @@ type TierConfig struct {
 	Backoff time.Duration
 }
 
-// Config is every configured tier. A tier that is absent is not configured, and
-// asking for it is [ErrTierNotConfigured] rather than a call to whatever was
-// nearest.
+// Config is every configured tier. Asking for a tier that is absent is
+// [ErrTierNotConfigured].
 type Config struct {
 	Tiers map[Tier]TierConfig
 }
 
 // Default is the configuration a Hearsay with no `llm:` section runs on: the
-// two completion tiers on the first provider, with the model each tier's
-// character asks for (the tier abstraction deliberately names no model, so this
-// is the one line that gets bumped when a better one ships).
-//
-// There is no default embed tier. Neither shipped adapter has an embedding
-// model, so an embed tier is something an operator
-// configures rather than something that can be defaulted; until they do,
-// [Registry.Embedder] is [ErrTierNotConfigured] and nothing writes a vector.
+// two completion tiers on the first provider. There is no default embed tier:
+// until an operator configures one, [Registry.Embedder] is
+// [ErrTierNotConfigured] and nothing writes a vector.
 func Default() Config {
 	return Config{Tiers: map[Tier]TierConfig{
 		TierDistill: {Provider: ProviderAnthropic, Model: "claude-haiku-4-5-20251001", MaxTokens: DefaultMaxTokens},
@@ -133,10 +114,7 @@ func (c Config) Clone() Config {
 // providers it was given.
 //
 // A parameter that a tier would not use is refused rather than ignored: a
-// `dimensions` on
-// the distill tier, or a `max_tokens` on the embed tier, is somebody's
-// misunderstanding of what they configured, and accepting it in silence is how
-// it survives.
+// `dimensions` on the distill tier, or a `max_tokens` on the embed tier.
 func (tc TierConfig) Validate(t Tier) error {
 	if !t.Valid() {
 		return fmt.Errorf("no such model tier %q", t)
@@ -192,9 +170,6 @@ func (tc TierConfig) Validate(t Tier) error {
 	return nil
 }
 
-// withDefaults fills in everything the configuration left out. providerTimeout
-// is the provider's own per-attempt default ([Capabilities.DefaultTimeout]),
-// zero where it has none; a configured timeout beats both.
 func (tc TierConfig) withDefaults(t Tier, providerTimeout time.Duration) TierConfig {
 	if tc.MaxTokens == 0 && t.Completion() {
 		tc.MaxTokens = DefaultMaxTokens
@@ -215,8 +190,7 @@ func (tc TierConfig) withDefaults(t Tier, providerTimeout time.Duration) TierCon
 }
 
 // Retries is how many further attempts this tier's calls get, with -1 read as
-// none: the zero value has to mean "the default" so that a tier nobody
-// configured retries, which leaves no other way to ask for no retries at all.
+// none.
 func (tc TierConfig) Retries() int {
 	if tc.MaxRetries < 0 {
 		return 0
@@ -224,11 +198,6 @@ func (tc TierConfig) Retries() int {
 	return tc.MaxRetries
 }
 
-// envVarName reports whether s is shaped like an environment variable name: a
-// name starting with a letter, in the shape every shell agrees on. It is the
-// same rule the `secrets:` of a source is held to (internal/config), for the
-// same reason — a credential pasted into a configuration repository that is
-// checked into git has to be a loud error rather than a secret in a commit.
 func envVarName(s string) bool {
 	if s == "" {
 		return false

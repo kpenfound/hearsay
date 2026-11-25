@@ -35,24 +35,17 @@ func TestWorkEntitiesAtStartupAndWhileFollowing(t *testing.T) {
 					}
 				} else {
 					f := assertworker.NewFollower(pool, repo, time.Millisecond, l0.MaxLimit)
-					deadline := time.Now().Add(20 * time.Second)
-					for processed < appended {
+					waitFor(t, "the follower to process every appended event", func() bool {
 						n, err := f.Once(ctx)
 						if err != nil {
 							t.Fatal(err)
 						}
 						processed += n
-						if n == 0 {
-							if time.Now().After(deadline) {
-								t.Fatalf("feed processed %d of %d events", processed, appended)
-							}
-							// Other databases' unfinished transactions can hold the feed's xmin.
-							time.Sleep(5 * time.Millisecond)
-						}
-					}
+						return processed >= appended
+					})
 				}
 			}
-			// A follower starts after the normal code seed. Runtime entities need no tracker.
+
 			if _, err := assertworker.SeedEntities(ctx, pool, repo, nil); err != nil {
 				t.Fatal(err)
 			}
@@ -99,7 +92,7 @@ func TestWorkEntitiesAtStartupAndWhileFollowing(t *testing.T) {
 				ev.Payload.Revision = &connector.Revision{Token: "two", EditedAt: now.Add(time.Hour)}
 				ev.Payload.Title = "Renamed " + original.Payload.Title
 				appendEvent(ev)
-				// A late revision must never put the old name back.
+
 				late := original
 				late.NativeID = late.Payload.Artifact + "@late"
 				late.Payload.Revision = &connector.Revision{Token: "late", EditedAt: now.Add(30 * time.Minute)}

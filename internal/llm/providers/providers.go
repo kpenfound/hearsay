@@ -1,11 +1,8 @@
-// Package providers is the list of provider adapters this build ships, in one
-// place so that nothing keeps its own copy of it: a process wiring up a
-// registry, and `hearsay config validate` deciding whether a configured
-// provider exists and can do what the tier needs, read the same list (adding
-// a provider is writing one adapter and no other change).
-//
-// It is separate from internal/llm because an adapter imports the abstraction:
-// the list has to live somewhere that can import both.
+// Package providers is the list of provider adapters this build ships: a
+// process wiring up a registry, and `hearsay config validate` deciding whether
+// a configured provider exists and can do what the tier needs, read the same
+// list. It is separate from internal/llm because an adapter imports the
+// abstraction.
 package providers
 
 import (

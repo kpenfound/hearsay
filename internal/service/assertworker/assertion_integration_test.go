@@ -21,8 +21,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
 )
 
-// assertedTopic opens a topic from the fixture's issue under the source's
-// scope, the way the worker would have, and gives it the issue's stance.
 func assertedTopic(t *testing.T, pool *pgxpool.Pool, src string) (l2.Topic, l2.Stance) {
 	t.Helper()
 	f := store(t, pool, src)
@@ -43,7 +41,6 @@ func assertedTopic(t *testing.T, pool *pgxpool.Pool, src string) (l2.Topic, l2.S
 	return topic, issue
 }
 
-// writeAssertion writes the L0 event the API's assert call writes.
 func writeAssertion(t *testing.T, pool *pgxpool.Pool, as l2.Assertion, when time.Time) string {
 	t.Helper()
 	native, _ := json.Marshal(as)
@@ -65,10 +62,6 @@ func writeAssertion(t *testing.T, pool *pgxpool.Pool, as l2.Assertion, when time
 	return appended.ID
 }
 
-// From the worker's side, an assertion becomes a
-// stance on its topic with no model call — the fake here has no answer to
-// give — of class agent, by the agent, citing what it cited; and one whose job
-// never ran is picked up at startup.
 func TestAnAssertionIsAppendedWithNoModelCall(t *testing.T) {
 	pool := scratchPool(t)
 	src := newSource(t)
@@ -108,7 +101,7 @@ func TestAnAssertionIsAppendedWithNoModelCall(t *testing.T) {
 		got.ID != l2.AssertionStanceID(topic.ID, id) || got.Judgement != l2.JudgementUnknown {
 		t.Errorf("the asserted stance = %+v, want the agent's position on the topic, citing %v, superseding the issue's", got, as.Evidence)
 	}
-	// It cites a merged pull request and is still an agent's proposal.
+
 	assessed, err := graph.Assess(t.Context(), config.Authority{}, l1.Reader{}, []l2.Topic{topic})
 	if err != nil {
 		t.Fatalf("Assess() = %v", err)
@@ -117,7 +110,6 @@ func TestAnAssertionIsAppendedWithNoModelCall(t *testing.T) {
 		t.Errorf("the topic stands at %s (%s), want the issue's stance, inferred: an issue outranks an agent", a.Standing.Current.ID, a.Standing.Tier)
 	}
 
-	// Appending again, as a retried job would, writes nothing.
 	if written, err := assertworker.AppendAssertion(t.Context(), pool, config.Authority{}, id, src); err != nil || written {
 		t.Errorf("AppendAssertion(again) = %v, %v, want nothing written", written, err)
 	}
@@ -145,9 +137,6 @@ func TestAppendAssertionRefusesWhatItCannotSerialize(t *testing.T) {
 	}
 }
 
-// A topic operation or a gesture that died holding its scope leaves an assert
-// job for its hold, which the worker finishes without reading anything: the
-// operation or gesture committed with the hold's completion or not at all.
 func TestALapsedHoldIsDone(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)

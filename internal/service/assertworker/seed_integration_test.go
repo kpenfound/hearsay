@@ -26,11 +26,8 @@ import (
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
-// seedSource is the GitHub source the seeding fixtures belong to.
 const seedSource = "github-acme"
 
-// recordedGitHub replays GitHub's answers recorded in testdata/github, by REST
-// path, and answers anything else with a 404. It keeps every path asked for.
 type recordedGitHub struct {
 	srv *httptest.Server
 
@@ -80,8 +77,6 @@ func (gh *recordedGitHub) seen() []string {
 	return slices.Clone(gh.requests)
 }
 
-// readers is what the binary hands the worker for the source: the GitHub
-// reader, built from the source's configuration with its token.
 func (gh *recordedGitHub) readers(t *testing.T) assertworker.Repos {
 	t.Helper()
 	settings, err := json.Marshal(map[string]string{"api_url": gh.srv.URL})
@@ -98,8 +93,6 @@ func (gh *recordedGitHub) readers(t *testing.T) assertworker.Repos {
 	return assertworker.Repos{seedSource: reader}
 }
 
-// seedConfig is a `code/` naming acme/api and its CODEOWNERS file, and the
-// people that file's logins map to.
 func seedConfig() config.Repo {
 	api := config.SourceRef{Source: seedSource, Project: "acme/api"}
 	return config.Repo{
@@ -115,7 +108,6 @@ func seedConfig() config.Repo {
 	}
 }
 
-// seeded is an entity as the assertions compare it.
 type seeded struct {
 	ID     string
 	Origin l2.Origin
@@ -142,10 +134,6 @@ func logged(t *testing.T) (context.Context, *bytes.Buffer) {
 
 const noReaderWarning = "no repository reader"
 
-// Startup seeds the top-level directories of a
-// configured GitHub repository as modules and imports owners from its
-// CODEOWNERS file, from recorded GitHub answers, reading the repository's
-// metadata, its root listing and that one file and nothing else.
 func TestStartupSeedsFromGitHub(t *testing.T) {
 	pool := scratchPool(t)
 	gh := newRecordedGitHub(t)
@@ -156,9 +144,6 @@ func TestStartupSeedsFromGitHub(t *testing.T) {
 		t.Fatalf("SeedEntities() = %v", err)
 	}
 	want := []seeded{
-		// The CODEOWNERS file seeds the entity naming it and its descendants:
-		// `*` is kyle's, /engine/ sam's, and /docs/'s owner maps to nobody. The
-		// project has no path of its own to own.
 		{"code:acme/api", l2.OriginConfig, nil},
 		{"code:acme/api:cmd", l2.OriginRepoStructure, []string{"kyle"}},
 		{"code:acme/api:docs", l2.OriginRepoStructure, nil},
@@ -232,8 +217,6 @@ func TestStartupSeedingFromGitHubFailures(t *testing.T) {
 	})
 }
 
-// Startup stores the hierarchy the sources merge to — a configured
-// entity with no part_of is part of the directory the layout seeded above it.
 func TestStartupStoresTheDerivedHierarchy(t *testing.T) {
 	pool := scratchPool(t)
 	gh := newRecordedGitHub(t)

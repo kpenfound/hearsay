@@ -19,7 +19,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
-// jevDistiller is the fixture repository's distiller over a Jev of the test's.
 func jevDistiller(t *testing.T, pool *pgxpool.Pool, src string, j llm.Judgments) *distiller.Distiller {
 	t.Helper()
 	d, err := distiller.New(pool, newFakeRegistry(t), j, testConfig(src))
@@ -29,8 +28,6 @@ func jevDistiller(t *testing.T, pool *pgxpool.Pool, src string, j llm.Judgments)
 	return d
 }
 
-// outcomeRecords is every outcome judgment's journal record, in the order the
-// outcome questions are asked.
 func outcomeRecords(t *testing.T, pool *pgxpool.Pool) []l1.JudgmentRecord {
 	t.Helper()
 	var out []l1.JudgmentRecord
@@ -57,9 +54,6 @@ func committedJudgments(t *testing.T, pool *pgxpool.Pool) int {
 	return n
 }
 
-// Jev decides the issue's outcome; the model's sentence is kept when the kind
-// states something and cleared when it is none. A restart reuses the committed
-// judgments and asks Jev nothing.
 func TestJevDecidesTheOutcome(t *testing.T) {
 	decided := answers[issueID]["outcome"].(string)
 	for _, tc := range []struct {
@@ -110,8 +104,7 @@ func TestJevDecidesTheOutcome(t *testing.T) {
 			if err != nil || len(observations) != 1 || observations[0].Cohort != "accepted" {
 				t.Fatalf("observations=%+v %v", observations, err)
 			}
-			// A new process with a Jev that cannot answer still writes nothing new:
-			// every judgment is committed for these inputs.
+
 			calls := jev.Calls()
 			mute := newOutcomeJev(t)
 			mute.failWith(errors.New("must not be asked"))
@@ -123,8 +116,6 @@ func TestJevDecidesTheOutcome(t *testing.T) {
 	}
 }
 
-// A judgment that fails is the job's error: nothing is written, nothing is
-// committed, and the retry asks again rather than reusing the attempt.
 func TestAFailedJudgmentFailsTheJob(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -154,7 +145,7 @@ func TestAFailedJudgmentFailsTheJob(t *testing.T) {
 			if n := committedJudgments(t, pool); n != 0 {
 				t.Fatalf("committed=%d", n)
 			}
-			// The retry, with Jev back, asks again and writes the document.
+
 			jev := fixtureJev(t)
 			result, err := jevDistiller(t, pool, src, jev.judgments()).Distill(t.Context(), id)
 			if err != nil || !result.Written || jev.Calls() != 1 {
@@ -168,8 +159,6 @@ func TestAFailedJudgmentFailsTheJob(t *testing.T) {
 	}
 }
 
-// afterJudgment injects a race after the fake answered but before the consumer
-// commits. It never replaces fake model output or touches a live provider.
 type afterJudgment struct {
 	llm.JudgmentProvider
 	after func()
@@ -181,8 +170,6 @@ func (p afterJudgment) Judge(ctx context.Context, req llm.JudgmentRequest) (llm.
 	return r, e
 }
 
-// A journal that refuses the judgments refuses the write: the job fails,
-// nothing is written, and the interrupted attempt is never reused.
 func TestAJournalRefusalFailsTheJob(t *testing.T) {
 	for _, kind := range []string{"write failure", "inputs changed", "statement timeout", "observation failure"} {
 		t.Run(kind, func(t *testing.T) {
@@ -199,7 +186,7 @@ func TestAJournalRefusalFailsTheJob(t *testing.T) {
 				case "observation failure":
 					sql = `CREATE FUNCTION refuse_judgment() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected'; END $$; CREATE TRIGGER refuse BEFORE INSERT ON pipeline_observations FOR EACH ROW EXECUTE FUNCTION refuse_judgment()`
 				case "statement timeout":
-					// Longer than the journal's statement bound, so the write is cut off.
+
 					sql = fmt.Sprintf(`CREATE FUNCTION refuse_judgment() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(%g); RETURN NEW; END $$; CREATE TRIGGER refuse BEFORE UPDATE ON judgment_journal FOR EACH ROW EXECUTE FUNCTION refuse_judgment()`, l1.DefaultJournalStatementTimeout.Seconds()+1)
 				case "inputs changed":
 					sql = `UPDATE l0_events SET payload=jsonb_set(payload,'{url}','"https://example.test/source-metadata-changed"') WHERE source=$1`
@@ -233,8 +220,7 @@ func TestAJournalRefusalFailsTheJob(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			// The retry asks again: an interrupted attempt is never mistaken for
-			// a committed judgment.
+
 			calls := jev.Calls()
 			result, err := jevDistiller(t, pool, src, jev.judgments()).Distill(t.Context(), id)
 			if err != nil || !result.Written || jev.Calls() != calls+1 {
@@ -283,7 +269,7 @@ func TestOutcomeControlTrafficNeverReachesJudgments(t *testing.T) {
 	if jev.Calls() != 0 {
 		t.Fatalf("control traffic made %d judgment calls", jev.Calls())
 	}
-	// Control events also stay out of a substantive document's source state.
+
 	events := fixtureEvents(src)
 	for i, kind := range []connector.Kind{connector.KindCommand, "github.reply"} {
 		control := reply(event(src, kind, "control-child-"+string(rune('0'+i)), at(1), who(src, "u1", "kpenfound"), "", "CONTROL TRAFFIC MUST STAY OUT"), repo+"#12")

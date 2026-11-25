@@ -10,8 +10,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/l2"
 )
 
-// writeExtraction writes where each position was placed: a stance on the
-// candidate it continues, or a new topic and its first stance.
 func (a *Asserter) writeExtraction(ctx context.Context, tx pgx.Tx, stored l1.Stored, scope string, topics []l2.Topic, placements []placement, result *Result) error {
 	doc, docID := stored.Document, stored.ID
 	keys := l2.JoinKeys(doc)
@@ -39,15 +37,12 @@ func (a *Asserter) writeExtraction(ctx context.Context, tx pgx.Tx, stored l1.Sto
 			if opened {
 				result.TopicsOpened++
 			}
-			// A topic this document opened before, on an earlier run, may
-			// have been merged away since: its stance goes where the
-			// topic went.
+
 			topicID = topic.ID
 		} else {
 			topicID = topics[pl.at].ID
 		}
-		// The topic as the ledger makes it now, with a row to write on:
-		// never one merged away, and a split's topic gets its row here.
+
 		target, err := w.Target(ctx, topicID, doc.ACL, docID)
 		if err != nil {
 			return err

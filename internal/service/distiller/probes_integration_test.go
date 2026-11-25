@@ -38,15 +38,7 @@ func TestProbes(t *testing.T) {
 	client := &http.Client{Timeout: time.Second}
 	get := func(path string) (int, string) {
 		t.Helper()
-		var resp *http.Response
-		var err error
-		for i := 0; i < 100; i++ {
-			resp, err = client.Get("http://" + listener.Addr().String() + path)
-			if err == nil {
-				break
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
+		resp, err := client.Get("http://" + listener.Addr().String() + path)
 		if err != nil {
 			t.Fatal(err)
 		}

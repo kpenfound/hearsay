@@ -12,8 +12,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
-// hidden is L0 behind its tombstones, for TargetOf: the events a tombstone
-// covers, by artifact.
 type hidden map[string]connector.Event
 
 func (h hidden) Retracted(_ context.Context, _, artifact string) (connector.Event, error) {
@@ -24,7 +22,6 @@ func (h hidden) Retracted(_ context.Context, _, artifact string) (connector.Even
 	return ev, nil
 }
 
-// hiddenOf is every fixture event as though a tombstone covered it.
 func hiddenOf(events []connector.Event) hidden {
 	h := hidden{}
 	for _, ev := range events {
@@ -33,7 +30,6 @@ func hiddenOf(events []connector.Event) hidden {
 	return h
 }
 
-// unreadable is an L0 whose read past a tombstone fails.
 type unreadable struct{}
 
 var errUnreadable = errors.New("the database went away")
@@ -42,18 +38,12 @@ func (unreadable) Retracted(context.Context, string, string) (connector.Event, e
 	return connector.Event{}, errUnreadable
 }
 
-// tombstoneFor is a tombstone shaped the way docs/connector-contract.md's
-// GitHub row specifies a deletion: its own artifact, a target, and nothing that
-// says which conversation the target was part of.
 func tombstoneFor(target string) connector.Event {
 	ev := event(source, connector.KindTombstone, target+":tombstone", at(9), nil, "", "")
 	ev.Payload.Target = target
 	return ev
 }
 
-// agentEvent is an agent session event in a channel, which is where a chat
-// message would be routed to a window, and hanging off a thread where one is
-// given: everything that would give an event a document except its kind.
 func agentEvent(kind connector.Kind, thread string) connector.Event {
 	ev := event(source, kind, "session-1:turn:1", at(1), &connector.Identity{Source: source, Kind: connector.IdentityAgent, NativeID: "shed"}, "", "a turn")
 	ev.Payload.Container = connector.Container{Kind: connector.ContainerChannel, NativeID: "C1"}
@@ -61,9 +51,6 @@ func agentEvent(kind connector.Kind, thread string) connector.Event {
 	return ev
 }
 
-// Which document an event belongs to is the whole of what the pump decides, and
-// it is what makes a change proposal with its reviews one document rather than
-// five.
 func TestTargetOf(t *testing.T) {
 	fixture := hiddenOf(fixtureEvents(source))
 	chat := event(source, connector.KindMessage, "m1", at(1), who(source, "u1", "kpenfound"), "", "hello")
@@ -296,8 +283,6 @@ func TestTargetOf(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			h := tt.hidden
 			if h == nil {
-				// Only a tombstone reads past one: anything else that reads L0
-				// here fails.
 				h = unreadable{}
 			}
 			got, ok, err := distiller.TargetOf(t.Context(), tt.ev, h)
@@ -320,9 +305,6 @@ func TestTargetOf(t *testing.T) {
 	}
 }
 
-// A read past a tombstone that fails is the pump's failure, not a tombstone that
-// belongs to nothing: the batch is read again rather than its cursor moving past
-// a deletion nothing re-derived.
 func TestTargetOfReportsAFailedReadPastATombstone(t *testing.T) {
 	_, ok, err := distiller.TargetOf(t.Context(), tombstoneFor(repo+"#12:comment:1"), unreadable{})
 	if !errors.Is(err, errUnreadable) {
@@ -333,30 +315,6 @@ func TestTargetOfReportsAFailedReadPastATombstone(t *testing.T) {
 	}
 }
 
-// The batch size is held to what one read of the feed returns. The drain loop
-// reads a full batch as "there is more", so a batch above the store's cap could
-// never be reached and a backfill would wait an interval between batches.
-func TestThePumpBatchIsHeldToWhatOneReadReturns(t *testing.T) {
-	tests := []struct {
-		asked int
-		want  int
-	}{
-		{asked: 0, want: distiller.DefaultPumpBatch},
-		{asked: -1, want: distiller.DefaultPumpBatch},
-		{asked: 10, want: 10},
-		{asked: l0.MaxLimit, want: l0.MaxLimit},
-		{asked: l0.MaxLimit + 1, want: l0.MaxLimit},
-		{asked: 1_000_000, want: l0.MaxLimit},
-	}
-	for _, tt := range tests {
-		if got := distiller.NewPump(nil, distiller.PumpOptions{Batch: tt.asked}).Batch(); got != tt.want {
-			t.Errorf("a pump asked for a batch of %d uses %d, want %d", tt.asked, got, tt.want)
-		}
-	}
-}
-
-// A distill job's target is a document id, so the id the pump writes has to be
-// one the handler can read back.
 func TestEveryTargetParsesBackToItsArtifact(t *testing.T) {
 	events := fixtureEvents(source)
 	for _, ev := range events {

@@ -30,11 +30,8 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
 )
 
-// hierarchySource is the GitHub source the connector's sub-issue recordings
-// are delivered as.
 const hierarchySource = "github-acme"
 
-// hierarchyConfig maps acme/api to a tracker, or, unmapped, only covers it.
 func hierarchyConfig(mapped bool) config.Repo {
 	scope := config.Scope{ID: "api", Sources: []config.ScopeSource{{Source: hierarchySource, Containers: []string{"acme/api"}}}}
 	if mapped {
@@ -43,8 +40,6 @@ func hierarchyConfig(mapped bool) config.Repo {
 	return config.Repo{Scopes: []config.Scope{scope}}
 }
 
-// hooks is the GitHub connector's webhook handler writing into L0 through the
-// gate production puts in front of it.
 type hooks struct {
 	t *testing.T
 	h http.Handler
@@ -66,7 +61,6 @@ func newHooks(t *testing.T, pool *pgxpool.Pool) *hooks {
 	return &hooks{t: t, h: c.Handler(gate)}
 }
 
-// deliver posts one of the connector's recorded deliveries.
 func (h *hooks) deliver(event, name string) {
 	h.t.Helper()
 	body, err := os.ReadFile(filepath.Join("..", "..", "connector", "github", "testdata", "hooks", name+".json"))
@@ -87,7 +81,6 @@ func (h *hooks) deliver(event, name string) {
 
 func item(n string) string { return "tracker:" + hierarchySource + ":acme/api#" + n }
 
-// follow drains the currently visible change feed into the tracker hierarchy.
 func follow(t *testing.T, pool *pgxpool.Pool, repo config.Repo) {
 	t.Helper()
 	f := assertworker.NewFollower(pool, repo, time.Millisecond, l0.MaxLimit)
@@ -102,8 +95,6 @@ func follow(t *testing.T, pool *pgxpool.Pool, repo config.Repo) {
 	}
 }
 
-// stanceOn opens a topic about a tracker item with one stance, evidenced by
-// the item's own document.
 func stanceOn(t *testing.T, pool *pgxpool.Pool, n, position string) {
 	t.Helper()
 	at := time.Date(2026, 9, 11, 0, 0, 0, 0, time.UTC)
@@ -132,7 +123,6 @@ func stanceOn(t *testing.T, pool *pgxpool.Pool, n, position string) {
 	}
 }
 
-// inherited is the positions a bundle for a tracker item serves as inherited.
 func inherited(t *testing.T, pool *pgxpool.Pool, entity string) []string {
 	t.Helper()
 	reader := l1.Reader{Effective: principal.Effective{Human: "kyle", Grant: principal.Grant{Scopes: principal.AllScopes()}}}
@@ -150,10 +140,6 @@ func inherited(t *testing.T, pool *pgxpool.Pool, entity string) []string {
 	return out
 }
 
-// From GitHub's recorded deliveries to a bundle: a sub-issue
-// inherits its parent's stances, and its grandparent's; moving it to another
-// parent changes what it inherits, and taking its parent out of the
-// grandparent takes the grandparent's away.
 func TestASubIssueInheritsItsParentsStances(t *testing.T) {
 	pool := scratchPool(t)
 	repo := hierarchyConfig(true)
@@ -189,11 +175,7 @@ func TestASubIssueInheritsItsParentsStances(t *testing.T) {
 	f := assertworker.NewFollower(pool, repo, time.Millisecond, l0.MaxLimit)
 	for _, step := range steps {
 		var held pgx.Tx
-		var released chan struct{}
 		if step.file == "issues.edited.sub_issue" {
-			// Hold the feed head while the first delivery commits. This
-			// reproduces the zero-read window that parallel integration tests
-			// can create, so a one-shot follower would miss the placement.
 			tx, err := pool.Begin(t.Context())
 			if err != nil {
 				t.Fatal(err)
@@ -202,26 +184,19 @@ func TestASubIssueInheritsItsParentsStances(t *testing.T) {
 			if err := tx.QueryRow(t.Context(), `SELECT pg_current_xact_id()::text`).Scan(&xid); err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() {
-				if released != nil {
-					<-released
-				}
-				_ = tx.Rollback(context.Background())
-			})
+			t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
 			held = tx
 		}
 		gh.deliver(step.event, step.file)
 		if held != nil {
-			released = make(chan struct{})
-			go func() {
-				defer close(released)
-				time.Sleep(100 * time.Millisecond)
-				_ = held.Rollback(context.Background())
-			}()
+			if _, err := f.Once(t.Context()); err != nil {
+				t.Fatalf("Once() with a transaction in flight = %v", err)
+			}
+			if err := held.Rollback(context.Background()); err != nil {
+				t.Fatal(err)
+			}
 		}
-		// An open transaction elsewhere in the cluster can make the feed
-		// temporarily empty, even after this delivery commits. Wait for the
-		// placement rather than treating one empty read as caught up.
+
 		waitFor(t, step.name, func() bool {
 			if _, err := f.Once(t.Context()); err != nil {
 				t.Fatalf("Once() = %v", err)
@@ -238,8 +213,6 @@ func TestASubIssueInheritsItsParentsStances(t *testing.T) {
 	}
 }
 
-// A repository no scope's tracker maps is not a tracker: following it creates
-// no entity and no edge, and neither does seeding from it.
 func TestNoTrackerItemForARepositoryNoScopeMaps(t *testing.T) {
 	pool := scratchPool(t)
 	repo := hierarchyConfig(false)
@@ -259,8 +232,6 @@ func TestNoTrackerItemForARepositoryNoScopeMaps(t *testing.T) {
 	}
 }
 
-// Startup seeds the tracker hierarchy L0 holds, with no feed read at all, and a
-// restart whose configuration no longer maps the tracker takes it away.
 func TestStartupSeedsTheTrackerHierarchyFromL0(t *testing.T) {
 	pool := scratchPool(t)
 	gh := newHooks(t, pool)
@@ -283,7 +254,7 @@ func TestStartupSeedsTheTrackerHierarchyFromL0(t *testing.T) {
 	if _, err := assertworker.SeedEntities(t.Context(), pool, hierarchyConfig(true), nil); err != nil {
 		t.Fatalf("SeedEntities() = %v", err)
 	}
-	// #12's current revision is part of nothing: it was taken out of #10.
+
 	want := map[string][]string{item("10"): {}, item("11"): {item("10")}}
 	if got := parents(); !equalParents(got, want) {
 		t.Errorf("seeded %v, want %v", got, want)

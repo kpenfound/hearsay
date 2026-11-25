@@ -23,16 +23,11 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
 )
 
-// otherName and otherPosition are a second topic the issue holds a position
-// on, which the pull request may continue too: it shares the issue's join key.
 const (
 	otherName     = "How the engine orders its writes"
 	otherPosition = "Writes are ordered by the job queue."
 )
 
-// twoTopics asserts the issue, which opens the fixture's topic, and adds a
-// second topic on the issue's join key with a current position. It returns
-// the fixture and the two topics, the issue's first.
 func twoTopics(t *testing.T, pool *pgxpool.Pool, src string) (fixture, l2.Topic, l2.Topic) {
 	t.Helper()
 	f := store(t, pool, src)
@@ -57,11 +52,6 @@ func twoTopics(t *testing.T, pool *pgxpool.Pool, src string) (fixture, l2.Topic,
 	return f, topics[0], other
 }
 
-// Code decides from Jev's answers by one rule: only a confident yes counts.
-// Among the candidates confidently answering the same question, the most
-// likely wins, and the first offered on a tie; with none, the position opens a
-// topic. On a topic, a confident yes to the same answer restates the current
-// position, and anything else changes it.
 func TestJevDecidesWhereEachPositionGoes(t *testing.T) {
 	byName := func(asked, other float64) func(string, string, shownCandidate) float64 {
 		return func(_, _ string, c shownCandidate) float64 {
@@ -76,8 +66,7 @@ func TestJevDecidesWhereEachPositionGoes(t *testing.T) {
 		name         string
 		sameQuestion func(string, string, shownCandidate) float64
 		sameAnswer   func(string, string) float64
-		// want is the topic the pull request's position lands on: "asked"
-		// (the issue's), "other" or "new".
+
 		want      string
 		judgement l2.Judgement
 	}{
@@ -113,8 +102,6 @@ func TestJevDecidesWhereEachPositionGoes(t *testing.T) {
 	}
 }
 
-// Two positions of one document are never put on one topic: a topic an earlier
-// position took is not offered for the next.
 func TestATopicOnePositionTookIsNotOfferedToTheNext(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
@@ -156,9 +143,6 @@ func TestATopicOnePositionTookIsNotOfferedToTheNext(t *testing.T) {
 	}
 }
 
-// A Jev failure fails the job, with nothing written, and the queue's retry
-// writes what a working Jev decides. So does an asserter built without Jev,
-// once it has a judgment to make.
 func TestAJudgmentThatCannotBeMadeFailsTheJob(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -204,7 +188,7 @@ func TestAJudgmentThatCannotBeMadeFailsTheJob(t *testing.T) {
 			src := newSource(t)
 			f := store(t, pool, src)
 			a := tc.build(t, pool, src)
-			// The issue has nothing to continue, so it asks Jev nothing.
+
 			if r := assertDoc(t, a, f.issueID, src); r.TopicsOpened != 1 {
 				t.Fatalf("Assert(issue) = %+v, want a topic opened", r)
 			}
@@ -219,8 +203,6 @@ func TestAJudgmentThatCannotBeMadeFailsTheJob(t *testing.T) {
 	}
 }
 
-// A journal that refuses the judgments fails the job: the stances they decided
-// are not written without them.
 func TestAJournalRefusalFailsTheJob(t *testing.T) {
 	pool := newPool(t)
 	src := newSource(t)
@@ -243,10 +225,6 @@ func TestAJournalRefusalFailsTheJob(t *testing.T) {
 	writtenJudgment(t, pool, f.prID, l2.JudgementChanges)
 }
 
-// A committed judgment is never asked again: a job that runs again over the
-// same inputs — a restart before its writes, say — reuses the answers the
-// first run committed, while unrelated ingestion in the same source neither
-// refuses the batch nor changes what is reused.
 func TestCommittedJudgmentsAreReusedAcrossARestart(t *testing.T) {
 	pool := scratchPool(t)
 	src := newSource(t)
@@ -270,7 +248,7 @@ func TestCommittedJudgmentsAreReusedAcrossARestart(t *testing.T) {
 			}
 			committed[r.Task] = r.ID
 		}
-		// Unrelated ingestion in the same source, while the job commits.
+
 		if _, err := pool.Exec(ctx, `INSERT INTO l0_events(id,source,native_id,kind,artifact,occurred_at,payload,acl)
      VALUES($1,$2,'unrelated','issue','unrelated',now(),'{"artifact":"unrelated","title":"Separate issue","text":"Separate discussion."}','[{"kind":"public"}]')`, "evt:"+src+":unrelated", src); err != nil {
 			t.Fatal(err)
@@ -282,8 +260,7 @@ func TestCommittedJudgmentsAreReusedAcrossARestart(t *testing.T) {
 	if jev.calls() != 2 || len(committed) != 2 {
 		t.Fatalf("Jev calls = %d, committed = %v, want one topic and one stance judgment", jev.calls(), committed)
 	}
-	// Put back what the job changed, as though it never wrote: its stance, its
-	// checkpoint, and the join keys and entities it extended the topic with.
+
 	for _, sql := range []string{`DELETE FROM l2_stances WHERE $1=ANY(evidence)`, `DELETE FROM l2_asserted WHERE doc_id=$1`} {
 		if _, err := pool.Exec(t.Context(), sql, f.prID); err != nil {
 			t.Fatal(err)
@@ -309,7 +286,7 @@ func TestCommittedJudgmentsAreReusedAcrossARestart(t *testing.T) {
 		return l1.CommitJudgments(ctx, tx, rs, obs, opts)
 	})
 	assertDoc(t, restarted, f.prID, src)
-	// The restarted Jev would answer changes; the committed restates stands.
+
 	writtenJudgment(t, pool, f.prID, l2.JudgementRestates)
 	if again.calls() != 0 {
 		t.Fatalf("the restart asked Jev %d times, want none", again.calls())
@@ -322,8 +299,6 @@ func TestCommittedJudgmentsAreReusedAcrossARestart(t *testing.T) {
 	}
 }
 
-// A person's gestures decide standing after Jev's judgment, without asking it
-// anything.
 func TestHumanGesturesDetermineStandingAfterJudgment(t *testing.T) {
 	for _, choice := range []l2.Judgement{l2.JudgementChanges, l2.JudgementRestates} {
 		t.Run(string(choice), func(t *testing.T) {

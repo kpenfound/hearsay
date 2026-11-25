@@ -3,15 +3,13 @@ package distiller_test
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/kpenfound/hearsay/internal/l1"
+	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
-// Every kind's request has to be one the abstraction would send and one the
-// registry can enforce: a schema outside the subset internal/llm understands is
-// refused, and a constraint that is not enforced is one a caller would believe
-// was.
 func TestRequestForIsValidForEveryKind(t *testing.T) {
 	doc := l1.Document{RawText: "what was said"}
 	for _, kind := range l1.Kinds() {
@@ -31,40 +29,52 @@ func TestRequestForIsValidForEveryKind(t *testing.T) {
 	}
 }
 
-// A per-kind field is declared only on the kind that has it, and the schema is
-// closed, so a model cannot answer with a field this build would drop.
+var kindFields = []struct {
+	kind   l1.Kind
+	has    []string
+	hasNot string
+}{
+	{kind: l1.KindIssue, has: []string{"question"}, hasNot: "change"},
+	{kind: l1.KindPR, has: []string{"change"}, hasNot: "question"},
+	{kind: l1.KindCommit, has: []string{"change"}, hasNot: "question"},
+	{kind: l1.KindChatThread, has: []string{"question"}, hasNot: "change"},
+}
+
+func schemaOf(kind l1.Kind) *llm.Schema {
+	return distiller.RequestFor(l1.Document{Kind: kind, RawText: "x"}, 0).Schema
+}
+
 func TestSchemaDeclaresOnlyTheFieldsAKindHas(t *testing.T) {
-	tests := []struct {
-		kind    l1.Kind
-		has     []string
-		hasNot  []string
-		answers map[string]string
-	}{
-		{kind: l1.KindIssue, has: []string{"question"}, hasNot: []string{"change"}},
-		{kind: l1.KindPR, has: []string{"change"}, hasNot: []string{"question"}},
-		{kind: l1.KindCommit, has: []string{"change"}, hasNot: []string{"question"}},
-		{kind: l1.KindChatThread, has: []string{"question"}, hasNot: []string{"change"}},
-	}
-	for _, tt := range tests {
+	for _, tt := range kindFields {
 		t.Run(string(tt.kind), func(t *testing.T) {
-			schema := distiller.RequestFor(l1.Document{Kind: tt.kind, RawText: "x"}, 0).Schema
+			schema := schemaOf(tt.kind)
 			for _, field := range append([]string{"summary", "outcome", "open_questions"}, tt.has...) {
 				if !strings.Contains(string(schema.Definition), `"`+field+`"`) {
 					t.Errorf("the %s schema does not ask for %q", tt.kind, field)
 				}
 			}
-			for _, field := range tt.hasNot {
-				if strings.Contains(string(schema.Definition), `"`+field+`"`) {
-					t.Errorf("the %s schema asks for %q, which that kind does not have", tt.kind, field)
-				}
+			if strings.Contains(string(schema.Definition), `"`+tt.hasNot+`"`) {
+				t.Errorf("the %s schema asks for %q, which that kind does not have", tt.kind, tt.hasNot)
 			}
-			// A field the schema does not declare is refused rather than
-			// dropped: additionalProperties is false.
-			answer := `{"summary":"a summary","` + tt.hasNot[0] + `":"x"}`
-			if err := schema.ValidateJSON([]byte(answer)); err == nil {
-				t.Errorf("the %s schema accepted a %q it does not declare", tt.kind, tt.hasNot[0])
+		})
+	}
+}
+
+func TestSchemaRefusesAFieldTheKindDoesNotDeclare(t *testing.T) {
+	for _, tt := range kindFields {
+		t.Run(string(tt.kind), func(t *testing.T) {
+			answer := `{"summary":"a summary","` + tt.hasNot + `":"x"}`
+			if err := schemaOf(tt.kind).ValidateJSON([]byte(answer)); err == nil {
+				t.Errorf("the %s schema accepted a %q it does not declare", tt.kind, tt.hasNot)
 			}
-			// The summary is required.
+		})
+	}
+}
+
+func TestSchemaRequiresASummaryAndNothingMore(t *testing.T) {
+	for _, tt := range kindFields {
+		t.Run(string(tt.kind), func(t *testing.T) {
+			schema := schemaOf(tt.kind)
 			if err := schema.ValidateJSON([]byte(`{"outcome":"x"}`)); err == nil {
 				t.Errorf("the %s schema accepted an answer with no summary", tt.kind)
 			}
@@ -75,36 +85,23 @@ func TestSchemaDeclaresOnlyTheFieldsAKindHas(t *testing.T) {
 	}
 }
 
-// A conversation longer than what this package sends is cut to size, on a rune
-// boundary, and says that it was.
 func TestRequestForTruncatesLongDocuments(t *testing.T) {
-	// Multi-byte runes, so that a naive cut would land inside one.
 	long := strings.Repeat("日本語のテキスト ", distiller.MaxPromptBytes/8)
-	doc := l1.Document{Kind: l1.KindPR, RawText: long}
-
-	first := distiller.RequestFor(doc, 0).Messages[0].Text
+	first := distiller.RequestFor(l1.Document{Kind: l1.KindPR, RawText: long}, 0).Messages[0].Text
 	if len(first) > distiller.MaxPromptBytes+200 {
 		t.Errorf("the prompt is %d bytes, want it cut to about %d", len(first), distiller.MaxPromptBytes)
 	}
 	if !strings.Contains(first, "left out") {
 		t.Error("the truncated prompt does not say that it is truncated")
 	}
-	if !utf8Valid(first) {
+	if !utf8.ValidString(first) {
 		t.Error("the prompt was cut inside a rune")
 	}
+}
 
-	// A document that fits is sent as it is.
+func TestRequestForLeavesAShortDocumentAlone(t *testing.T) {
 	short := l1.Document{Kind: l1.KindPR, RawText: "what was said"}
 	if got := distiller.RequestFor(short, 0).Messages[0].Text; got != short.RawText {
 		t.Errorf("a short document was rewritten: %q", got)
 	}
-}
-
-func utf8Valid(s string) bool {
-	for _, r := range s {
-		if r == '�' {
-			return false
-		}
-	}
-	return true
 }

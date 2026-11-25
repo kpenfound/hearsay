@@ -16,19 +16,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
-// A service with dependencies says what it is missing rather than starting
-// without them and failing on the first job. All four have them: the distiller
-// reads L0, writes L1 and calls a model, the assertion worker reads L1, writes
-// L2 and calls a model, the connectors write L0 and keep their backfill
-// positions there, and the API reads every layer and writes an audit event to
-// L0 per bundle.
-//
-// Every service must also return when its context is cancelled — `hearsay all`
-// composes them, so one that ignores cancellation hangs the dev process — and
-// since none runs without a database that is covered against Postgres: the
-// distiller's, the assertion worker's and the API's integration tests run them
-// and cancel them, and internal/service/connectors' tests stop the connectors
-// service on every case they start.
 func TestTheServicesWithDependenciesRefuseToRunWithoutThem(t *testing.T) {
 	cfg := config.Default()
 	tests := []struct {
@@ -42,8 +29,6 @@ func TestTheServicesWithDependenciesRefuseToRunWithoutThem(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Not a cancelled context: the point is that it returns before it
-			// would ever look at one.
 			err := tt.run(t.Context())
 			if err == nil {
 				t.Fatal("Run() with no dependencies = nil, want an error")
