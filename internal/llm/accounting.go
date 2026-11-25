@@ -45,8 +45,7 @@ func completionUsage(resp Response) JudgmentUsage {
 		SanitizeJudgmentUsage(&u)
 		return u
 	}
-	// Legacy providers have no presence bits: positive counts are reported, zero
-	// cannot be distinguished from absence. Never infer provider cost from price.
+
 	var u JudgmentUsage
 	if resp.Tokens.Input > 0 {
 		u.InputTokens = int64ptr(int64(resp.Tokens.Input))

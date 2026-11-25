@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/poll"
 )
 
 type cursorPoller struct {
@@ -26,6 +27,7 @@ type cursorPoller struct {
 func (p *cursorPoller) Poll(context.Context, connector.Sink) error {
 	return errors.New("ordinary Poll called for cursor poller")
 }
+
 func (p *cursorPoller) PollFrom(_ context.Context, _ connector.Sink, from connector.Cursor) (connector.Cursor, error) {
 	select {
 	case p.seen <- from:
@@ -89,23 +91,14 @@ func TestCursorPollerResumesFromDurablePosition(t *testing.T) {
 	}
 }
 
-// The store the runtime keeps backfill positions in, and the one a test uses,
-// are the same interface.
-var _ connector.CursorStore = (*connector.MemoryCursors)(nil)
-
-// runtimeSource is a source with a cadence a test can wait for: the runtime's
-// own floor is thirty seconds, which is a deployment's number and not a test's.
 func runtimeSource(id string) connector.SourceConfig {
 	return connector.SourceConfig{ID: id, Type: connector.FakeType, Containers: []string{"C123"}, Refresh: time.Millisecond}
 }
 
-// quick is the cadence every runtime test runs on.
 func quick() connector.Cadence {
 	return connector.Cadence{MinRefresh: time.Millisecond, Refresh: time.Millisecond, MaxBackoff: 5 * time.Millisecond, Shutdown: time.Second}
 }
 
-// registryOf returns a registry whose factory hands out the connectors a test
-// built, one per source id.
 func registryOf(t *testing.T, conns map[string]connector.Connector) *connector.Registry {
 	t.Helper()
 	reg := connector.NewRegistry()
@@ -121,10 +114,6 @@ func registryOf(t *testing.T, conns map[string]connector.Connector) *connector.R
 	return reg
 }
 
-// start runs a runtime in the background and returns a function that stops it
-// and reports what Run returned. Every test that starts one defers it, so a
-// runtime that will not shut down fails the test rather than leaking into the
-// next one.
 func start(t *testing.T, opts connector.RuntimeOptions) (*connector.Runtime, func() error) {
 	t.Helper()
 	if opts.Cadence == (connector.Cadence{}) {
@@ -149,21 +138,15 @@ func start(t *testing.T, opts connector.RuntimeOptions) (*connector.Runtime, fun
 	}
 }
 
-// waitFor blocks until cond holds, and fails the test if it never does: a test
-// that waits without a bound reads as passing when the thing it waits for has
-// stopped happening.
-func waitFor(t *testing.T, what string, cond func() bool) {
+func waitForPolls(t *testing.T, fake *connector.Fake, rec *connector.Recorder, n int) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out after 10s waiting for %s", what)
-		}
-		time.Sleep(time.Millisecond)
+	for i := range n {
+		id := "tick-" + strconv.Itoa(i)
+		fake.Enqueue(fake.NewEvent(connector.KindMessage, id, "tick"))
+		poll.Until(t, "the poll that emits "+id, func() bool { return slices.Contains(artifacts(rec), id) })
 	}
 }
 
-// poller counts polls, and reports whether two of them ever overlapped.
 type poller struct {
 	*connector.Fake
 	hold     time.Duration
@@ -171,8 +154,8 @@ type poller struct {
 	inPoll   atomic.Int64
 	overlap  atomic.Bool
 	closes   atomic.Int64
-	failures int64         // fail this many polls before the first success
-	release  chan struct{} // if set, the first poll that would succeed waits for it
+	failures int64
+	release  chan struct{}
 }
 
 func (p *poller) Poll(ctx context.Context, sink connector.Sink) error {
@@ -189,10 +172,6 @@ func (p *poller) Poll(ctx context.Context, sink connector.Sink) error {
 	if n := p.polls.Add(1); n <= p.failures {
 		return errors.New("the source is unreachable")
 	}
-	// Held here rather than after the poll: a failure count that clears on
-	// success is only observable while the call that clears it has not
-	// returned, and a test that raced the clear would pass on the timing of the
-	// machine it ran on.
 	if p.release != nil {
 		select {
 		case <-p.release:
@@ -208,9 +187,6 @@ func (p *poller) Close(ctx context.Context) error {
 	return p.Fake.Close(ctx)
 }
 
-// Two ticks of one connector's Poll never run at the same time, which is what
-// lets a poller keep its position in memory without locking
-// (docs/connector-contract.md).
 func TestPollIsNeverConcurrentWithItself(t *testing.T) {
 	src := runtimeSource("fake-eng")
 	fake := connector.NewFake(src)
@@ -222,9 +198,7 @@ func TestPollIsNeverConcurrentWithItself(t *testing.T) {
 		Registry: registryOf(t, map[string]connector.Connector{src.ID: p}),
 		Sink:     rec,
 	})
-	// Several ticks, each of which takes five times the interval: a runtime
-	// that started a goroutine per tick would have them piled up by now.
-	waitFor(t, "five polls", func() bool { return p.polls.Load() >= 5 })
+	poll.Until(t, "five polls", func() bool { return p.polls.Load() >= 5 })
 	if err := stop(); err != nil {
 		t.Fatalf("Run() = %v, want nil", err)
 	}
@@ -234,14 +208,11 @@ func TestPollIsNeverConcurrentWithItself(t *testing.T) {
 	if got := p.closes.Load(); got != 1 {
 		t.Errorf("the connector was closed %d times, want once", got)
 	}
-	// And the runtime closed it: a closed fake refuses to ingest.
 	if err := p.Fake.Poll(t.Context(), rec); !errors.Is(err, connector.ErrClosed) {
 		t.Errorf("Poll() after the runtime stopped = %v, want ErrClosed", err)
 	}
 }
 
-// A poll that fails is retried on the next tick rather than ending the loop,
-// and the failures are visible in health until one works.
 func TestAPollThatFailsIsRetried(t *testing.T) {
 	src := runtimeSource("fake-eng")
 	fake := connector.NewFake(src)
@@ -254,16 +225,14 @@ func TestAPollThatFailsIsRetried(t *testing.T) {
 		Registry: registryOf(t, map[string]connector.Connector{src.ID: p}),
 		Sink:     rec,
 	})
-	// The third poll is the one that will work, and it is held: the count is
-	// what it was when the second failed, and nothing has cleared it yet.
-	waitFor(t, "the poll after the failures to start", func() bool { return p.polls.Load() > p.failures })
+	poll.Until(t, "the poll after the failures to start", func() bool { return p.polls.Load() > p.failures })
 	if got := runtime.Health(t.Context()).Sources[0].PollFailures; got != p.failures {
 		t.Errorf("PollFailures = %d after %d failed polls, want %d", got, p.failures, p.failures)
 	}
 	close(p.release)
 
-	waitFor(t, "the event that follows them", func() bool { return len(rec.Events()) == 1 })
-	waitFor(t, "the failure count to clear", func() bool {
+	poll.Until(t, "the event that follows them", func() bool { return len(rec.Events()) == 1 })
+	poll.Until(t, "the failure count to clear", func() bool {
 		return runtime.Health(t.Context()).Sources[0].PollFailures == 0
 	})
 	if err := stop(); err != nil {
@@ -271,9 +240,6 @@ func TestAPollThatFailsIsRetried(t *testing.T) {
 	}
 }
 
-// An event from a container config does not list is dropped before it reaches
-// the sink, and counted, because a container nobody put in config is not an
-// error anywhere (docs/design.md#access-control, control point 1).
 func TestAnEventOutsideTheAllowlistIsDroppedAndCounted(t *testing.T) {
 	src := runtimeSource("fake-eng")
 	fake := connector.NewFake(src)
@@ -288,8 +254,8 @@ func TestAnEventOutsideTheAllowlistIsDroppedAndCounted(t *testing.T) {
 		Registry: registryOf(t, map[string]connector.Connector{src.ID: fake}),
 		Sink:     rec,
 	})
-	waitFor(t, "the allowed event", func() bool { return len(rec.Events()) >= 1 })
-	waitFor(t, "the drop to be counted", func() bool {
+	poll.Until(t, "the allowed event", func() bool { return len(rec.Events()) >= 1 })
+	poll.Until(t, "the drop to be counted", func() bool {
 		return runtime.Health(t.Context()).Sources[0].Dropped >= 1
 	})
 	if err := stop(); err != nil {
@@ -309,11 +275,9 @@ func TestAnEventOutsideTheAllowlistIsDroppedAndCounted(t *testing.T) {
 	}
 }
 
-// pager is a backfiller that records the cursor it was called with, and can be
-// held between calls so that a test knows exactly how far a backfill got.
 type pager struct {
 	*connector.Fake
-	tokens chan struct{} // one token per call; nil is no waiting
+	tokens chan struct{}
 
 	mu   sync.Mutex
 	from []connector.Cursor
@@ -339,7 +303,6 @@ func (p *pager) cursors() []connector.Cursor {
 	return slices.Clone(p.from)
 }
 
-// pages builds a fake with three pages of history, one event each.
 func pages(src connector.SourceConfig) *connector.Fake {
 	fake := connector.NewFake(src)
 	for _, id := range []string{"h1", "h2", "h3"} {
@@ -348,15 +311,10 @@ func pages(src connector.SourceConfig) *connector.Fake {
 	return fake
 }
 
-// A backfill interrupted by a restart resumes from the position that was
-// stored, not from the beginning of history: the restarted process must not
-// walk a source's whole history again.
 func TestBackfillResumesFromThePersistedCursor(t *testing.T) {
 	src := runtimeSource("fake-eng")
 	cursors := connector.NewMemoryCursors()
 
-	// The first process gets one page done, and is stopped while the second
-	// call is waiting for a token it never gets.
 	first := &pager{Fake: pages(src), tokens: make(chan struct{}, 1)}
 	firstRec := &connector.Recorder{}
 	_, stop := start(t, connector.RuntimeOptions{
@@ -366,7 +324,7 @@ func TestBackfillResumesFromThePersistedCursor(t *testing.T) {
 		Cursors:  cursors,
 	})
 	first.tokens <- struct{}{}
-	waitFor(t, "the first page to be persisted", func() bool { return len(cursors.Saves(src.ID)) == 1 })
+	poll.Until(t, "the first page to be persisted", func() bool { return len(cursors.Saves(src.ID)) == 1 })
 	if err := stop(); err != nil {
 		t.Fatalf("Run(first) = %v, want nil", err)
 	}
@@ -376,8 +334,6 @@ func TestBackfillResumesFromThePersistedCursor(t *testing.T) {
 		t.Fatalf("after one page the stored position is %+v, want a cursor and not done", saved)
 	}
 
-	// The second process resumes: it asks for the stored cursor first, and
-	// nothing from the page the first process already walked reaches its sink.
 	second := &pager{Fake: pages(src)}
 	secondRec := &connector.Recorder{}
 	runtime, stop := start(t, connector.RuntimeOptions{
@@ -386,7 +342,7 @@ func TestBackfillResumesFromThePersistedCursor(t *testing.T) {
 		Sink:     secondRec,
 		Cursors:  cursors,
 	})
-	waitFor(t, "the rest of history", func() bool {
+	poll.Until(t, "the rest of history", func() bool {
 		return runtime.Health(t.Context()).Sources[0].BackfillDone
 	})
 	if err := stop(); err != nil {
@@ -405,7 +361,6 @@ func TestBackfillResumesFromThePersistedCursor(t *testing.T) {
 		t.Errorf("the restarted backfill emitted %v, want %v", got, want)
 	}
 
-	// And history is exhausted, so a third process does not walk it again.
 	final, err := cursors.Load(t.Context(), src.ID)
 	if err != nil {
 		t.Fatalf("Load() = %v, want no error", err)
@@ -418,8 +373,6 @@ func TestBackfillResumesFromThePersistedCursor(t *testing.T) {
 	}
 }
 
-// The position is stored after every call rather than at the end, which is what
-// makes an interrupted backfill resume rather than start again.
 func TestBackfillPersistsAfterEveryCall(t *testing.T) {
 	src := runtimeSource("fake-eng")
 	cursors := connector.NewMemoryCursors()
@@ -432,7 +385,7 @@ func TestBackfillPersistsAfterEveryCall(t *testing.T) {
 		Sink:     rec,
 		Cursors:  cursors,
 	})
-	waitFor(t, "history", func() bool { return runtime.Health(t.Context()).Sources[0].BackfillDone })
+	poll.Until(t, "history", func() bool { return runtime.Health(t.Context()).Sources[0].BackfillDone })
 	if err := stop(); err != nil {
 		t.Fatalf("Run() = %v, want nil", err)
 	}
@@ -449,16 +402,11 @@ func TestBackfillPersistsAfterEveryCall(t *testing.T) {
 			t.Errorf("save %d counts %d events, want %d", i, save.Events, want)
 		}
 	}
-	// The last call reports Done, and its Next is meaningless: the position
-	// stays where the last call that meant one left it.
 	if got, want := saves[len(saves)-1].Cursor, saves[len(saves)-2].Cursor; got != want {
 		t.Errorf("the position after the last page is %q, want the one before it (%q): Next is ignored when Done is set", got, want)
 	}
 }
 
-// stuck is a backfiller that hands back the cursor it was given and emits
-// nothing: the contract says one call does a bounded amount of work and reports
-// Done when there is no more, so this is a connector to fix.
 type stuck struct {
 	*connector.Fake
 	calls atomic.Int64
@@ -469,10 +417,6 @@ func (s *stuck) Backfill(_ context.Context, _ connector.Sink, from connector.Cur
 	return connector.BackfillResult{Next: from}, nil
 }
 
-// A backfill that makes no progress is a failure and not the end of history:
-// recording a walk that never happened would lose the source's history for
-// good, and calling it again immediately would be a hot loop against the
-// source's API.
 func TestABackfillThatMakesNoProgressIsNotProgress(t *testing.T) {
 	src := runtimeSource("fake-eng")
 	cursors := connector.NewMemoryCursors()
@@ -484,7 +428,7 @@ func TestABackfillThatMakesNoProgressIsNotProgress(t *testing.T) {
 		Sink:     &connector.Recorder{},
 		Cursors:  cursors,
 	})
-	waitFor(t, "the backfill to be tried", func() bool { return s.calls.Load() >= 2 })
+	poll.Until(t, "the backfill to be tried", func() bool { return s.calls.Load() >= 2 })
 	health := runtime.Health(t.Context())
 	if err := stop(); err != nil {
 		t.Fatalf("Run() = %v, want nil", err)
@@ -500,22 +444,17 @@ func TestABackfillThatMakesNoProgressIsNotProgress(t *testing.T) {
 	}
 }
 
-// flaky is a backfiller that fails the first few calls and then works, which is
-// what a source that was briefly unreachable looks like.
 type flaky struct {
 	*connector.Fake
 	failures int64
 	calls    atomic.Int64
-	release  chan struct{} // if set, the first call that would succeed waits for it
+	release  chan struct{}
 }
 
 func (f *flaky) Backfill(ctx context.Context, sink connector.Sink, from connector.Cursor) (connector.BackfillResult, error) {
 	if f.calls.Add(1) <= f.failures {
 		return connector.BackfillResult{}, errors.New("the source is unreachable")
 	}
-	// Held for the same reason [poller] is: the count clears when a call and
-	// its save both work, so it can only be read while the call that clears it
-	// is still in flight.
 	if f.release != nil {
 		select {
 		case <-f.release:
@@ -526,9 +465,6 @@ func (f *flaky) Backfill(ctx context.Context, sink connector.Sink, from connecto
 	return f.Fake.Backfill(ctx, sink, from)
 }
 
-// A backfill that fails is retried and counted, and the count clears when one
-// works: a source whose history is stuck must not look like one that has no
-// history left to walk.
 func TestABackfillThatFailsIsRetriedAndCounted(t *testing.T) {
 	src := runtimeSource("fake-eng")
 	cursors := connector.NewMemoryCursors()
@@ -541,14 +477,13 @@ func TestABackfillThatFailsIsRetriedAndCounted(t *testing.T) {
 		Sink:     rec,
 		Cursors:  cursors,
 	})
-	// The third call is the one that will work, and it is held.
-	waitFor(t, "the call after the failures to start", func() bool { return f.calls.Load() > f.failures })
+	poll.Until(t, "the call after the failures to start", func() bool { return f.calls.Load() > f.failures })
 	if got := runtime.Health(t.Context()).Sources[0].BackfillFailures; got != f.failures {
 		t.Errorf("BackfillFailures = %d after %d failed calls, want %d", got, f.failures, f.failures)
 	}
 	close(f.release)
 
-	waitFor(t, "the history that follows them", func() bool {
+	poll.Until(t, "the history that follows them", func() bool {
 		return runtime.Health(t.Context()).Sources[0].BackfillDone
 	})
 	if err := stop(); err != nil {
@@ -562,9 +497,6 @@ func TestABackfillThatFailsIsRetriedAndCounted(t *testing.T) {
 	}
 }
 
-// A store that will not take the position is counted too: a backfill retrying
-// forever behind a cursor nothing will store is the failure that health would
-// otherwise report as a source with nothing to walk.
 func TestAPositionThatCannotBeStoredIsCounted(t *testing.T) {
 	src := runtimeSource("fake-eng")
 	cursors := connector.NewMemoryCursors()
@@ -576,7 +508,7 @@ func TestAPositionThatCannotBeStoredIsCounted(t *testing.T) {
 		Sink:     &connector.Recorder{},
 		Cursors:  cursors,
 	})
-	waitFor(t, "the failure to be reported", func() bool {
+	poll.Until(t, "the failure to be reported", func() bool {
 		return runtime.Health(t.Context()).Sources[0].BackfillFailures >= 1
 	})
 	got := runtime.Health(t.Context()).Sources[0]
@@ -588,9 +520,6 @@ func TestAPositionThatCannotBeStoredIsCounted(t *testing.T) {
 	}
 }
 
-// A position that cannot even be read is counted too, and the backfill does not
-// start: walking history from the beginning because the store was briefly
-// unreachable is exactly what the stored position exists to prevent.
 func TestAPositionThatCannotBeReadIsCounted(t *testing.T) {
 	src := runtimeSource("fake-eng")
 	cursors := connector.NewMemoryCursors()
@@ -603,7 +532,7 @@ func TestAPositionThatCannotBeReadIsCounted(t *testing.T) {
 		Sink:     &connector.Recorder{},
 		Cursors:  cursors,
 	})
-	waitFor(t, "the failure to be reported", func() bool {
+	poll.Until(t, "the failure to be reported", func() bool {
 		return runtime.Health(t.Context()).Sources[0].BackfillFailures >= 1
 	})
 	got := runtime.Health(t.Context()).Sources[0]
@@ -618,9 +547,6 @@ func TestAPositionThatCannotBeReadIsCounted(t *testing.T) {
 	}
 }
 
-// unreliableCursors fails a fixed number of Loads and then answers: a store
-// that was briefly away, which is what a failover or a pool restart looks like
-// to a process that has just started.
 type unreliableCursors struct {
 	*connector.MemoryCursors
 	remaining atomic.Int64
@@ -633,15 +559,9 @@ func (u *unreliableCursors) Load(ctx context.Context, source string) (connector.
 	return u.MemoryCursors.Load(ctx, source)
 }
 
-// A source whose history is already walked is not walked again on the next
-// start — and a read that failed on the way to finding that out is not still
-// being reported once it has worked.
 func TestADoneBackfillIsNotRestarted(t *testing.T) {
 	src := runtimeSource("fake-eng")
 	cursors := &unreliableCursors{MemoryCursors: connector.NewMemoryCursors()}
-	// One failed read, then the store answers. This is the path with no
-	// iteration to clear the count: the source is done, so nothing is called
-	// and nothing is saved.
 	cursors.remaining.Store(1)
 	cursors.Set(src.ID, connector.BackfillState{Cursor: "3", Done: true, Events: 3})
 	p := &pager{Fake: pages(src)}
@@ -653,11 +573,10 @@ func TestADoneBackfillIsNotRestarted(t *testing.T) {
 		Sink:     rec,
 		Cursors:  cursors,
 	})
-	waitFor(t, "the stored position to be read", func() bool {
+	poll.Until(t, "the stored position to be read", func() bool {
 		return runtime.Health(t.Context()).Sources[0].BackfillDone
 	})
-	// Long enough for many ticks of a one-millisecond cadence.
-	time.Sleep(50 * time.Millisecond)
+	waitForPolls(t, p.Fake, rec, 2)
 	got := runtime.Health(t.Context()).Sources[0]
 	if err := stop(); err != nil {
 		t.Fatalf("Run() = %v, want nil", err)
@@ -668,24 +587,15 @@ func TestADoneBackfillIsNotRestarted(t *testing.T) {
 	if saves := cursors.Saves(src.ID); len(saves) != 0 {
 		t.Errorf("the position was written %d times for a source whose history is done: %+v", len(saves), saves)
 	}
-	// Health says what the stored position says, not what this process happened
-	// to do: an operator reading readiness after a deploy must not conclude the
-	// backfill never ran.
 	if !got.BackfillDone || got.Backfilled != 3 {
 		t.Errorf("after resuming a finished backfill health says done=%v after %d events, want done after the 3 the stored position counts",
 			got.BackfillDone, got.Backfilled)
 	}
-	// And the read that failed on the way is over: BackfillFailures is "how
-	// many times in a row, and zero once one works", on this path as much as on
-	// the one with a loop in it.
 	if got.BackfillFailures != 0 {
 		t.Errorf("BackfillFailures = %d after a read that failed once and then worked, want it cleared", got.BackfillFailures)
 	}
 }
 
-// With nowhere to keep a position, the runtime polls and does not backfill:
-// walking the whole of a source's history on every restart is worse than not
-// walking it.
 func TestBackfillNeedsACursorStore(t *testing.T) {
 	src := runtimeSource("fake-eng")
 	p := &pager{Fake: pages(src)}
@@ -696,9 +606,7 @@ func TestBackfillNeedsACursorStore(t *testing.T) {
 		Registry: registryOf(t, map[string]connector.Connector{src.ID: p}),
 		Sink:     rec,
 	})
-	// Long enough for many ticks of a one-millisecond cadence: what is being
-	// asserted is that something never happens.
-	time.Sleep(50 * time.Millisecond)
+	waitForPolls(t, p.Fake, rec, 2)
 	if err := stop(); err != nil {
 		t.Fatalf("Run() = %v, want nil", err)
 	}
@@ -707,8 +615,6 @@ func TestBackfillNeedsACursorStore(t *testing.T) {
 	}
 }
 
-// A push connector's handler is mounted under the path the runtime owns, and
-// what it emits goes through the same gate a poll does.
 func TestPushHandlersAreMounted(t *testing.T) {
 	src := runtimeSource("fake-eng")
 	fake := connector.NewFake(src)
@@ -756,9 +662,6 @@ func TestPushHandlersAreMounted(t *testing.T) {
 	}
 }
 
-// pushOnly is a connector that only receives: no Poll, no Backfill, so the
-// runtime has no loop of its own for it. GitHub with webhooks and no history to
-// walk is this shape.
 type pushOnly struct {
 	fake *connector.Fake
 }
@@ -768,9 +671,6 @@ func (p *pushOnly) Health(ctx context.Context) connector.Health { return p.fake.
 func (p *pushOnly) Close(ctx context.Context) error             { return p.fake.Close(ctx) }
 func (p *pushOnly) Handler(sink connector.Sink) http.Handler    { return p.fake.Handler(sink) }
 
-// A runtime whose connectors have no loops still runs: a push connector is
-// waiting to be delivered to, and health is served while it waits. Run returns
-// when it is asked to, and not when it happens to run out of work.
 func TestRunKeepsRunningWithNothingToLoopOver(t *testing.T) {
 	src := runtimeSource("fake-eng")
 	fake := connector.NewFake(src)
@@ -789,13 +689,11 @@ func TestRunKeepsRunningWithNothingToLoopOver(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- runtime.Run(ctx) }()
 
-	// Long enough for a hundred ticks of the cadence these tests run on.
 	select {
 	case err := <-done:
 		t.Fatalf("Run() returned %v while it was still supposed to be hosting a push connector", err)
 	case <-time.After(100 * time.Millisecond):
 	}
-	// And it is still serving: the delivery lands in the sink.
 	body, err := json.Marshal(fake.NewEvent(connector.KindMessage, "p1", "delivered"))
 	if err != nil {
 		t.Fatalf("marshalling the event: %v", err)
@@ -821,8 +719,6 @@ func TestRunKeepsRunningWithNothingToLoopOver(t *testing.T) {
 	}
 }
 
-// Health is each connector's own account of itself, and the worst of them is
-// the runtime's.
 func TestHealthAggregatesEveryConnector(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -864,8 +760,6 @@ func TestHealthAggregatesEveryConnector(t *testing.T) {
 				t.Fatalf("Health() reports %d sources, want %d", len(health.Sources), len(tt.statuses))
 			}
 			for i, got := range health.Sources {
-				// Each source keeps its own status, unchanged: the aggregate is
-				// the runtime's summary, not a rewrite of what a connector said.
 				if got.Status != tt.statuses[i] {
 					t.Errorf("source %s reports %q, want the connector's own %q", got.Source, got.Status, tt.statuses[i])
 				}
@@ -877,9 +771,6 @@ func TestHealthAggregatesEveryConnector(t *testing.T) {
 	}
 }
 
-// Building the connectors is where a misconfigured source fails: a source that
-// cannot start is a startup failure and not a health status
-// (docs/connector-contract.md).
 func TestNewRuntimeRefusesWhatCannotRun(t *testing.T) {
 	src := runtimeSource("fake-eng")
 	fakes := registryOf(t, map[string]connector.Connector{src.ID: connector.NewFake(src)})
@@ -944,8 +835,6 @@ func TestNewRuntimeRefusesWhatCannotRun(t *testing.T) {
 	}
 }
 
-// A connector already built when a later source fails is closed: nothing else
-// holds it, so nothing else can.
 func TestNewRuntimeClosesWhatItBuiltBeforeItFailed(t *testing.T) {
 	first := runtimeSource("fake-one")
 	built := connector.NewFake(first)
@@ -964,8 +853,6 @@ func TestNewRuntimeClosesWhatItBuiltBeforeItFailed(t *testing.T) {
 	}
 }
 
-// Configuration names an environment variable and the runtime supplies its
-// value (docs/config.md).
 func TestResolveSecrets(t *testing.T) {
 	env := map[string]string{"HEARSAY_GITHUB_TOKEN": "t0ken", "HEARSAY_EMPTY": ""}
 	lookup := func(name string) (string, bool) {
@@ -1028,74 +915,65 @@ func TestResolveSecrets(t *testing.T) {
 	}
 }
 
-// The floor, the fallback and the cap are the runtime's own, applied on top of
-// what a source asked for.
-func TestCadence(t *testing.T) {
-	cadence := connector.Cadence{MinRefresh: 30 * time.Second, Refresh: 5 * time.Minute, MaxBackoff: 15 * time.Minute}
+var testCadence = connector.Cadence{MinRefresh: 30 * time.Second, Refresh: 5 * time.Minute, MaxBackoff: 15 * time.Minute}
 
-	t.Run("interval", func(t *testing.T) {
-		tests := []struct {
-			name string
-			src  time.Duration
-			want time.Duration
-		}{
-			{name: "what the source asked for", src: 2 * time.Minute, want: 2 * time.Minute},
-			{name: "under the floor", src: time.Second, want: 30 * time.Second},
-			{name: "no refresh in config", src: 0, want: 5 * time.Minute},
-			{name: "exactly the floor", src: 30 * time.Second, want: 30 * time.Second},
-		}
-		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				got := cadence.Interval(connector.SourceConfig{ID: "s", Refresh: tt.src})
-				if got != tt.want {
-					t.Errorf("Interval(%s) = %s, want %s", tt.src, got, tt.want)
-				}
-			})
-		}
-	})
-
-	t.Run("a tick is spread over the interval after it is due", func(t *testing.T) {
-		// Two sources, or two replicas, whose ticks start together stay in
-		// lockstep forever without this.
-		seen := map[time.Duration]bool{}
-		for range 200 {
-			seen[cadence.Backoff(time.Minute, 1)] = true
-		}
-		if len(seen) < 2 {
-			t.Errorf("200 ticks of a one-minute interval all came out at %v, want them spread", slices.Collect(maps.Keys(seen)))
-		}
-	})
-
-	t.Run("backoff", func(t *testing.T) {
-		tests := []struct {
-			name     string
-			interval time.Duration
-			fails    int
-			want     time.Duration
-		}{
-			{name: "the first failure waits an interval", interval: time.Minute, fails: 1, want: time.Minute},
-			{name: "the second doubles it", interval: time.Minute, fails: 2, want: 2 * time.Minute},
-			{name: "the third doubles again", interval: time.Minute, fails: 3, want: 4 * time.Minute},
-			{name: "and it is capped", interval: time.Minute, fails: 30, want: 15 * time.Minute},
-			{name: "a source slower than the cap keeps its own cadence", interval: time.Hour, fails: 30, want: time.Hour},
-			{name: "zero failures is the interval", interval: time.Minute, fails: 0, want: time.Minute},
-		}
-		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				// Jitter is added on top and never taken off: the interval is a
-				// promise not to poll a source more often than that.
-				for range 50 {
-					got := cadence.Backoff(tt.interval, tt.fails)
-					if got < tt.want || got > tt.want+tt.want/10 {
-						t.Fatalf("Backoff(%s, %d) = %s, want between %s and %s", tt.interval, tt.fails, got, tt.want, tt.want+tt.want/10)
-					}
-				}
-			})
-		}
-	})
+func TestCadenceInterval(t *testing.T) {
+	tests := []struct {
+		name string
+		src  time.Duration
+		want time.Duration
+	}{
+		{name: "what the source asked for", src: 2 * time.Minute, want: 2 * time.Minute},
+		{name: "under the floor", src: time.Second, want: 30 * time.Second},
+		{name: "no refresh in config", src: 0, want: 5 * time.Minute},
+		{name: "exactly the floor", src: 30 * time.Second, want: 30 * time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := testCadence.Interval(connector.SourceConfig{ID: "s", Refresh: tt.src})
+			if got != tt.want {
+				t.Errorf("Interval(%s) = %s, want %s", tt.src, got, tt.want)
+			}
+		})
+	}
 }
 
-// artifacts is what reached a sink, which is what a test compares.
+func TestCadenceSpreadsTicksOverTheIntervalAfterTheyAreDue(t *testing.T) {
+	seen := map[time.Duration]bool{}
+	for range 200 {
+		seen[testCadence.Backoff(time.Minute, 1)] = true
+	}
+	if len(seen) < 2 {
+		t.Errorf("200 ticks of a one-minute interval all came out at %v, want them spread", slices.Collect(maps.Keys(seen)))
+	}
+}
+
+func TestCadenceBackoff(t *testing.T) {
+	tests := []struct {
+		name     string
+		interval time.Duration
+		fails    int
+		want     time.Duration
+	}{
+		{name: "the first failure waits an interval", interval: time.Minute, fails: 1, want: time.Minute},
+		{name: "the second doubles it", interval: time.Minute, fails: 2, want: 2 * time.Minute},
+		{name: "the third doubles again", interval: time.Minute, fails: 3, want: 4 * time.Minute},
+		{name: "and it is capped", interval: time.Minute, fails: 30, want: 15 * time.Minute},
+		{name: "a source slower than the cap keeps its own cadence", interval: time.Hour, fails: 30, want: time.Hour},
+		{name: "zero failures is the interval", interval: time.Minute, fails: 0, want: time.Minute},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for range 50 {
+				got := testCadence.Backoff(tt.interval, tt.fails)
+				if got < tt.want || got > tt.want+tt.want/10 {
+					t.Fatalf("Backoff(%s, %d) = %s, want between %s and %s", tt.interval, tt.fails, got, tt.want, tt.want+tt.want/10)
+				}
+			}
+		})
+	}
+}
+
 func artifacts(rec *connector.Recorder) []string {
 	out := []string{}
 	for _, ev := range rec.Events() {
@@ -1104,8 +982,6 @@ func artifacts(rec *connector.Recorder) []string {
 	return out
 }
 
-// A completed backfill belongs to the configured input set that produced it.
-// Changing access config must not leave a completed cursor suppressing a walk.
 type versionPager struct {
 	*pager
 	version string
@@ -1117,10 +993,10 @@ func TestVersionedBackfillRestartsWhenConfigChanges(t *testing.T) {
 	src := runtimeSource("versioned")
 	cursors := connector.NewMemoryCursors()
 	cursors.Set(src.ID, connector.BackfillState{Cursor: "old-config", Done: true, Events: 3})
-	first := &versionPager{pager: &pager{Fake: pages(src)}, version: "new-config"}
+	p := &versionPager{pager: &pager{Fake: pages(src)}, version: "new-config"}
 	rec := &connector.Recorder{}
-	_, stop := start(t, connector.RuntimeOptions{Sources: []connector.SourceConfig{src}, Registry: registryOf(t, map[string]connector.Connector{src.ID: first}), Sink: rec, Cursors: cursors})
-	waitFor(t, "versioned walk", func() bool {
+	_, stop := start(t, connector.RuntimeOptions{Sources: []connector.SourceConfig{src}, Registry: registryOf(t, map[string]connector.Connector{src.ID: p}), Sink: rec, Cursors: cursors})
+	poll.Until(t, "versioned walk", func() bool {
 		state, _ := cursors.Load(t.Context(), src.ID)
 		return state.Done && state.Cursor == "new-config"
 	})
@@ -1130,17 +1006,26 @@ func TestVersionedBackfillRestartsWhenConfigChanges(t *testing.T) {
 	if len(rec.Events()) != 3 {
 		t.Fatalf("rewalk emitted %d, want 3", len(rec.Events()))
 	}
-	// The same configuration again: the stored position is done for it, so
-	// health reports the walk done without a call. A runtime that walked again
-	// would report done only after emitting the history.
-	again := &versionPager{pager: &pager{Fake: pages(src)}, version: "new-config"}
-	rec = &connector.Recorder{}
-	runtime, stop := start(t, connector.RuntimeOptions{Sources: []connector.SourceConfig{src}, Registry: registryOf(t, map[string]connector.Connector{src.ID: again}), Sink: rec, Cursors: cursors})
-	waitFor(t, "the stored position to be read", func() bool { return runtime.Health(t.Context()).Sources[0].BackfillDone })
+}
+
+func TestVersionedBackfillIsNotRepeatedForTheSameConfig(t *testing.T) {
+	src := runtimeSource("versioned")
+	cursors := connector.NewMemoryCursors()
+	cursors.Set(src.ID, connector.BackfillState{Cursor: "new-config", Done: true, Events: 3})
+	p := &versionPager{pager: &pager{Fake: pages(src)}, version: "new-config"}
+	rec := &connector.Recorder{}
+	runtime, stop := start(t, connector.RuntimeOptions{Sources: []connector.SourceConfig{src}, Registry: registryOf(t, map[string]connector.Connector{src.ID: p}), Sink: rec, Cursors: cursors})
+	poll.Until(t, "the stored position to be read", func() bool { return runtime.Health(t.Context()).Sources[0].BackfillDone })
+	waitForPolls(t, p.Fake, rec, 2)
 	if err := stop(); err != nil {
 		t.Fatal(err)
 	}
-	if calls := again.cursors(); len(calls) != 0 || len(rec.Events()) != 0 {
-		t.Fatalf("same version called Backfill %v and emitted %d events, want neither", calls, len(rec.Events()))
+	if calls := p.cursors(); len(calls) != 0 {
+		t.Fatalf("same version called Backfill %v, want no call", calls)
+	}
+	for _, id := range artifacts(rec) {
+		if !strings.HasPrefix(id, "tick-") {
+			t.Errorf("same version emitted history %q, want none", id)
+		}
 	}
 }

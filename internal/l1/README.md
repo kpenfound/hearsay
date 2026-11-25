@@ -140,10 +140,10 @@ Capture **before** reading the state used in a question, while holding the
 worker's existing scope key where applicable. If a later read sees another
 revision, discard the judgment or capture and judge again.
 
-`BeginJudgment` on an autocommit store records an attempt before the provider
-call. Use its returned id for the final `JudgmentRecord`. An attempt remains
+`BeginJudgments` on an autocommit store records attempts before the provider
+call. Use each returned id for the final `JudgmentRecord`. An attempt remains
 an attempt through a crash or refused commit; only a `committed` record may
-be reused. `LookupJudgment` checks the current state and exact question/hash
+be reused. `LookupJudgments` checks the current state and exact question/hash
 identity in the same SQL snapshot. A requested model version is deliberately
 absent from the lookup key: reuse returns the original resolved version,
 policy, label and accounting without reinterpreting the result. A committed
@@ -200,8 +200,7 @@ marker log independently of the journal. **Any new table that changes
 effective inputs must join this trigger/guard protocol.**
 
 `PipelineObservation` is one stage run, `distill` or `assert`; its cohort is
-always `accepted` now, and `baseline` and `shadow` survive only on rows written
-before Jev was required. It includes handler/queue time in nanoseconds,
+`accepted`, `baseline` or `shadow`, and the workers write `accepted`. It includes handler/queue time in nanoseconds,
 generative calls/tokens/cost, judgment attempts/tokens/cost and candidate
 processing. Durations,
 counts and usage are pointers: nil means unknown, and a pointer to zero is
@@ -211,7 +210,7 @@ storage. Observations use the same commit operation, including runs with no
 judgment records; their evidence snapshots are validated too.
 Summaries and reports over these tables belong to `internal/eval`.
 
-`JudgmentsFor`, `LookupJudgment` and `ObservationsFor` filter both scope and
+`JudgmentsFor`, `LookupJudgments` and `ObservationsFor` filter both scope and
 stored ACL, then check current evidence access, including the newest visible
 source revisions while L1 is waiting for its ACL rebuild. An operator deletion removes
 attempts, committed records and observations referencing any covered source
@@ -234,6 +233,6 @@ membership identities. Bursts, wiki sections, meeting segments and other
 SourceBuilt keys that cannot be tied to a captured root or window retain a
 conservative source-wide marker; event-pair markers alone cannot describe
 their membership. Stored candidate evidence uses conversation scopes too,
-with the same source fallback for derived shapes. The default remains a full L1 input
+with the same source fallback for derived shapes. The default is a full L1 input
 snapshot for assertion consumers. Do not use source-built identity when the
 question depends on previously generated L1 text.

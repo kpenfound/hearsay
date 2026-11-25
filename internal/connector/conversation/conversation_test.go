@@ -1,11 +1,10 @@
 package conversation_test
 
 import (
-	"context"
+	"bytes"
 	"encoding/json"
 	"errors"
-	"io"
-	"net"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -13,30 +12,24 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/connector/connectortest"
 	"github.com/kpenfound/hearsay/internal/connector/conversation"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/principal"
-	"github.com/kpenfound/hearsay/internal/service/connectors"
+	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
 const sourceID = "kern-chat"
 
-// The tokens, by the environment variable the principals name.
 var env = map[string]string{
 	"KERN_TOKEN":  "kern-secret",
 	"SCOUT_TOKEN": "scout-secret",
 	"KYLE_TOKEN":  "kyle-secret",
 }
 
-func lookup(name string) (string, bool) {
-	v, ok := env[name]
-	return v, ok
-}
+var lookup = connectortest.Lookup(env)
 
-// identity is the mapping a principal needs in the conversation source for its
-// events to resolve and be read.
 func identity(id string) []principal.Identity {
 	return []principal.Identity{{Source: sourceID, NativeID: id}}
 }
@@ -56,43 +49,15 @@ func source() connector.SourceConfig {
 	}
 }
 
-// server is the connector's handler behind the gate the runtime would give it,
-// writing to a recorder.
 func server(t *testing.T, src connector.SourceConfig) (*httptest.Server, *connector.Recorder) {
 	t.Helper()
 	c, err := conversation.New(src, principals, lookup)
 	if err != nil {
 		t.Fatalf("New() = %v", err)
 	}
-	rec := &connector.Recorder{}
-	gate := connector.NewGate(rec, src.ID, c.Describe(), connector.NewAllowlist(src))
-	srv := httptest.NewServer(c.Handler(gate))
-	t.Cleanup(srv.Close)
-	return srv, rec
+	return connectortest.Serve(t, src, c)
 }
 
-func post(t *testing.T, url, token, body string) (int, string) {
-	t.Helper()
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, strings.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	out, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return resp.StatusCode, string(out)
-}
-
-// The two messages of one exchange, as docs/connector-contract.md shows them.
 const (
 	ownerWords = `{"owner":"kyle","conversation":"c-1","exchange":"x-1","role":"owner",
 		"time":"2026-11-02T09:00:00Z","text":"Let's use Postgres for the queue."}`
@@ -102,7 +67,7 @@ const (
 
 func accepted(t *testing.T, srv *httptest.Server, token, body string) conversation.Accepted {
 	t.Helper()
-	code, out := post(t, srv.URL, token, body)
+	code, out := connectortest.PostWithToken(t, srv.URL, token, body)
 	if code != http.StatusAccepted {
 		t.Fatalf("POST = %d %s, want 202", code, out)
 	}
@@ -113,9 +78,7 @@ func accepted(t *testing.T, srv *httptest.Server, token, body string) conversati
 	return got
 }
 
-// An exchange is two events, authored by the owner and by the agent, in the
-// owner's stream, readable by the owner alone.
-func TestAnExchangeIsTwoOwnerOnlyEvents(t *testing.T) {
+func TestAnExchangeIsTwoEvents(t *testing.T) {
 	srv, rec := server(t, source())
 	owner := accepted(t, srv, env["KERN_TOKEN"], ownerWords)
 	reply := accepted(t, srv, env["KERN_TOKEN"], answer)
@@ -165,14 +128,6 @@ func TestAnExchangeIsTwoOwnerOnlyEvents(t *testing.T) {
 			if want := (connector.Container{Kind: conversation.ContainerStream, NativeID: "kyle"}); ev.Payload.Container != want {
 				t.Errorf("container = %+v, want %+v", ev.Payload.Container, want)
 			}
-			wantACL := connector.ACL{{Kind: connector.ACLIdentity, Source: sourceID, NativeID: "kyle"}}
-			if !reflect.DeepEqual(ev.ACL, wantACL) {
-				t.Errorf("acl = %+v, want the owner alone, %+v", ev.ACL, wantACL)
-			}
-			// The chat paths take a message from a channel, which this is not.
-			if kind, ok := l1.KindFor(ev); ok || l1.ChatRoot(ev) {
-				t.Errorf("l1 reads the event as a %q document root (chat root %v), want neither", kind, l1.ChatRoot(ev))
-			}
 		})
 	}
 	if events[0].ID == events[1].ID {
@@ -180,9 +135,36 @@ func TestAnExchangeIsTwoOwnerOnlyEvents(t *testing.T) {
 	}
 }
 
-// A message posted again with its current content writes nothing, and with
-// changed text is a new current revision, never a conflict.
-func TestARepostIsUnchangedOrANewRevision(t *testing.T) {
+func postExchange(t *testing.T) []connector.Event {
+	t.Helper()
+	srv, rec := server(t, source())
+	accepted(t, srv, env["KERN_TOKEN"], ownerWords)
+	accepted(t, srv, env["KERN_TOKEN"], answer)
+	return rec.Events()
+}
+
+func TestEveryConversationEventsAccessListNamesTheOwnerAlone(t *testing.T) {
+	wantACL := connector.ACL{{Kind: connector.ACLIdentity, Source: sourceID, NativeID: "kyle"}}
+	events := postExchange(t)
+	if len(events) != 2 {
+		t.Fatalf("recorded %d events, want 2", len(events))
+	}
+	for _, ev := range events {
+		if !reflect.DeepEqual(ev.ACL, wantACL) {
+			t.Errorf("%s acl = %+v, want the owner alone, %+v", ev.Payload.Artifact, ev.ACL, wantACL)
+		}
+	}
+}
+
+func TestL1DoesNotReadAConversationEventAsADocumentRoot(t *testing.T) {
+	for _, ev := range postExchange(t) {
+		if kind, ok := l1.KindFor(ev); ok || l1.ChatRoot(ev) {
+			t.Errorf("%s: l1 reads the event as a %q document root (chat root %v), want neither", ev.Payload.Artifact, kind, l1.ChatRoot(ev))
+		}
+	}
+}
+
+func TestAnIdenticalRepostWritesNothing(t *testing.T) {
 	srv, rec := server(t, source())
 	first := accepted(t, srv, env["KERN_TOKEN"], ownerWords)
 
@@ -193,6 +175,11 @@ func TestARepostIsUnchangedOrANewRevision(t *testing.T) {
 	if n := len(rec.Events()); n != 1 {
 		t.Fatalf("an identical repost emitted, %d events, want 1", n)
 	}
+}
+
+func TestChangedTextIsANewCurrentRevisionOfTheSameArtifact(t *testing.T) {
+	srv, rec := server(t, source())
+	first := accepted(t, srv, env["KERN_TOKEN"], ownerWords)
 
 	rewritten := strings.Replace(ownerWords, "Postgres for the queue", "Postgres for the job queue", 1)
 	second := accepted(t, srv, env["KERN_TOKEN"], rewritten)
@@ -206,12 +193,28 @@ func TestARepostIsUnchangedOrANewRevision(t *testing.T) {
 	if current.Payload.Artifact != "c-1/x-1:owner" {
 		t.Errorf("the rewrite is artifact %q, want the same artifact", current.Payload.Artifact)
 	}
+}
 
-	// The rewrite posted again is unchanged, and the words coming back are a
-	// third revision rather than the first one over again.
+func TestAnIdenticalRepostOfARewriteWritesNothing(t *testing.T) {
+	srv, rec := server(t, source())
+	accepted(t, srv, env["KERN_TOKEN"], ownerWords)
+	rewritten := strings.Replace(ownerWords, "Postgres for the queue", "Postgres for the job queue", 1)
+	second := accepted(t, srv, env["KERN_TOKEN"], rewritten)
+
 	if got := accepted(t, srv, env["KERN_TOKEN"], rewritten); got.EventID != second.EventID || got.Status != conversation.Unchanged {
 		t.Errorf("the rewrite again = %+v, want the same id and unchanged", got)
 	}
+	if n := len(rec.Events()); n != 2 {
+		t.Errorf("recorded %d events, want 2", n)
+	}
+}
+
+func TestWordsThatComeBackAfterARewriteAreANewCurrentRevision(t *testing.T) {
+	srv, rec := server(t, source())
+	first := accepted(t, srv, env["KERN_TOKEN"], ownerWords)
+	rewritten := strings.Replace(ownerWords, "Postgres for the queue", "Postgres for the job queue", 1)
+	second := accepted(t, srv, env["KERN_TOKEN"], rewritten)
+
 	back := accepted(t, srv, env["KERN_TOKEN"], ownerWords)
 	if back.Status != conversation.Stored || back.EventID == first.EventID || back.EventID == second.EventID {
 		t.Errorf("the first words again = %+v, want a new revision", back)
@@ -221,8 +224,6 @@ func TestARepostIsUnchangedOrANewRevision(t *testing.T) {
 	}
 }
 
-// Words that were never completed are posted alone, marked, and the mark is
-// kept on the stored event.
 func TestAnInterruptedMessageKeepsItsMark(t *testing.T) {
 	srv, rec := server(t, source())
 	body := strings.Replace(ownerWords, `"text"`, `"interrupted":true,"text"`, 1)
@@ -241,19 +242,20 @@ func TestAnInterruptedMessageKeepsItsMark(t *testing.T) {
 	if !strings.Contains(string(ev.Payload.Native), `"interrupted":true`) {
 		t.Errorf("native = %s, want the interrupted mark", ev.Payload.Native)
 	}
+}
 
-	// The mark is content: the same words without it are a new revision.
-	if got := accepted(t, srv, env["KERN_TOKEN"], ownerWords); got.Status != conversation.Stored || got.EventID == ev.ID {
+func TestTheSameWordsWithoutTheInterruptedMarkAreANewRevision(t *testing.T) {
+	srv, rec := server(t, source())
+	marked := accepted(t, srv, env["KERN_TOKEN"], strings.Replace(ownerWords, `"text"`, `"interrupted":true,"text"`, 1))
+
+	if got := accepted(t, srv, env["KERN_TOKEN"], ownerWords); got.Status != conversation.Stored || got.EventID == marked.EventID {
 		t.Errorf("the words unmarked = %+v, want a new revision", got)
 	}
-	// A completed exchange's words carry no mark at all.
 	if strings.Contains(string(rec.Events()[1].Payload.Native), "interrupted") {
 		t.Errorf("native = %s, want no mark", rec.Events()[1].Payload.Native)
 	}
 }
 
-// Nothing is emitted for a request the connector refuses, and every refusal
-// says why in the contract's JSON.
 func TestARequestIsRefused(t *testing.T) {
 	remove := func(field string) string {
 		var m map[string]any
@@ -305,7 +307,7 @@ func TestARequestIsRefused(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			srv, rec := server(t, source())
-			code, body := post(t, srv.URL, tt.token, tt.body)
+			code, body := connectortest.PostWithToken(t, srv.URL, tt.token, tt.body)
 			if code != tt.want {
 				t.Errorf("POST = %d %s, want %d", code, body, tt.want)
 			}
@@ -319,46 +321,40 @@ func TestARequestIsRefused(t *testing.T) {
 		})
 	}
 
-	t.Run("a GET", func(t *testing.T) {
-		srv, _ := server(t, source())
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_ = resp.Body.Close()
-		if resp.StatusCode != http.StatusMethodNotAllowed {
-			t.Errorf("GET = %d, want 405", resp.StatusCode)
-		}
-	})
 }
 
-// A message the store refuses to take back is answered 410, whether the post
-// repeats its words or changes them, and a failure of the store is answered 500
-// without its reason; neither writes.
-func TestTheStoreDecidesWhatAMessageIsAnsweredWith(t *testing.T) {
+func TestAGetIsRefused(t *testing.T) {
+	srv, _ := server(t, source())
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("GET = %d, want 405", resp.StatusCode)
+	}
+}
+
+func TestARepostOfADeletedMessageIsAnswered410AndWritesNothing(t *testing.T) {
 	changed := strings.Replace(ownerWords, "Postgres", "SQLite", 1)
 	tests := []struct {
 		name string
-		prep func(*connector.Recorder)
 		body string
-		want int
-		resp string
 	}{
-		{"a deleted message, reposted", func(r *connector.Recorder) { r.MarkDeleted(sourceID, "c-1/x-1:owner") }, ownerWords, http.StatusGone, `"code":"deleted","status":"deleted"`},
-		{"a deleted message, with changed text", func(r *connector.Recorder) { r.MarkDeleted(sourceID, "c-1/x-1:owner") }, changed, http.StatusGone, `"code":"deleted","status":"deleted"`},
-		{"a failing store", func(r *connector.Recorder) { r.Err = errors.New("connection refused at 10.0.0.9") }, ownerWords, http.StatusInternalServerError, `"code":"internal"`},
+		{"the same text", ownerWords},
+		{"changed text", changed},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			srv, rec := server(t, source())
-			tt.prep(rec)
-			code, body := post(t, srv.URL, env["KERN_TOKEN"], tt.body)
-			if code != tt.want || !strings.Contains(body, tt.resp) || strings.Contains(body, "10.0.0.9") {
-				t.Errorf("POST = %d %s, want %d containing %s and no cause", code, body, tt.want, tt.resp)
+			rec.MarkDeleted(sourceID, "c-1/x-1:owner")
+			code, body := connectortest.PostWithToken(t, srv.URL, env["KERN_TOKEN"], tt.body)
+			if code != http.StatusGone || !strings.Contains(body, `"code":"deleted","status":"deleted"`) {
+				t.Errorf("POST = %d %s, want 410 with code and status deleted", code, body)
 			}
 			if n := len(rec.Events()); n != 0 {
 				t.Errorf("emitted %d events", n)
@@ -367,18 +363,26 @@ func TestTheStoreDecidesWhatAMessageIsAnsweredWith(t *testing.T) {
 	}
 }
 
-// Deleting one message leaves the others of the exchange, and of the
-// conversation, as they were.
+func TestAFailingStoreIsAnswered500WithoutItsCauseAndWritesNothing(t *testing.T) {
+	srv, rec := server(t, source())
+	rec.Err = errors.New("connection refused at 10.0.0.9")
+	code, body := connectortest.PostWithToken(t, srv.URL, env["KERN_TOKEN"], ownerWords)
+	if code != http.StatusInternalServerError || !strings.Contains(body, `"code":"internal"`) || strings.Contains(body, "10.0.0.9") {
+		t.Errorf("POST = %d %s, want 500 with code internal and no cause", code, body)
+	}
+	if n := len(rec.Events()); n != 0 {
+		t.Errorf("emitted %d events", n)
+	}
+}
+
 func TestADeletedMessageClosesOnlyItself(t *testing.T) {
 	srv, rec := server(t, source())
 	rec.MarkDeleted(sourceID, "c-1/x-1:owner")
-	if code, body := post(t, srv.URL, env["KERN_TOKEN"], answer); code != http.StatusAccepted {
+	if code, body := connectortest.PostWithToken(t, srv.URL, env["KERN_TOKEN"], answer); code != http.StatusAccepted {
 		t.Errorf("POST of the answer = %d %s, want 202: only the owner's words were deleted", code, body)
 	}
 }
 
-// A source that could not accept anything, or whose events nobody could read,
-// does not start.
 func TestNewRefusesASourceItCannotServe(t *testing.T) {
 	unset := func(string) (string, bool) { return "", false }
 	with := func(settings, containers string) connector.SourceConfig {
@@ -444,61 +448,58 @@ func TestNewRefusesASourceItCannotServe(t *testing.T) {
 	}
 }
 
-// The source is hosted like any other: mounted under /hooks/<source>, and
-// reported by /readyz with the time it last took a message.
 func TestTheServiceHostsAndReportsTheSource(t *testing.T) {
-	src := source()
-	registry := connector.NewRegistry()
-	if err := registry.Register(conversation.Type, conversation.NewFactory(principals, lookup)); err != nil {
-		t.Fatal(err)
-	}
-	var lc net.ListenConfig
-	listener, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := "http://" + listener.Addr().String()
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() {
-		done <- connectors.Run(ctx, &config.Config{Repo: config.Repo{Sources: []connector.SourceConfig{src}}}, connectors.Deps{
-			Registry: registry,
-			Sink:     &connector.Recorder{},
-			Cursors:  connector.NewMemoryCursors(),
-			Listener: listener,
-		})
-	}()
-	defer func() {
-		cancel()
-		if err := <-done; err != nil {
-			t.Errorf("Run() = %v", err)
-		}
-	}()
+	connectortest.HostedSource(t, source(), conversation.Type, conversation.NewFactory(principals, lookup), env["KERN_TOKEN"], ownerWords)
+}
 
-	// The listener is bound, so these wait for the service rather than fail.
-	if code, body := post(t, addr+connector.HookPath(sourceID), env["KERN_TOKEN"], ownerWords); code != http.StatusAccepted {
-		t.Fatalf("POST %s = %d %s, want 202", connector.HookPath(sourceID), code, body)
-	}
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, addr+"/readyz", nil)
+func logOf(t *testing.T, level slog.Level) string {
+	t.Helper()
+	var out bytes.Buffer
+	ctx := telemetry.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&out, &slog.HandlerOptions{Level: level})))
+	src := source()
+	c, err := conversation.New(src, principals, lookup)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("New() = %v", err)
 	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
+	rec := &connector.Recorder{}
+	handler := c.Handler(connector.NewGate(rec, src.ID, c.Describe(), connector.NewAllowlist(src)))
+	send := func(token, body string) {
+		req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/", strings.NewReader(body))
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		handler.ServeHTTP(httptest.NewRecorder(), req)
 	}
-	defer func() { _ = resp.Body.Close() }()
-	var ready connectors.Readiness
-	if err := json.NewDecoder(resp.Body).Decode(&ready); err != nil {
-		t.Fatal(err)
+	send(env["KERN_TOKEN"], ownerWords)
+	send(env["KERN_TOKEN"], ownerWords)
+	send(env["KERN_TOKEN"], strings.Replace(ownerWords, `"kyle"`, `"robin"`, 1))
+	send(env["SCOUT_TOKEN"], ownerWords)
+	send("not-a-token", ownerWords)
+	rec.Err = errors.New("the store is down")
+	send(env["KERN_TOKEN"], answer)
+	return out.String()
+}
+
+func TestInfoLogsCarryNoMessageText(t *testing.T) {
+	logs := logOf(t, slog.LevelInfo)
+	if !strings.Contains(logs, "refused") || !strings.Contains(logs, "failed") {
+		t.Fatalf("info-level logs hold no refusal or failure line, so this checks nothing: %s", logs)
 	}
-	if resp.StatusCode != http.StatusOK || ready.Status != connector.HealthOK {
-		t.Errorf("GET /readyz = %d %+v, want 200 and ok", resp.StatusCode, ready)
+	for _, content := range []string{"Postgres for the queue", "Postgres it is"} {
+		if strings.Contains(logs, content) {
+			t.Errorf("info-level logs carry message text %q: %s", content, logs)
+		}
 	}
-	if len(ready.Sources) != 1 || ready.Sources[0].Source != sourceID || ready.Sources[0].Type != conversation.Type {
-		t.Fatalf("readiness lists %+v, want the conversation source", ready.Sources)
+}
+
+func TestDebugLogsCarryNoCredential(t *testing.T) {
+	logs := logOf(t, slog.LevelDebug)
+	if !strings.Contains(logs, "conversation message ingested") {
+		t.Fatalf("debug-level logs hold no ingest line, so this checks nothing: %s", logs)
 	}
-	if ready.Sources[0].LastEventAt.IsZero() {
-		t.Error("readiness has no last event time after a message was taken")
+	for _, secret := range []string{env["KERN_TOKEN"], env["SCOUT_TOKEN"], env["KYLE_TOKEN"], "not-a-token"} {
+		if strings.Contains(logs, secret) {
+			t.Errorf("debug-level logs carry the credential %q: %s", secret, logs)
+		}
 	}
 }

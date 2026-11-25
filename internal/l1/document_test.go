@@ -15,11 +15,10 @@ func TestDocID(t *testing.T) {
 		source   string
 		artifact string
 		want     string
-		parse    bool // the id parses back to the two it was built from
 	}{
-		{name: "an issue", source: "github-acme", artifact: "acme/api#12", want: "l1:github-acme:acme/api#12", parse: true},
-		{name: "an artifact id with colons in it", source: "github-acme", artifact: "acme/api#31:review:77", want: "l1:github-acme:acme/api#31:review:77", parse: true},
-		{name: "a commit", source: "github-acme", artifact: "acme/api@deadbeef", want: "l1:github-acme:acme/api@deadbeef", parse: true},
+		{name: "an issue", source: "github-acme", artifact: "acme/api#12", want: "l1:github-acme:acme/api#12"},
+		{name: "an artifact id with colons in it", source: "github-acme", artifact: "acme/api#31:review:77", want: "l1:github-acme:acme/api#31:review:77"},
+		{name: "a commit", source: "github-acme", artifact: "acme/api@deadbeef", want: "l1:github-acme:acme/api@deadbeef"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -54,8 +53,6 @@ func TestParseDocIDRefusesWhatIsNotOne(t *testing.T) {
 	}
 }
 
-// The kind a document takes is the L0 kind's, or the base kind of an extension
-// kind, and everything else is part of somebody else's document.
 func TestKindFor(t *testing.T) {
 	tests := []struct {
 		kind     connector.Kind
@@ -85,8 +82,6 @@ func TestKindFor(t *testing.T) {
 	}
 }
 
-// The outcome kind is the L2 trigger, so which of the five enter the assertion
-// pipeline is a rule stated in one place.
 func TestOutcomeKinds(t *testing.T) {
 	asserting := map[l1.OutcomeKind]bool{l1.OutcomeDecided: true, l1.OutcomeProposed: true, l1.OutcomeResolved: true}
 	for _, o := range l1.OutcomeKinds {
@@ -96,49 +91,42 @@ func TestOutcomeKinds(t *testing.T) {
 		if o.Asserts() != asserting[o] {
 			t.Errorf("%q.Asserts() = %v, want %v", o, o.Asserts(), asserting[o])
 		}
-		parsed, err := l1.ParseOutcomeKind(string(o))
-		if err != nil || parsed != o {
-			t.Errorf("ParseOutcomeKind(%q) = %q, %v", o, parsed, err)
-		}
-	}
-	for _, bad := range []string{"", "merged", "Resolved", "none "} {
-		if _, err := l1.ParseOutcomeKind(bad); err == nil {
-			t.Errorf("ParseOutcomeKind(%q) = nil, want an error", bad)
-		}
 	}
 }
 
-// Validate is what the table enforces, in Go. Each case changes one thing about
-// a document that is otherwise fine.
-func TestValidate(t *testing.T) {
-	good := func() l1.Document {
-		return l1.Document{
-			ID:   "l1:github-acme:acme/api#12",
-			Kind: l1.KindIssue, ArtifactClass: config.ArtifactIssue,
-			Source:  l1.Source{System: "github-acme", NativeID: "acme/api#12"},
-			L0Refs:  []string{"evt:github-acme:acme%2Fapi%2312"},
-			Time:    l1.Times{Created: day, Updated: day, LastActivity: day},
-			ACL:     connector.ACL{{Kind: connector.ACLPublic}},
-			Text:    "a distillation",
-			RawText: "what was said",
-			Body:    l1.Body{Summary: "a distillation", OutcomeKind: l1.OutcomeOpen},
-		}
+func goodDocument() l1.Document {
+	return l1.Document{
+		ID:   "l1:github-acme:acme/api#12",
+		Kind: l1.KindIssue, ArtifactClass: config.ArtifactIssue,
+		Source:  l1.Source{System: "github-acme", NativeID: "acme/api#12"},
+		L0Refs:  []string{"evt:github-acme:acme%2Fapi%2312"},
+		Time:    l1.Times{Created: day, Updated: day, LastActivity: day},
+		ACL:     connector.ACL{{Kind: connector.ACLPublic}},
+		Text:    "a distillation",
+		RawText: "what was said",
+		Body:    l1.Body{Summary: "a distillation", OutcomeKind: l1.OutcomeOpen},
 	}
-	if err := good().Validate(); err != nil {
+}
+
+func TestValidateAcceptsAGoodDocument(t *testing.T) {
+	if err := goodDocument().Validate(); err != nil {
 		t.Fatalf("Validate() on a good document = %v", err)
 	}
-	t.Run("containers access list", func(t *testing.T) {
-		containers, key, err := connector.CanonicalContainers([]connector.ContainerRef{{Source: "github-acme", NativeID: "acme/api"}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		doc := good()
-		doc.ACL = connector.ACL{{Kind: connector.ACLContainers, NativeID: key, Containers: containers}}
-		if err := doc.Validate(); err != nil {
-			t.Fatalf("Validate() with containers ACL = %v", err)
-		}
-	})
+}
 
+func TestValidateAcceptsAContainersAccessList(t *testing.T) {
+	containers, key, err := connector.CanonicalContainers([]connector.ContainerRef{{Source: "github-acme", NativeID: "acme/api"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := goodDocument()
+	doc.ACL = connector.ACL{{Kind: connector.ACLContainers, NativeID: key, Containers: containers}}
+	if err := doc.Validate(); err != nil {
+		t.Fatalf("Validate() with containers ACL = %v", err)
+	}
+}
+
+func TestValidateRefuses(t *testing.T) {
 	tests := []struct {
 		name string
 		with func(*l1.Document)
@@ -178,7 +166,7 @@ func TestValidate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			doc := good()
+			doc := goodDocument()
 			tt.with(&doc)
 			err := doc.Validate()
 			if err == nil {

@@ -7,18 +7,15 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/l3"
 )
 
-// A traversal's neighbours come out in id order whatever order the graph
-// stores them in, so the same query always serves the same bytes. The parents
-// and owners are written out of order on purpose, and the children are
-// written in reverse.
 func TestTraverseDeterministicOrder(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	graph := l2.New(pool)
-	src := newSource()
+	src := dbtest.UniqueID()
 	root := "code:" + src
 	id := func(kind, name string) string { return root + ":" + kind + "-" + name }
 	order := []string{"z", "b", "a"}

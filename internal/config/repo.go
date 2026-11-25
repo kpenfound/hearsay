@@ -13,12 +13,7 @@ import (
 // `llm/`, or the single file that expands to it (docs/config.md).
 //
 // Every field is the parsed form of one directory. Sources are
-// [connector.SourceConfig] values because that is what the connector runtime
-// consumes; nothing reshapes them on the way.
-//
-// The lookups on it scan, because a configuration repository holds tens of
-// entries rather than thousands and a map would have to be kept in step with
-// the slice a caller can already range over.
+// [connector.SourceConfig] values, as the connector runtime consumes them.
 type Repo struct {
 	// Path is where the configuration was loaded from, as it was given to
 	// [Load]. It is empty on a Repo that was never loaded.
@@ -225,7 +220,6 @@ type CodeEntity struct {
 // tracker mapping and from `principals/`, so neither is declared here.
 type CodeEntityType string
 
-// The code entity types.
 const (
 	// TypeProject is a repository or a product-level grouping.
 	TypeProject CodeEntityType = "project"
@@ -237,9 +231,6 @@ const (
 	TypeSymbol CodeEntityType = "symbol"
 )
 
-// codeEntityTypes is every value [CodeEntityType] may take.
 var codeEntityTypes = []CodeEntityType{TypeProject, TypeService, TypeModule, TypeSymbol}
 
-// foldAlias is how two aliases are compared: case-insensitively, with
-// surrounding space ignored.
 func foldAlias(s string) string { return strings.ToLower(strings.TrimSpace(s)) }

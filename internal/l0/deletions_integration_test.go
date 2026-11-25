@@ -11,16 +11,14 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 )
 
 const secret = "tangerine-otter-42"
 
-// At L0, an operator deletion redacts the row in place, every read hides it, a
-// read by id names the deletion rather than a tombstone, a replay is dropped and
-// counted, and a new revision is admitted.
 func TestAnOperatorDeletionRedactsTheRowAndHidesIt(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	fake, source := newFake(t)
 	store := l0.New(pool)
 	ctx := t.Context()
@@ -65,7 +63,6 @@ func TestAnOperatorDeletionRedactsTheRowAndHidesIt(t *testing.T) {
 		t.Errorf("Delete().Events = %v, want %v", deleted.Events, []string{pastedID})
 	}
 
-	// The row is still there, in the same place, and says nothing it said.
 	var after struct {
 		xact, kind, acl, payload string
 		seq                      int64
@@ -93,7 +90,6 @@ func TestAnOperatorDeletionRedactsTheRowAndHidesIt(t *testing.T) {
 		}
 	}
 
-	// A read by id names the deletion, and it is not a tombstone.
 	_, err = store.Get(ctx, pastedID)
 	var gone *l0.DeletedError
 	if !errors.As(err, &gone) || !errors.Is(err, l0.ErrDeleted) || errors.Is(err, l0.ErrRetracted) {
@@ -103,7 +99,6 @@ func TestAnOperatorDeletionRedactsTheRowAndHidesIt(t *testing.T) {
 		t.Errorf("Get(deleted) = %+v (%v), want deletion %s by kyle and no content", gone, err, id)
 	}
 
-	// Every other read leaves it out.
 	listed, err := store.List(ctx, l0.ListOptions{Filter: l0.Filter{Source: source}})
 	if err != nil || !slices.Equal(nativeIDs(listed), []string{"root", "m2"}) {
 		t.Errorf("List() = %v, %v, want root and m2", nativeIDs(listed), err)
@@ -117,7 +112,6 @@ func TestAnOperatorDeletionRedactsTheRowAndHidesIt(t *testing.T) {
 	}
 	assertCounts(t, store, source, connector.KindMessage, 3, 2)
 
-	// Hearsay's own event records it, under its own source and kind.
 	retraction, err := store.Get(ctx, deleted.Retraction)
 	if err != nil {
 		t.Fatalf("Get(retraction) = %v", err)
@@ -127,7 +121,6 @@ func TestAnOperatorDeletionRedactsTheRowAndHidesIt(t *testing.T) {
 		t.Errorf("the retraction event = %+v, want a hearsay deletion by kyle naming %s", retraction, id)
 	}
 
-	// A replay is dropped, counted and not an error, however it arrives.
 	replay, err := store.Append(ctx, pasted)
 	if err != nil || replay.Stored || replay.Dropped != id {
 		t.Errorf("Append(replay) = %+v, %v, want dropped by %s", replay, err, id)
@@ -143,7 +136,6 @@ func TestAnOperatorDeletionRedactsTheRowAndHidesIt(t *testing.T) {
 		t.Errorf("Get(after replay) = %v, want still deleted", err)
 	}
 
-	// A new revision is a new row, and it is admitted.
 	edited := pasted
 	edited.NativeID = "m1@2"
 	edited.Payload.Revision = &connector.Revision{Token: "2", EditedAt: pasted.Time.Add(time.Hour)}
@@ -156,7 +148,6 @@ func TestAnOperatorDeletionRedactsTheRowAndHidesIt(t *testing.T) {
 		t.Errorf("CurrentArtifact(m1) = %s, %v, %v, want the new revision", current.NativeID, ok, err)
 	}
 
-	// Deleting what is already deleted does nothing.
 	tx, err = pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -170,8 +161,6 @@ func TestAnOperatorDeletionRedactsTheRowAndHidesIt(t *testing.T) {
 	}
 }
 
-// A source tombstone keeps the source's attribution, and is never reported as
-// an operator deletion.
 func TestATombstonedEventIsAttributedToItsSource(t *testing.T) {
 	store, fake, source := newStore(t)
 	ctx := t.Context()

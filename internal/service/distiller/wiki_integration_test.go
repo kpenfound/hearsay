@@ -8,14 +8,15 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
 func TestWikiSectionsTrackSourceEdits(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	base := event(src, connector.KindDocument, "file-1", at(0), who(src, "u1", "kpenfound"), "Design notes", "# Alpha\nWe decided to use the engine.\n# Beta\nBackground with [[Home]] and #tag.")
 	base.ACL = connector.ACL{{Kind: connector.ACLGroup, Source: src, NativeID: "team"}}
 	first := revised(base, "r1", at(1))

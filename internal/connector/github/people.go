@@ -7,9 +7,6 @@ import (
 	"slices"
 )
 
-// maxCollaboratorPages bounds the collaborator walk of one repository, at a
-// hundred people a page. A repository with more than ten thousand
-// collaborators is not a team `hearsay init` is seeding by hand.
 const maxCollaboratorPages = 100
 
 // Collaborator is one account with access to a repository, as the

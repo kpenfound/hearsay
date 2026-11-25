@@ -11,10 +11,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/deletion"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/llm"
+	"github.com/kpenfound/hearsay/internal/poll"
 	"github.com/kpenfound/hearsay/internal/queue"
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
@@ -37,14 +39,11 @@ func onePending(t *testing.T, c *queue.Client) queue.Job {
 	return jobs[0]
 }
 
-// Read until these events are visible: L0's safe feed horizon can be held
-// behind transactions in other databases on the same test cluster.
 func pumpEvents(t *testing.T, p *distiller.Pump, count int) distiller.Progress {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
 	total := 0
 	var last distiller.Progress
-	for total < count {
+	poll.Within(t, fmt.Sprintf("the pump to read %d events", count), 30*time.Second, func() bool {
 		got, err := p.Once(t.Context())
 		if err != nil {
 			t.Fatal(err)
@@ -53,17 +52,11 @@ func pumpEvents(t *testing.T, p *distiller.Pump, count int) distiller.Progress {
 		if got.Events > 0 {
 			last = got
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("Once read %d events, want %d", total, count)
-		}
-		if total < count {
-			time.Sleep(5 * time.Millisecond)
-		}
-	}
+		return total >= count
+	})
 	return last
 }
 
-// Wait without pumping so the burst is collapsed in one enqueue transaction.
 func waitForPumpBatch(t *testing.T, pool *pgxpool.Pool, count int) {
 	t.Helper()
 	from, err := l0.NewCursors(pool).Load(t.Context(), distiller.Consumer)
@@ -71,24 +64,15 @@ func waitForPumpBatch(t *testing.T, pool *pgxpool.Pool, count int) {
 		t.Fatal(err)
 	}
 	events := l0.New(pool)
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+	poll.Within(t, fmt.Sprintf("the feed to return %d events in one batch", count), 30*time.Second, func() bool {
 		changes, err := events.Changes(t.Context(), from, l0.Filter{}, 100)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(changes) == count {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("Changes returned %d events, want %d in one batch", len(changes), count)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return len(changes) == count
+	})
 }
 
-// Revisions keep the recorded commit's current text: ten L0 changes still
-// make exactly the request in the existing recorded fixture.
 func commitRevision(src string, i int) connector.Event {
 	return revised(fixtureEvents(src)[6], fmt.Sprintf("burst-%03d", i), at(7))
 }
@@ -96,8 +80,8 @@ func commitRevision(src string, i int) connector.Event {
 func TestThePumpDebouncesBurstsWithinAndAcrossReads(t *testing.T) {
 	for _, batch := range []int{1, 100} {
 		t.Run(fmt.Sprintf("batch-%d", batch), func(t *testing.T) {
-			pool := newScratchPool(t)
-			src := newSource(t)
+			pool := dbtest.Scratch(t, "distiller_none")
+			src := dbtest.UniqueID()
 			opts := distiller.PumpOptions{Quiet: 2 * time.Second, MaxDelay: 5 * time.Second, Batch: batch}
 			p := distiller.NewPump(pool, opts)
 			c := distillQueue(t, pool)
@@ -130,7 +114,6 @@ func TestThePumpDebouncesBurstsWithinAndAcrossReads(t *testing.T) {
 				t.Fatalf("Claim before quiet = %v, %v", jobs, err)
 			}
 
-			// A normal queue poll claims the single job once its quiet period ends.
 			registry, err := llm.NewFake(testRepo(src).LLM, loadFixtures(t))
 			if err != nil {
 				t.Fatal(err)
@@ -171,25 +154,21 @@ func TestThePumpDebouncesBurstsWithinAndAcrossReads(t *testing.T) {
 
 func claimWhenDue(t *testing.T, c *queue.Client) []queue.Job {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		jobs, err := c.Claim(t.Context())
+	var jobs []queue.Job
+	poll.Within(t, "the job to become claimable", 10*time.Second, func() bool {
+		var err error
+		jobs, err = c.Claim(t.Context())
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(jobs) > 0 {
-			return jobs
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("job never became claimable")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return len(jobs) > 0
+	})
+	return jobs
 }
 
 func TestASteadyStreamBecomesDueAtTheMaximumAndDistils(t *testing.T) {
-	pool := newScratchPool(t)
-	src := newSource(t)
+	pool := dbtest.Scratch(t, "distiller_none")
+	src := dbtest.UniqueID()
 	opts := distiller.PumpOptions{Quiet: 750 * time.Millisecond, MaxDelay: 1500 * time.Millisecond}
 	p := distiller.NewPump(pool, opts)
 	c := distillQueue(t, pool)
@@ -237,28 +216,24 @@ func TestASteadyStreamBecomesDueAtTheMaximumAndDistils(t *testing.T) {
 }
 
 func TestDebouncedJobsRollBackWhenThePumpCannotSaveItsCursor(t *testing.T) {
-	pool := newScratchPool(t)
-	src := newSource(t)
+	pool := dbtest.Scratch(t, "distiller_none")
+	src := dbtest.UniqueID()
 	ingest(t, pool, []connector.Event{commitRevision(src, 0)})
 	if _, err := pool.Exec(t.Context(), `CREATE FUNCTION refuse_cursor() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'cursor refused'; END $$;
  CREATE TRIGGER refuse_cursor BEFORE INSERT ON l0_feed_cursors FOR EACH ROW EXECUTE FUNCTION refuse_cursor()`); err != nil {
 		t.Fatal(err)
 	}
 	p := distiller.NewPump(pool, distiller.PumpOptions{Quiet: time.Minute, MaxDelay: 5 * time.Minute})
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+	poll.Within(t, "the feed to reach the cursor save", 30*time.Second, func() bool {
 		_, err := p.Once(t.Context())
-		if err != nil {
-			if !strings.Contains(err.Error(), "cursor refused") {
-				t.Fatal(err)
-			}
-			break
+		if err == nil {
+			return false
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("feed never reached cursor save")
+		if !strings.Contains(err.Error(), "cursor refused") {
+			t.Fatal(err)
 		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return true
+	})
 	c := distillQueue(t, pool)
 	if jobs, err := c.List(t.Context(), queue.StatePending, 100); err != nil || len(jobs) != 0 {
 		t.Fatalf("after cursor rollback jobs = %v, %v", jobs, err)
@@ -274,8 +249,8 @@ func TestDebouncedJobsRollBackWhenThePumpCannotSaveItsCursor(t *testing.T) {
 }
 
 func TestDeletionExpeditesAPendingRebuildDespiteAFurtherPumpRead(t *testing.T) {
-	pool := newScratchPool(t)
-	src := newSource(t)
+	pool := dbtest.Scratch(t, "distiller_none")
+	src := dbtest.UniqueID()
 	ingest(t, pool, fixtureEvents(src)[:3])
 	d := newDistiller(t, pool, src)
 	doc := l1.DocID(src, repo+"#12")
@@ -292,9 +267,9 @@ func TestDeletionExpeditesAPendingRebuildDespiteAFurtherPumpRead(t *testing.T) {
 	if _, err := deletion.Apply(t.Context(), pool, testRepo(src), deletion.Selector{Event: connector.EventID(src, retractedComment)}, "remove pasted content", "kyle"); err != nil {
 		t.Fatal(err)
 	}
-	// A further revision of the root arrives after Apply commits, before claim.
+
 	ingest(t, pool, []connector.Event{revised(fixtureEvents(src)[0], "after-deletion", at(0))})
-	pumpEvents(t, p, 2) // deletion event and the root revision
+	pumpEvents(t, p, 2)
 	pending := onePending(t, c)
 	if pending.ID != first.ID {
 		t.Fatalf("deletion replaced job %d with %d", first.ID, pending.ID)

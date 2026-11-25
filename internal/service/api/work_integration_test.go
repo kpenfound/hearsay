@@ -18,9 +18,10 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/work"
-	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
@@ -31,8 +32,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
-// Explicit recording uses authored answers below and the exported prompt
-// builders, as in the service fixture suites. Normal runs only replay disk.
 var recordWork = flag.Bool("record-work", false, "record work integration model exchanges; never calls a provider")
 
 type postedWork struct {
@@ -43,11 +42,8 @@ type postedWork struct {
 
 func newPostedWork(t *testing.T) *postedWork {
 	t.Helper()
-	pool, err := db.Connect(t.Context(), api.ScratchDB(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
+	pool := dbtest.Scratch(t, "work")
+	var err error
 	cfg := config.Default()
 	cfg.Repo = config.Repo{
 		Sources: []connector.SourceConfig{
@@ -70,12 +66,8 @@ func newPostedWork(t *testing.T) *postedWork {
 			t.Setenv(p.TokenEnv, "reach-"+p.ID+"-credential")
 		}
 	}
-	// Load authority through its public configuration surface.
-	file := filepath.Join(t.TempDir(), "hearsay.yaml")
-	if err := os.WriteFile(file, []byte("sources:\n  - id: projects\n    type: work\n    containers: [\"*\"]\nscopes:\n  - id: api\n    sources: [projects]\nprincipals:\n  - id: kyle\n    kind: human\nauthority:\n  - scope: '*'\n    ratified_by:\n      principals: [kyle]\n      sources: []\n      artifacts: []\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	loaded, err := config.Load(file)
+
+	loaded, err := config.Load(configtest.Write(t, map[string]string{"hearsay.yaml": "sources:\n  - id: projects\n    type: work\n    containers: [\"*\"]\nscopes:\n  - id: api\n    sources: [projects]\nprincipals:\n  - id: kyle\n    kind: human\nauthority:\n  - scope: '*'\n    ratified_by:\n      principals: [kyle]\n      sources: []\n      artifacts: []\n"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +85,7 @@ func newPostedWork(t *testing.T) *postedWork {
 	calls.WithWatch(15*time.Millisecond, 2*time.Millisecond)
 	server := httptest.NewServer(api.Handler(calls, pool))
 	t.Cleanup(server.Close)
-	w := &postedWork{workVisibilityWorld: &workVisibilityWorld{reachWorld: &reachWorld{src: "github", repo: "code:acme/api", events: events, server: server}, pool: pool, docs: l1.New(pool), graph: l2.New(pool), calls: calls, projectEntity: "work:projects:retry", streamEntity: "work:projects:retry#policy"}, cfg: cfg, hook: c.Handler(gate)}
+	w := &postedWork{workVisibilityWorld: &workVisibilityWorld{reachWorld: &reachWorld{src: "github", repo: "code:acme/api", events: events, client: client{server: server, credential: reachCredential}}, pool: pool, docs: l1.New(pool), graph: l2.New(pool), calls: calls, projectEntity: "work:projects:retry", streamEntity: "work:projects:retry#policy"}, cfg: cfg, hook: c.Handler(gate)}
 	w.repositoryRevision(t, "acme/api", "api-issue", "private", 1, connector.ACL{{Kind: connector.ACLGroup, Source: "github", NativeID: "acme/api"}})
 	w.repositoryRevision(t, "acme/other", "other-issue", "private", 1, connector.ACL{{Kind: connector.ACLGroup, Source: "github", NativeID: "acme/other"}})
 	return w
@@ -135,8 +127,6 @@ func (w *postedWork) current(t *testing.T, artifact string) connector.Event {
 	return ev
 }
 
-// Each fixture contains the exact request as well as the answer, so a prompt
-// change fails playback until an explicit recording is reviewed.
 func workRegistry(t *testing.T, name string, recordings []llm.CompletionFixture) llm.Registry {
 	t.Helper()
 	path := filepath.Join("testdata", "work", name+".json")
@@ -195,8 +185,7 @@ func (w *postedWork) distillWork(t *testing.T, name string, decided bool) l1.Doc
 	if decided {
 		body = l1.Body{Summary: "The retry policy limits attempts.", Outcome: "Retry twice, then stop.", OutcomeKind: l1.OutcomeDecided}
 	}
-	// The model writes the summary and the outcome sentence; Jev decides the
-	// kind, so the recorded answer carries none.
+
 	raw, _ := json.Marshal(map[string]any{"summary": body.Summary, "outcome": body.Outcome})
 	jev := llm.FakeJudgments(func(_ string, q llm.JudgmentQuestion) float64 {
 		if decided && q.ID == "binding_agreement" {
@@ -297,8 +286,7 @@ func TestPostedWorkProjectInheritancePropagationAndDeletion(t *testing.T) {
 	if err != nil || !slices.Equal(entity.PartOf, []string{"code:acme/api"}) {
 		t.Fatalf("project placement: %+v %v", entity, err)
 	}
-	// Changing repos re-emits all children before the successful response. Ann
-	// and Kyle can still reach the project through API, but neither reads other.
+
 	changed := strings.Replace(workProject, `"project":"acme/api"`, `"project":"acme/api"},{"source":"github","project":"acme/other"`, 1)
 	changed = strings.Replace(changed, `"created_at":`, `"updated_at":"2026-10-02T12:00:00Z","created_at":`, 1)
 	w.postWork(t, changed)
@@ -361,8 +349,7 @@ func TestPostedWorkAttributedUpdateStandingAndScopeRecovery(t *testing.T) {
 			if tt.author != "" {
 				update = strings.TrimSuffix(update, "}") + `,"author":"` + tt.author + `"}`
 			}
-			// The courier did not author the root, so its strongest role
-			// in the attributed document is agent (L1 retains one role).
+
 			posterID := "factory"
 			if tt.author != "" {
 				posterID = "courier"
@@ -454,8 +441,7 @@ func TestPostedWorkAttributedUpdateStandingAndScopeRecovery(t *testing.T) {
 					t.Fatalf("standing = %+v, want one current stance at tier %s", history, want)
 				}
 			}
-			// Attribution changes the event and document participants. It does
-			// not grant authority to the stance drawn from the whole document.
+
 			standing(l2.TierInferred)
 			held, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()

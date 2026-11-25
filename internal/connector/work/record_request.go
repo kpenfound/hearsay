@@ -35,7 +35,6 @@ var (
 	documentFields = fieldSet("kind", "project", "workstream", "document", "name", "body", "url", "author", "created_at", "updated_at", "deleted")
 	decisionFields = fieldSet("kind", "project", "workstream", "decision", "context", "outcome", "rationale", "rejected_options", "decider",
 		"supersedes", "spec_document", "pull_request", "question", "author", "created_at", "updated_at", "deleted")
-	// recordOnly are the fields no project, workstream or update may carry.
 	recordOnly = []string{"document", "body", "decision", "context", "outcome", "rationale", "rejected_options", "decider",
 		"supersedes", "spec_document", "pull_request", "question"}
 )
@@ -48,7 +47,6 @@ func fieldSet(names ...string) map[string]bool {
 	return set
 }
 
-// kindName names a request's kind in a message without echoing untrusted text.
 func (r Request) kindName() string {
 	switch r.Kind {
 	case "project", "workstream", "update", KindDocumentRecord, KindDecisionRecord:
@@ -57,8 +55,6 @@ func (r Request) kindName() string {
 	return "this kind"
 }
 
-// checkShape refuses a field on a kind it does not belong to. Presence counts,
-// so an empty field in the wrong place is refused rather than dropped.
 func (r Request) checkShape() error {
 	var allowed map[string]bool
 	switch r.Kind {
@@ -92,8 +88,6 @@ func mapKeys(m map[string]bool) func(func(string) bool) {
 	}
 }
 
-// validateRecord checks the content of a document or decision that is not a
-// deletion. Shape and ids were checked already.
 func (r Request) validateRecord() error {
 	if r.Kind == KindDocumentRecord {
 		if blank(r.Name) {

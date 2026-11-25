@@ -196,7 +196,7 @@ func (c *Connector) dispatch(ctx context.Context, sink connector.Sink, kind stri
 		if ch.ParentID == "" {
 			return nil
 		}
-		artifact := threadArtifact(ch.ID)
+		artifact := ThreadArtifact(ch.ID)
 		return c.emitTombstone(ctx, sink, ch.ID, artifact+":tombstone", artifact, snowflakeTime(ch.ID))
 	case "MESSAGE_CREATE", "MESSAGE_UPDATE":
 		var m message
@@ -238,7 +238,7 @@ func (c *Connector) dispatch(ctx context.Context, sink connector.Sink, kind stri
 		c.mu.Unlock()
 		if m.Author == nil {
 			return nil
-		} // a partial update without its create cannot supply an author
+		}
 		return c.emitMessage(ctx, sink, m)
 	case "MESSAGE_DELETE":
 		var d deleted
@@ -282,7 +282,7 @@ func (c *Connector) place(channelID string) (connector.Container, string, connec
 	id := channelID
 	thread := ""
 	if ch.Type == 11 || ch.Type == 12 || ch.Type == 10 {
-		thread = threadArtifact(ch.ID)
+		thread = ThreadArtifact(ch.ID)
 		if ch.ParentID != "" {
 			id = ch.ParentID
 		}
@@ -290,8 +290,6 @@ func (c *Connector) place(channelID string) (connector.Container, string, connec
 	}
 	container := connector.Container{Kind: connector.ContainerChannel, NativeID: id, Name: ch.Name}
 	public := c.publicLocked(id)
-	// A private thread is narrower than its parent. It is read through its
-	// own group, while the allowlist still names the parent channel.
 	if c.channels[channelID].Type == 12 {
 		return container, thread, connector.ACL{{Kind: connector.ACLGroup, Source: c.source, NativeID: channelID}}
 	}
@@ -313,8 +311,6 @@ func (c *Connector) publicLocked(id string) bool {
 	return public
 }
 
-// permissionToken is canonical across Gateway and REST observations. Discord
-// supplies no overwrite version or change time; ingest order orders revisions.
 func (c *Connector) permissionToken(channelID string) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -420,7 +416,7 @@ func (c *Connector) emitThread(ctx context.Context, sink connector.Sink, ch chan
 	if ch.OwnerID == "" || ch.Name == "" {
 		return nil
 	}
-	ev := c.event(connector.KindThread, threadArtifact(ch.ID), ch.ID, snowflakeTime(ch.ID))
+	ev := c.event(connector.KindThread, ThreadArtifact(ch.ID), ch.ID, snowflakeTime(ch.ID))
 	ev.Payload.Title = ch.Name
 	ev.Payload.URL = channelURL(c.guild, ch.ID)
 	ev.Payload.Author = &connector.Identity{Source: c.source, Kind: connector.IdentityUser, NativeID: ch.OwnerID}
@@ -430,7 +426,11 @@ func (c *Connector) emitThread(ctx context.Context, sink connector.Sink, ch chan
 	ev.Payload.Revision = &connector.Revision{Token: token}
 	return c.emit(ctx, sink, ev)
 }
-func threadArtifact(id string) string { return "thread:" + id }
+
+// ThreadArtifact is the artifact id a thread's events carry in
+// `payload.thread`, and so the key of the thread's L1 document.
+func ThreadArtifact(id string) string { return "thread:" + id }
+
 func (c *Connector) emitTombstone(ctx context.Context, sink connector.Sink, channelID, artifact, target string, at time.Time) error {
 	ev := c.event(connector.KindTombstone, artifact, channelID, at)
 	ev.Payload.Target = target

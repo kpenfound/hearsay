@@ -12,8 +12,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/l1"
 )
 
-// testRepo is the configuration a document is built against: one scope over the
-// repository, with a tracker and the code entities it is about.
 var testRepo = config.Repo{
 	Path: "testdata",
 	Scopes: []config.Scope{{
@@ -30,9 +28,6 @@ var testRepo = config.Repo{
 	Code: testCode,
 }
 
-// pullRequest is the fixture conversation: a change proposal, a review, a
-// review comment and a comment, in the shapes the GitHub table of
-// docs/connector-contract.md specifies.
 func pullRequest() (connector.Event, []connector.Event) {
 	pr := revised(event(connector.KindPullRequest, repo+"#31", at(0), who("u1", "kpenfound"),
 		"engine: take the lock before writing",
@@ -62,15 +57,18 @@ func TestBuildChatWindowAcceptsMessageExtension(t *testing.T) {
 	}
 }
 
-func TestBuild(t *testing.T) {
-	resolver := testPrincipals(t)
+func buildPullRequest(t *testing.T) l1.Document {
+	t.Helper()
 	root, children := pullRequest()
-
-	doc, err := l1.Build(l1.Input{Root: root, Children: children, Resolver: resolver, Repo: testRepo})
+	doc, err := l1.Build(l1.Input{Root: root, Children: children, Resolver: testPrincipals(t), Repo: testRepo})
 	if err != nil {
 		t.Fatalf("Build() = %v, want no error", err)
 	}
+	return doc
+}
 
+func TestBuildNamesTheDocumentAfterItsArtifact(t *testing.T) {
+	doc := buildPullRequest(t)
 	if want := "l1:" + source + ":" + repo + "#31"; doc.ID != want {
 		t.Errorf("ID = %q, want %q", doc.ID, want)
 	}
@@ -80,9 +78,10 @@ func TestBuild(t *testing.T) {
 	if doc.Source.System != source || doc.Source.NativeID != repo+"#31" {
 		t.Errorf("Source = %+v, want the artifact and the source it came from", doc.Source)
 	}
+}
 
-	// Provenance: the current revision of the artifact and of each reply, in
-	// the order the document reads.
+func TestBuildQuotesEveryRevisionInTheOrderTheDocumentReads(t *testing.T) {
+	doc := buildPullRequest(t)
 	wantRefs := []string{
 		connector.EventID(source, repo+"#31@2026-09-09T14:00:00Z"),
 		connector.EventID(source, repo+"#31:review:77"),
@@ -92,9 +91,10 @@ func TestBuild(t *testing.T) {
 	if !slices.Equal(doc.L0Refs, wantRefs) {
 		t.Errorf("L0Refs = %v\nwant %v", doc.L0Refs, wantRefs)
 	}
+}
 
-	// The artifact happened when it happened, was edited later, and the
-	// conversation went on after that.
+func TestBuildTimesTheDocumentByItsArtifactAndItsNewestEvent(t *testing.T) {
+	doc := buildPullRequest(t)
 	if !doc.Time.Created.Equal(at(0)) {
 		t.Errorf("Time.Created = %s, want %s", doc.Time.Created, at(0))
 	}
@@ -104,9 +104,10 @@ func TestBuild(t *testing.T) {
 	if !doc.Time.LastActivity.Equal(at(6)) {
 		t.Errorf("Time.LastActivity = %s, want the newest thing in the document %s", doc.Time.LastActivity, at(6))
 	}
+}
 
-	// Whoever opened it authored it; whoever reviewed it is a reviewer; an
-	// agent that commented is an agent.
+func TestBuildNamesEachParticipantByTheirStrongestRole(t *testing.T) {
+	doc := buildPullRequest(t)
 	wantParticipants := []l1.Participant{
 		{PrincipalID: "kyle", Role: connector.RoleAuthor},
 		{PrincipalID: "sam", Role: connector.RoleReviewer},
@@ -115,25 +116,28 @@ func TestBuild(t *testing.T) {
 	if !slices.Equal(doc.Participants, wantParticipants) {
 		t.Errorf("Participants = %v\nwant %v", doc.Participants, wantParticipants)
 	}
+}
 
-	// The scope is the covering scope's entities, the entities the text names,
-	// and the tracker item the artifact is. The scope that covers another
-	// repository contributes nothing.
+func TestBuildScopesTheDocumentToTheCodeAndTheTrackerItem(t *testing.T) {
+	doc := buildPullRequest(t)
 	wantScope := []string{"code:acme/api:engine", "code:acme/api:queue", "tracker:" + source + ":" + repo + "#31"}
 	if !slices.Equal(doc.Scope, wantScope) {
 		t.Errorf("Scope = %v\nwant %v", doc.Scope, wantScope)
 	}
+}
 
-	wantRefsOut := []l1.Reference{
+func TestBuildReferencesThePeopleSystemsAndItemsTheTextNames(t *testing.T) {
+	doc := buildPullRequest(t)
+	assertRefs(t, doc.References, []l1.Reference{
 		{Type: l1.RefPerson, ID: "sam"},
 		{Type: l1.RefSystem, ID: "code:acme/api:engine"},
 		{Type: l1.RefSystem, ID: "code:acme/api:queue"},
 		{Type: l1.RefTrackerItem, ID: repo + "#12"},
-	}
-	assertRefs(t, doc.References, wantRefsOut)
+	})
+}
 
-	// The conversation reads in order, with everything attributed to the
-	// principal rather than to the login.
+func TestBuildRendersTheConversationAttributedAndInOrder(t *testing.T) {
+	doc := buildPullRequest(t)
 	for _, want := range []string{
 		"# engine: take the lock before writing",
 		"pull_request by kyle at 2026-09-09T12:00:00Z",
@@ -148,8 +152,10 @@ func TestBuild(t *testing.T) {
 	if at := strings.Index(doc.RawText, "## review"); at > strings.Index(doc.RawText, "## message by kyle") {
 		t.Errorf("the conversation is out of order:\n%s", doc.RawText)
 	}
+}
 
-	// The body has not been distilled yet, so there is no text to embed.
+func TestBuildLeavesTheDistillationEmptyUntilABodyIsSet(t *testing.T) {
+	doc := buildPullRequest(t)
 	if doc.Text != "" {
 		t.Errorf("Text = %q before a body was set, want empty", doc.Text)
 	}
@@ -158,8 +164,6 @@ func TestBuild(t *testing.T) {
 	}
 }
 
-// A pull request's document is linked to the code entities its paths fall
-// under, in its references and its scope.
 func TestBuildLinksAChangeToTheCodeItTouches(t *testing.T) {
 	root, children := pullRequest()
 	root.Payload.Paths = []string{"engine/server/lock.go", "engine/server/write_test.go"}
@@ -176,9 +180,6 @@ func TestBuildLinksAChangeToTheCodeItTouches(t *testing.T) {
 			systems = append(systems, ref.ID)
 		}
 	}
-	// The title says "engine", which is Engine's name as well as a directory
-	// the change is in, and the review names the queue, which the change does
-	// not touch: it follows every entity the change does.
 	wantSystems := []string{"code:acme/api:engine/server", "code:acme/api:engine", "code:acme/api:golang", "code:acme/api:queue"}
 	if !slices.Equal(systems, wantSystems) {
 		t.Errorf("system references = %v\nwant %v", systems, wantSystems)
@@ -193,9 +194,6 @@ func TestBuildLinksAChangeToTheCodeItTouches(t *testing.T) {
 	}
 }
 
-// Where the source gives no time for an edit, the revision still exists and the
-// document says the artifact was last edited when it happened: there is nothing
-// else to say, and a zero time would be a time before the artifact.
 func TestBuildWithARevisionThatCarriesNoEditTime(t *testing.T) {
 	root, _ := pullRequest()
 	root.Payload.Revision.EditedAt = time.Time{}
@@ -212,9 +210,6 @@ func TestBuildWithARevisionThatCarriesNoEditTime(t *testing.T) {
 	}
 }
 
-// The order children are handed over in is the caller's business and not the
-// document's: a store returns them in one order, a test in another, and the
-// document has to be the same either way or re-distilling would rewrite the row.
 func TestBuildIsIndependentOfTheOrderChildrenArriveIn(t *testing.T) {
 	resolver := testPrincipals(t)
 	root, children := pullRequest()
@@ -236,14 +231,9 @@ func TestBuildIsIndependentOfTheOrderChildrenArriveIn(t *testing.T) {
 	}
 }
 
-// A document quotes every event in it, so it is readable by whoever may read
-// all of them. A reply somebody restricted narrows the document rather than
-// being published under the artifact's own access list.
 func TestBuildFoldsTheAccessListOfEveryEventItQuotes(t *testing.T) {
 	resolver := testPrincipals(t)
 	root, children := pullRequest()
-	// The repository went private between the change proposal and the review,
-	// so the review carries the collaborator group as well as public.
 	children[2].ACL = connector.ACL{{Kind: connector.ACLPublic}, {Kind: connector.ACLGroup, Source: source, NativeID: repo}}
 	root.ACL = connector.ACL{{Kind: connector.ACLGroup, Source: source, NativeID: repo, Label: "collaborators"}}
 
@@ -254,24 +244,18 @@ func TestBuildFoldsTheAccessListOfEveryEventItQuotes(t *testing.T) {
 	if len(doc.ACL) != 1 || doc.ACL[0].Kind != connector.ACLGroup || doc.ACL[0].NativeID != repo {
 		t.Errorf("ACL = %v, want only the grant both events carry", doc.ACL)
 	}
-	// The label is a display name, so the two spellings of one grant are one
-	// grant and the artifact's own label survives.
 	if doc.ACL[0].Label != "collaborators" {
 		t.Errorf("ACL[0].Label = %q, want the artifact's own", doc.ACL[0].Label)
 	}
 }
 
-// Two grants of one kind that name different things are two grants. Comparing
-// only the kind would make a reply readable by another repository's
-// collaborators look like a reply readable by this one's.
-func TestBuildTellsTwoGrantsOfOneKindApart(t *testing.T) {
-	resolver := testPrincipals(t)
+func TestBuildLeavesOutAReplyReadableByADifferentGroup(t *testing.T) {
 	root, children := pullRequest()
 	root.ACL = connector.ACL{{Kind: connector.ACLGroup, Source: source, NativeID: repo}}
 	elsewhere := children[0]
 	elsewhere.ACL = connector.ACL{{Kind: connector.ACLGroup, Source: source, NativeID: "acme/other"}}
 
-	doc, err := l1.Build(l1.Input{Root: root, Children: []connector.Event{elsewhere}, Resolver: resolver, Repo: testRepo})
+	doc, err := l1.Build(l1.Input{Root: root, Children: []connector.Event{elsewhere}, Resolver: testPrincipals(t), Repo: testRepo})
 	if err != nil {
 		t.Fatalf("Build() = %v", err)
 	}
@@ -281,36 +265,38 @@ func TestBuildTellsTwoGrantsOfOneKindApart(t *testing.T) {
 	if len(doc.ACL) != 1 || doc.ACL[0].NativeID != repo {
 		t.Errorf("ACL = %v, want the artifact's own group", doc.ACL)
 	}
+}
 
-	// A grant is its kind, its source and its native id together. A source
-	// where a group and a person can be named the same thing is a source where
-	// comparing native ids alone would make one readable as the other.
+func TestBuildLeavesOutAReplyWhoseIdentityIsNamedLikeTheGroup(t *testing.T) {
+	root, children := pullRequest()
+	root.ACL = connector.ACL{{Kind: connector.ACLGroup, Source: source, NativeID: repo}}
 	person := children[0]
 	person.ACL = connector.ACL{{Kind: connector.ACLIdentity, Source: source, NativeID: repo}}
-	doc, err = l1.Build(l1.Input{Root: root, Children: []connector.Event{person}, Resolver: resolver, Repo: testRepo})
+
+	doc, err := l1.Build(l1.Input{Root: root, Children: []connector.Event{person}, Resolver: testPrincipals(t), Repo: testRepo})
 	if err != nil {
-		t.Fatalf("Build(one identity named like the group) = %v", err)
+		t.Fatalf("Build() = %v", err)
 	}
 	if len(doc.L0Refs) != 1 {
 		t.Errorf("L0Refs = %v, want only the artifact: a group and an identity are not one grant", doc.L0Refs)
 	}
+}
 
-	// And a reply carrying the same grant under a different label is the same
-	// grant: a label is what a person reads.
+func TestBuildQuotesAReplyThatCarriesTheSameGrantUnderAnotherLabel(t *testing.T) {
+	root, children := pullRequest()
+	root.ACL = connector.ACL{{Kind: connector.ACLGroup, Source: source, NativeID: repo}}
 	same := children[0]
 	same.ACL = connector.ACL{{Kind: connector.ACLGroup, Source: source, NativeID: repo, Label: "the api team"}}
-	doc, err = l1.Build(l1.Input{Root: root, Children: []connector.Event{same}, Resolver: resolver, Repo: testRepo})
+
+	doc, err := l1.Build(l1.Input{Root: root, Children: []connector.Event{same}, Resolver: testPrincipals(t), Repo: testRepo})
 	if err != nil {
-		t.Fatalf("Build(same grant) = %v", err)
+		t.Fatalf("Build() = %v", err)
 	}
 	if len(doc.L0Refs) != 2 {
 		t.Errorf("L0Refs = %v, want the reply as well: it carries the same grant", doc.L0Refs)
 	}
 }
 
-// A reply that shares no grant with the artifact cannot narrow the document to
-// nothing — a document nobody may read is unreadable for ever, which is not the
-// same thing as a private one — so it is left out of the document instead.
 func TestBuildLeavesOutAReplyThatSharesNoGrant(t *testing.T) {
 	resolver := testPrincipals(t)
 	root, children := pullRequest()
@@ -332,9 +318,6 @@ func TestBuildLeavesOutAReplyThatSharesNoGrant(t *testing.T) {
 	}
 }
 
-// A command a person gave Hearsay in the conversation, and Hearsay's reply to
-// it, are control traffic: neither is part of the document, its text, its
-// provenance or its participants.
 func TestBuildLeavesOutCommandsAndReplies(t *testing.T) {
 	resolver := testPrincipals(t)
 	root, children := pullRequest()
@@ -362,8 +345,6 @@ func TestBuildLeavesOutCommandsAndReplies(t *testing.T) {
 	}
 }
 
-// An artifact that makes no document of its own is not an error to be retried;
-// it is a job with nothing to do.
 func TestBuildRefusesAnArtifactThatIsPartOfAnotherDocument(t *testing.T) {
 	_, children := pullRequest()
 	_, err := l1.Build(l1.Input{Root: children[0], Repo: testRepo})
@@ -372,9 +353,6 @@ func TestBuildRefusesAnArtifactThatIsPartOfAnotherDocument(t *testing.T) {
 	}
 }
 
-// A connector's own kind is read through the core kind it says it behaves like,
-// which is what docs/connector-contract.md promises: a source nobody wrote code
-// for here still distils.
 func TestBuildReadsAnExtensionKindThroughItsBaseKind(t *testing.T) {
 	root := event("jira.story", "ENG-7", at(0), who("u1", "kpenfound"), "the story", "do the thing")
 	root.Payload.BaseKind = connector.KindIssue
@@ -388,8 +366,6 @@ func TestBuildReadsAnExtensionKindThroughItsBaseKind(t *testing.T) {
 	}
 }
 
-// A child that hangs off something else is a caller mistake, and a document
-// that quoted it would attribute one conversation's words to another.
 func TestBuildRefusesAChildOfAnotherConversation(t *testing.T) {
 	root, children := pullRequest()
 	stray := reply(children[0], repo+"#99")
@@ -398,9 +374,7 @@ func TestBuildRefusesAChildOfAnotherConversation(t *testing.T) {
 	}
 }
 
-// The scrub runs before anything is stored, on the conversation and on what the
-// model wrote about it.
-func TestBuildScrubsTheConversation(t *testing.T) {
+func TestBuildScrubsCredentialsAndAddressesFromTheConversation(t *testing.T) {
 	root, _ := pullRequest()
 	root.Payload.Text = "the key is AKIAIOSFODNN7EXAMPLE, mail kyle@example.com"
 
@@ -413,33 +387,37 @@ func TestBuildScrubsTheConversation(t *testing.T) {
 			t.Errorf("RawText holds %q:\n%s", secret, doc.RawText)
 		}
 	}
+}
 
-	// Every string the row holds is scrubbed, not only raw_text: references is
-	// the fourth, it is what L2 joins on, and Store.Get hands it straight back —
-	// a secret in it is as stored as one in raw_text.
+func TestBuildScrubsTheCredentialsOfALinkFromTheTextAndTheReference(t *testing.T) {
 	credentialed, _ := pullRequest()
 	credentialed.Payload.Text = "status is at https://deploy:hunter2@internal.example.com/status?token=abcd1234"
-	leaky, err := l1.Build(l1.Input{Root: credentialed, Repo: testRepo})
+	doc, err := l1.Build(l1.Input{Root: credentialed, Repo: testRepo})
 	if err != nil {
 		t.Fatalf("Build(a link with credentials) = %v", err)
 	}
 	for _, secret := range []string{"hunter2", "abcd1234"} {
-		for _, ref := range leaky.References {
+		for _, ref := range doc.References {
 			if strings.Contains(ref.ID, secret) {
 				t.Errorf("the %s reference %q holds %q", ref.Type, ref.ID, secret)
 			}
 		}
-		if strings.Contains(leaky.RawText, secret) {
-			t.Errorf("RawText holds %q:\n%s", secret, leaky.RawText)
+		if strings.Contains(doc.RawText, secret) {
+			t.Errorf("RawText holds %q:\n%s", secret, doc.RawText)
 		}
 	}
-	// The link is still a reference — the credentials are dropped from it, not
-	// the link with them.
 	want := l1.Reference{Type: l1.RefURL, ID: "https://internal.example.com/status?token=[redacted:secret]"}
-	if !slices.Contains(leaky.References, want) {
-		t.Errorf("References = %v, want it to carry %v", leaky.References, want)
+	if !slices.Contains(doc.References, want) {
+		t.Errorf("References = %v, want it to carry %v", doc.References, want)
 	}
+}
 
+func TestWithBodyScrubsTheModelsWords(t *testing.T) {
+	root, _ := pullRequest()
+	doc, err := l1.Build(l1.Input{Root: root, Repo: testRepo})
+	if err != nil {
+		t.Fatalf("Build() = %v", err)
+	}
 	body := l1.Body{Summary: "the key is AKIAIOSFODNN7EXAMPLE", OutcomeKind: l1.OutcomeNone}
 	withBody, redacted, err := doc.WithBody(body)
 	if err != nil {
@@ -453,8 +431,6 @@ func TestBuildScrubsTheConversation(t *testing.T) {
 	}
 }
 
-// The distillation is what gets embedded, so it holds what the model wrote and
-// nothing that would move every document from one repository closer together.
 func TestWithBodyRendersTheDistillation(t *testing.T) {
 	root, _ := pullRequest()
 	doc, err := l1.Build(l1.Input{Root: root, Repo: testRepo})
@@ -489,8 +465,6 @@ func TestWithBodyRendersTheDistillation(t *testing.T) {
 	}
 }
 
-// A document with nothing in the body is not a document: text is what gets
-// embedded, and a row with none of it would be found by nothing.
 func TestWithBodyRefusesAnEmptyBody(t *testing.T) {
 	root, _ := pullRequest()
 	doc, err := l1.Build(l1.Input{Root: root, Repo: testRepo})

@@ -14,9 +14,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector"
 )
 
-// slashCommand is Slack's Socket Mode slash_commands payload. Slack's
-// documented payload has no thread_ts, but clients that supply it can pin
-// directly; a message permalink is also accepted as a pin argument.
 type slashCommand struct {
 	TeamID      string `json:"team_id"`
 	ChannelID   string `json:"channel_id"`
@@ -29,8 +26,6 @@ type slashCommand struct {
 	ResponseURL string `json:"response_url"`
 }
 
-// parseCommand only accepts the configured workspace and a public channel.
-// The trigger id identifies one invocation across Socket Mode redelivery.
 func (c *Connector) parseCommand(raw json.RawMessage) (connector.Command, string, bool) {
 	var in slashCommand
 	if json.Unmarshal(raw, &in) != nil || in.TeamID != c.team || !c.configured(in.ChannelID) ||
@@ -89,8 +84,6 @@ func pinTimestamp(channel, input string) string {
 	return input
 }
 
-// A response_url is a short-lived capability. Never send one to an arbitrary
-// address from a forged fixture or a malformed envelope.
 func responseURL(raw string) bool {
 	u, err := url.Parse(raw)
 	if err != nil || u.User != nil || u.Fragment != "" || u.RawQuery != "" {

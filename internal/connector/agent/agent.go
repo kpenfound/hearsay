@@ -82,9 +82,7 @@ const ContainerStream connector.ContainerKind = "stream"
 type Connector struct {
 	source string
 	allow  connector.Allowlist
-	// agents are the agents that may post, with the digest of their token.
 	agents push.Tokens
-	// humans are the principal ids an agent may act for.
 	humans map[string]bool
 	last   atomic.Int64
 }
@@ -232,13 +230,8 @@ const (
 	PhaseEnd   = "end"
 )
 
-// maxKey is the longest session, turn, call or next id.
 const maxKey = 128
 
-// validKey reports whether s may be a session, turn, call or next id: 1 to [maxKey]
-// bytes of letters, digits, `-`, `_`, `.` and `:`. The set leaves out `@`,
-// which separates an artifact from its revision in a native id, and anything
-// an event id would have to escape.
 func validKey(s string) bool {
 	if s == "" || len(s) > maxKey {
 		return false
@@ -259,8 +252,6 @@ func validKey(s string) bool {
 // connector can emit. Both surfaces use the same grammar.
 func ValidSessionID(id string) bool { return validKey(id) }
 
-// event turns an authenticated agent's request into the event it means. The
-// request is the caller's, so what is wrong with it is an [errBadRequest].
 func (c *Connector) event(agent string, req Request) (connector.Event, error) {
 	if req.Session == "" || !validKey(req.Session) {
 		return connector.Event{}, badRequest("session must be 1 to %d bytes of letters, digits, -, _, . and :", maxKey)
@@ -343,12 +334,10 @@ func (c *Connector) event(agent string, req Request) (connector.Event, error) {
 		Kind:     req.Kind,
 		Time:     req.StartedAt.UTC(),
 		Payload: connector.Payload{
-			Artifact:  req.Session,
-			Container: connector.Container{Kind: ContainerStream, NativeID: agent},
-			Text:      req.Text,
-			Author:    &author,
-			// The agent acted; the person is who it acted for, as the API's own
-			// audit and assertion events say it.
+			Artifact:     req.Session,
+			Container:    connector.Container{Kind: ContainerStream, NativeID: agent},
+			Text:         req.Text,
+			Author:       &author,
 			Participants: []connector.Participant{{Identity: person, Role: connector.RoleAuthor}},
 			Revision:     &connector.Revision{Token: revision, EditedAt: edited},
 			Native:       raw,
@@ -364,13 +353,8 @@ func hasNextFields(req Request) bool {
 	return req.Next != "" || req.Scope != "" || req.Action != "" || req.Verdicts != nil
 }
 
-// errBadRequest is a request the connector cannot turn into an event: the
-// agent's fault, answered 400.
-var errBadRequest = push.ErrBadRequest
-
 func badRequest(format string, args ...any) error {
-	return fmt.Errorf("%w: %s", errBadRequest, fmt.Sprintf(format, args...))
+	return fmt.Errorf("%w: %s", push.ErrBadRequest, fmt.Sprintf(format, args...))
 }
 
-// mayActFor reports whether id is a configured human.
 func (c *Connector) mayActFor(id string) bool { return c.humans[id] }

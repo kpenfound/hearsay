@@ -1,0 +1,105 @@
+sources:
+  - id: team-work
+    type: work
+    containers: ["*"]
+    settings:
+      posters: [publisher]
+      attributors: [publisher]
+  - id: notes
+    type: obsidian
+    containers: [Daily, "Side Projects", KB, Homelab]
+    settings:
+      root: /srv/vault
+      owner: {source: notes, kind: user, native_id: owner-1}
+  - id: team-work-owner
+    type: work
+    containers: ["*"]
+    settings:
+      owner_of: team-work
+      posters: [publisher]
+      attributors: [publisher]
+  - id: assistant-work
+    type: work
+    containers: ["*"]
+    settings:
+      posters: [assistant]
+  - id: assistant-owner
+    type: work
+    containers: ["*"]
+    settings:
+      owner_of: assistant-work
+      posters: [assistant]
+
+scopes:
+  - id: team-work
+    name: Team projects
+    sources: [team-work, team-work-owner]
+  - id: notes
+    name: Owner's notes
+    sources: [notes]
+  - id: assistant-work
+    name: Assistant quests
+    sources: [assistant-work, assistant-owner]
+
+authority:
+  - scope: team-work
+    ratified_by:
+      principals: [owner]
+      sources: [team-work-owner]
+      artifacts: [spec, decision]
+  - scope: assistant-work
+    ratified_by:
+      principals: [owner]
+      sources: [assistant-owner]
+      artifacts: [decision]
+
+principals:
+  - id: owner
+    name: Example Owner
+    kind: human
+    token_env: HEARSAY_OWNER_TOKEN
+    identities:
+      - {source: notes, native_id: owner-1}
+
+  - id: publisher
+    kind: agent
+    class: observer
+    token_env: HEARSAY_PUBLISHER_TOKEN
+    scopes: &team-projects
+      - work:team-work:p_example01
+      - work:team-work:p_example02
+      - work:team-work:p_example03
+  - id: worker
+    kind: agent
+    class: worker
+    token_env: HEARSAY_WORKER_TOKEN
+    scopes: *team-projects
+  - id: orchestrator
+    kind: agent
+    class: orchestrator
+    token_env: HEARSAY_ORCHESTRATOR_TOKEN
+    scopes: *team-projects
+  - id: observer
+    kind: agent
+    class: observer
+    token_env: HEARSAY_OBSERVER_TOKEN
+    scopes: *team-projects
+  - id: assistant
+    kind: agent
+    class: observer
+    token_env: HEARSAY_ASSISTANT_TOKEN
+    scopes: ["*"]
+
+llm:
+  tiers:
+    distill:
+      provider: claude-sbx
+      model: haiku
+      max_tokens: 8192
+    assert:
+      provider: claude-sbx
+      model: sonnet
+  judgments:
+    model: judge-latest
+    base_url: https://judge.example.test/api
+    api_key_env: JUDGE_API_KEY

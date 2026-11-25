@@ -19,10 +19,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/onboard"
 )
 
-// initIO is what `hearsay init` reads besides its flags: the answers to its
-// prompts, whether there is a person at the other end to prompt, the
-// environment the source credentials come from, and the randomness the API
-// tokens are made of. Tests give it their own.
 type initIO struct {
 	stdin    io.Reader
 	terminal bool
@@ -38,21 +34,14 @@ func runInit(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	return initTeam(ctx, args, initIO{stdin: os.Stdin, terminal: terminal, lookup: os.LookupEnv, random: rand.Reader}, stdout, stderr)
 }
 
-// question is one prompt of `hearsay init` and the flag that answers it
-// instead. Answering the prompt and passing the flag with the same text are
-// the same thing: that is what makes the flow scriptable.
 type question struct {
-	flag   string
-	prompt string
-	// list takes several values, comma-separated or with the flag repeated.
-	list bool
-	// required is asked again until it is answered.
+	flag     string
+	prompt   string
+	list     bool
 	required bool
-	// when is whether it is asked at all, given the answers so far. A flag
-	// given for a question that is not asked still counts.
-	when  func(onboard.Input) bool
-	check func(string) error
-	set   func(*onboard.Input, []string)
+	when     func(onboard.Input) bool
+	check    func(string) error
+	set      func(*onboard.Input, []string)
 }
 
 func initQuestions() []question {
@@ -98,7 +87,6 @@ func initQuestions() []question {
 	}
 }
 
-// answer is a question's flag: whether it was given, and what it said.
 type answer struct {
 	list   bool
 	given  bool
@@ -116,9 +104,6 @@ func (a *answer) Set(v string) error {
 	return nil
 }
 
-// splitAnswer reads one answer the way a prompt and a flag both take it:
-// trimmed, and for a list, split on commas with the empty items dropped. An
-// empty answer is no value, which is how a source is skipped.
 func splitAnswer(v string, list bool) []string {
 	if !list {
 		if v = strings.TrimSpace(v); v == "" {
@@ -135,9 +120,6 @@ func splitAnswer(v string, list bool) []string {
 	return out
 }
 
-// initTeam is `hearsay init`: it asks what the team uses, reads who is on it
-// from the sources it has credentials for, and writes the configuration and
-// the env file for its secrets (docs/config.md). It needs no database.
 func initTeam(ctx context.Context, args []string, env initIO, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("hearsay init", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -220,9 +202,6 @@ func initTeam(ctx context.Context, args []string, env initIO, stdout, stderr io.
 	return nil
 }
 
-// ask puts one question to the person at the terminal until it has an answer
-// that passes its check. Running out of input answers an optional question
-// with nothing, and fails a required one.
 func ask(r *bufio.Reader, w io.Writer, q question) ([]string, error) {
 	for {
 		fmt.Fprintf(w, "%s [--%s]: ", q.prompt, q.flag)
@@ -258,11 +237,6 @@ func ask(r *bufio.Reader, w io.Writer, q question) ([]string, error) {
 	}
 }
 
-// initDirectory builds a reader for each configured source whose credential
-// is in the environment, under the variable the generated configuration names
-// for it, so what init reads with is what the services will. A source without
-// one is not read, and the notes say what that leaves out. Nothing read here
-// is written anywhere.
 func initDirectory(in onboard.Input, lookup func(string) (string, bool)) (onboard.Directory, []string, error) {
 	var dir onboard.Directory
 	var notes []string

@@ -13,24 +13,8 @@ import (
 	"strings"
 )
 
-// No test in this repository makes a real model call (CLAUDE.md). What every
-// other package's tests use instead is here: a [Registry] that answers from
-// recorded fixtures, keyed by the request, and refuses anything it has no
-// recording for.
-//
-// The fake is the real registry with a provider that reads a file: it is built
-// by [NewRegistry], from the same [Config], so a test exercises the same
-// request validation, the same defaults, the same retry loop and the same token
-// accounting the process will. What a fixture replaces is the network, and
-// nothing else.
-
 // FixtureFile is what a recorded fixture file holds: JSON, one object with a
-// list of completions and a list of embeddings. Files are checked in, and a
-// test that needs a new one records it deliberately.
-//
-// The type is exported so that whatever records a fixture — a program pointed
-// at a real provider once, a hand-written case — writes it with encoding/json
-// rather than by copying a format out of this file.
+// list of completions and a list of embeddings.
 type FixtureFile struct {
 	Completions []CompletionFixture `json:"completions,omitempty"`
 	Embeddings  []EmbeddingFixture  `json:"embeddings,omitempty"`
@@ -58,8 +42,7 @@ type EmbeddingFixture struct {
 type Fixtures struct {
 	completions map[string]CompletionFixture
 	embeddings  map[string]EmbeddingFixture
-	// files is where each key was read from, for an error that names the file
-	// holding a duplicate.
+
 	files map[string]string
 }
 
@@ -74,9 +57,8 @@ func NewFixtures() *Fixtures {
 
 // LoadFixtures reads every `.json` file under fsys, in path order, and checks
 // each recording as it goes: a request that is not one this abstraction would
-// send, an answer that does not satisfy the schema its request asked for, or
-// two recordings of the same request are all errors here rather than a
-// confusing failure in the test that replays them.
+// send, an answer that does not satisfy the schema its request asked for, and
+// two recordings of the same request are all errors.
 func LoadFixtures(fsys fs.FS) (*Fixtures, error) {
 	f := NewFixtures()
 	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
@@ -180,8 +162,6 @@ func (f *Fixtures) addEmbedding(file string, e EmbeddingFixture) error {
 	return nil
 }
 
-// claim reserves a key, so that two recordings of the same request are an error
-// rather than one of them silently winning.
 func (f *Fixtures) claim(key, file string) error {
 	if where, ok := f.files[key]; ok {
 		if where == "" {
@@ -194,17 +174,8 @@ func (f *Fixtures) claim(key, file string) error {
 }
 
 // FixtureKey is what a completion is recorded under: the tier and the request,
-// canonicalised. It is exported so that whatever records a fixture can name the
-// file after the call it recorded, and so that a test chasing a miss can print
-// the key it expected.
-//
-// The token budget is part of the key. A request answered under a different
-// budget is a different call, and a fixture recorded at one budget replayed at
-// another would be a recording of something that never happened.
-//
-// A schema is canonicalised first ([canonicalJSON], the same form a `const` is
-// compared in), so that a fixture file and the caller asking for the same shape
-// do not have to write it out the same way round.
+// canonicalised. The token budget is part of the key, and a schema is
+// canonicalised first, so the same shape written differently keys the same.
 func FixtureKey(tier Tier, req Request) string {
 	type canonical struct {
 		Tier      Tier      `json:"tier"`
@@ -231,27 +202,18 @@ func EmbedFixtureKey(texts []string) string {
 	}{Tier: TierEmbed, Texts: texts})
 }
 
-// hashJSON is the key of anything canonicalised: sha256 over its JSON, which is
-// deterministic because every field of the values passed to it is ordered.
 func hashJSON(v any) string {
 	body, err := json.Marshal(v)
 	if err != nil {
-		// Nothing here holds a channel, a function or a NaN, and a caller
-		// cannot supply one: the canonical types are this file's.
 		return "sha256:unencodable"
 	}
 	sum := sha256.Sum256(body)
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// NewFake builds a registry that answers from fx: the same registry a process
-// runs on, with the network replaced. Every tier the configuration names is
-// served, whatever provider it names, so a test can use the shipped
-// configuration unchanged.
-//
-// A request nothing was recorded for is [ErrNoFixture]. That is the point: a
-// test that would otherwise reach a provider fails, loudly, naming the key to
-// record.
+// NewFake builds a registry that answers from fx. Every tier the configuration
+// names is served, whatever provider it names. A request nothing was recorded
+// for is [ErrNoFixture], naming the key to record.
 func NewFake(cfg Config, fx *Fixtures, opts ...Option) (Registry, error) {
 	if fx == nil {
 		fx = NewFixtures()
@@ -267,7 +229,6 @@ func NewFake(cfg Config, fx *Fixtures, opts ...Option) (Registry, error) {
 	return NewRegistry(cfg, providers, opts...)
 }
 
-// fakeProvider stands in for whatever provider a tier names.
 type fakeProvider struct {
 	name     string
 	fixtures *Fixtures
@@ -275,9 +236,6 @@ type fakeProvider struct {
 
 func (p *fakeProvider) Name() string { return p.name }
 
-// Capabilities is everything, because a fixture can record anything a provider
-// could answer. A test for what happens when a provider cannot do something
-// writes its own [Provider]; that is a test of [NewRegistry], not of the fake.
 func (p *fakeProvider) Capabilities() Capabilities {
 	return Capabilities{Complete: true, Embed: true, SystemPrompt: true, StructuredOutput: true}
 }
@@ -295,11 +253,6 @@ type fakeCompleter struct {
 	fixtures *Fixtures
 }
 
-// Complete replays what was recorded for this request.
-//
-// The miss says which tier and which key, and how many messages there were —
-// and not one byte of the prompt. A prompt is L1 text on its way to a model,
-// and an error string ends up in a log line.
 func (c *fakeCompleter) Complete(_ context.Context, req Request) (Response, error) {
 	key := FixtureKey(c.tier, req)
 	fixture, ok := c.fixtures.completions[key]
@@ -321,14 +274,11 @@ type fakeEmbedder struct {
 
 func (e *fakeEmbedder) Dimensions() int { return e.dimensions }
 
-// Embed replays the vectors recorded for exactly these texts, in order.
 func (e *fakeEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	vectors, _, err := e.EmbedTokens(ctx, texts)
 	return vectors, err
 }
 
-// EmbedTokens replays the recording and what it was billed for, so that a test
-// of token accounting has something to account for.
 func (e *fakeEmbedder) EmbedTokens(_ context.Context, texts []string) ([][]float32, Tokens, error) {
 	key := EmbedFixtureKey(texts)
 	fixture, ok := e.fixtures.embeddings[key]

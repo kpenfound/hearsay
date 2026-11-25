@@ -37,8 +37,6 @@ func JoinTailscale(log *slog.Logger) Join {
 	}
 }
 
-// logf adapts log to Tailscale's logf signature. A non-empty only keeps the
-// lines whose format starts with it.
 func logf(log *slog.Logger, level slog.Level, only string) func(string, ...any) {
 	return func(format string, args ...any) {
 		if only != "" && !strings.HasPrefix(format, only) {
@@ -84,7 +82,6 @@ func (b tsnetBackend) TLSConfig(ctx context.Context, name string) (*tls.Config, 
 	if err != nil {
 		return nil, err
 	}
-	// Fetch ahead of serving, so an issuance failure shows without a handshake.
 	certPEM, keyPEM, err := client.CertPair(ctx, name)
 	if err == nil {
 		_, err = tls.X509KeyPair(certPEM, keyPEM)

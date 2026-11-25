@@ -10,9 +10,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/llm"
 )
 
-// A provider that takes none of temperature, base_url or api_key_env refuses a
-// tier that sets one, naming the setting; a tier that sets none builds, and
-// what a default would put in those fields is never refused.
 func TestNewRegistryRefusesSettingsAProviderHasNoUseFor(t *testing.T) {
 	temp := 0.2
 	for _, tt := range []struct {
@@ -50,8 +47,6 @@ func TestNewRegistryRefusesSettingsAProviderHasNoUseFor(t *testing.T) {
 	}
 }
 
-// A provider that takes the settings is not refused for them: the capability
-// is opt-out, so every existing provider is unchanged.
 func TestNewRegistryTakesSettingsByDefault(t *testing.T) {
 	temp := 0.2
 	tc := llm.TierConfig{Provider: "anthropic", Model: "m", Temperature: &temp, BaseURL: "https://g.example", APIKeyEnv: "K"}
@@ -60,20 +55,23 @@ func TestNewRegistryTakesSettingsByDefault(t *testing.T) {
 	}
 }
 
-func TestCanServeRefusesSettingsWhereConfigValidateAsks(t *testing.T) {
-	temp := 0.2
-	caps := llm.Capabilities{Complete: true, SystemPrompt: true, StructuredOutput: true, NoTemperature: true}
-	if err := llm.CanServe("x", caps, llm.TierDistill, llm.TierConfig{Provider: "x", Model: "m"}); err != nil {
+var temperatureRefusingCaps = llm.Capabilities{Complete: true, SystemPrompt: true, StructuredOutput: true, NoTemperature: true}
+
+func TestCanServeAcceptsATierThatSetsNothingTheProviderRefuses(t *testing.T) {
+	if err := llm.CanServe("x", temperatureRefusingCaps, llm.TierDistill, llm.TierConfig{Provider: "x", Model: "m"}); err != nil {
 		t.Errorf("CanServe() = %v, want nil", err)
 	}
+}
+
+func TestCanServeRefusesSettingsWhereConfigValidateAsks(t *testing.T) {
+	temp := 0.2
+	caps := temperatureRefusingCaps
 	err := llm.CanServe("x", caps, llm.TierDistill, llm.TierConfig{Provider: "x", Model: "m", Temperature: &temp})
 	if err == nil || !strings.Contains(err.Error(), "temperature") {
 		t.Errorf("CanServe() = %v, want a refusal of temperature", err)
 	}
 }
 
-// A provider's own per-attempt default applies when the tier sets no timeout,
-// and a configured timeout beats it.
 func TestProviderDefaultTimeout(t *testing.T) {
 	for _, tt := range []struct {
 		name     string
@@ -103,14 +101,11 @@ func TestProviderDefaultTimeout(t *testing.T) {
 
 func costOf(c float64) *llm.JudgmentUsage { return &llm.JudgmentUsage{CostUSD: &c} }
 
-// A provider's reported cost is summed per tier, provider and model exactly as
-// reported, a reported zero stays distinct from no cost, and tokens are counted
-// as before.
 func TestUsageSumsReportedCost(t *testing.T) {
 	answers := []llm.Response{
 		{Text: "ok", Model: "m", Tokens: llm.Tokens{Input: 10, Output: 2}, ReportedUsage: costOf(0.25)},
 		{Text: "ok", Model: "m", Tokens: llm.Tokens{Input: 5, Output: 1}, ReportedUsage: costOf(0.5)},
-		// an unusable figure is no cost, and does not poison the sum
+
 		{Text: "ok", Model: "m", ReportedUsage: costOf(math.NaN())},
 		{Text: "ok", Model: "m", ReportedUsage: costOf(-1)},
 		{Text: "ok", Model: "zero", ReportedUsage: costOf(0)},

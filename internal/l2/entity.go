@@ -134,7 +134,6 @@ type RepoReader interface {
 // writes nothing new.
 func Seed(ctx context.Context, repo config.Repo, reader RepoReader, placements []Placement) ([]Entity, error) {
 	byID := map[string]*Entity{}
-	// The repository each entity is in, for nesting by path pattern.
 	repoOf := map[string]config.SourceRef{}
 	configured := Configured(repo)
 	for _, c := range repo.Code {
@@ -193,9 +192,6 @@ func Seed(ctx context.Context, repo config.Repo, reader RepoReader, placements [
 		for _, dir := range dirs {
 			dir = strings.Trim(dir, "/")
 			if dir == "" || strings.Contains(dir, "/") || strings.HasPrefix(dir, ".") {
-				// Not a top-level directory, or a dot-directory (.github,
-				// .dagger), which is tooling rather than something a team
-				// talks about as part of the product.
 				continue
 			}
 			id := project + ":" + dir
@@ -210,7 +206,6 @@ func Seed(ctx context.Context, repo config.Repo, reader RepoReader, placements [
 			repoOf[id] = ref
 		}
 	}
-	// The owners below follow the hierarchy, so it is settled first.
 	hierarchy(ctx, byID, repoOf, configured, placed, work)
 
 	resolver, err := repo.Resolver()
@@ -231,11 +226,7 @@ func Seed(ctx context.Context, repo config.Repo, reader RepoReader, placements [
 			return nil, fmt.Errorf("reading %s for %s: %w", c.CodeOwners, c.ID, err)
 		}
 		rules := ParseCodeOwners(content)
-		// The file seeds owners for the entity that names it and for everything
-		// under it (docs/config.md#code): the descendants share its repository.
 		for _, e := range descendants(byID, c.ID) {
-			// Owners already set are configuration's: nothing else has set any
-			// by this point.
 			if len(e.Owners) > 0 {
 				continue
 			}
@@ -249,7 +240,6 @@ func Seed(ctx context.Context, repo config.Repo, reader RepoReader, placements [
 	return sorted(byID), nil
 }
 
-// repositories is every repository `code/` names, once each, sorted.
 func repositories(code []config.CodeEntity) []config.SourceRef {
 	var refs []config.SourceRef
 	for _, c := range code {
@@ -264,9 +254,6 @@ func repositories(code []config.CodeEntity) []config.SourceRef {
 	return refs
 }
 
-// hierarchy sets every entity's part_of: `code/`'s where it sets any, then the
-// tracker's, then runtime work declarations, and otherwise what the entities' path patterns imply within their
-// repository.
 func hierarchy(ctx context.Context, byID map[string]*Entity, repoOf map[string]config.SourceRef, configured, tracker, work Parents) {
 	located := make([]Located, 0, len(byID))
 	for _, id := range sortedKeys(byID) {
@@ -281,9 +268,6 @@ func hierarchy(ctx context.Context, byID map[string]*Entity, repoOf map[string]c
 	}
 }
 
-// descendants is the entity and everything whose part_of chain reaches it.
-// [MergeHierarchy] drops every edge that would close a cycle, so the walk
-// ends; the visited set is what keeps it ending anyway.
 func descendants(byID map[string]*Entity, root string) []*Entity {
 	visited := map[string]bool{}
 	var out []*Entity

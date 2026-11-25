@@ -1,11 +1,3 @@
-{{- /*
-The deploy job: `hearsay migrate up` from the image being
-deployed, run to completion before install creates the services and before an
-upgrade rolls them. A hook runs before the release's own objects exist, so it
-reads nothing the chart renders: only the database URL, from the existing
-Secret. It is kept after it succeeds, so `kubectl logs job/<name>` answers what
-it did, and deleted when the next one is created.
-*/ -}}
 {{- if .Values.migrate.enabled }}
 apiVersion: batch/v1
 kind: Job
@@ -19,8 +11,6 @@ metadata:
     helm.sh/hook-weight: "0"
     helm.sh/hook-delete-policy: before-hook-creation
 spec:
-  # A retry is safe: each migration is a transaction, and goose's advisory
-  # lock makes a concurrent run wait.
   backoffLimit: {{ .Values.migrate.backoffLimit }}
   {{- with .Values.migrate.activeDeadlineSeconds }}
   activeDeadlineSeconds: {{ . }}

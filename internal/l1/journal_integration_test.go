@@ -6,8 +6,6 @@ import (
 	"context"
 	"errors"
 	"math"
-	"os"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/connector"
-	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/principal"
@@ -25,51 +23,7 @@ import (
 
 func journalDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	admin, err := db.Open(t.Context(), url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	name := "journal_" + strconv.FormatInt(time.Now().UnixNano(), 36)
-	if _, err = admin.Exec(t.Context(), "CREATE DATABASE "+name); err != nil {
-		t.Fatal(err)
-	}
-	admin.Close()
-	base, query, hasQuery := strings.Cut(url, "?")
-	scratchURL := base[:strings.LastIndex(base, "/")+1] + name
-	if hasQuery {
-		scratchURL += "?" + query
-	}
-	t.Cleanup(func() {
-		admin, err := db.Open(context.Background(), url)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		defer admin.Close()
-		_, err = admin.Exec(context.Background(), "DROP DATABASE "+name+" WITH (FORCE)")
-		if err != nil {
-			t.Error(err)
-		}
-	})
-	m, err := db.NewMigrator(t.Context(), scratchURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = m.Up(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if err = m.Close(); err != nil {
-		t.Fatal(err)
-	}
-	pool, err := db.Connect(t.Context(), scratchURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
+	pool := dbtest.Scratch(t, "journal")
 	journalExec(t, pool, `INSERT INTO l0_events(id,source,native_id,kind,artifact,occurred_at,payload,acl)
       VALUES('evt:test:one','test','one','message','one',now(),'{}','[{"kind":"public"}]')`)
 	journalExec(t, pool, `INSERT INTO l1_docs(id,kind,source,source_native_id,l0_refs,created_at,updated_at,last_activity_at,acl,text,raw_text,body,outcome_kind,scope,artifact_class)
@@ -119,21 +73,38 @@ func journalCommit(t *testing.T, pool *pgxpool.Pool, rs []l1.JudgmentRecord, obs
 		t.Fatal(err)
 	}
 }
-func lookupJournal(t *testing.T, pool *pgxpool.Pool, r l1.JudgmentRecord) *l1.JudgmentRecord {
+func lookupJudgment(t *testing.T, pool *pgxpool.Pool, r l1.JudgmentRecord, inputs l1.JudgmentInputs) *l1.JudgmentRecord {
 	t.Helper()
-	got, err := l1.New(pool).LookupJudgment(t.Context(), journalReader(), r.Task, r.QuestionVersion, r.QuestionHash, r.Inputs)
+	key := l1.JudgmentKey{Task: r.Task, Version: r.QuestionVersion, QuestionHash: r.QuestionHash}
+	found, err := l1.New(pool).LookupJudgments(t.Context(), journalReader(), []l1.JudgmentKey{key}, inputs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return got
+	got, ok := found[key]
+	if !ok {
+		return nil
+	}
+	return &got
+}
+
+func lookupJournal(t *testing.T, pool *pgxpool.Pool, r l1.JudgmentRecord) *l1.JudgmentRecord {
+	t.Helper()
+	return lookupJudgment(t, pool, r, r.Inputs)
+}
+
+func beginJudgment(t *testing.T, pool *pgxpool.Pool, r l1.JudgmentRecord) string {
+	t.Helper()
+	ids, err := l1.New(pool).BeginJudgments(t.Context(), []l1.JudgmentRecord{r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ids[0]
 }
 
 func TestJournalAttemptsAndRestart(t *testing.T) {
 	pool := journalDB(t)
 	r := journalRecord(t, pool, "attempt")
-	if _, err := l1.New(pool).BeginJudgment(t.Context(), r); err != nil {
-		t.Fatal(err)
-	}
+	beginJudgment(t, pool, r)
 	if got := lookupJournal(t, pool, r); got != nil {
 		t.Fatal("interrupted attempt was reusable")
 	}
@@ -154,8 +125,6 @@ func TestJournalAttemptsAndRestart(t *testing.T) {
 	if again == nil || !again.CommittedAt.Equal(*got.CommittedAt) {
 		t.Fatal("reuse changed the committed record")
 	}
-	// Changing model configuration is absent from the lookup key, and a
-	// committed record cannot be silently overwritten or reinterpreted.
 	changed := r
 	changed.Label = "no"
 	changed.ModelVersion = "new-version"
@@ -222,10 +191,7 @@ func TestJournalRefusalsPreserveBaselineTransaction(t *testing.T) {
 			pool := journalDB(t)
 			first := journalRecord(t, pool, "first")
 			second := journalRecord(t, pool, "second")
-			// An interrupted attempt survives a failed optional batch as an attempt.
-			if _, err := l1.New(pool).BeginJudgment(t.Context(), first); err != nil {
-				t.Fatal(err)
-			}
+			beginJudgment(t, pool, first)
 			want := l1.JournalStorageFailure
 			opts := l1.JournalCommitOptions{StatementTimeout: 200 * time.Millisecond, LockTimeout: 25 * time.Millisecond}
 			var holder pgx.Tx
@@ -280,7 +246,6 @@ func TestJournalRefusalsPreserveBaselineTransaction(t *testing.T) {
 				}
 			}
 			journalExec(t, tx, `INSERT INTO l2_asserted(doc_id,distilled_at) VALUES('baseline-after',now())`)
-			// Optional server timeout settings never leak into baseline writes.
 			journalExec(t, tx, `SELECT pg_sleep(0.03)`)
 			var n int
 			if err = tx.QueryRow(t.Context(), `SELECT count(*) FROM l2_asserted`).Scan(&n); err != nil || n != 2 {
@@ -322,15 +287,12 @@ func TestJournalCommitClosesConcurrentChangeGap(t *testing.T) {
 			}
 			defer writer.Rollback(t.Context())
 			journalExec(t, writer, `SET LOCAL lock_timeout='25ms'`)
-			// Even a no-op DELETE invokes the statement guard before it can mutate
-			// effective inputs, proving no concurrent change slips past validation.
 			if _, err = writer.Exec(t.Context(), "DELETE FROM "+table+" WHERE false"); err == nil {
 				t.Fatal("input writer passed the commit guard")
 			}
 			if err = writer.Rollback(t.Context()); err != nil {
 				t.Fatal(err)
 			}
-			// The guard allows this caller's own baseline/accepted consumer writes.
 			journalExec(t, tx, `UPDATE l1_docs SET distilled_at=distilled_at WHERE id='l1:test:one'`)
 			if err = tx.Commit(t.Context()); err != nil {
 				t.Fatal(err)
@@ -340,9 +302,6 @@ func TestJournalCommitClosesConcurrentChangeGap(t *testing.T) {
 	}
 }
 
-// Two distill jobs judging at once: the second waits for the first to commit
-// instead of being refused. Against Neon the first holds the guard for several
-// round trips, and every refusal re-ran the second job's model calls.
 func TestAConcurrentCommitWaitsForTheGuard(t *testing.T) {
 	pool := journalDB(t)
 	first, second := journalRecord(t, pool, "first"), journalRecord(t, pool, "second")
@@ -356,7 +315,7 @@ func TestAConcurrentCommitWaitsForTheGuard(t *testing.T) {
 	}
 	committed := make(chan error, 1)
 	go func() {
-		time.Sleep(300 * time.Millisecond) // a commit's round trips to a remote database
+		dbtest.WaitForLockWait(t, pool)
 		committed <- holder.Commit(context.WithoutCancel(t.Context()))
 	}()
 	tx, err := pool.Begin(t.Context())
@@ -494,10 +453,7 @@ func TestJournalAttemptBeforeFirstDocument(t *testing.T) {
 		t.Fatal("unwritten document had a revision")
 	}
 	r := l1.JudgmentRecord{Task: "outcome.binding_agreement", QuestionVersion: "v1", QuestionHash: "hash-of-question", Mode: "shadow", Inputs: inputs}
-	id, err := l1.New(pool).BeginJudgment(t.Context(), r)
-	if err != nil {
-		t.Fatal(err)
-	}
+	id := beginJudgment(t, pool, r)
 	records, err := l1.New(pool).JudgmentsFor(t.Context(), journalReader(), r.Task)
 	if err != nil || len(records) != 1 || records[0].ID != id || records[0].State != "attempt" {
 		t.Fatalf("pending attempt = %+v, %v", records, err)
@@ -539,8 +495,6 @@ func TestJournalOutcomeKinds(t *testing.T) {
 	}
 }
 
-// The aggregate-only export preserves nullable counts and costs through the
-// same persistence path workers use; it does not expose evidence identities.
 func TestPipelineAccountingExport(t *testing.T) {
 	pool := journalDB(t)
 	record := journalRecord(t, pool, "accounting-input")
@@ -593,7 +547,6 @@ func TestJournalBatchedAttemptsAndLookups(t *testing.T) {
 	if got, err := store.LookupJudgments(t.Context(), journalReader(), keys, asked[0].Inputs); err != nil || len(got) != 0 {
 		t.Fatalf("interrupted attempts were reusable: %v %v", got, err)
 	}
-	// Commit two of the three; only those are reusable, each under its own key.
 	for i := range asked {
 		asked[i].ID = ids[i]
 	}
@@ -603,7 +556,6 @@ func TestJournalBatchedAttemptsAndLookups(t *testing.T) {
 	if err != nil || len(got) != 2 || got[keys[0]].ID != ids[0] || got[keys[0]].Label != "yes" || got[keys[1]].ID != ids[1] || got[keys[1]].Label != "no" {
 		t.Fatalf("lookups=%+v err=%v", got, err)
 	}
-	// One batch shares one snapshot; mixed inputs are refused.
 	other := question("", "T4")
 	other.Inputs.Hash = "different"
 	if _, err := store.BeginJudgments(t.Context(), []l1.JudgmentRecord{question("", "T5"), other}); !errors.Is(err, l1.JournalInputsChanged) {

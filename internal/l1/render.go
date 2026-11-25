@@ -8,22 +8,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
-// The two renderings a document carries, and why they are different strings.
-//
-// RawText is the artifact in the team's own words: the title, the body, and
-// every comment and review in the order they were written, each attributed and
-// timestamped. It is what the full-text index searches, it is what the distill
-// tier is given to read, and it is never embedded — a long conversation
-// averages out into a vector that means nothing.
-//
-// Text is the distillation: the title, the summary, what was concluded and what
-// is still open. It is what is embedded, because it is one document about one
-// thing, and it is what a bundle quotes a line of.
-//
-// Both are deterministic functions of what they render, which is what makes
-// re-distilling an artifact produce the row that is already there.
-
-// renderRaw is the conversation as one document.
 func renderRaw(root connector.Event, children []connector.Event, resolver *principal.Resolver) string {
 	var b strings.Builder
 	if title := strings.TrimSpace(root.Payload.Title); title != "" {
@@ -45,18 +29,10 @@ func renderRaw(root connector.Event, children []connector.Event, resolver *princ
 	return b.String()
 }
 
-// header attributes one event: what it is, who wrote it and when.
 func header(ev connector.Event, kind connector.Kind, resolver *principal.Resolver) string {
 	return string(kind) + " by " + attribution(ev.Payload.Author, resolver) + " at " + ev.Time.UTC().Format(time.RFC3339)
 }
 
-// attribution is who an event is by, for a person and for a model reading the
-// document: the principal id where the identity mapping has one, and what the
-// source called them where it does not.
-//
-// Preferring the principal id is what makes a document stable across a rename
-// at the source, and it is why fixing the mapping and re-distilling recovers
-// authorship — the document is rebuilt with the name Hearsay knows.
 func attribution(author *connector.Identity, resolver *principal.Resolver) string {
 	if author == nil {
 		return "an unnamed author"
@@ -74,13 +50,6 @@ func attribution(author *connector.Identity, resolver *principal.Resolver) strin
 	}
 }
 
-// renderText is the distillation, which is what is embedded.
-//
-// It holds the model's words and nothing else: no title, no id, no attribution.
-// Those are columns of their own, and a vector over one document about one
-// thing is what a similarity search is for — putting an artifact id in it moves
-// every document a little closer to every other document from the same
-// repository.
 func renderText(d Document) string {
 	var b strings.Builder
 	if d.Body.Summary != "" {

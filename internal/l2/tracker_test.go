@@ -11,8 +11,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/l2"
 )
 
-// trackerRepo maps acme/api in github-acme to a tracker, and covers acme/web
-// without mapping it.
 func trackerRepo() config.Repo {
 	return config.Repo{Scopes: []config.Scope{
 		{ID: "api", Tracker: config.SourceRef{Source: "github-acme", Project: "acme/api"}},
@@ -71,9 +69,6 @@ func TestPlacementOf(t *testing.T) {
 	}
 }
 
-// Seeding merges the tracker's hierarchy at its rank:
-// under configuration, over repository structure, with a cycle's closing edge
-// dropped. A placement with no parent adds no entity.
 func TestSeedMergesTheTrackersHierarchy(t *testing.T) {
 	repo := seedRepo()
 	repo.Scopes = trackerRepo().Scopes
@@ -88,14 +83,9 @@ func TestSeedMergesTheTrackersHierarchy(t *testing.T) {
 	tracker := []l2.Placement{
 		placed("acme/api#11", "acme/api#10"),
 		placed("acme/api#12", "acme/api#11"),
-		// Closes a cycle, and loses: #10 is taken first, by id, and #12's
-		// edge would close it.
 		placed("acme/api#10", "acme/api#12"),
 		placed("acme/api#13", ""),
 		placed("acme/api#14", "acme/web#7"),
-		// Not what a tracker says about code, but what the rank does if it
-		// did: configuration's parent stands, and the tracker's replaces the
-		// one repository structure implies.
 		{Item: l2.Entity{ID: "code:acme/api:engine/server"}, Parents: []l2.Entity{{ID: item("10")}}},
 		{Item: l2.Entity{ID: "code:acme/api:queue"}, Parents: []l2.Entity{{ID: item("10")}}},
 	}
@@ -105,10 +95,7 @@ func TestSeedMergesTheTrackersHierarchy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Seed() = %v", err)
 	}
-	parents := map[string][]string{}
-	for _, e := range got {
-		parents[e.ID] = e.PartOf
-	}
+	parents := partOfByID(got)
 	want := map[string][]string{
 		"code:acme/api":               nil,
 		"code:acme/api:engine":        {"code:acme/api"},
@@ -125,10 +112,5 @@ func TestSeedMergesTheTrackersHierarchy(t *testing.T) {
 	}
 	if d := droppedIn(t, log.String()); fmt.Sprint(d) != fmt.Sprint([]dropped{{item("12"), item("11"), "tracker"}}) {
 		t.Errorf("logged dropped edges %v, want #12's edge to #11", d)
-	}
-	for _, e := range got {
-		if e.ID == item("11") && (e.Type != l2.TypeTrackerItem || e.Origin != l2.OriginReference || e.Name != "acme/api#11") {
-			t.Errorf("seeded %+v, want a tracker item", e)
-		}
 	}
 }

@@ -4,73 +4,23 @@ package api
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/bundle"
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
-	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
-func cacheTestDB(t *testing.T) string {
-	t.Helper()
-	adminURL := os.Getenv("HEARSAY_DATABASE_URL")
-	if adminURL == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	admin, err := db.Open(t.Context(), adminURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer admin.Close()
-	name := fmt.Sprintf("bundle_cache_%d", time.Now().UnixNano())
-	if _, err := admin.Exec(t.Context(), `CREATE DATABASE `+name); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		dropper, err := db.Open(context.Background(), adminURL)
-		if err != nil {
-			t.Errorf("connecting to drop cache test database: %v", err)
-			return
-		}
-		defer dropper.Close()
-		if _, err := dropper.Exec(context.Background(), `DROP DATABASE `+name+` WITH (FORCE)`); err != nil {
-			t.Errorf("dropping cache test database: %v", err)
-		}
-	})
-	base, query, found := strings.Cut(adminURL, "?")
-	url := base[:strings.LastIndex(base, "/")+1] + name
-	if found {
-		url += "?" + query
-	}
-	migrator, err := db.NewMigrator(t.Context(), url, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer migrator.Close()
-	if _, err := migrator.Up(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	return url
-}
-
 func TestBundleCacheFollowsCallInputsAndLayerWrites(t *testing.T) {
-	url := cacheTestDB(t)
-	pool, err := db.Connect(t.Context(), url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
+	pool := dbtest.Scratch(t, "bundle_cache")
 	t.Setenv("CACHE_TEST_KYLE", "kyle-token")
 	t.Setenv("CACHE_TEST_SAM", "sam-token")
 	t.Setenv("CACHE_TEST_SHED", "shed-token")

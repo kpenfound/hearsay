@@ -13,8 +13,10 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l2"
+	"github.com/kpenfound/hearsay/internal/poll"
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
@@ -22,7 +24,7 @@ import (
 func TestWorkEntitiesAtStartupAndWhileFollowing(t *testing.T) {
 	for _, mode := range []string{"startup", "follower"} {
 		t.Run(mode, func(t *testing.T) {
-			pool := scratchPool(t)
+			pool := dbtest.Scratch(t, "hearsay_assert")
 			repo := config.Repo{Sources: []connector.SourceConfig{{ID: "projects", Type: "work"}, {ID: "other-projects", Type: "work"}}, Code: []config.CodeEntity{{ID: "code:acme/api", Type: config.TypeProject}, {ID: "code:acme/web", Type: config.TypeProject}}}
 			var logs bytes.Buffer
 			ctx := telemetry.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&logs, nil)))
@@ -35,24 +37,17 @@ func TestWorkEntitiesAtStartupAndWhileFollowing(t *testing.T) {
 					}
 				} else {
 					f := assertworker.NewFollower(pool, repo, time.Millisecond, l0.MaxLimit)
-					deadline := time.Now().Add(20 * time.Second)
-					for processed < appended {
+					poll.Until(t, "the follower to process every appended event", func() bool {
 						n, err := f.Once(ctx)
 						if err != nil {
 							t.Fatal(err)
 						}
 						processed += n
-						if n == 0 {
-							if time.Now().After(deadline) {
-								t.Fatalf("feed processed %d of %d events", processed, appended)
-							}
-							// Other databases' unfinished transactions can hold the feed's xmin.
-							time.Sleep(5 * time.Millisecond)
-						}
-					}
+						return processed >= appended
+					})
 				}
 			}
-			// A follower starts after the normal code seed. Runtime entities need no tracker.
+
 			if _, err := assertworker.SeedEntities(ctx, pool, repo, nil); err != nil {
 				t.Fatal(err)
 			}
@@ -99,7 +94,7 @@ func TestWorkEntitiesAtStartupAndWhileFollowing(t *testing.T) {
 				ev.Payload.Revision = &connector.Revision{Token: "two", EditedAt: now.Add(time.Hour)}
 				ev.Payload.Title = "Renamed " + original.Payload.Title
 				appendEvent(ev)
-				// A late revision must never put the old name back.
+
 				late := original
 				late.NativeID = late.Payload.Artifact + "@late"
 				late.Payload.Revision = &connector.Revision{Token: "late", EditedAt: now.Add(30 * time.Minute)}

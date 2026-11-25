@@ -6,48 +6,21 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
+	"github.com/kpenfound/hearsay/internal/poll"
 	"github.com/kpenfound/hearsay/internal/service/connectors"
 )
 
-// newPool connects to the database the integration-test check brings up.
-func newPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	pool, err := db.Connect(context.Background(), url)
-	if err != nil {
-		t.Fatalf("connecting to postgres: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
-// newSourceID is a source id nothing else in the suite uses: the database
-// outlives one test and the packages run in parallel, so an assertion is scoped
-// to a source rather than to a table.
-func newSourceID(t *testing.T) string {
-	t.Helper()
-	return "t" + strconv.FormatInt(time.Now().UnixNano(), 36) + "conn"
-}
-
-// pager records the cursor every Backfill call was given, which is how a
-// restarted process is asked where it resumed from.
 type pager struct {
 	*connector.Fake
 
@@ -68,12 +41,9 @@ func (p *pager) cursors() []connector.Cursor {
 	return slices.Clone(p.from)
 }
 
-// The service against the real thing: what a connector polls, backfills and is
-// pushed lands in L0, the backfill's position is in the database, and a second
-// process started against the same database does not walk the history again.
 func TestTheServiceIngestsIntoL0AndKeepsItsPosition(t *testing.T) {
-	pool := newPool(t)
-	id := newSourceID(t)
+	pool := dbtest.Pool(t)
+	id := dbtest.UniqueID()
 	src := connector.SourceConfig{ID: id, Type: connector.FakeType, Containers: []string{"C123"}, Refresh: time.Millisecond}
 	cfg := &config.Config{Repo: config.Repo{Sources: []connector.SourceConfig{src}}}
 	store := l0.New(pool)
@@ -92,7 +62,6 @@ func TestTheServiceIngestsIntoL0AndKeepsItsPosition(t *testing.T) {
 		Registry: fakeRegistry(t, map[string]connector.Connector{id: first}),
 	})
 
-	// The push path, through the mounted handler and the same gate.
 	body, err := json.Marshal(fake.NewEvent(connector.KindMessage, "p1", "pushed"))
 	if err != nil {
 		t.Fatalf("marshalling the event: %v", err)
@@ -113,16 +82,14 @@ func TestTheServiceIngestsIntoL0AndKeepsItsPosition(t *testing.T) {
 		t.Fatalf("POST %s = %d, want 202", connector.HookPath(id), resp.StatusCode)
 	}
 
-	waitFor(t, "everything the connector produced to reach L0", func() bool {
+	poll.Until(t, "everything the connector produced to reach L0", func() bool {
 		return len(artifactsIn(t, store, id)) == 4
 	})
 	if got, want := artifactsIn(t, store, id), []string{"h1", "h2", "m1", "p1"}; !slices.Equal(got, want) {
 		t.Errorf("L0 holds %v, want the polled, backfilled and pushed artifacts %v", got, want)
 	}
-	// The backfill saves its position after the last page's events reach L0, so
-	// the position is final a moment after L0 holds everything. Stopping before
-	// that would cancel the save.
-	waitFor(t, "the backfill to store its final position", func() bool {
+
+	poll.Until(t, "the backfill to store its final position", func() bool {
 		state, err := cursors.Load(t.Context(), id)
 		return err == nil && state.Done && state.Events == 2
 	})
@@ -138,16 +105,13 @@ func TestTheServiceIngestsIntoL0AndKeepsItsPosition(t *testing.T) {
 		t.Errorf("the stored position is %+v, want done after two events", state)
 	}
 
-	// A second process against the same database. History is walked once: the
-	// position says it is done, so the restarted process asks for no page at
-	// all.
 	second := &pager{Fake: connector.NewFake(src)}
 	second.Pages = fake.Pages
 	addr, stop = run(t, cfg, connectors.Deps{
 		Pool:     pool,
 		Registry: fakeRegistry(t, map[string]connector.Connector{id: second}),
 	})
-	waitFor(t, "the restarted process to read the stored position", func() bool {
+	poll.Until(t, "the restarted process to read the stored position", func() bool {
 		_, body := get(t, addr, "/readyz")
 		return strings.Contains(body, `"backfill_done": true`)
 	})
@@ -162,17 +126,8 @@ func TestTheServiceIngestsIntoL0AndKeepsItsPosition(t *testing.T) {
 	}
 }
 
-// Ready is not the same as up: a process whose database has gone away is
-// running and cannot ingest.
 func TestReadyzFailsWhenTheDatabaseIsUnreachable(t *testing.T) {
-	newPool(t) // skips the test when there is no database
-
-	// A pool of its own, closed: that is a database this process cannot reach,
-	// without taking the one every other test is using away from them.
-	pool, err := db.Connect(t.Context(), os.Getenv("HEARSAY_DATABASE_URL"))
-	if err != nil {
-		t.Fatalf("Connect() = %v, want no error", err)
-	}
+	pool := dbtest.Pool(t)
 	pool.Close()
 
 	addr, stop := run(t, &config.Config{}, connectors.Deps{
@@ -184,8 +139,7 @@ func TestReadyzFailsWhenTheDatabaseIsUnreachable(t *testing.T) {
 	if code != http.StatusServiceUnavailable {
 		t.Errorf("GET /readyz with an unreachable database = %d, want 503: %s", code, body)
 	}
-	// What went wrong is in the log. The body says that something is, and names
-	// no host, no user and no password.
+
 	for _, secret := range []string{"127.0.0.1", "hearsay@", "closed"} {
 		if strings.Contains(body, secret) {
 			t.Errorf("the readiness body carries %q, which is the operator's to read in the log: %s", secret, body)
@@ -196,16 +150,8 @@ func TestReadyzFailsWhenTheDatabaseIsUnreachable(t *testing.T) {
 	}
 }
 
-// A database this binary is ahead of is one this process cannot ingest into,
-// and that is a readiness failure — which is what turns the schema
-// version check into a deployment that stops rather than one that half-works.
 func TestReadyzFailsWhenTheSchemaIsBehindTheBinary(t *testing.T) {
-	newPool(t) // skips the test when there is no database
-
-	// The maintenance database every Postgres server has, which nothing
-	// migrates. db.Open rather than db.Connect: Connect is the startup check
-	// and would refuse it here, which is the other half of the same rule.
-	pool, err := db.Open(t.Context(), swapDatabaseName(os.Getenv("HEARSAY_DATABASE_URL"), "postgres"))
+	pool, err := db.Open(t.Context(), dbtest.Create(t, "hearsay_behind"))
 	if err != nil {
 		t.Fatalf("Open() = %v, want no error", err)
 	}
@@ -228,19 +174,6 @@ func TestReadyzFailsWhenTheSchemaIsBehindTheBinary(t *testing.T) {
 	}
 }
 
-// swapDatabaseName points a connection URL at another database on the same
-// server.
-func swapDatabaseName(url, name string) string {
-	base, query, hasQuery := strings.Cut(url, "?")
-	swapped := base[:strings.LastIndex(base, "/")+1] + name
-	if hasQuery {
-		return swapped + "?" + query
-	}
-	return swapped
-}
-
-// artifactsIn is what L0 holds for one source, sorted, which is what a test
-// compares.
 func artifactsIn(t *testing.T, store *l0.Store, source string) []string {
 	t.Helper()
 	events, err := store.List(t.Context(), l0.ListOptions{Filter: l0.Filter{Source: source}})
@@ -255,12 +188,8 @@ func artifactsIn(t *testing.T, store *l0.Store, source string) []string {
 	return out
 }
 
-// A command a connector receives is recorded in L0 as a `command` event and
-// applied through the applier the service builds over the database, and the
-// connector gets the result to answer with; a read-only source records,
-// applies and answers nothing.
 func TestTheServiceRecordsAndAppliesACommand(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l0.New(pool)
 	tests := []struct {
 		name     string
@@ -274,7 +203,7 @@ func TestTheServiceRecordsAndAppliesACommand(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			id := newSourceID(t)
+			id := dbtest.UniqueID()
 			src := connector.SourceConfig{ID: id, Type: connector.FakeType, Containers: []string{"C123"}, Refresh: time.Hour, ReadOnly: tt.readOnly}
 			cfg := &config.Config{Repo: config.Repo{Sources: []connector.SourceConfig{src}}}
 			fake := connector.NewFake(src)

@@ -1,8 +1,10 @@
 package tracker_test
 
 import (
+	"bytes"
 	"encoding/json"
-	"io"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,9 +16,11 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/connector/connectortest"
 	"github.com/kpenfound/hearsay/internal/connector/tracker"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
+	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
 const (
@@ -24,8 +28,6 @@ const (
 	token    = "sender-secret"
 )
 
-// source is ENG, which everyone may read, and SEC, which the security group
-// may, with the settings given where they are not nil.
 func source(settings map[string]any) connector.SourceConfig {
 	if settings == nil {
 		settings = map[string]any{}
@@ -46,48 +48,25 @@ func source(settings map[string]any) connector.SourceConfig {
 	}
 }
 
-// server is the connector's handler behind the gate the runtime would give it,
-// writing to a recorder.
 func server(t *testing.T, src connector.SourceConfig) (*httptest.Server, *connector.Recorder, *tracker.Connector) {
 	t.Helper()
 	c, err := tracker.New(src)
 	if err != nil {
 		t.Fatalf("New() = %v", err)
 	}
-	rec := &connector.Recorder{}
-	gate := connector.NewGate(rec, src.ID, c.Describe(), connector.NewAllowlist(src))
-	srv := httptest.NewServer(c.Handler(gate))
-	t.Cleanup(srv.Close)
+	srv, rec := connectortest.Serve(t, src, c)
 	return srv, rec, c
 }
 
-func post(t *testing.T, url string, header http.Header, body string) (int, string) {
-	t.Helper()
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, strings.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header = header
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	out, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return resp.StatusCode, string(out)
-}
-
 func bearer(tok string) http.Header {
-	return http.Header{"Authorization": {"Bearer " + tok}, "Content-Type": {"application/json"}}
+	h := connectortest.Bearer(tok)
+	h.Set("Content-Type", "application/json")
+	return h
 }
 
-// send posts with the source's token and fails the test on an unexpected status.
 func send(t *testing.T, url, body string, want int) string {
 	t.Helper()
-	code, out := post(t, url, bearer(token), body)
+	code, out := connectortest.Post(t, url, bearer(token), body)
 	if code != want {
 		t.Fatalf("POST %s = %d %s, want %d", body, code, out, want)
 	}
@@ -103,8 +82,6 @@ func fixture(t *testing.T, name string) string {
 	return string(raw)
 }
 
-// with returns a fixture with its top-level fields replaced; a nil value
-// removes one.
 func with(t *testing.T, body string, fields map[string]any) string {
 	t.Helper()
 	var m map[string]any
@@ -165,8 +142,6 @@ func TestNewRefusesASourceItCannotServe(t *testing.T) {
 	}
 }
 
-// Nothing is read or written for a request that does not carry the source's
-// token, exactly once, as a bearer token.
 func TestOnlyTheSendersTokenIsAccepted(t *testing.T) {
 	srv, rec, _ := server(t, source(nil))
 	ticket := fixture(t, "ticket.json")
@@ -185,7 +160,7 @@ func TestOnlyTheSendersTokenIsAccepted(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			before := len(rec.Events())
-			code, body := post(t, srv.URL, tt.header, ticket)
+			code, body := connectortest.Post(t, srv.URL, tt.header, ticket)
 			if code != tt.want {
 				t.Fatalf("POST = %d %s, want %d", code, body, tt.want)
 			}
@@ -195,6 +170,10 @@ func TestOnlyTheSendersTokenIsAccepted(t *testing.T) {
 		})
 	}
 
+}
+
+func TestAGetIsRefused(t *testing.T) {
+	srv, _, _ := server(t, source(nil))
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -210,8 +189,6 @@ func TestOnlyTheSendersTokenIsAccepted(t *testing.T) {
 	}
 }
 
-// A request that is not a ticket or a comment is refused with what is wrong
-// with it, and a project the source does not grant is forbidden.
 func TestRequestsAreValidated(t *testing.T) {
 	srv, rec, _ := server(t, source(nil))
 	ticket, comment := fixture(t, "ticket.json"), fixture(t, "comment.json")
@@ -260,7 +237,7 @@ func TestRequestsAreValidated(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			code, body := post(t, srv.URL, bearer(token), tt.body)
+			code, body := connectortest.Post(t, srv.URL, bearer(token), tt.body)
 			if code != tt.want || !strings.Contains(body, tt.says) {
 				t.Fatalf("POST = %d %q, want %d saying %q", code, body, tt.want, tt.says)
 			}
@@ -271,8 +248,6 @@ func TestRequestsAreValidated(t *testing.T) {
 	}
 }
 
-// The worked example in docs/connector-contract.md is this fixture, and it is
-// written as the event the document shows.
 func TestATicketIsAnIssue(t *testing.T) {
 	srv, rec, _ := server(t, source(nil))
 	out := send(t, srv.URL, fixture(t, "ticket.json"), http.StatusAccepted)
@@ -389,8 +364,6 @@ func TestTicketStateIsStatedByTheSender(t *testing.T) {
 	}
 }
 
-// Posting a revision again is the same event, however the JSON is laid out;
-// anything the event says changing is a new revision of the same artifact.
 func TestRevisionsAreStable(t *testing.T) {
 	srv, rec, _ := server(t, source(nil))
 	ticket := fixture(t, "ticket.json")
@@ -426,44 +399,46 @@ func TestRevisionsAreStable(t *testing.T) {
 	}
 }
 
-// A ticket's parent is part_of, and the tracker hierarchy and the document
-// read it with nothing tracker-specific: a scope mapping the project makes the
-// ticket and its parent tracker items, and the comment part of the ticket's
-// document.
-func TestParentsAndCommentsReadAsATrackersDo(t *testing.T) {
+var trackerRepo = config.Repo{Scopes: []config.Scope{
+	{ID: "eng", Sources: []config.ScopeSource{{Source: sourceID, Containers: []string{"ENG"}}}, Tracker: config.SourceRef{Source: sourceID, Project: "ENG"}},
+	{ID: "sec", Sources: []config.ScopeSource{{Source: sourceID, Containers: []string{"SEC"}}}, Tracker: config.SourceRef{Source: sourceID, Project: "SEC"}},
+}}
+
+func TestATicketsParentIsPartOfAndPlacesItUnderThatItem(t *testing.T) {
 	srv, rec, _ := server(t, source(nil))
 	send(t, srv.URL, fixture(t, "ticket.json"), http.StatusAccepted)
-	send(t, srv.URL, fixture(t, "comment.json"), http.StatusAccepted)
 	send(t, srv.URL, with(t, fixture(t, "ticket.json"), map[string]any{"id": "ENG-43", "parent": map[string]string{"project": "SEC", "id": "SEC-1"}}), http.StatusAccepted)
 	events := rec.Events()
-	ticket, comment, crossProject := events[0], events[1], events[2]
 
-	repo := config.Repo{Scopes: []config.Scope{
-		{ID: "eng", Sources: []config.ScopeSource{{Source: sourceID, Containers: []string{"ENG"}}}, Tracker: config.SourceRef{Source: sourceID, Project: "ENG"}},
-		{ID: "sec", Sources: []config.ScopeSource{{Source: sourceID, Containers: []string{"SEC"}}}, Tracker: config.SourceRef{Source: sourceID, Project: "SEC"}},
-	}}
 	tests := []struct {
 		name       string
 		ev         connector.Event
 		wantItem   string
 		wantParent []string
 	}{
-		{"a parent in the project", ticket, "tracker:linear:ENG#ENG-42", []string{"tracker:linear:ENG#ENG-7"}},
-		{"a parent in another project", crossProject, "tracker:linear:ENG#ENG-43", []string{"tracker:linear:SEC#SEC-1"}},
+		{"a parent in the project", events[0], "tracker:linear:ENG#ENG-42", []string{"tracker:linear:ENG#ENG-7"}},
+		{"a parent in another project", events[1], "tracker:linear:ENG#ENG-43", []string{"tracker:linear:SEC#SEC-1"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p, ok := l2.PlacementOf(repo, tt.ev)
+			p, ok := l2.PlacementOf(trackerRepo, tt.ev)
 			if !ok || p.Item.ID != tt.wantItem || !slices.Equal(p.ParentIDs(), tt.wantParent) {
 				t.Fatalf("PlacementOf = %v %v under %v, want %s under %v", ok, p.Item.ID, p.ParentIDs(), tt.wantItem, tt.wantParent)
 			}
 		})
 	}
+}
+
+func TestACommentIsAMessageInItsTicketsDocument(t *testing.T) {
+	srv, rec, _ := server(t, source(nil))
+	send(t, srv.URL, fixture(t, "ticket.json"), http.StatusAccepted)
+	send(t, srv.URL, fixture(t, "comment.json"), http.StatusAccepted)
+	ticket, comment := rec.Events()[0], rec.Events()[1]
 
 	if comment.Kind != connector.KindMessage || comment.Payload.Parent != "ENG#ENG-42" || comment.Payload.Thread != "ENG#ENG-42" {
 		t.Fatalf("the comment is %s off %q in thread %q, want a message off and in ENG#ENG-42", comment.Kind, comment.Payload.Parent, comment.Payload.Thread)
 	}
-	doc, err := l1.Build(l1.Input{Root: ticket, Children: []connector.Event{comment}, Repo: repo})
+	doc, err := l1.Build(l1.Input{Root: ticket, Children: []connector.Event{comment}, Repo: trackerRepo})
 	if err != nil {
 		t.Fatalf("l1.Build = %v", err)
 	}
@@ -472,21 +447,24 @@ func TestParentsAndCommentsReadAsATrackersDo(t *testing.T) {
 	}
 }
 
-// A deletion retracts the current revision with a tombstone carrying its
-// container, time and access list; deleting what is not held emits nothing.
-func TestDeletionsAreTombstones(t *testing.T) {
-	srv, rec, _ := server(t, source(nil))
-	ticket, deletion := fixture(t, "ticket.json"), fixture(t, "delete.json")
+const (
+	ticketDeletion  = `{"kind":"ticket","project":"ENG","id":"ENG-42","deleted":true}`
+	commentDeletion = `{"kind":"comment","project":"ENG","ticket":"ENG-42","id":"9001","deleted":true}`
+)
 
-	send(t, srv.URL, deletion, http.StatusNoContent)
+func TestDeletingATicketHearsayNeverHeldEmitsNothing(t *testing.T) {
+	srv, rec, _ := server(t, source(nil))
+	send(t, srv.URL, fixture(t, "delete.json"), http.StatusNoContent)
 	if n := len(rec.Events()); n != 0 {
 		t.Fatalf("deleting a ticket Hearsay never held emitted %d events", n)
 	}
+}
 
-	send(t, srv.URL, ticket, http.StatusAccepted)
-	held := rec.Events()[0]
-	send(t, srv.URL, deletion, http.StatusAccepted)
-	tomb := rec.Events()[1]
+func TestDeletingATicketEmitsATombstoneOfTheRetractedRevision(t *testing.T) {
+	srv, rec, _ := server(t, source(nil))
+	send(t, srv.URL, fixture(t, "ticket.json"), http.StatusAccepted)
+	send(t, srv.URL, fixture(t, "delete.json"), http.StatusAccepted)
+	held, tomb := rec.Events()[0], rec.Events()[1]
 	switch {
 	case tomb.Kind != connector.KindTombstone || tomb.Payload.Target != "ENG#ENG-42":
 		t.Fatalf("the deletion emitted a %s of %q, want a tombstone of ENG#ENG-42", tomb.Kind, tomb.Payload.Target)
@@ -495,65 +473,79 @@ func TestDeletionsAreTombstones(t *testing.T) {
 	case !tomb.Time.Equal(held.Time) || !reflect.DeepEqual(tomb.ACL, held.ACL) || tomb.Payload.Container != held.Payload.Container:
 		t.Fatalf("the tombstone is %v in %v readable by %v, want the retracted revision's %v, %v, %v", tomb.Time, tomb.Payload.Container, tomb.ACL, held.Time, held.Payload.Container, held.ACL)
 	}
+}
 
-	send(t, srv.URL, deletion, http.StatusNoContent)
+func TestDeletingATicketTwiceEmitsOneTombstone(t *testing.T) {
+	srv, rec, _ := server(t, source(nil))
+	send(t, srv.URL, fixture(t, "ticket.json"), http.StatusAccepted)
+	send(t, srv.URL, fixture(t, "delete.json"), http.StatusAccepted)
+	send(t, srv.URL, fixture(t, "delete.json"), http.StatusNoContent)
 	if n := len(rec.Events()); n != 2 {
 		t.Fatalf("deleting a ticket again emitted %d more events", n-2)
 	}
+}
 
-	// The ticket comes back, and goes again: a second retraction, not a replay
-	// of the first.
+func TestDeletingATicketThatCameBackEmitsANewTombstone(t *testing.T) {
+	srv, rec, _ := server(t, source(nil))
+	ticket, deletion := fixture(t, "ticket.json"), fixture(t, "delete.json")
+	send(t, srv.URL, ticket, http.StatusAccepted)
+	send(t, srv.URL, deletion, http.StatusAccepted)
 	send(t, srv.URL, with(t, ticket, map[string]any{"updated_at": "2026-09-25T00:00:00Z"}), http.StatusAccepted)
 	send(t, srv.URL, deletion, http.StatusAccepted)
-	if again := rec.Events()[3]; again.Kind != connector.KindTombstone || again.ID == tomb.ID {
+	events := rec.Events()
+	if again := events[3]; again.Kind != connector.KindTombstone || again.ID == events[1].ID {
 		t.Fatalf("deleting the returned ticket emitted %s %s, want a new tombstone", again.Kind, again.ID)
 	}
+}
 
-	// A comment is deleted the same way.
+func TestDeletingACommentEmitsATombstoneOfIt(t *testing.T) {
+	srv, rec, _ := server(t, source(nil))
+	send(t, srv.URL, fixture(t, "ticket.json"), http.StatusAccepted)
 	send(t, srv.URL, fixture(t, "comment.json"), http.StatusAccepted)
-	send(t, srv.URL, `{"kind":"comment","project":"ENG","ticket":"ENG-42","id":"9001","deleted":true}`, http.StatusAccepted)
-	if last := rec.Events()[5]; last.Kind != connector.KindTombstone || last.Payload.Target != "ENG#ENG-42:comment:9001" {
+	send(t, srv.URL, commentDeletion, http.StatusAccepted)
+	if last := rec.Events()[2]; last.Kind != connector.KindTombstone || last.Payload.Target != "ENG#ENG-42:comment:9001" {
 		t.Fatalf("deleting the comment emitted a %s of %q", last.Kind, last.Payload.Target)
 	}
+}
 
-	// A restricted ticket's tombstone is as restricted as the ticket.
-	send(t, srv.URL, with(t, ticket, map[string]any{"project": "SEC", "id": "SEC-1", "parent": nil}), http.StatusAccepted)
+func TestARestrictedTicketsTombstoneIsAsRestrictedAsTheTicket(t *testing.T) {
+	srv, rec, _ := server(t, source(nil))
+	send(t, srv.URL, with(t, fixture(t, "ticket.json"), map[string]any{"project": "SEC", "id": "SEC-1", "parent": nil}), http.StatusAccepted)
 	send(t, srv.URL, `{"kind":"ticket","project":"SEC","id":"SEC-1","deleted":true}`, http.StatusAccepted)
 	want := connector.ACL{{Kind: connector.ACLGroup, Source: sourceID, NativeID: "security"}}
-	if last := rec.Events()[7]; last.Kind != connector.KindTombstone || !reflect.DeepEqual(last.ACL, want) {
+	if last := rec.Events()[1]; last.Kind != connector.KindTombstone || !reflect.DeepEqual(last.ACL, want) {
 		t.Fatalf("deleting the restricted ticket emitted a %s readable by %v, want a tombstone readable by %v", last.Kind, last.ACL, want)
 	}
 }
 
-func TestDeletionsStillReadOnlyIDs(t *testing.T) {
+func TestADeletionIgnoresStateAndStatus(t *testing.T) {
 	tests := []struct {
 		name     string
 		fixture  string
 		deletion string
 		target   string
 	}{
-		{"ticket", "ticket.json", `{"kind":"ticket","project":"ENG","id":"ENG-42","deleted":true}`, "ENG#ENG-42"},
-		{"comment", "comment.json", `{"kind":"comment","project":"ENG","ticket":"ENG-42","id":"9001","deleted":true}`, "ENG#ENG-42:comment:9001"},
+		{"ticket", "ticket.json", ticketDeletion, "ENG#ENG-42"},
+		{"comment", "comment.json", commentDeletion, "ENG#ENG-42:comment:9001"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			srv, rec, _ := server(t, source(nil))
-			send(t, srv.URL, fixture(t, tt.fixture), http.StatusAccepted)
+			send(t, srv.URL, fixture(t, "ticket.json"), http.StatusAccepted)
+			if tt.fixture != "ticket.json" {
+				send(t, srv.URL, fixture(t, tt.fixture), http.StatusAccepted)
+			}
 			body := with(t, tt.deletion, map[string]any{"state": "unknown", "status": strings.Repeat("x", 65)})
 			send(t, srv.URL, body, http.StatusAccepted)
 			events := rec.Events()
-			if len(events) != 2 {
-				t.Fatalf("emitted %d events, want the original and its tombstone", len(events))
-			}
-			if tomb := events[1]; tomb.Kind != connector.KindTombstone || tomb.Payload.Target != tt.target || tomb.Payload.State != nil {
+			tomb := events[len(events)-1]
+			if tomb.Kind != connector.KindTombstone || tomb.Payload.Target != tt.target || tomb.Payload.State != nil {
 				t.Fatalf("deletion = %+v, want a tombstone for %s without state", tomb, tt.target)
 			}
 		})
 	}
 }
 
-// Access is the project's unless the source lets a ticket carry its own, and a
-// comment is read by whoever may read its ticket.
 func TestAccessIsTheProjectsOrTheTickets(t *testing.T) {
 	security := connector.ACL{{Kind: connector.ACLGroup, Source: sourceID, NativeID: "security"}}
 	ownACL := []map[string]string{{"kind": "identity", "native_id": "u-17"}, {"kind": "group", "source": "github", "native_id": "acme/leads"}}
@@ -601,8 +593,6 @@ func TestAccessIsTheProjectsOrTheTickets(t *testing.T) {
 	}
 }
 
-// The connector reports when it last emitted, which is how a quiet sender is
-// told from a broken one.
 func TestHealthSaysWhenItLastEmitted(t *testing.T) {
 	srv, _, c := server(t, source(nil))
 	if h := c.Health(t.Context()); h.Status != connector.HealthOK || !h.LastEventAt.IsZero() {
@@ -614,7 +604,6 @@ func TestHealthSaysWhenItLastEmitted(t *testing.T) {
 	}
 }
 
-// docs/connector-contract.md's worked request is the fixture the tests post.
 func TestTheContractShowsTheFixture(t *testing.T) {
 	raw, err := os.ReadFile("../../../docs/connector-contract.md")
 	if err != nil {
@@ -623,6 +612,55 @@ func TestTheContractShowsTheFixture(t *testing.T) {
 	for _, name := range []string{"ticket.json", "comment.json", "delete.json"} {
 		if !strings.Contains(string(raw), strings.TrimSpace(fixture(t, name))) {
 			t.Errorf("docs/connector-contract.md does not show testdata/%s verbatim", name)
+		}
+	}
+}
+
+func logOf(t *testing.T, level slog.Level) string {
+	t.Helper()
+	var out bytes.Buffer
+	ctx := telemetry.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&out, &slog.HandlerOptions{Level: level})))
+	src := source(nil)
+	c, err := tracker.New(src)
+	if err != nil {
+		t.Fatalf("New() = %v", err)
+	}
+	rec := &connector.Recorder{}
+	handler := c.Handler(connector.NewGate(rec, src.ID, c.Describe(), connector.NewAllowlist(src)))
+	send := func(header http.Header, body string) {
+		req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/", strings.NewReader(body))
+		req.Header = header
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+	}
+	ticket := fixture(t, "ticket.json")
+	send(bearer(token), ticket)
+	send(bearer("guess-token"), ticket)
+	send(bearer(token), with(t, ticket, map[string]any{"project": "OPS"}))
+	rec.Err = errors.New("the store is down")
+	send(bearer(token), with(t, ticket, map[string]any{"title": "Another title"}))
+	return out.String()
+}
+
+func TestInfoLogsCarryNoTicketText(t *testing.T) {
+	logs := logOf(t, slog.LevelInfo)
+	if !strings.Contains(logs, "refused") || !strings.Contains(logs, "failed") {
+		t.Fatalf("info-level logs hold no refusal or failure line, so this checks nothing: %s", logs)
+	}
+	for _, content := range []string{"Retry webhook deliveries", "exponential backoff", "Another title"} {
+		if strings.Contains(logs, content) {
+			t.Errorf("info-level logs carry ticket content %q: %s", content, logs)
+		}
+	}
+}
+
+func TestDebugLogsCarryNoCredential(t *testing.T) {
+	logs := logOf(t, slog.LevelDebug)
+	if !strings.Contains(logs, "tracker event ingested") {
+		t.Fatalf("debug-level logs hold no ingest line, so this checks nothing: %s", logs)
+	}
+	for _, secret := range []string{token, "guess-token"} {
+		if strings.Contains(logs, secret) {
+			t.Errorf("debug-level logs carry the credential %q: %s", secret, logs)
 		}
 	}
 }

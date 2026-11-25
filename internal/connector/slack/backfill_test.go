@@ -12,16 +12,27 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/connector/connectortest"
 	"github.com/kpenfound/hearsay/internal/connector/slack"
 )
 
-func TestBackfillPagesRepliesAndRestarts(t *testing.T) {
+func publicRoot() connector.Event {
+	return connector.Event{Source: "slack-acme", NativeID: public + "/1758700000.000100@v1+perm:public", Kind: connector.KindMessage, Time: time.Unix(1758700000, 100000).UTC(), ACL: connector.ACL{{Kind: connector.ACLPublic}}, Payload: connector.Payload{Artifact: public + "/1758700000.000100", Container: connector.Container{Kind: connector.ContainerChannel, NativeID: public}, Text: "root", Author: &connector.Identity{Source: "slack-acme", Kind: connector.IdentityUser, NativeID: "U0KYLE"}, Revision: &connector.Revision{Token: "v1+perm:public"}}}
+}
+
+type backfillRun struct {
+	sink  *connectortest.Deduplicating
+	calls []string
+}
+
+func runBackfillWithRestarts(t *testing.T) backfillRun {
+	t.Helper()
 	fake := newFakeSlack(t, func(int, *websocket.Conn) {})
-	calls := []string{}
+	run := backfillRun{sink: connectortest.NewDeduplicating()}
 	fake.history = func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/")
 		cursor := r.FormValue("cursor")
-		calls = append(calls, path+":"+cursor)
+		run.calls = append(run.calls, path+":"+cursor)
 		switch path + ":" + cursor {
 		case "conversations.history:":
 			fmt.Fprint(w, `{"ok":true,"messages":[{"ts":"1758700000.000100","user":"U0KYLE","text":"root","reply_count":1}],"response_metadata":{"next_cursor":"h2"}}`)
@@ -35,10 +46,12 @@ func TestBackfillPagesRepliesAndRestarts(t *testing.T) {
 			t.Errorf("unexpected page %s:%s", path, cursor)
 		}
 	}
-	rec := &deduplicating{seen: map[string]bool{}}
-	gate := connector.NewGate(rec, fake.resolved().ID, (&slack.Connector{}).Describe(), connector.NewAllowlist(fake.resolved()))
+	gate := connector.NewGate(run.sink, fake.resolved().ID, (&slack.Connector{}).Describe(), connector.NewAllowlist(fake.resolved()))
 	var from connector.Cursor
-	for pass := 0; pass < 8; pass++ {
+	for pass := 0; ; pass++ {
+		if pass == 8 {
+			t.Fatal("backfill did not finish")
+		}
 		c, err := slack.New(fake.resolved())
 		if err != nil {
 			t.Fatal(err)
@@ -48,27 +61,37 @@ func TestBackfillPagesRepliesAndRestarts(t *testing.T) {
 			t.Fatal(err)
 		}
 		if result.Done {
-			break
+			return run
 		}
 		if result.Next == from {
 			t.Fatal("cursor did not advance")
 		}
 		from = result.Next
-		if pass == 7 {
-			t.Fatal("backfill did not finish")
-		}
 	}
-	events := rec.recorder.Events()
-	if len(events) != 2 {
-		t.Fatalf("stored events = %d, want root and reply", len(events))
+}
+
+func TestBackfillStoresRootAndReplyAcrossRestarts(t *testing.T) {
+	if got := len(runBackfillWithRestarts(t).sink.Events()); got != 2 {
+		t.Errorf("stored events = %d, want root and reply", got)
 	}
-	if deliveries := rec.delivered(); len(deliveries) != 3 || deliveries[0] != deliveries[1] {
+}
+
+func TestBackfillReplaysRootRevisionWithTheSameID(t *testing.T) {
+	deliveries := runBackfillWithRestarts(t).sink.DeliveredIDs()
+	if len(deliveries) != 3 || deliveries[0] != deliveries[1] {
 		t.Errorf("deliveries = %v, want identical root revision replay", deliveries)
 	}
+}
+
+func TestBackfillReplyBelongsToRootThread(t *testing.T) {
+	events := runBackfillWithRestarts(t).sink.Events()
 	if events[1].Payload.Thread != public+"/1758700000.000100" {
 		t.Errorf("reply thread = %q", events[1].Payload.Thread)
 	}
-	if len(calls) != 4 {
+}
+
+func TestBackfillReadsEachHistoryAndReplyPage(t *testing.T) {
+	if calls := runBackfillWithRestarts(t).calls; len(calls) != 4 {
 		t.Errorf("calls = %v", calls)
 	}
 }
@@ -99,26 +122,34 @@ func TestBackfillRateLimitLeavesCursor(t *testing.T) {
 	}
 }
 
-func TestResyncRevisesPriorEventsAndRetries(t *testing.T) {
+func resyncedPublicRoot(t *testing.T) (*slack.Connector, *connector.Recorder) {
+	t.Helper()
 	fake := newFakeSlack(t, func(int, *websocket.Conn) {})
 	c, err := slack.New(fake.resolved())
 	if err != nil {
 		t.Fatal(err)
 	}
 	rec := &connector.Recorder{}
-	// A public artifact already in L0 before the visibility transition.
-	ev := connector.Event{Source: "slack-acme", NativeID: public + "/1758700000.000100@v1+perm:public", Kind: connector.KindMessage, Time: time.Unix(1758700000, 100000).UTC(), ACL: connector.ACL{{Kind: connector.ACLPublic}}, Payload: connector.Payload{Artifact: public + "/1758700000.000100", Container: connector.Container{Kind: connector.ContainerChannel, NativeID: public}, Text: "root", Author: &connector.Identity{Source: "slack-acme", Kind: connector.IdentityUser, NativeID: "U0KYLE"}, Revision: &connector.Revision{Token: "v1+perm:public"}}}
-	if err := rec.Emit(t.Context(), ev); err != nil {
+	if err := rec.Emit(t.Context(), publicRoot()); err != nil {
 		t.Fatal(err)
 	}
 	first, err := c.Resync(t.Context(), rec, public, "")
 	if err != nil || !first.Done {
 		t.Fatalf("resync = %+v, %v", first, err)
 	}
+	return c, rec
+}
+
+func TestResyncRevisesPriorEventsUnderCurrentPermissions(t *testing.T) {
+	_, rec := resyncedPublicRoot(t)
 	events := rec.Events()
 	if len(events) != 2 || events[1].ACL[0].Kind != connector.ACLGroup || events[1].Payload.Revision.Token != "v1+perm:private" {
 		t.Fatalf("events = %+v", events)
 	}
+}
+
+func TestResyncReplayWritesNothingNew(t *testing.T) {
+	c, rec := resyncedPublicRoot(t)
 	again, err := c.Resync(t.Context(), rec, public, "")
 	if err != nil || !again.Done || len(rec.Events()) != 2 {
 		t.Errorf("replay = %+v, %v, events %d", again, err, len(rec.Events()))
@@ -143,8 +174,17 @@ func (s *owedSink) RequestResync(_ context.Context, channel string) error {
 	return nil
 }
 
-func TestArchiveTransitionRequestsResyncBeforeAckAndRetries(t *testing.T) {
+type archiveRun struct {
+	c            *slack.Connector
+	sink         *owedSink
+	firstAcked   bool
+	firstStreamE error
+}
+
+func runArchiveTransition(t *testing.T) archiveRun {
+	t.Helper()
 	archived := `{"id":"C0PUBLIC","is_channel":true,"is_archived":true,"is_member":true}`
+	firstAcked := make(chan bool, 1)
 	var fake *fakeSlack
 	fake = newFakeSlack(t, func(n int, ws *websocket.Conn) {
 		if n == 1 {
@@ -155,9 +195,7 @@ func TestArchiveTransitionRequestsResyncBeforeAckAndRetries(t *testing.T) {
 			_ = ws.WriteJSON(map[string]any{"type": "events_api", "envelope_id": "one", "payload": map[string]any{"type": "event_callback", "team_id": "T0001", "event": map[string]any{"type": "channel_archive", "channel": public}}})
 			var ack map[string]any
 			_ = ws.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-			if err := ws.ReadJSON(&ack); err == nil {
-				t.Errorf("acknowledged before durable request: %v", ack)
-			}
+			firstAcked <- ws.ReadJSON(&ack) == nil
 			return
 		}
 		_ = ws.WriteJSON(map[string]any{"type": "hello"})
@@ -177,19 +215,41 @@ func TestArchiveTransitionRequestsResyncBeforeAckAndRetries(t *testing.T) {
 		t.Fatal(err)
 	}
 	sink := &owedSink{fail: true}
-	if err := c.Stream(t.Context(), sink); err == nil {
-		t.Fatal("stream should fail when durable request fails")
-	}
+	run := archiveRun{c: c, sink: sink}
+	run.firstStreamE = c.Stream(t.Context(), sink)
+	run.firstAcked = <-firstAcked
 	if err := c.Stream(t.Context(), sink); err == nil {
 		t.Fatal("fixture should close stream")
 	}
-	if sink.requests != 2 {
-		t.Errorf("requests = %d, want retry", sink.requests)
+	return run
+}
+
+func TestArchiveTransitionIsNotAckedBeforeResyncIsRequested(t *testing.T) {
+	run := runArchiveTransition(t)
+	if run.firstStreamE == nil {
+		t.Error("stream should fail when the durable request fails")
 	}
-	if events := sink.Events(); len(events) != 1 || events[0].ACL[0].Kind != connector.ACLGroup || events[0].Payload.Revision.Token != "perm:private" {
+	if run.firstAcked {
+		t.Error("acknowledged before the durable request")
+	}
+}
+
+func TestArchiveTransitionRetriesFailedResyncRequest(t *testing.T) {
+	if run := runArchiveTransition(t); run.sink.requests != 2 {
+		t.Errorf("requests = %d, want retry", run.sink.requests)
+	}
+}
+
+func TestArchivedChannelTombstoneIsRestricted(t *testing.T) {
+	events := runArchiveTransition(t).sink.Events()
+	if len(events) != 1 || events[0].ACL[0].Kind != connector.ACLGroup || events[0].Payload.Revision.Token != "perm:private" {
 		t.Errorf("restricted tombstone = %+v", events)
 	}
-	publicNow, err := c.Public(t.Context(), public)
+}
+
+func TestArchivedChannelIsNotPublic(t *testing.T) {
+	run := runArchiveTransition(t)
+	publicNow, err := run.c.Public(t.Context(), public)
 	if err != nil || publicNow {
 		t.Errorf("archived public = %v, %v", publicNow, err)
 	}
@@ -223,7 +283,7 @@ func TestPrivateResyncRetry(t *testing.T) {
 		t.Fatalf("private public = %v, %v", isPublic, err)
 	}
 	rec := &connector.Recorder{}
-	ev := connector.Event{Source: "slack-acme", NativeID: public + "/1758700000.000100@v1+perm:public", Kind: connector.KindMessage, Time: time.Unix(1758700000, 100000).UTC(), ACL: connector.ACL{{Kind: connector.ACLPublic}}, Payload: connector.Payload{Artifact: public + "/1758700000.000100", Container: connector.Container{Kind: connector.ContainerChannel, NativeID: public}, Text: "root", Author: &connector.Identity{Source: "slack-acme", Kind: connector.IdentityUser, NativeID: "U0KYLE"}, Revision: &connector.Revision{Token: "v1+perm:public"}}}
+	ev := publicRoot()
 	if err := rec.Emit(t.Context(), ev); err != nil {
 		t.Fatal(err)
 	}

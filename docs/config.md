@@ -328,7 +328,7 @@ fill messages missed while the process was down, even when the initial backfill
 already finished. A channel visibility update requests the same walk before
 its Gateway sequence is acknowledged. At startup, the runtime also checks
 channels whose current L0 artifacts are still public and requests a walk if
-Discord now reports them private. The walk re-emits messages with a new
+Discord reports them private. The walk re-emits messages with a new
 permission revision and the current ACL. `/readyz` reports backfill and re-sync
 failures; a REST error or 429 retries the same page. Keep the bot's View Channel,
 Read Message History, and private-thread access after changing a channel's
@@ -508,7 +508,7 @@ small sender that the team runs posts tickets and comments to the connectors
 service's `/hooks/<source id>`. Hearsay never calls the tracker, and backfill
 means the sender posts everything again. The request shapes, a worked curl
 request and a sender sketch are in
-[the connector contract](connector-contract.md#generic-tracker-issue-213).
+[the connector contract](connector-contract.md#generic-tracker).
 
 ```yaml
 sources:
@@ -588,7 +588,7 @@ places it in the hierarchy:
 Agents post their own session events to this source: the session starting and
 ending, its turns and its tool calls. Hearsay does not fetch anything for it.
 Each event is one `POST /hooks/<source id>` on the connectors service.
-[The connector contract](connector-contract.md#agent-sessions-issue-149) has one
+[The connector contract](connector-contract.md#agent-sessions) has one
 example request per kind.
 
 ```yaml
@@ -689,7 +689,7 @@ posting agent reads them only as an agent acting for the owner.
 Factories and agents post projects, workstreams and updates to this source.
 Hearsay distils them as ordinary issues and messages; projects and workstreams
 also declare runtime entities. New projects and repositories need no config
-change. [The connector contract](connector-contract.md#work-updates-issue-237)
+change. [The connector contract](connector-contract.md#work-updates)
 has the request examples and L0 mapping.
 
 <!-- example: work/hearsay.yaml -->
@@ -828,7 +828,7 @@ inherits, and a project's read does not serve its workstreams'. A decision is
 names it in its latest revision's `supersedes`, and `current` otherwise; a
 superseded decision keeps the tier its own source gave it and makes nothing
 contested. Documents and decisions are readable by whoever may read their
-project, as it is now: when its `repos` change, once the distiller has processed
+project as it stands: when its `repos` change, once the distiller has processed
 the change, a reader who lost access is served none of them, by a bundle, a
 traversal or a fetch by handle. Their tier is
 [the source's](#authority-by-source), and nothing else's.
@@ -1468,7 +1468,7 @@ called; none of it is any caller's to configure twice.
 **The `embed` tier has no default and no shipped provider.** Neither adapter
 this build has (`anthropic`, `claude-sbx`) has an embedding model, so
 `hearsay config validate` refuses both on `embed` and there is nothing else to
-name yet. Until an embedding adapter ships, no document is
+name. Without an embedding adapter, no document is
 embedded: documents are written and searchable, and `search` runs on its
 full-text half alone — it finds a document by the words the team wrote in it and
 never by what it is about.
@@ -2001,7 +2001,7 @@ they are valid and that the two forms produce the same configuration. The
 completion tiers on `claude-sbx`. An example here that stops working stops the
 build.
 
-## Not in this version
+## Not configurable
 
 Named deliberately, so that the absence is a decision rather than an oversight.
 

@@ -3,7 +3,6 @@
 package distiller_test
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -12,47 +11,26 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/deletion"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
-	"github.com/kpenfound/hearsay/internal/llm"
+	"github.com/kpenfound/hearsay/internal/poll"
 	"github.com/kpenfound/hearsay/internal/principal"
 	"github.com/kpenfound/hearsay/internal/service/api"
-	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
-// End to end: a comment pasting a secret is distilled
-// into the issue's document, an operator deletes it, and the running distiller
-// re-distils the issue without it from the recorded answer for the repository
-// as it was before the paste. Afterwards the secret is in no L0 read, no L1
-// read, no search and no bundle.
 func TestAnOperatorDeletionTakesAPastedSecretOutOfEveryRead(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	ctx := t.Context()
 	ingest(t, pool, append(fixtureEvents(src), secretComment(src)))
 	secretEvent := connector.EventID(src, secretCommentID)
 
-	registry, err := llm.NewFake(testRepo(src).LLM, loadFixtures(t))
-	if err != nil {
-		t.Fatalf("building the fake registry: %v", err)
-	}
-	runCtx, cancel := context.WithCancel(ctx)
-	done := make(chan error, 1)
-	go func() {
-		done <- distiller.Run(runCtx, testConfig(src), distiller.Deps{
-			Pool:      pool,
-			LLM:       registry,
-			Judgments: fixtureJev(t).judgments(),
-			Pump:      distiller.PumpOptions{Quiet: 200 * time.Millisecond, MaxDelay: time.Second, Interval: 100 * time.Millisecond, Batch: l0.MaxLimit},
-		})
-	}()
+	stop := startDistiller(t, pool, src)
 	defer func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(30 * time.Second):
-			t.Error("Run() did not return within 30s of cancellation")
+		if err := stop(); err != nil {
+			t.Error(err)
 		}
 	}()
 
@@ -60,24 +38,19 @@ func TestAnOperatorDeletionTakesAPastedSecretOutOfEveryRead(t *testing.T) {
 	id := l1.DocID(src, repo+"#12")
 	waitForIssue := func(what string, ok func(l1.Stored) bool) l1.Stored {
 		t.Helper()
-		deadline := time.Now().Add(60 * time.Second)
-		for {
+		var found l1.Stored
+		poll.Within(t, "the issue's document to have "+what, 60*time.Second, func() bool {
 			doc, err := docs.Get(ctx, id)
-			if err == nil && ok(doc) {
-				return doc
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("the issue's document never %s (last read: %v)", what, err)
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
+			found = doc
+			return err == nil && ok(doc)
+		})
+		return found
 	}
 	before := waitForIssue("quoted the secret", func(doc l1.Stored) bool { return slices.Contains(doc.L0Refs, secretEvent) })
 	if !strings.Contains(before.RawText, pastedSecret) || !strings.Contains(before.Text, pastedSecret) {
 		t.Fatalf("the secret is not in the issue's document before the deletion:\n%s\n%s", before.Text, before.RawText)
 	}
 
-	// Every read the API serves, as kyle, who may read everything here.
 	t.Setenv("HEARSAY_TEST_DELETE_KYLE", "test-delete-kyle-credential")
 	t.Setenv("HEARSAY_TEST_DELETE_SAM", "test-delete-sam-credential")
 	repoWithAPI := testRepo(src)
@@ -98,9 +71,7 @@ func TestAnOperatorDeletionTakesAPastedSecretOutOfEveryRead(t *testing.T) {
 		}
 		return calls.Call(ctx, kyle, name, raw)
 	}
-	// A bundle line is cut short, and here it is cut inside the secret, so the
-	// bundle is searched for the words before it. Nothing else in the fixture
-	// says "passphrase".
+
 	reads := []struct {
 		name   string
 		args   any
@@ -137,7 +108,6 @@ func TestAnOperatorDeletionTakesAPastedSecretOutOfEveryRead(t *testing.T) {
 		t.Errorf("L0Refs = %v, want %v less the deleted comment", after.L0Refs, before.L0Refs)
 	}
 
-	// L0: the rows, every read, and the feed.
 	var rows int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM l0_events WHERE source = $1 AND payload::text LIKE '%' || $2 || '%'`, src, pastedSecret).Scan(&rows); err != nil || rows != 0 {
 		t.Errorf("%d L0 rows still hold the secret (%v)", rows, err)
@@ -164,7 +134,6 @@ func TestAnOperatorDeletionTakesAPastedSecretOutOfEveryRead(t *testing.T) {
 		t.Errorf("Get(deleted) = %v, want ErrDeleted", err)
 	}
 
-	// L1: the rows, and the API's reads.
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM l1_docs WHERE source = $1 AND (text || raw_text || body::text) LIKE '%' || $2 || '%'`, src, pastedSecret).Scan(&rows); err != nil || rows != 0 {
 		t.Errorf("%d L1 rows still hold the secret (%v)", rows, err)
 	}

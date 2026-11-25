@@ -10,6 +10,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/llm"
@@ -17,8 +18,8 @@ import (
 )
 
 func TestThreadAliasVotesFromTouchedPR(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	cfg := config.Default()
 	cfg.Repo = chatRepo(src)
 	cfg.Repo.Code[0].Repo = config.SourceRef{Source: src, Project: repo}
@@ -142,8 +143,7 @@ func TestThreadAliasVotesFromTouchedPR(t *testing.T) {
 	if !slices.Contains(rebuilt.References, l1.Reference{Type: l1.RefSystem, ID: learned.ID}) {
 		t.Errorf("re-distilled references = %+v", rebuilt.References)
 	}
-	// A later ACL resync can narrow evidence. Candidate reads must honor the
-	// current L1 grant as well as the snapshot taken when votes were cast.
+
 	prDoc.ACL = connector.ACL{{Kind: connector.ACLGroup, Source: src, NativeID: "other"}}
 	if _, err := l1.New(pool).Put(t.Context(), prDoc); err != nil {
 		t.Fatal(err)

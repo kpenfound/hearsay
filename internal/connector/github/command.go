@@ -17,17 +17,11 @@ const CommandWord = "/hearsay"
 // command. It behaves like a `command`: control traffic, never distilled.
 const KindReply connector.Kind = "github.reply"
 
-// replyMarker starts the invisible line every reply ends with. It names the
-// command comment the reply answers, which is how the webhook echo of a reply
-// is told from a person's comment and how a retried reply finds the one it
-// already posted.
 const replyMarker = "<!-- hearsay:reply comment="
 
 // ReplyMarker is the line a reply to command comment id carries.
 func ReplyMarker(id int64) string { return replyMarker + strconv.FormatInt(id, 10) + " -->" }
 
-// replyTo is the command comment a reply names, and false for a comment that
-// is not a reply.
 func replyTo(body string) (int64, bool) {
 	_, rest, ok := strings.Cut(body, replyMarker)
 	if !ok {
@@ -109,12 +103,6 @@ type replyNative struct {
 	ReplyTo int64 `json:"reply_to"`
 }
 
-// controlEvent turns a comment's event into the control traffic it is, where
-// it is: Hearsay's reply to a command, which is never a command itself, and a
-// `/hearsay` command. Anything else is left a `message`, and so is a
-// `/hearsay` comment in a read-only source, which takes no commands: there it
-// is what the person wrote and nothing more. A reply is still a reply there,
-// because it is Hearsay's own text from before the source was read-only.
 func controlEvent(ev connector.Event, cm comment, issue int, repo string, readOnly bool) (connector.Event, error) {
 	if to, ok := replyTo(cm.Body); ok {
 		raw, err := json.Marshal(replyNative{ID: cm.ID, ReplyTo: to})

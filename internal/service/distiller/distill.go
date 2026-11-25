@@ -23,26 +23,16 @@ import (
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
-// CallTimeout bounds one distillation's model call, retries included.
-//
-// A handler owes its model call a deadline shorter than the lease on the job it
-// is running (internal/llm): the abstraction honours a provider's Retry-After
-// uncapped by design, so a rate-limited call with no deadline could outlive the
-// lease, have the job reclaimed underneath it, and end with two workers writing
-// one document. The queue's default lease is a minute and the worker heartbeats
-// while the handler runs, so the lease is not the bound in practice — this is,
-// and it is what makes a wedged provider a failed job that retries rather than
-// a worker that stops working.
+// CallTimeout bounds one distillation's model call, retries included. A wedged
+// provider becomes a failed job that retries.
 const CallTimeout = 2 * time.Minute
 
 // Distiller turns one artifact or channel conversation into L1 documents. A
 // long chat may also produce burst documents. It is the whole of what a
-// `distill` job does, and it is a value a test can drive directly: the worker
-// loop around it is [Run]'s.
+// `distill` job does; the worker loop around it is [Run]'s.
 //
-// It is stateless and idempotent. Running it twice over an artifact nothing has
-// happened to writes the document that is already there, which the store
-// notices and does not write at all.
+// It is stateless and idempotent: running it twice over an artifact nothing has
+// happened to writes nothing the second time.
 type Distiller struct {
 	pool      *pgxpool.Pool
 	events    *l0.Store
@@ -55,19 +45,14 @@ type Distiller struct {
 	judgments llm.Judgments
 }
 
-// The embed tier is used through internal/l1's own interface, so that storing a
-// vector does not depend on the provider abstraction. This is the one place
-// that says the two are the same shape.
 var _ l1.Embedder = (llm.Embedder)(nil)
 
 // New builds the distiller from what the process has: the database, the model
 // tier registry, Jev and the configuration.
 //
-// It resolves the `distill` tier here rather than per job, because a process
-// that cannot make a model call should not be running: a tier the
-// configuration does not name is a startup failure, not a job that fails five
-// times an hour later. Jev is required for the same reason: every outcome is
-// decided from its judgments.
+// It resolves the `distill` tier here, so a tier the configuration does not
+// name is a startup failure. Jev is required: every outcome is decided from its
+// judgments.
 func New(pool *pgxpool.Pool, registry llm.Registry, judgments llm.Judgments, cfg *config.Config) (*Distiller, error) {
 	if pool == nil {
 		return nil, errors.New("the distiller needs a database")
@@ -103,14 +88,6 @@ func New(pool *pgxpool.Pool, registry llm.Registry, judgments llm.Judgments, cfg
 	}, nil
 }
 
-// embedTier is the `embed` tier, or nil where the configuration names none.
-//
-// A configuration with no embed tier is the shipped one (Hearsay ships no
-// embedding provider), and it is not an error: documents are written without a
-// vector and search finds them by their words alone. What is an error is a tier
-// that produces vectors of the wrong width — that is a migration and a re-embed
-// of every row rather than a configuration edit, so it stops the process at
-// startup instead of writing rows the column would refuse.
 func embedTier(registry llm.Registry) (llm.Embedder, error) {
 	embedder, err := registry.Embedder()
 	if errors.Is(err, llm.ErrTierNotConfigured) {
@@ -130,19 +107,16 @@ type Result struct {
 	// DocID is the document the job was about.
 	DocID string
 	// Written reports that the document changed. False with no other flag set
-	// is the ordinary outcome of re-distilling an artifact nothing has happened
-	// to: the document was rebuilt and was the one already stored.
+	// means the rebuilt document was the one already stored.
 	Written bool
 	// Deleted reports that the artifact has been retracted at the source and
 	// the document went with it.
 	Deleted bool
-	// Skipped reports an artifact that makes no document of its own — a comment
-	// whose parent the source did not name, a kind this build does not distil.
+	// Skipped reports an artifact that makes no document of its own.
 	Skipped bool
 	// Superseded reports that L0 gained events for this artifact while the
-	// model was answering, so what came back describes a conversation that has
-	// moved on and was not written. The events that moved it have a job of
-	// their own, so the document is not left behind.
+	// model was answering, so the answer was not written. The new events have a
+	// job of their own.
 	Superseded bool
 	// Redacted names the shapes the scrub took out of what the model wrote,
 	// sorted. It is the shapes and never the values.
@@ -154,14 +128,13 @@ type Result struct {
 	// names message revisions, or documents, that the one before did not.
 	Recorded bool
 	// Embedded reports that the document was given the vector its text asks
-	// for. It is false where there is no embed tier configured, and where the
-	// document already had one — which is the ordinary outcome, because a
-	// re-distillation that changes nothing leaves the vector standing.
+	// for. It is false where no embed tier is configured and where the
+	// document already had one.
 	Embedded bool
 }
 
 // Handle is the queue handler for the `distill` kind. It is safe to run twice
-// on one job, which is what at-least-once delivery requires.
+// on one job.
 func (d *Distiller) Handle(ctx context.Context, job queue.Job) error {
 	if !job.EnqueuedAt.IsZero() {
 		ctx = context.WithValue(ctx, queueDelayKey{}, max(int64(0), time.Since(job.EnqueuedAt).Nanoseconds()))
@@ -171,8 +144,6 @@ func (d *Distiller) Handle(ctx context.Context, job queue.Job) error {
 		return err
 	}
 	if !result.Superseded {
-		// A job that wrote nothing still finished the document's rebuild, and
-		// an operator deletion waiting on it would otherwise wait for good.
 		if err := d.settled(ctx, job.TargetID); err != nil {
 			return err
 		}
@@ -195,9 +166,6 @@ func (d *Distiller) Handle(ctx context.Context, job queue.Job) error {
 	return nil
 }
 
-// settled records a document's rebuild as it stands, for a job whose outcome
-// wrote no transaction of its own: re-distilled if it is still in L1, deleted
-// if it is not. A rebuild already recorded is left as it was.
 func (d *Distiller) settled(ctx context.Context, docID string) error {
 	_, err := d.docs.Get(ctx, docID)
 	if err != nil && !errors.Is(err, l1.ErrNotFound) {
@@ -214,9 +182,9 @@ func (d *Distiller) settled(ctx context.Context, docID string) error {
 
 // Distill rebuilds one document from L0 and writes it.
 //
-// Everything it needs is in the event store, so it is safe to run at any time,
-// in any order, twice: the job carries a document id and nothing else, and the
-// document is a function of the artifact's current revisions.
+// The job carries a document id and nothing else, and the document is a
+// function of the artifact's current revisions, so Distill is safe to run at
+// any time, in any order, twice.
 func (d *Distiller) Distill(ctx context.Context, docID string) (Result, error) {
 	source, artifact, err := l1.ParseDocID(docID)
 	if err != nil {
@@ -224,8 +192,6 @@ func (d *Distiller) Distill(ctx context.Context, docID string) (Result, error) {
 	}
 	result := Result{DocID: docID}
 	if thread, ok := l1.ParseConversationSegmentKey(artifact); ok {
-		// A job for one topic of a conversation, which is what an operator
-		// deletion queues, rebuilds the whole conversation.
 		return d.distillConversation(ctx, result, source, thread)
 	}
 	if container, start, ok := l1.ParseChatWindowKey(artifact); ok {
@@ -245,11 +211,7 @@ func (d *Distiller) Distill(ctx context.Context, docID string) (Result, error) {
 		} else if conversation {
 			return d.distillConversation(ctx, result, source, artifact)
 		}
-		// Either the artifact was retracted at the source — a tombstone hides
-		// its earlier revisions — or nothing was ever ingested under this id. A
-		// document derived from nothing is not a document, and leaving one
-		// standing would serve what the source deleted
-		// (docs/design.md#deletion-and-provenance).
+
 		deleted, err := d.deleteConversation(ctx, source, artifact, docID)
 		if err != nil {
 			return Result{}, err
@@ -272,9 +234,7 @@ func (d *Distiller) Distill(ctx context.Context, docID string) (Result, error) {
 		if l1.ChatRoot(root) {
 			return d.distillReplies(ctx, result, source, artifact, root)
 		}
-		// A job for something that is part of another artifact's document: a
-		// comment whose parent the source did not name, or a kind no L1 kind
-		// covers yet. Nothing to do, and nothing wrong.
+
 		result.Skipped = true
 		return result, nil
 	}
@@ -287,10 +247,6 @@ func (d *Distiller) Distill(ctx context.Context, docID string) (Result, error) {
 		return Result{}, fmt.Errorf("reading the conversation on %s: %w", docID, err)
 	}
 	if len(children) >= l0.MaxLimit {
-		// Silently distilling the first thousand would be a document that
-		// claims to be the whole conversation and is not, and it would go on
-		// being wrong every time it was rebuilt. A failed job is visible in the
-		// queue; a truncated document is not.
 		return Result{}, fmt.Errorf("%s has at least %d replies, which is more than one read returns", docID, l0.MaxLimit)
 	}
 
@@ -317,10 +273,6 @@ func (d *Distiller) Distill(ctx context.Context, docID string) (Result, error) {
 	return d.writeDocument(ctx, result, source, artifact, root.Payload.Container.NativeID, doc, nil, root.Payload.Touches)
 }
 
-// distillReplies distils the conversation a channel message heads on a source
-// whose replies name the message they answer as their thread. A message nobody
-// answers heads nothing, and one whose replies are all gone takes its document
-// and bursts with it.
 func (d *Distiller) distillReplies(ctx context.Context, result Result, source, artifact string, root connector.Event) (Result, error) {
 	repo, err := d.referenceRepo(ctx)
 	if err != nil {
@@ -342,7 +294,6 @@ func (d *Distiller) distillReplies(ctx context.Context, result Result, source, a
 	return d.writeThread(ctx, result, source, artifact, root.Payload.Container.NativeID, doc, append(replies, root), root.Payload.Touches)
 }
 
-// replies reads and builds the conversation a [l1.ChatRoot] message heads.
 func (d *Distiller) replies(ctx context.Context, source string, root connector.Event, repo config.Repo) (l1.Document, []connector.Event, error) {
 	children, err := d.events.Current(ctx, l0.ListOptions{
 		Filter: l0.Filter{Source: source, Thread: root.Payload.Artifact},
@@ -357,9 +308,6 @@ func (d *Distiller) replies(ctx context.Context, source string, root connector.E
 	return l1.BuildChatReplies(root, children, d.resolver, repo)
 }
 
-// referenceRepo is the current vocabulary for extracting L1 references.
-// Decisions are read for each build so an operator's confirmation takes effect
-// on the next distillation without restarting the service.
 func (d *Distiller) referenceRepo(ctx context.Context) (config.Repo, error) {
 	confirmed, err := l2.New(d.pool).ConfirmedAliases(ctx)
 	if err != nil {
@@ -404,9 +352,7 @@ func (d *Distiller) referenceRepo(ctx context.Context) (config.Repo, error) {
 			}
 		}
 	}
-	// Repository structure can seed a project even when code/ names only its
-	// modules. Expose existing projects for explicit touches, without adding
-	// prose aliases or path patterns to the reference vocabulary.
+
 	configured := make(map[string]bool, len(d.repo.Code))
 	for _, e := range d.repo.Code {
 		configured[e.ID] = true
@@ -435,7 +381,6 @@ func (d *Distiller) referenceRepo(ctx context.Context) (config.Repo, error) {
 	return repo, nil
 }
 
-// chatWindow reads current revisions in one indexed container/time range.
 func (d *Distiller) chatWindowMessages(ctx context.Context, source, key, container string, start time.Time) (l1.Document, []connector.Event, error) {
 	events, err := d.events.Current(ctx, l0.ListOptions{
 		Filter: l0.Filter{Source: source, BaseKind: connector.KindMessage, Container: container, Since: start, Before: start.Add(l1.ChatWindow)},
@@ -479,8 +424,7 @@ func (d *Distiller) distillChatWindow(ctx context.Context, result Result, source
 	if err != nil {
 		return Result{}, err
 	}
-	// L1 orders equal-time messages by artifact ID; L0 returns them in arrival
-	// order. Use the document's root so recovery selects the same scope key.
+
 	for _, message := range messages {
 		if message.ID == doc.L0Refs[0] {
 			return d.writeThread(ctx, result, source, key, container, doc, messages, message.Payload.Touches)
@@ -520,8 +464,7 @@ func (d *Distiller) deleteConversation(ctx context.Context, source, artifact, do
 		if err := l2.EnqueueDeletedEvidence(ctx, tx, removedIDs); err != nil {
 			return err
 		}
-		// The document is gone whether this job removed it or an earlier one
-		// did, and an operator deletion that queued it is told so.
+
 		return rebuilt(ctx, tx, nil, append(removedIDs, docID))
 	})
 	if err != nil {
@@ -530,11 +473,6 @@ func (d *Distiller) deleteConversation(ctx context.Context, source, artifact, do
 	return deleted, nil
 }
 
-// rebuilt tells any operator deletion that queued these documents that they
-// were re-distilled or deleted, and redacts the L2 text the deletion took the
-// ground from (l2.RedactDeleted). It runs in the transaction that wrote or
-// removed them. A document no deletion is waiting on costs one insert that
-// matches nothing.
 func rebuilt(ctx context.Context, tx pgx.Tx, redistilled, deleted []string) error {
 	recorded, err := l0.RecordRebuilt(ctx, tx, redistilled, deleted)
 	if err != nil || recorded == 0 {
@@ -543,8 +481,6 @@ func rebuilt(ctx context.Context, tx pgx.Tx, redistilled, deleted []string) erro
 	return l2.RedactDeleted(ctx, tx, append(slices.Clone(redistilled), deleted...))
 }
 
-// deleteDerived returns the removed L1 ids so their graph repair jobs can be
-// enqueued in the same transaction.
 func deleteDerived(ctx context.Context, tx pgx.Tx, sql string, args ...any) ([]string, error) {
 	rows, err := tx.Query(ctx, sql+` RETURNING id`, args...)
 	if err != nil {
@@ -557,9 +493,6 @@ func deleteDerived(ctx context.Context, tx pgx.Tx, sql string, args ...any) ([]s
 	return ids, nil
 }
 
-// distillWikiSections models each bounded part independently, then reconciles
-// the entire derived set in one transaction. A failed call cannot leave half a
-// new page current or retract the prior version of an unchanged section.
 func (d *Distiller) distillWikiSections(ctx context.Context, result Result, root connector.Event) (Result, error) {
 	repo, err := d.referenceRepo(ctx)
 	if err != nil {
@@ -578,8 +511,6 @@ func (d *Distiller) distillWikiSections(ctx context.Context, result Result, root
 		if err == nil && previous.Kind == l1.KindWikiSection && previous.RawText == sections[i].RawText {
 			if reflect.DeepEqual(previous.State, sections[i].State) && previous.Source.URL == sections[i].Source.URL && previous.ACL.Equal(sections[i].ACL) &&
 				slices.Equal(previous.Participants, sections[i].Participants) && slices.Equal(previous.References, sections[i].References) && slices.Equal(previous.Scope, sections[i].Scope) {
-				// The prior L0 revision still proves this exact text, so an edit to
-				// another section need not rewrite this row or its outcome.
 				sections[i] = previous.Document
 				continue
 			}
@@ -701,19 +632,6 @@ func (d *Distiller) writeDocument(ctx context.Context, result Result, source, ar
 		bursts[i] = burstRun.doc
 	}
 
-	// The model call is the slow part, and the queue's dedupe on (kind, target)
-	// only covers jobs that are still pending: an event arriving while this one
-	// runs gets a job of its own, and both can be in flight at once. The write
-	// is an upsert, so the one that finishes last wins — and if that is this
-	// one, built from the older read, the document loses the newer events and
-	// nothing is left pending to put them back.
-	//
-	// So the provenance is checked against L0 again before the row is written,
-	// and a distillation whose conversation has moved is dropped rather than
-	// stored. Rebuilding is how the check is made, because it is the same code
-	// that produced L0Refs in the first place and cannot drift from it; it
-	// costs two reads and no model call. The job that carried those newer
-	// events writes the document that includes them.
 	current, err := d.provenanceNow(ctx, source, artifact)
 	if err != nil {
 		return Result{}, fmt.Errorf("re-reading %s: %w", docID, err)
@@ -726,11 +644,6 @@ func (d *Distiller) writeDocument(ctx context.Context, result Result, source, ar
 		return Result{}, err
 	}
 
-	// The document and the assert job it causes are one transaction:
-	// either a document whose outcome enters the assertion pipeline is stored
-	// with its job, or neither is and the retry writes both. Only a write that
-	// changed the row asks for one — a re-distillation that changed nothing has
-	// nothing new for L2 to read.
 	err = pgx.BeginFunc(ctx, d.pool, func(tx pgx.Tx) error {
 		if err := commitOutcomes(ctx, tx, runs...); err != nil {
 			return err
@@ -784,18 +697,6 @@ func (d *Distiller) writeDocument(ctx context.Context, result Result, source, ar
 	}
 	result.Redacted = redacted
 
-	// The vector comes after the row, and asks the table what it needs rather
-	// than assuming: Put clears the embedding whenever it writes different
-	// text, so what needs embedding is what has no vector — a document this
-	// job just changed, one written before an embed tier was configured, or one
-	// whose embedding failed last time. A re-distillation that changed nothing
-	// makes no embedding call.
-	//
-	// A failure here fails the job, and the retry re-distils from scratch: a
-	// document that is in the table but not in the vector index is invisible to
-	// half of search, and the model call the retry spends is the price of that
-	// not being a silent state. The tier has already retried by then
-	// (internal/llm), so a failure that reaches here is a persistent one.
 	embedded, err := d.embed(ctx, docID)
 	if err != nil {
 		return Result{}, err
@@ -809,8 +710,6 @@ func (d *Distiller) writeDocument(ctx context.Context, result Result, source, ar
 	return result, nil
 }
 
-// voteAliases uses the existing distill result and structured references. A
-// PR's leading system reference is the most specific touched code entity.
 func (d *Distiller) voteAliases(ctx context.Context, tx pgx.Tx, doc l1.Document) error {
 	switch doc.Kind {
 	case l1.KindChatThread:
@@ -846,8 +745,6 @@ func (d *Distiller) voteAliases(ctx context.Context, tx pgx.Tx, doc l1.Document)
 }
 
 func voteForPair(ctx context.Context, tx pgx.Tx, thread, pr l1.Document) error {
-	// References orders touched entities by path specificity. A name without
-	// an explicit target is assigned only to the leading, most specific one.
 	for _, touched := range pr.References {
 		if touched.Type != l1.RefSystem {
 			continue
@@ -865,8 +762,6 @@ func voteForPair(ctx context.Context, tx pgx.Tx, thread, pr l1.Document) error {
 	return nil
 }
 
-// embed gives a document the vector its text asks for, where there is a tier to
-// make one.
 func (d *Distiller) embed(ctx context.Context, docID string) (bool, error) {
 	if d.embedder == nil {
 		return false, nil
@@ -876,10 +771,6 @@ func (d *Distiller) embed(ctx context.Context, docID string) (bool, error) {
 	return d.docs.Embed(call, d.embedder, docID)
 }
 
-// provenanceNow is the L0Refs a document built from L0 right now would carry,
-// and nil for an artifact that would no longer make a document at all. It is
-// the second half of the check described in Distill: same reads, same builder,
-// so what it returns is comparable to what Build already produced.
 func (d *Distiller) provenanceNow(ctx context.Context, source, artifact string) ([]string, error) {
 	if container, start, ok := l1.ParseChatWindowKey(artifact); ok {
 		doc, err := d.chatWindow(ctx, source, artifact, container, start)
@@ -916,39 +807,26 @@ func (d *Distiller) provenanceNow(ctx context.Context, source, artifact string) 
 		Repo:     d.repo,
 	})
 	if err != nil {
-		// Including ErrNotDistilled: an artifact that no longer makes a
-		// document is not one this distillation should write.
 		return nil, nil //nolint:nilerr // a build that no longer succeeds is a changed provenance, not a failure
 	}
 	return doc.L0Refs, nil
 }
 
-// distil makes the model call: the document's own words in, the body out.
-//
-// The error it returns is a log line and a `queue_job.last_error` column, so it
-// names the document, the tier and the shape that was asked for, and never a
-// word of what was sent or what came back. internal/llm's own errors
-// hold to the same rule.
 func (d *Distiller) distil(ctx context.Context, doc l1.Document) (l1.Body, error) {
 	a, err := d.distilAnswer(ctx, doc)
 	return a.body(), err
 }
 
-// distilAnswer is the model's answer for one document, as it decoded.
 func (d *Distiller) distilAnswer(ctx context.Context, doc l1.Document) (answer, error) {
 	call, done := context.WithTimeout(ctx, d.timeout)
 	defer done()
 
-	// The budget is left zero: the registry fills in the tier's, which is
-	// where a deployment sets it.
 	req := RequestFor(doc, 0)
 	resp, err := d.tier.Complete(call, req)
 	if err != nil {
 		return answer{}, fmt.Errorf("distilling %s: %w", doc.ID, err)
 	}
 
-	// The answer has already been checked against the schema by internal/llm,
-	// so this decodes a shape that is known to fit.
 	var a answer
 	if err := json.Unmarshal(resp.JSON, &a); err != nil {
 		return answer{}, fmt.Errorf("distilling %s: the %s answer for %s did not decode: %w", doc.ID, llm.TierDistill, req.Schema.Name, err)
@@ -956,13 +834,6 @@ func (d *Distiller) distilAnswer(ctx context.Context, doc l1.Document) (answer, 
 	return a, nil
 }
 
-// distillDecision writes the document of a decision a `work` source recorded.
-// The document is built from the record's fields ([l1.BuildDecision]), so there
-// is no model call to fail, no body to distil and no embedding: a decision is
-// found by its words through full text, and its stance is placed by the
-// assertion worker, from the same fields, in the transaction that writes the
-// document. It does not enter the model-based assertion pipeline, so it is
-// counted once.
 func (d *Distiller) distillDecision(ctx context.Context, result Result, root connector.Event) (Result, error) {
 	repo, err := d.referenceRepo(ctx)
 	if err != nil {
@@ -980,8 +851,7 @@ func (d *Distiller) distillDecision(ctx context.Context, result Result, root con
 	if err != nil {
 		return Result{}, fmt.Errorf("building %s: %w", result.DocID, err)
 	}
-	// The root is read again with the write, as every distillation does, so a
-	// revision that arrived meanwhile is not overwritten by this one.
+
 	err = pgx.BeginFunc(ctx, d.pool, func(tx pgx.Tx) error {
 		current, err := l0.New(tx).Current(ctx, l0.ListOptions{Filter: l0.Filter{Source: root.Source, Artifact: root.Payload.Artifact}, Limit: 1})
 		if err != nil {

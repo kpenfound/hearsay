@@ -1,5 +1,4 @@
-// Package telemetry builds the process logger and, later, the OpenTelemetry
-// trace and metric providers.
+// Package telemetry builds the process logger and carries it in a context.
 package telemetry
 
 import (
@@ -36,11 +35,6 @@ func With(ctx context.Context, args ...any) context.Context {
 // NewLogger builds the process logger, writing to w. The level is debug, info,
 // warn or error, and the format is json, text or auto; empty means the default
 // of each.
-//
-// It takes the two settings as values rather than as `config.Log` so that this
-// package depends on nothing: `internal/config` reads the configuration for
-// every other package, including the ones this one is used from, and a utility
-// that the configuration package cannot import is a utility in the wrong place.
 //
 // The caller attaches the fields that hold for the whole process — service,
 // version, instance — and puts the result in the context with [WithLogger].
@@ -84,8 +78,6 @@ func parseLevel(s string) (slog.Level, error) {
 	}
 }
 
-// isTerminal reports whether w is a character device, which is as close as the
-// standard library gets to asking whether a human is reading.
 func isTerminal(w io.Writer) bool {
 	f, ok := w.(*os.File)
 	if !ok {

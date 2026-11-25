@@ -177,6 +177,12 @@ func (c *Connector) Health(context.Context) connector.Health {
 	return connector.Health{Status: connector.HealthOK, LastEventAt: c.lastEventAt}
 }
 
+func (c *Connector) noteEvent() {
+	c.mu.Lock()
+	c.lastEventAt = time.Now()
+	c.mu.Unlock()
+}
+
 // Close has nothing to release; the connector starts no goroutines.
 func (c *Connector) Close(context.Context) error { return nil }
 

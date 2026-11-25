@@ -4,12 +4,11 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 )
 
-// A scope covers a container or it does not; there is no "probably", because
-// what a scope covers decides what a bundle is built from.
 func TestScopeCovers(t *testing.T) {
-	repo, err := config.Load(writeFiles(t, map[string]string{
+	repo, err := config.Load(configtest.Write(t, map[string]string{
 		"sources/all.yaml": "" +
 			"- id: github\n  type: github\n  containers: [acme/api, acme/infra]\n" +
 			"- id: discord\n  type: discord\n  containers: [\"*\"]\n",
@@ -31,11 +30,9 @@ func TestScopeCovers(t *testing.T) {
 		want              bool
 	}{
 		{"github", "acme/api", true},
-		{"github", "acme/infra", false}, // ingested, but not in this scope
+		{"github", "acme/infra", false},
 		{"discord", "824100000000000001", true},
 		{"drive", "anything", false},
-		// A scope that takes every container of a source still does not cover
-		// an artifact with no container, the way the ingest allowlist does not.
 		{"discord", "", false},
 		{"github", "", false},
 		{"", "", false},
@@ -48,7 +45,7 @@ func TestScopeCovers(t *testing.T) {
 }
 
 func TestTrackerItemID(t *testing.T) {
-	repo, err := config.Load(writeFiles(t, map[string]string{
+	repo, err := config.Load(configtest.Write(t, map[string]string{
 		"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\n",
 		"scopes/all.yaml": "" +
 			"- id: api\n  sources: [github]\n  tracker: {source: github, project: acme/api}\n" +

@@ -26,8 +26,6 @@ func runDelete(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	asJSON := fs.Bool("json", false, "print the preview, what was applied, or the deletion records as JSON")
 	apply := fs.Bool("apply", false, "delete: redact the covered L0 events and re-distill what depended on them")
 	operator := fs.String("principal", "", "with --apply: the configured human principal applying the deletion")
-	// flag.FlagSet consumes one value, whereas --artifact has two. Extract its
-	// pair first and let parseWords handle all remaining flags in any position.
 	var artifactSource, artifactID string
 	filtered := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
@@ -63,8 +61,6 @@ func runDelete(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	if *configPath == "" && *author != "" && !strings.Contains(*author, ":") {
 		return errors.New("--author requires --config")
 	}
-	// Who applies a deletion is settled before anything is opened: the
-	// operator is a configured human, named, and never inferred.
 	if !*apply && *operator != "" {
 		return errors.New("--principal is only read with --apply: a preview needs no operator")
 	}
@@ -151,8 +147,6 @@ func selectorLabel(s deletion.Selector) string {
 	return "artifact " + s.ArtifactSource + " " + s.ArtifactID
 }
 
-// runDeleteRecord is `hearsay delete list` and `hearsay delete show <id>`: the
-// audit trail of deletions applied, read-only.
 func runDeleteRecord(ctx context.Context, fs *flag.FlagSet, cfg *config.Config, resolveDatabase func(), words []string, asJSON bool, stdout io.Writer) error {
 	action := "delete " + words[0]
 	if err := checkFlags(fs, action, "json"); err != nil {

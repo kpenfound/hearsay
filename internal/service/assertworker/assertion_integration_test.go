@@ -13,16 +13,16 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/llm"
+	"github.com/kpenfound/hearsay/internal/poll"
 	"github.com/kpenfound/hearsay/internal/queue"
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
 )
 
-// assertedTopic opens a topic from the fixture's issue under the source's
-// scope, the way the worker would have, and gives it the issue's stance.
 func assertedTopic(t *testing.T, pool *pgxpool.Pool, src string) (l2.Topic, l2.Stance) {
 	t.Helper()
 	f := store(t, pool, src)
@@ -43,7 +43,6 @@ func assertedTopic(t *testing.T, pool *pgxpool.Pool, src string) (l2.Topic, l2.S
 	return topic, issue
 }
 
-// writeAssertion writes the L0 event the API's assert call writes.
 func writeAssertion(t *testing.T, pool *pgxpool.Pool, as l2.Assertion, when time.Time) string {
 	t.Helper()
 	native, _ := json.Marshal(as)
@@ -65,13 +64,9 @@ func writeAssertion(t *testing.T, pool *pgxpool.Pool, as l2.Assertion, when time
 	return appended.ID
 }
 
-// From the worker's side, an assertion becomes a
-// stance on its topic with no model call — the fake here has no answer to
-// give — of class agent, by the agent, citing what it cited; and one whose job
-// never ran is picked up at startup.
 func TestAnAssertionIsAppendedWithNoModelCall(t *testing.T) {
-	pool := scratchPool(t)
-	src := newSource(t)
+	pool := dbtest.Scratch(t, "hearsay_assert")
+	src := dbtest.UniqueID()
 	topic, issueStance := assertedTopic(t, pool, src)
 	f := newFixture(src)
 	as := l2.Assertion{Topic: topic.ID, Position: prPosition, Evidence: l2.SortedEvidence([]string{f.prID, f.issueID}), Agent: "shed", Principal: "kyle"}
@@ -88,7 +83,7 @@ func TestAnAssertionIsAppendedWithNoModelCall(t *testing.T) {
 	}()
 	graph := l2.New(pool)
 	var history []l2.Stance
-	waitFor(t, "the assertion's stance", func() bool {
+	poll.Until(t, "the assertion's stance", func() bool {
 		history, err = graph.StanceHistory(t.Context(), topic.ID)
 		return err == nil && len(history) == 2
 	})
@@ -108,7 +103,7 @@ func TestAnAssertionIsAppendedWithNoModelCall(t *testing.T) {
 		got.ID != l2.AssertionStanceID(topic.ID, id) || got.Judgement != l2.JudgementUnknown {
 		t.Errorf("the asserted stance = %+v, want the agent's position on the topic, citing %v, superseding the issue's", got, as.Evidence)
 	}
-	// It cites a merged pull request and is still an agent's proposal.
+
 	assessed, err := graph.Assess(t.Context(), config.Authority{}, l1.Reader{}, []l2.Topic{topic})
 	if err != nil {
 		t.Fatalf("Assess() = %v", err)
@@ -117,7 +112,6 @@ func TestAnAssertionIsAppendedWithNoModelCall(t *testing.T) {
 		t.Errorf("the topic stands at %s (%s), want the issue's stance, inferred: an issue outranks an agent", a.Standing.Current.ID, a.Standing.Tier)
 	}
 
-	// Appending again, as a retried job would, writes nothing.
 	if written, err := assertworker.AppendAssertion(t.Context(), pool, config.Authority{}, id, src); err != nil || written {
 		t.Errorf("AppendAssertion(again) = %v, %v, want nothing written", written, err)
 	}
@@ -127,8 +121,8 @@ func TestAnAssertionIsAppendedWithNoModelCall(t *testing.T) {
 }
 
 func TestAppendAssertionRefusesWhatItCannotSerialize(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	topic, _ := assertedTopic(t, pool, src)
 	f := newFixture(src)
 	id := writeAssertion(t, pool, l2.Assertion{Topic: topic.ID, Position: "p", Evidence: []string{f.issueID}, Agent: "shed", Principal: "kyle"}, at(5))
@@ -145,12 +139,9 @@ func TestAppendAssertionRefusesWhatItCannotSerialize(t *testing.T) {
 	}
 }
 
-// A topic operation or a gesture that died holding its scope leaves an assert
-// job for its hold, which the worker finishes without reading anything: the
-// operation or gesture committed with the hold's completion or not at all.
 func TestALapsedHoldIsDone(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	a := newAsserter(t, pool, src, llm.NewFixtures())
 	for _, prefix := range []string{l2.OperationTarget, l2.GestureHoldTarget} {
 		job := queue.Job{Kind: l2.AssertKind(), TargetID: prefix + "0123", SerialKey: src, Attempt: 2}

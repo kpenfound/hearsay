@@ -51,10 +51,6 @@ func (c *Connector) Poll(ctx context.Context, sink connector.Sink) error {
 	return nil
 }
 
-// reconcile is called only while holding the project's lock, and only on a work
-// source. CurrentArtifacts contains only live revisions, so deleting a parent
-// never deletes its children. It brings this source's children and each owner
-// source's records of the project to the project's current access list.
 func (c *Connector) reconcile(ctx context.Context, sink connector.Sink, reader connector.ArtifactReader, project string) error {
 	root, held, err := reader.CurrentArtifact(ctx, c.source, project)
 	if err != nil {
@@ -82,8 +78,6 @@ func (c *Connector) reconcile(ctx context.Context, sink connector.Sink, reader c
 	return ctx.Err()
 }
 
-// reconcileOwned is reconcile for an owner source: its own records of a project
-// the paired work source holds. The caller holds the pair's lock.
 func (c *Connector) reconcileOwned(ctx context.Context, sink connector.Sink, reader, works connector.ArtifactReader, project string) error {
 	root, held, err := works.CurrentArtifact(ctx, c.ownerOf, project)
 	if err != nil {
@@ -95,9 +89,6 @@ func (c *Connector) reconcileOwned(ctx context.Context, sink connector.Sink, rea
 	return c.reconcileSource(ctx, sink, reader, c.source, project, root.ACL)
 }
 
-// reconcileSource re-emits every live artifact of source in the project whose
-// access list is not acl, through that source's sink and reader. The project's
-// own root is not one of them.
 func (c *Connector) reconcileSource(ctx context.Context, sink connector.Sink, reader connector.ArtifactReader, source, project string, acl connector.ACL) error {
 	all, err := reader.CurrentArtifacts(ctx, source)
 	if err != nil {
@@ -124,10 +115,6 @@ func (c *Connector) reconcileSource(ctx context.Context, sink connector.Sink, re
 			return fmt.Errorf("verify child %s: %w", child.Payload.Artifact, err)
 		}
 		if ok && !current.ACL.Equal(acl) {
-			// If this ACL was served before, the first emission can deduplicate to
-			// an older revision. Advance by the smallest timestamp increment above
-			// the current revision to record the newly observed permission change.
-			// Content and the artifact's original time remain unchanged.
 			current.ACL = acl
 			ev, err = push.Revise(current, current.Payload.Revision.EditedAt.Add(time.Nanosecond))
 			if err != nil {
@@ -138,8 +125,6 @@ func (c *Connector) reconcileSource(ctx context.Context, sink connector.Sink, re
 			}
 		}
 	}
-	// Emission may deduplicate a revision seen earlier. Acceptance depends on the
-	// lists L0 actually serves, so verify completion before answering success.
 	all, err = reader.CurrentArtifacts(ctx, source)
 	if err != nil {
 		return fmt.Errorf("verify children of %s: %w", project, err)

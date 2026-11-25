@@ -9,6 +9,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/llm"
@@ -27,9 +28,8 @@ func TestWorkTouchesSeededRepositoryProject(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Isolate the fixed code id from other integration tests' seeds.
-			pool := newScratchPool(t)
-			src := newSource(t)
+			pool := dbtest.Scratch(t, "distiller_none")
+			src := dbtest.UniqueID()
 			cfg := config.Default()
 			cfg.Repo = config.Repo{
 				Sources: []connector.SourceConfig{{ID: src, Type: "work"}, {ID: "github", Type: "github"}},
@@ -53,8 +53,6 @@ func TestWorkTouchesSeededRepositoryProject(t *testing.T) {
 			root.Payload.Touches = []connector.Touch{{Source: "github", Project: repo}}
 			ingest(t, pool, []connector.Event{root})
 
-			// Build the expected model request from the intended vocabulary. The
-			// distiller itself must discover the project through the L2 store.
 			vocabulary := cfg.Repo
 			vocabulary.Code = slices.Clone(cfg.Repo.Code)
 			if tt.want {

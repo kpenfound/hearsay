@@ -12,24 +12,16 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 )
 
-// `hearsay topics` end to end over a scratch database: what each person
-// lists, what they may merge, split and undo, what the ledger shows them, and
-// that a topic, stance or operation they may not read is answered exactly as
-// one that does not exist.
-//
-// kyle reads everything and may ratify; sam reads only public evidence and may
-// ratify; viv reads what sam does and may not ratify. Scope `api` holds two
-// public topics, each with one public and one stance only kyle may read;
-// scope `vault` holds a topic only kyle may read.
 func TestTopicsCommands(t *testing.T) {
 	url, pool := deleteDatabase(t, "topics_cli_")
 	ctx := t.Context()
-	configPath := writeConfig(t, map[string]string{
+	configPath := configtest.Write(t, map[string]string{
 		"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\n",
 		"scopes/api.yaml":     "id: api\nsources: [github]\n",
 		"principals/p.yaml": "- id: kyle\n  identities: [{source: github, native_id: u1}]\n" +
@@ -98,8 +90,6 @@ func TestTopicsCommands(t *testing.T) {
 		}
 		return ops
 	}
-	// mustFail runs a command that must be refused, print nothing and record
-	// nothing, and returns its error message.
 	mustFail := func(who string, args ...string) string {
 		t.Helper()
 		before := len(ledger())
@@ -115,7 +105,6 @@ func TestTopicsCommands(t *testing.T) {
 		}
 		return err.Error()
 	}
-	// recorded runs a command that must record one operation and print its id.
 	recorded := func(who string, args ...string) l2.Operation {
 		t.Helper()
 		out, err := topics(who, args...)
@@ -129,8 +118,6 @@ func TestTopicsCommands(t *testing.T) {
 		}
 		return last
 	}
-	// same asserts that two refusals read the same once the id each was asked
-	// about is taken out: a hidden thing and a missing one are one answer.
 	same := func(hidden, hiddenID, missing, missingID string) {
 		t.Helper()
 		if strings.ReplaceAll(hidden, hiddenID, "ID") != strings.ReplaceAll(missing, missingID, "ID") {
@@ -167,7 +154,6 @@ func TestTopicsCommands(t *testing.T) {
 		}
 		same(mustFail("sam", "merge", vault.ID, lock.ID), vault.ID, mustFail("sam", "merge", "topic:nope", lock.ID), "topic:nope")
 		same(mustFail("sam", "merge", lock.ID, vault.ID), vault.ID, mustFail("sam", "merge", lock.ID, "topic:nope"), "topic:nope")
-		// kyle may read both, and they are in two scopes.
 		if msg := mustFail("kyle", "merge", vault.ID, lock.ID); !strings.Contains(msg, "stays inside one scope") {
 			t.Errorf("a merge across scopes = %s", msg)
 		}
@@ -280,9 +266,6 @@ func TestTopicsCommands(t *testing.T) {
 		if msg := mustFail("viv", "undo", fmt.Sprint(split.ID)); !strings.Contains(msg, "may not ratify by hand") {
 			t.Errorf("viv's undo = %s", msg)
 		}
-		// A split of the stance only kyle may read makes a topic only kyle
-		// may read: it is in the way of undoing the merge, and sam is not
-		// told which operation it is.
 		private := recorded("kyle", "split", lock.ID, "--stance", a2, "--name", "private half")
 		if msg := mustFail("kyle", "undo", fmt.Sprint(merge.ID)); !strings.HasSuffix(msg, fmt.Sprintf("undo them first: operation %d, %d", split.ID, private.ID)) {
 			t.Errorf("kyle's undo under two later splits = %s", msg)
@@ -293,8 +276,6 @@ func TestTopicsCommands(t *testing.T) {
 		if got, want := ids(opsJSON("sam")), []int64{merge.ID, split.ID}; !slices.Equal(got, want) {
 			t.Errorf("sam's ops = %v, want %v: kyle's split is not theirs to read", got, want)
 		}
-		// kyle's split is also in the way of undoing sam's, and it is all
-		// that is: sam is told there is a conflict, and nothing about it.
 		msg := mustFail("sam", "undo", fmt.Sprint(split.ID))
 		if !strings.Contains(msg, "conflicting topic operation") || !strings.Contains(msg, "still in force") || strings.Contains(msg, fmt.Sprint("operation ", private.ID)) {
 			t.Errorf("sam's undo under a split they may not read = %s, want a conflict naming no operation", msg)
@@ -333,8 +314,6 @@ func TestTopicsCommands(t *testing.T) {
 	})
 }
 
-// table is a tabwriter's output, a line per row with its cells one space
-// apart.
 func table(out string) []string {
 	var lines []string
 	for line := range strings.Lines(out) {

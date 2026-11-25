@@ -10,19 +10,16 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
-// base is the smallest valid configuration, in the directory form. Tests add to
-// it or replace one of its files, so that a case fails for the reason it is
-// about and not because a configuration with no scopes is invalid.
 var base = map[string]string{
 	"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\n",
 	"scopes/api.yaml":     "id: api\nsources: [github]\n",
 }
 
-// with returns base with these files added or replacing what is there.
 func with(files map[string]string) map[string]string {
 	out := maps.Clone(base)
 	maps.Copy(out, files)
@@ -33,10 +30,7 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 	tests := []struct {
 		name  string
 		files map[string]string
-		// want is one substring per problem, and there must be exactly as many
-		// problems as entries: a rule that reports the same mistake twice is
-		// as wrong as one that reports it not at all.
-		want []string
+		want  []string
 	}{
 		{
 			name:  "a key that is not a field",
@@ -75,8 +69,8 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 		},
 		{
 			name:  "a subdirectory inside a configuration directory",
-			files: with(map[string]string{"sources/legacy/old.yaml": "id: old\n"}),
-			want:  []string{"sources/legacy/: subdirectories are not read"},
+			files: with(map[string]string{"sources/nested/other.yaml": "id: other\n"}),
+			want:  []string{"sources/nested/: subdirectories are not read"},
 		},
 		{
 			name:  "a YAML file at the top level of a directory configuration",
@@ -92,15 +86,12 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 			},
 		},
 
-		// Sources.
 		{
 			name:  "a source with no id and no type",
 			files: with(map[string]string{"sources/github.yaml": "containers: [acme/api]\n"}),
 			want: []string{
 				"source 1: id: is required",
 				"source 1: type: is required",
-				// A source whose id is the thing that is wrong is not the
-				// source the scope was naming, and saying so is not noise.
 				`scope "api": sources[0].source: no source is configured with id "github"`,
 			},
 		},
@@ -120,9 +111,6 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 			want: []string{`source "hearsay": id: "hearsay" is reserved for Hearsay's own audit and assertion events`},
 		},
 		{
-			// The referrer names the id as written, so this is the one round
-			// trip: nothing of that name is configured, because the name is
-			// what is wrong with it.
 			name: "a source id that is not a source id, named by the scope that wants it",
 			files: with(map[string]string{
 				"sources/github.yaml": "id: GitHub\ntype: github\ncontainers: [acme/api]\n",
@@ -186,7 +174,6 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 			want:  []string{`source "github": secrets.token: "ghp_secret" is not the name of an environment variable`},
 		},
 
-		// Scopes.
 		{
 			name:  "a scope with no sources",
 			files: with(map[string]string{"scopes/api.yaml": "id: api\n"}),
@@ -221,9 +208,6 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 			},
 		},
 		{
-			// Both are wrong in the same way and both are said in one pass. A
-			// policy's scope is checked for shape before it is looked up, so
-			// this is two rules agreeing rather than a reference resolving.
 			name: "a scope id that is not a scope id, named by the policy that wants it",
 			files: with(map[string]string{
 				"scopes/api.yaml":  "id: API\nsources: [github]\n",
@@ -240,7 +224,6 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 			want:  []string{`scope "api": entities[0]: no code entity is configured with id "code:acme/api"`},
 		},
 
-		// Principals.
 		{
 			name:  "a principal with no identities",
 			files: with(map[string]string{"principals/p.yaml": "id: kyle\n"}),
@@ -300,17 +283,11 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 			want:  []string{`principal "kyle": kind: "robot" is not a principal kind: want one of human, agent, team`},
 		},
 		{
-			// Every other rule about a principal depends on its kind, so a kind
-			// nobody knows is reported once and the rest are not run: with them
-			// this is four problems, all of them the same mistake.
 			name:  "a principal kind that does not exist, and nothing else fits it",
 			files: with(map[string]string{"principals/p.yaml": "id: kyle\nkind: robot\nclass: worker\nmembers: [robin]\n"}),
 			want:  []string{`principal "kyle": kind: "robot" is not a principal kind`},
 		},
 		{
-			// One login written in two cases is one identity, because that is
-			// how the resolver matches it. Catching it here is what stops it
-			// from becoming an ambiguous author at ingest.
 			name: "two principals claiming one handle in different cases",
 			files: with(map[string]string{"principals/p.yaml": "" +
 				"- id: kyle\n  identities: [{source: github, handle: KPenfound}]\n" +
@@ -336,8 +313,6 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 			want: []string{`principal "eng": members[0]: "api-team" is a team, and a team may not contain a team`},
 		},
 		{
-			// Reported once, as being a member of itself, rather than twice by
-			// also being a team inside a team.
 			name:  "a team inside itself",
 			files: with(map[string]string{"principals/p.yaml": "id: eng\nkind: team\nmembers: [eng]\n"}),
 			want:  []string{`principal "eng": members[0]: a team cannot be a member of itself`},
@@ -356,7 +331,6 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 			},
 		},
 
-		// Code entities.
 		{
 			name:  "a code entity id in the wrong namespace",
 			files: with(map[string]string{"code/c.yaml": "id: acme/api\ntype: project\n"}),
@@ -392,8 +366,6 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 			},
 		},
 		{
-			// An entity the loader is holding out of the configuration is still
-			// an entity somebody wrote, and its own edges are still checked.
 			name: "a parent that is not configured, on an entity whose own id is malformed",
 			files: with(map[string]string{
 				"code/c.yaml": "id: acme/api\ntype: project\npart_of: [code:acme]\n",
@@ -434,7 +406,6 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 			want:  []string{`code entity "code:a": codeowners: "../CODEOWNERS" is not a path inside the repository`},
 		},
 
-		// Authority.
 		{
 			name:  "a policy for a scope that does not exist",
 			files: with(map[string]string{"authority/a.yaml": "scope: web\n"}),
@@ -488,10 +459,6 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 			want:  []string{`authority policy "api": ratified_by.artifacts: "merged_pr" ratifies on its own, and the ranking in force for this scope leaves it out`},
 		},
 		{
-			// The ranking and the ratifier are in two different policies and
-			// neither is wrong on its own: it is the policy the scope ends up
-			// with that contradicts itself, and the file that narrowed the
-			// ranking is where it was introduced.
 			name: "a narrowed ranking that contradicts an inherited ratifier",
 			files: with(map[string]string{"authority/a.yaml": "" +
 				"- scope: \"*\"\n  ratified_by:\n    artifacts: [spec]\n" +
@@ -499,19 +466,11 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 			want: []string{`authority/a.yaml:4: authority policy "api": ratified_by.artifacts: "spec" ratifies on its own`},
 		},
 		{
-			// A policy that names no scope is in force nowhere, so what it
-			// would have meant is not a second thing to fix. The ranking here
-			// leaves out the merged_pr it would have inherited as a ratifier,
-			// and that is not reported.
 			name:  "a policy whose scope is not a scope id, and a ranking that would contradict it",
 			files: with(map[string]string{"authority/a.yaml": "scope: API\nranking: [meeting]\n"}),
 			want:  []string{`authority policy "API": scope: "API" is not a scope id`},
 		},
 		{
-			// The other direction of the same contradiction: the `*` ranking is
-			// narrow but consistent with what `*` ratifies, and the scope names
-			// a ratifier that the ranking it inherited leaves out. The scope's
-			// file is the one that made the two halves meet.
 			name: "a ratifier that contradicts an inherited ranking",
 			files: with(map[string]string{"authority/a.yaml": "" +
 				"- scope: \"*\"\n  ranking: [meeting, merged_pr]\n" +
@@ -519,9 +478,6 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 			want: []string{`authority/a.yaml:3: authority policy "api": ratified_by.artifacts: "spec" ratifies on its own`},
 		},
 		{
-			// The contradiction is entirely inside the `*` policy. Every scope
-			// inherits it, and none of them introduced it, so it is one problem
-			// on one line however many scopes there are.
 			name: "a contradiction in the default policy that every scope inherits",
 			files: with(map[string]string{
 				"scopes/api.yaml":   "- id: api\n  sources: [github]\n- id: web\n  sources: [github]\n",
@@ -547,24 +503,29 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := config.Load(writeFiles(t, tt.files))
-			var invalid *config.InvalidError
-			if !errors.As(err, &invalid) {
-				t.Fatalf("Load() = %v, want an *InvalidError", err)
-			}
-			got := make([]string, len(invalid.Problems))
-			for i, p := range invalid.Problems {
-				got[i] = p.Error()
-			}
-			if len(got) != len(tt.want) {
-				t.Fatalf("Load() reported %d problems, want %d:\n%s", len(got), len(tt.want), strings.Join(got, "\n"))
-			}
-			for _, want := range tt.want {
-				if !containsSubstring(got, want) {
-					t.Errorf("no problem contains %q; got:\n%s", want, strings.Join(got, "\n"))
-				}
-			}
+			assertProblems(t, tt.files, tt.want)
 		})
+	}
+}
+
+func assertProblems(t *testing.T, files map[string]string, want []string) {
+	t.Helper()
+	_, err := config.Load(configtest.Write(t, files))
+	var invalid *config.InvalidError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("Load() = %v, want an *InvalidError", err)
+	}
+	got := make([]string, len(invalid.Problems))
+	for i, p := range invalid.Problems {
+		got[i] = p.Error()
+	}
+	if len(got) != len(want) {
+		t.Fatalf("Load() reported %d problems, want %d:\n%s", len(got), len(want), strings.Join(got, "\n"))
+	}
+	for _, w := range want {
+		if !containsSubstring(got, w) {
+			t.Errorf("no problem contains %q; got:\n%s", w, strings.Join(got, "\n"))
+		}
 	}
 }
 
@@ -577,31 +538,29 @@ func containsSubstring(problems []string, want string) bool {
 	return false
 }
 
-// A `principals/` that is valid comes out as the identity model, and the Repo
-// builds the resolver ingest resolves identity hints against.
-func TestLoadPrincipalsAndResolver(t *testing.T) {
-	repo, err := config.Load(writeFiles(t, with(map[string]string{
-		"principals/p.yaml": "" +
-			"- id: kyle\n  name: Kyle Penfound\n  token_env: HEARSAY_KYLE_TOKEN\n  identities: [{source: github, native_id: MDQ6VXNlcjE=, handle: KPenfound}]\n" +
-			// A native id is matched byte for byte, so two that differ only in
-			// case are two identities. A GitHub node id is base64: its case is
-			// meaning rather than spelling.
-			"- id: robin\n  identities: [{source: github, native_id: mdq6vxnlcje=}]\n" +
-			"- id: shed\n  kind: agent\n  class: worker\n  scopes: [code:acme/api]\n  identities: [{source: github, handle: \"shed-agent[bot]\"}]\n" +
-			"- id: api-team\n  kind: team\n  members: [kyle, shed]\n" +
-			// A team that claims a source's group needs no members: the group
-			// is the membership, and the source keeps it up to date.
-			"- id: eng\n  kind: team\n  identities: [{source: github, native_id: MDQ6VGVhbTE=}]\n",
-	})))
+const principalFiles = "" +
+	"- id: kyle\n  name: Kyle Penfound\n  token_env: HEARSAY_KYLE_TOKEN\n  identities: [{source: github, native_id: MDQ6VXNlcjE=, handle: KPenfound}]\n" +
+	"- id: robin\n  identities: [{source: github, native_id: mdq6vxnlcje=}]\n" +
+	"- id: shed\n  kind: agent\n  class: worker\n  scopes: [code:acme/api]\n  identities: [{source: github, handle: \"shed-agent[bot]\"}]\n" +
+	"- id: api-team\n  kind: team\n  members: [kyle, shed]\n" +
+	"- id: eng\n  kind: team\n  identities: [{source: github, native_id: MDQ6VGVhbTE=}]\n"
+
+func loadPrincipals(t *testing.T) config.Repo {
+	t.Helper()
+	repo, err := config.Load(configtest.Write(t, with(map[string]string{"principals/p.yaml": principalFiles})))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+	return repo
+}
+
+func TestLoadPrincipals(t *testing.T) {
+	repo := loadPrincipals(t)
 
 	kyle, ok := repo.Principal("kyle")
 	if !ok || kyle.Kind != principal.KindHuman || kyle.Name != "Kyle Penfound" || kyle.TokenEnv != "HEARSAY_KYLE_TOKEN" {
 		t.Errorf("Principal(kyle) = %+v, %v", kyle, ok)
 	}
-	// A handle is stored as it was written, and folded when it is matched.
 	if len(kyle.Identities) != 1 || kyle.Identities[0].Handle != "KPenfound" {
 		t.Errorf("kyle's identities = %+v", kyle.Identities)
 	}
@@ -612,8 +571,10 @@ func TestLoadPrincipalsAndResolver(t *testing.T) {
 		!slices.Equal(team.Members, []string{"kyle", "shed"}) {
 		t.Errorf("Principal(api-team) = %+v, %v", team, ok)
 	}
+}
 
-	r, err := repo.Resolver()
+func TestRepoResolverResolvesConfiguredIdentities(t *testing.T) {
+	r, err := loadPrincipals(t).Resolver()
 	if err != nil {
 		t.Fatalf("Resolver: %v", err)
 	}
@@ -633,10 +594,8 @@ func TestLoadPrincipalsAndResolver(t *testing.T) {
 	}
 }
 
-// A problem is reachable through the aggregate, so a caller can pick out the
-// file and line rather than parsing the message.
 func TestInvalidErrorUnwrapsToProblems(t *testing.T) {
-	root := writeFiles(t, with(map[string]string{"scopes/api.yaml": "id: api\nsources: [github, discord]\n"}))
+	root := configtest.Write(t, with(map[string]string{"scopes/api.yaml": "id: api\nsources: [github, discord]\n"}))
 	_, err := config.Load(root)
 
 	var problem *config.Problem
@@ -654,20 +613,17 @@ func TestInvalidErrorUnwrapsToProblems(t *testing.T) {
 
 func TestLoadRejectsBothFormsAtOnce(t *testing.T) {
 	files := with(map[string]string{"hearsay.yaml": "sources: []\n"})
-	if _, err := config.Load(writeFiles(t, files)); err == nil ||
+	if _, err := config.Load(configtest.Write(t, files)); err == nil ||
 		!strings.Contains(err.Error(), "holds both configuration forms") {
 		t.Errorf("Load() = %v, want it to refuse a directory holding both forms", err)
 	}
 }
 
-// The single file has two spellings, and a directory holding both of them is
-// two configurations. Reading either one and not the other loses a whole file
-// with nothing said, which is the failure the format is shaped to avoid.
 func TestLoadRejectsTwoSingleFiles(t *testing.T) {
 	const one = "sources:\n  - id: github\n    type: github\n    containers: [acme/api]\nscopes:\n  - id: api\n    sources: [github]\n"
 	const two = "sources:\n  - id: discord\n    type: discord\n    containers: [\"1\"]\nscopes:\n  - id: chat\n    sources: [discord]\n"
 
-	root := writeFiles(t, map[string]string{"hearsay.yaml": one, "hearsay.yml": two})
+	root := configtest.Write(t, map[string]string{"hearsay.yaml": one, "hearsay.yml": two})
 	repo, err := config.Load(root)
 	if err == nil {
 		t.Fatalf("Load() loaded %d sources and %d scopes, want an error naming both files",
@@ -678,8 +634,7 @@ func TestLoadRejectsTwoSingleFiles(t *testing.T) {
 			t.Errorf("Load() = %v, want the error to name %s", err, want)
 		}
 	}
-	// Either one on its own is still the single-file form.
-	if _, err := config.Load(writeFiles(t, map[string]string{"hearsay.yml": one})); err != nil {
+	if _, err := config.Load(configtest.Write(t, map[string]string{"hearsay.yml": one})); err != nil {
 		t.Errorf("Load(a directory holding hearsay.yml) = %v, want no error", err)
 	}
 }
@@ -692,23 +647,19 @@ func TestLoadMissingPath(t *testing.T) {
 	}
 }
 
-// A configuration directory holds files that are not configuration, and reading
-// them as configuration would make a README a syntax error.
 func TestLoadIgnoresWhatIsNotConfiguration(t *testing.T) {
 	files := with(map[string]string{
 		"README.md":        "# our configuration\n",
 		".gitignore":       "*.tmp\n",
 		"sources/notes.md": "not configuration\n",
 	})
-	if _, err := config.Load(writeFiles(t, files)); err != nil {
+	if _, err := config.Load(configtest.Write(t, files)); err != nil {
 		t.Errorf("Load() = %v, want no error", err)
 	}
 }
 
-// One file holds one object or a list of them, and a file per source and a file
-// of sources have to mean the same thing.
 func TestLoadAcceptsAFileOfOneObjectOrMany(t *testing.T) {
-	one, err := config.Load(writeFiles(t, map[string]string{
+	one, err := config.Load(configtest.Write(t, map[string]string{
 		"sources/github.yaml":  "id: github\ntype: github\ncontainers: [acme/api]\n",
 		"sources/discord.yaml": "id: discord\ntype: discord\ncontainers: [\"1\"]\n",
 		"scopes/api.yaml":      "id: api\nsources: [github, discord]\n",
@@ -716,7 +667,7 @@ func TestLoadAcceptsAFileOfOneObjectOrMany(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(a file per source) = %v, want no error", err)
 	}
-	many, err := config.Load(writeFiles(t, map[string]string{
+	many, err := config.Load(configtest.Write(t, map[string]string{
 		"sources/all.yaml": "- id: discord\n  type: discord\n  containers: [\"1\"]\n- id: github\n  type: github\n  containers: [acme/api]\n",
 		"scopes/api.yaml":  "id: api\nsources: [github, discord]\n",
 	}))
@@ -735,14 +686,12 @@ func TestLoadAcceptsAFileOfOneObjectOrMany(t *testing.T) {
 	}
 }
 
-// Writing a source id on its own is the same as naming every container it
-// ingests, which is what makes the short form safe to reach for.
 func TestScopeSourceShorthandMatchesTheLongForm(t *testing.T) {
-	short, err := config.Load(writeFiles(t, base))
+	short, err := config.Load(configtest.Write(t, base))
 	if err != nil {
 		t.Fatalf("Load(short form) = %v, want no error", err)
 	}
-	long, err := config.Load(writeFiles(t, with(map[string]string{
+	long, err := config.Load(configtest.Write(t, with(map[string]string{
 		"scopes/api.yaml": "id: api\nsources:\n  - source: github\n    containers: [\"*\"]\n",
 	})))
 	if err != nil {
@@ -758,9 +707,6 @@ func TestScopeSourceShorthandMatchesTheLongForm(t *testing.T) {
 	}
 }
 
-// read_only is a field of every source, whatever its type, next to containers
-// and refresh rather than in the connector's settings, and it is false unless
-// the file says true.
 func TestSourceReadOnly(t *testing.T) {
 	tests := []struct {
 		name string
@@ -779,7 +725,7 @@ func TestSourceReadOnly(t *testing.T) {
 			for _, typ := range types {
 				files["sources/"+typ+".yaml"] = "id: " + typ + "\ntype: " + typ + "\ncontainers: [x]\n" + tt.line
 			}
-			repo, err := config.Load(writeFiles(t, files))
+			repo, err := config.Load(configtest.Write(t, files))
 			if err != nil {
 				t.Fatalf("Load() = %v, want no error", err)
 			}
@@ -795,12 +741,10 @@ func TestSourceReadOnly(t *testing.T) {
 	}
 }
 
-// The digest identifies the bytes, because that is what a running process can
-// report and an operator can compare with what is checked in.
 func TestDigestIdentifiesTheBytes(t *testing.T) {
 	load := func(t *testing.T, files map[string]string) config.Repo {
 		t.Helper()
-		repo, err := config.Load(writeFiles(t, files))
+		repo, err := config.Load(configtest.Write(t, files))
 		if err != nil {
 			t.Fatalf("Load() = %v, want no error", err)
 		}
@@ -826,19 +770,17 @@ func TestDigestIdentifiesTheBytes(t *testing.T) {
 	}
 }
 
-// The single-file form is one mapping of the same five lists, and it is read by
-// the same rules, including the one about a key that is not a field.
-func TestSingleFileForm(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "hearsay.yaml")
-	write := func(t *testing.T, body string) {
-		t.Helper()
-		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-			t.Fatalf("writing %s: %v", path, err)
-		}
+func writeSingleFile(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "hearsay.yaml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("writing %s: %v", path, err)
 	}
+	return path
+}
 
-	write(t, "sources:\n  - id: github\n    type: github\n    containers: [acme/api]\nscopes:\n  - id: api\n    sources: [github]\n")
+func TestSingleFileFormLoadsEveryDirectory(t *testing.T) {
+	path := writeSingleFile(t, "sources:\n  - id: github\n    type: github\n    containers: [acme/api]\nscopes:\n  - id: api\n    sources: [github]\n")
 	repo, err := config.Load(path)
 	if err != nil {
 		t.Fatalf("Load() = %v, want no error", err)
@@ -846,11 +788,11 @@ func TestSingleFileForm(t *testing.T) {
 	if len(repo.Sources) != 1 || len(repo.Scopes) != 1 {
 		t.Errorf("loaded %d sources and %d scopes, want 1 each", len(repo.Sources), len(repo.Scopes))
 	}
+}
 
-	// The line reported is the object's, not the file's, so a problem in the
-	// fourth of five sources says which one.
-	write(t, "sources:\n  - id: github\n    type: github\n    containers: [acme/api]\n  - id: discord\n    type: discord\n    containers: []\nscopes:\n  - id: api\n    sources: [github]\n")
-	_, err = config.Load(path)
+func TestSingleFileFormReportsTheLineOfAnObject(t *testing.T) {
+	path := writeSingleFile(t, "sources:\n  - id: github\n    type: github\n    containers: [acme/api]\n  - id: discord\n    type: discord\n    containers: []\nscopes:\n  - id: api\n    sources: [github]\n")
+	_, err := config.Load(path)
 	var problem *config.Problem
 	if !errors.As(err, &problem) {
 		t.Fatalf("Load() = %v, want a problem", err)
@@ -858,23 +800,24 @@ func TestSingleFileForm(t *testing.T) {
 	if problem.Line != 5 {
 		t.Errorf("problem is on line %d, want 5 (where the second source starts): %v", problem.Line, problem)
 	}
+}
 
-	write(t, "sources: []\nscopes: []\ntopics: []\n")
+func TestSingleFileFormRejectsAKeyThatIsNotADirectory(t *testing.T) {
+	path := writeSingleFile(t, "sources: []\nscopes: []\ntopics: []\n")
 	if _, err := config.Load(path); err == nil || !strings.Contains(err.Error(), `no such field "topics"`) {
 		t.Errorf("Load() = %v, want it to reject a key that is not one of the five", err)
 	}
+}
 
-	write(t, "- id: github\n")
+func TestSingleFileFormMustBeAMapping(t *testing.T) {
+	path := writeSingleFile(t, "- id: github\n")
 	if _, err := config.Load(path); err == nil || !strings.Contains(err.Error(), "want a mapping with sources, scopes") {
 		t.Errorf("Load() = %v, want it to say what a single file looks like", err)
 	}
 }
 
-// Problems come out in file and line order, so that the same broken
-// configuration prints the same list every run — a person walks the files top
-// to bottom, and CI output diffs cleanly.
 func TestProblemsAreOrderedByFileAndLine(t *testing.T) {
-	root := writeFiles(t, map[string]string{
+	root := configtest.Write(t, map[string]string{
 		"sources/github.yaml": "" +
 			"- id: github\n  type: github\n  containers: [acme/api]\n  refresh: soon\n" +
 			"- id: github\n  type: github\n  containers: [\"*\", acme/api]\n",

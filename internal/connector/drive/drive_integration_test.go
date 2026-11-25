@@ -5,7 +5,6 @@ package drive_test
 import (
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -13,23 +12,23 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/connector/connectortest"
 	"github.com/kpenfound/hearsay/internal/connector/drive"
-	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 )
 
-// The SQL cursor and sink survive a connector replacement, and the real gate
-// only lets the three directly allowlisted, label-eligible files reach L0.
-func TestDriveBackfillThroughGateAndSQL(t *testing.T) {
-	database := os.Getenv("HEARSAY_DATABASE_URL")
-	if database == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	pool, err := db.Connect(t.Context(), database)
+func storedEvents(t *testing.T, events *l0.Store, filter l0.Filter) []connector.Event {
+	t.Helper()
+	got, err := events.List(t.Context(), l0.ListOptions{Filter: filter, Limit: l0.MaxLimit})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(pool.Close)
+	return got
+}
+
+func TestDriveBackfillThroughGateAndSQL(t *testing.T) {
+	pool := dbtest.Pool(t)
 	f := &fixture{}
 	server := httptest.NewServer(http.HandlerFunc(f.serve))
 	defer server.Close()
@@ -57,26 +56,10 @@ func TestDriveBackfillThroughGateAndSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	gate = connector.NewGate(events, src.ID, c.Describe(), connector.NewAllowlist(src))
-	state, err := cursors.Load(t.Context(), src.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for !state.Done {
-		result, err := c.Backfill(t.Context(), gate, state.Cursor)
-		if err != nil {
-			t.Fatal(err)
-		}
-		state.Cursor = result.Next
-		state.Done = result.Done
-		state.Events += int64(result.Events)
-		if err := cursors.Save(t.Context(), src.ID, state); err != nil {
-			t.Fatal(err)
-		}
-	}
-	stored, err := events.List(t.Context(), l0.ListOptions{Filter: l0.Filter{Source: src.ID}, Limit: l0.MaxLimit})
-	if err != nil {
-		t.Fatal(err)
-	}
+	connectortest.Finish(t, cursors, src.ID, func(cursor connector.Cursor) (connector.BackfillResult, error) {
+		return c.Backfill(t.Context(), gate, cursor)
+	})
+	stored := storedEvents(t, events, l0.Filter{Source: src.ID})
 	ids := []string{}
 	for _, ev := range stored {
 		ids = append(ids, ev.NativeID)
@@ -85,31 +68,17 @@ func TestDriveBackfillThroughGateAndSQL(t *testing.T) {
 	if want := []string{"doc1@r1", "doc2@r2", "tagged@head"}; !slices.Equal(ids, want) {
 		t.Fatalf("stored native IDs = %v, want %v", ids, want)
 	}
-	// A repeated page is harmless in the actual L0 sink.
 	if _, err := c.Backfill(t.Context(), gate, ""); err != nil {
 		t.Fatal(err)
 	}
-	again, err := events.List(t.Context(), l0.ListOptions{Filter: l0.Filter{Source: src.ID}, Limit: l0.MaxLimit})
-	if err != nil {
-		t.Fatal(err)
-	}
+	again := storedEvents(t, events, l0.Filter{Source: src.ID})
 	if len(again) != len(stored) {
 		t.Errorf("replayed page wrote %d events, want %d", len(again), len(stored))
 	}
 }
 
-// The change cursor, event IDs, current revision and retraction all survive a
-// connector replacement through the real SQL sink.
 func TestDriveLiveSyncThroughSQL(t *testing.T) {
-	database := os.Getenv("HEARSAY_DATABASE_URL")
-	if database == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	pool, err := db.Connect(t.Context(), database)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
+	pool := dbtest.Pool(t)
 	f := &liveFixture{files: map[string]liveFile{
 		"doc":      {Folder: "docs", Head: "r1", Text: "one", Public: true},
 		"untagged": {Folder: "meet", Head: "r1", Text: "hidden", Public: true},
@@ -144,7 +113,6 @@ func TestDriveLiveSyncThroughSQL(t *testing.T) {
 	if got := current(); len(got) != 1 || got[0].Payload.Artifact != "doc" {
 		t.Fatalf("initial current = %+v", got)
 	}
-	// Restart and resume from the SQL cursor after a sharing-only change.
 	c, err = drive.New(src)
 	if err != nil {
 		t.Fatal(err)
@@ -171,21 +139,14 @@ func TestDriveLiveSyncThroughSQL(t *testing.T) {
 			t.Fatal("current ACL retained public access")
 		}
 	}
-	before, err := events.List(t.Context(), l0.ListOptions{Filter: l0.Filter{Source: src.ID}, Limit: l0.MaxLimit})
-	if err != nil {
-		t.Fatal(err)
-	}
+	before := storedEvents(t, events, l0.Filter{Source: src.ID})
 	if _, err := c.PollFrom(t.Context(), gate, state.Cursor); err != nil {
 		t.Fatal(err)
 	}
-	after, err := events.List(t.Context(), l0.ListOptions{Filter: l0.Filter{Source: src.ID}, Limit: l0.MaxLimit})
-	if err != nil {
-		t.Fatal(err)
-	}
+	after := storedEvents(t, events, l0.Filter{Source: src.ID})
 	if len(after) != len(before) {
 		t.Errorf("replay wrote %d new rows", len(after)-len(before))
 	}
-	// A move outside the allowlist retracts only the formerly eligible file.
 	f.set("doc", liveFile{Folder: "elsewhere", Head: "r1", Text: "one", Public: false})
 	f.next("s1", "s2", "doc")
 	next, err = c.PollFrom(t.Context(), gate, next)
@@ -195,14 +156,10 @@ func TestDriveLiveSyncThroughSQL(t *testing.T) {
 	if got := current(); len(got) != 0 {
 		t.Errorf("moved-out file remains current: %+v", got)
 	}
-	tombs, err := events.List(t.Context(), l0.ListOptions{Filter: l0.Filter{Source: src.ID, Kind: connector.KindTombstone}, Limit: l0.MaxLimit})
-	if err != nil {
-		t.Fatal(err)
-	}
+	tombs := storedEvents(t, events, l0.Filter{Source: src.ID, Kind: connector.KindTombstone})
 	if len(tombs) != 1 || tombs[0].Payload.Target != "doc" || tombs[0].Payload.Container.NativeID != "docs" || len(tombs[0].ACL) != len(after[len(after)-1].ACL) {
 		t.Errorf("tombstone = %+v", tombs)
 	}
-	// A move back restores the same artifact with fresh content and ACL.
 	f.set("doc", liveFile{Folder: "docs", Head: "r2", Text: "returned", Public: true})
 	f.next("s2", "s3", "doc")
 	next, err = c.PollFrom(t.Context(), gate, next)
@@ -213,16 +170,12 @@ func TestDriveLiveSyncThroughSQL(t *testing.T) {
 	if len(got) != 1 || got[0].Payload.Artifact != "doc" || got[0].Payload.Text != "returned" || !slices.ContainsFunc(got[0].ACL, func(a connector.ACLEntry) bool { return a.Kind == connector.ACLPublic }) {
 		t.Fatalf("restored document = %+v", got)
 	}
-	// Replaying the old move-out page observes the present file and cannot
-	// retract its new revision.
 	if _, err := c.PollFrom(t.Context(), gate, "s1"); err != nil {
 		t.Fatal(err)
 	}
 	if got := current(); len(got) != 1 || got[0].Payload.Text != "returned" {
 		t.Errorf("old retraction replay hid document: %+v", got)
 	}
-	// A second move-out has its own tombstone, and a move back with the
-	// same Drive head still gets a distinct eligible revision.
 	f.set("doc", liveFile{Folder: "elsewhere", Head: "r2", Text: "returned", Public: true})
 	f.next("s3", "s3a", "doc")
 	next, err = c.PollFrom(t.Context(), gate, next)
@@ -245,8 +198,6 @@ func TestDriveLiveSyncThroughSQL(t *testing.T) {
 	if err != nil || len(docTombs) != 2 || docTombs[0].ID == docTombs[1].ID {
 		t.Fatalf("document tombstone cycles = %+v, %v", docTombs, err)
 	}
-	// A tagged transcript enters, leaves when untagged, then returns through
-	// expired-token reconciliation after a connector restart.
 	f.set("meeting", liveFile{Folder: "meet", Head: "t1", Text: "initial", Tagged: true, Public: true})
 	f.next("s3b", "s4", "meeting")
 	next, err = c.PollFrom(t.Context(), gate, next)

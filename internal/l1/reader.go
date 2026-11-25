@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
@@ -67,7 +68,7 @@ type Reader struct {
 // Container grants present in L1 are resolved once per call against current
 // L0 revisions. Every list of every named container must allow the base reader;
 // a missing container or a database error never grants access.
-func ReaderFor(ctx context.Context, q Querier, res *principal.Resolver, eff principal.Effective) (Reader, error) {
+func ReaderFor(ctx context.Context, q db.Querier, res *principal.Resolver, eff principal.Effective) (Reader, error) {
 	if res == nil {
 		return Reader{}, fmt.Errorf("%w: there is no identity mapping to read %q's grants from", principal.ErrCannotAct, eff.Human)
 	}
@@ -95,8 +96,6 @@ func ReaderFor(ctx context.Context, q Querier, res *principal.Resolver, eff prin
 	if err != nil {
 		return Reader{}, err
 	}
-	// Only the base audience proves container access. Resolved entries never
-	// prove other entries, regardless of the order L1 returned them in.
 	resolved := []connector.ACLEntry{}
 	access := make(map[connector.ContainerRef]bool)
 	for _, entry := range entries {
@@ -131,9 +130,7 @@ func ReaderFor(ctx context.Context, q Querier, res *principal.Resolver, eff prin
 	return base, nil
 }
 
-// Close the L1 result before querying L0, so a single-connection pool and a
-// transaction can resolve entries too.
-func containerEntries(ctx context.Context, q Querier) ([]connector.ACLEntry, error) {
+func containerEntries(ctx context.Context, q db.Querier) ([]connector.ACLEntry, error) {
 	if q == nil {
 		return nil, fmt.Errorf("reading container grants needs a database")
 	}
@@ -162,31 +159,6 @@ func containerEntries(ctx context.Context, q Querier) ([]connector.ACLEntry, err
 	return entries, nil
 }
 
-// entriesFor is every access-list entry one configured identity satisfies, for
-// the principal that identity belongs to.
-//
-// An entry's `native_id` is the source's id for the thing
-// (docs/connector-contract.md), so a configured native id is taken as it
-// stands: [principal.NewResolver] refuses two principals claiming one native id
-// in one source, and matching in SQL is byte-exact, as it is everywhere an id
-// is compared.
-//
-// A handle is taken as well — a source with no separate id for a group emits
-// the group's name, and `acme/api-team` is a handle in the mapping — but only
-// where it names this principal and nobody else *in either namespace*
-// ([principal.Resolver.Claims]). The mapping keeps native ids and handles apart
-// and lets them collide, deliberately: a GitHub node id and a GitHub login are
-// different names for different things and either may be any string. An access
-// list entry carries one string with no namespace on it, so a handle that
-// happens to be somebody else's native id says nothing about who may read, and
-// taking it as a grant would hand one person's documents to another. Both
-// spellings of a handle are offered, because folding one side of a byte
-// comparison and not the other matches nothing.
-//
-// What is left is fail-closed in both directions. A spelling nobody configured
-// matches no entry, and a spelling two principals answer to is a grant to
-// neither: the first costs a person a document they may read, and the second is
-// the one that has to be impossible (docs/design.md#access-control).
 func entriesFor(res *principal.Resolver, kind connector.ACLKind, owner string, id principal.Identity) []connector.ACLEntry {
 	if id.Source == "" {
 		return nil
@@ -207,8 +179,6 @@ func entriesFor(res *principal.Resolver, kind connector.ACLKind, owner string, i
 	return out
 }
 
-// sortEntries puts an audience in one order with no duplicates, so that the
-// predicate a reader produces is a function of the reader and nothing else.
 func sortEntries(entries []connector.ACLEntry) []connector.ACLEntry {
 	slices.SortFunc(entries, func(a, b connector.ACLEntry) int {
 		if c := strings.Compare(string(a.Kind), string(b.Kind)); c != 0 {

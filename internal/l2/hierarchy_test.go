@@ -10,7 +10,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/l2"
 )
 
-// dropped is a cycle warning MergeHierarchy logged.
 type dropped struct {
 	Entity, Parent, Source string
 }
@@ -86,7 +85,6 @@ func TestMergeHierarchy(t *testing.T) {
 				Tracker:       l2.Parents{"b": {"c"}},
 				RepoStructure: l2.Parents{"c": {"a", "d"}},
 			},
-			// Only the edge that closes the cycle goes: c keeps d.
 			want:    l2.Parents{"a": {"b"}, "b": {"c"}, "c": {"d"}},
 			dropped: []dropped{{"c", "a", "repo_structure"}},
 		},
@@ -142,7 +140,6 @@ func TestNestByPattern(t *testing.T) {
 		{
 			name: "an entity is part of the nearest entity its patterns lie under",
 			entities: []l2.Located{
-				// Deepest first, so a farther ancestor is met after the nearest.
 				{ID: "go-files", Repo: api, PathPatterns: []string{"engine/server/*.go", "engine/server/x/**/*.go"}},
 				{ID: "write", Repo: api, PathPatterns: []string{"engine/server/write/**"}},
 				{ID: "server", Repo: api, PathPatterns: []string{"engine/server/**"}},
@@ -177,7 +174,6 @@ func TestNestByPattern(t *testing.T) {
 				{ID: "two", Repo: api, PathPatterns: []string{"./engine/**"}},
 				{ID: "server", Repo: api, PathPatterns: []string{"engine/server/**"}},
 			},
-			// Both are nearest to the server.
 			want: l2.Parents{"server": {"one", "two"}},
 		},
 		{

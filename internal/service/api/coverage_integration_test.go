@@ -30,12 +30,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/api"
 )
 
-// The recorded conversation in testdata/conversations/coverage.json: the
-// messages Kern posted and the topic ranges the segmentation call answered, by
-// state. No model is called here: the documents are built from the recorded
-// ranges by the code the distiller runs, and published with the record the
-// distiller publishes them with.
-
 type coverageMessage struct {
 	Exchange string    `json:"exchange"`
 	Role     string    `json:"role"`
@@ -66,13 +60,11 @@ func loadCoverageRecording(t *testing.T) coverageRecording {
 	return rec
 }
 
-// conversationWorld is a conversation source in a world: the owner's messages
-// as the source stores them, and the distillations published over them.
 type conversationWorld struct {
 	*world
 	rec    coverageRecording
 	thread string
-	// texts are the current words of each artifact, by exchange:role.
+
 	texts map[string]coverageMessage
 }
 
@@ -83,8 +75,6 @@ func newConversationWorld(t *testing.T) *conversationWorld {
 	return &conversationWorld{world: w, rec: rec, thread: rec.Conversation + "-" + w.src, texts: map[string]coverageMessage{}}
 }
 
-// event is a message as the conversation source stores it: the owner's alone on
-// the access list, one revision per text.
 func (c *conversationWorld) event(m coverageMessage) connector.Event {
 	author := connector.Identity{Source: c.src, Kind: connector.IdentityUser, NativeID: kyleNode}
 	if m.Role == conversation.RoleAssistant {
@@ -105,7 +95,6 @@ func (c *conversationWorld) event(m coverageMessage) connector.Event {
 	}
 }
 
-// post stores a message, or a new revision of it, and returns its event id.
 func (c *conversationWorld) post(t *testing.T, m coverageMessage) string {
 	t.Helper()
 	c.texts[m.Exchange+":"+m.Role] = m
@@ -116,7 +105,6 @@ func (c *conversationWorld) post(t *testing.T, m coverageMessage) string {
 	return connector.EventID(ev.Source, ev.NativeID)
 }
 
-// id is the event id of the current revision of a message.
 func (c *conversationWorld) id(exchange, role string) string {
 	ev := c.event(c.texts[exchange+":"+role])
 	return connector.EventID(ev.Source, ev.NativeID)
@@ -129,9 +117,6 @@ func (c *conversationWorld) postAll(t *testing.T, messages []coverageMessage) {
 	}
 }
 
-// publish is what the distiller's transaction writes for an attempt that read
-// `read` (a message's current event id, or none for all the current ones) and
-// whose segmentation answered the recorded ranges of a state.
 func (c *conversationWorld) publish(t *testing.T, spans []l1.MeetingSpan, read ...string) []l1.Document {
 	t.Helper()
 	ctx := t.Context()
@@ -178,7 +163,6 @@ type coverageAnswer struct {
 	Results []api.CoverageResult `json:"results"`
 }
 
-// ask is the coverage of ids for a caller, over HTTP, in request order.
 func (w *world) ask(t *testing.T, caller api.Caller, ids ...string) []api.CoverageResult {
 	t.Helper()
 	var got coverageAnswer
@@ -206,9 +190,6 @@ func expect(t *testing.T, got api.CoverageResult, state string, documents ...str
 
 func (c *conversationWorld) base() []l1.MeetingSpan { return c.rec.States["base"].Segments }
 
-// A message in L0 that the distiller has not consumed is pending, not excluded.
-// Once its conversation is distilled, the quoted messages are covered with the
-// documents that cite them and a greeting nothing quotes is excluded.
 func TestCoverageGoesFromPendingToCoveredAndLeavesTheGreetingOut(t *testing.T) {
 	c := newConversationWorld(t)
 	c.postAll(t, c.rec.Messages)
@@ -217,7 +198,7 @@ func TestCoverageGoesFromPendingToCoveredAndLeavesTheGreetingOut(t *testing.T) {
 	for _, r := range c.ask(t, kyle, greeting, decision, deploy) {
 		expect(t, r, "pending")
 	}
-	// The agent acting for the owner reads the same.
+
 	for _, r := range c.ask(t, shedKyle, greeting, decision) {
 		expect(t, r, "pending")
 	}
@@ -243,8 +224,6 @@ func TestCoverageGoesFromPendingToCoveredAndLeavesTheGreetingOut(t *testing.T) {
 	expect(t, got[4], "covered", byTopic["cache"])
 }
 
-// A segmentation that selects nothing is a published distillation: every input
-// is excluded.
 func TestCoverageExcludesEveryMessageWhenSegmentationSelectsNothing(t *testing.T) {
 	c := newConversationWorld(t)
 	c.postAll(t, c.rec.Messages)
@@ -263,15 +242,11 @@ func TestCoverageExcludesEveryMessageWhenSegmentationSelectsNothing(t *testing.T
 	}
 }
 
-// An attempt that failed, or was stopped by a restart, published nothing, so a
-// conversation read before it stays pending — also where an earlier distillation
-// published other messages — until an attempt succeeds.
 func TestCoverageStaysPendingWithNoPublishedDistillationAndFollowsTheNextOne(t *testing.T) {
 	c := newConversationWorld(t)
 	c.postAll(t, c.rec.Messages)
 	decision := c.id("x-3", "owner")
-	// Nothing was published by the failed attempt, whatever documents it built
-	// in memory; the same is true after a restart.
+
 	for range 2 {
 		expect(t, c.ask(t, kyle, decision)[0], "pending")
 	}
@@ -285,9 +260,6 @@ func TestCoverageStaysPendingWithNoPublishedDistillationAndFollowsTheNextOne(t *
 	expect(t, c.ask(t, kyle, decision)[0], "covered", cited)
 }
 
-// A message rewritten while documents built from its older revision remain is
-// pending, never covered by those documents, and so is the older revision's id
-// that was asked. A distillation that read the new revision decides.
 func TestCoverageIsPendingForARewriteUntilADistillationReadsIt(t *testing.T) {
 	c := newConversationWorld(t)
 	c.postAll(t, c.rec.Messages)
@@ -307,7 +279,7 @@ func TestCoverageIsPendingForARewriteUntilADistillationReadsIt(t *testing.T) {
 	if newer == older {
 		t.Fatal("the rewrite did not make a new revision")
 	}
-	// The documents of the older revision are still there, and cite only it.
+
 	if held, err := l1.New(c.pool).Holders(t.Context(), []string{older, newer}); err != nil || len(held[older]) == 0 || len(held[newer]) != 0 {
 		t.Fatalf("holders = %+v, %v", held, err)
 	}
@@ -316,8 +288,7 @@ func TestCoverageIsPendingForARewriteUntilADistillationReadsIt(t *testing.T) {
 			expect(t, c.ask(t, kyle, id)[0], "pending")
 		})
 	}
-	// A message the rewrite left alone was read by the published distillation
-	// and is still covered by it.
+
 	deploy := c.id("x-4", "owner")
 	if got := c.ask(t, kyle, deploy)[0]; got.State != "covered" {
 		t.Errorf("an untouched message = %+v, want covered", got)
@@ -338,8 +309,6 @@ func TestCoverageIsPendingForARewriteUntilADistillationReadsIt(t *testing.T) {
 	}
 }
 
-// A message that arrived while an attempt ran is not among what the attempt
-// read, so it is pending after that attempt publishes.
 func TestCoverageIsPendingForAMessageThatArrivedWhileAnAttemptRan(t *testing.T) {
 	c := newConversationWorld(t)
 	c.postAll(t, c.rec.Messages)
@@ -350,7 +319,6 @@ func TestCoverageIsPendingForAMessageThatArrivedWhileAnAttemptRan(t *testing.T) 
 	late := c.rec.States["late"]
 	arrived := c.post(t, late.Add[0])
 
-	// The attempt published what it read: the messages before the new one.
 	current := c.publish(t, c.base(), read...)
 	if len(current) == 0 {
 		t.Fatal("no documents")
@@ -360,7 +328,7 @@ func TestCoverageIsPendingForAMessageThatArrivedWhileAnAttemptRan(t *testing.T) 
 	if got[1].State != "covered" && got[1].State != "excluded" {
 		t.Errorf("a message the attempt read = %+v", got[1])
 	}
-	// The next attempt reads it.
+
 	docs := c.publish(t, late.Segments)
 	var cited string
 	for _, d := range docs {
@@ -371,8 +339,6 @@ func TestCoverageIsPendingForAMessageThatArrivedWhileAnAttemptRan(t *testing.T) 
 	expect(t, c.ask(t, kyle, arrived)[0], "covered", cited)
 }
 
-// A deleted message is excluded: the operator deletion redacts every revision of
-// its artifact, whichever id is asked.
 func TestCoverageExcludesADeletedMessage(t *testing.T) {
 	c := newConversationWorld(t)
 	c.postAll(t, c.rec.Messages)
@@ -392,15 +358,12 @@ func TestCoverageExcludesADeletedMessage(t *testing.T) {
 	}
 }
 
-// A nonexistent id, an id the caller may not read and a deleted one are all
-// excluded, and the answer for the first two is the same bytes: nothing tells a
-// caller which messages exist.
 func TestCoverageAnswersAnUnreadableIdAsANonexistentOne(t *testing.T) {
 	c := newConversationWorld(t)
 	c.postAll(t, c.rec.Messages)
 	c.publish(t, c.base())
 	decision := c.id("x-3", "owner")
-	// An event the second human may read, which is not a conversation message.
+
 	readable := connector.EventID(c.src, c.project+"#12")
 	nobody := connector.EventID(c.src, "c-nobody/x-0:owner@0000000000000000")
 
@@ -414,13 +377,13 @@ func TestCoverageAnswersAnUnreadableIdAsANonexistentOne(t *testing.T) {
 		if bytes.Contains(unreadable, []byte("covered")) || bytes.Contains(unreadable, []byte("documents")) {
 			t.Errorf("%s: %s", who, unreadable)
 		}
-		// Read in a batch they are the same too.
+
 		both := c.ask(t, caller, decision, nobody, readable)
 		for _, r := range both {
 			expect(t, r, "excluded")
 		}
 	}
-	// The owner reads it.
+
 	expect(t, c.ask(t, kyle, decision)[0], "covered", c.publishedDocument(t, decision))
 	expect(t, c.ask(t, kyle, nobody)[0], "excluded")
 }
@@ -434,9 +397,6 @@ func (c *conversationWorld) publishedDocument(t *testing.T, event string) string
 	return held[event][0].ID
 }
 
-// The same call over MCP is the same bytes as over HTTP, an empty list, too many
-// ids and an unknown field are refused with invalid_request, and the call asks
-// no model: a counting embedder is never used.
 func TestCoverageOverHTTPAndMCPAndItsRefusals(t *testing.T) {
 	c := newConversationWorld(t)
 	c.postAll(t, c.rec.Messages)

@@ -39,9 +39,6 @@ type Worker struct {
 	client  *Client
 	handler Handler
 
-	// listenConfig is how the listener opens the connection it holds outside
-	// the pool. LISTEN belongs to a session, so a pooled connection handed
-	// back between notifications would stop being the one that is listening.
 	listenConfig *pgx.ConnConfig
 }
 
@@ -61,10 +58,6 @@ func NewWorker(pool *pgxpool.Pool, cfg Config, handler Handler) (*Worker, error)
 	}, nil
 }
 
-// Client is the queue the worker runs on, for the caller that also wants to
-// read its stats or list its failures.
-func (w *Worker) Client() *Client { return w.client }
-
 // Run works the kind's queue until ctx is cancelled, and returns nil when it
 // stops that way: a worker asked to stop has not failed. It returns an error
 // only for something it cannot work through — a database that stays
@@ -75,7 +68,6 @@ func (w *Worker) Run(ctx context.Context) error {
 	ctx = telemetry.With(ctx, "job_kind", cfg.Kind.Name)
 	log := telemetry.Logger(ctx)
 
-	// The listener is this loop's, so this loop cancels it and waits for it.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	wake := make(chan struct{}, 1)
@@ -97,19 +89,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		"poll_interval", cfg.PollInterval.String(), "lease", cfg.Lease.String())
 
 	for {
-		// Drain what is due before going back to sleep: one notification can
-		// stand for many jobs, because Postgres collapses identical
-		// notifications from one transaction.
 		for ctx.Err() == nil {
-			// Maintenance belongs in here as well as in the select below. A
-			// worker with a backlog never leaves this loop — a distiller
-			// backfill is exactly that — and the outer select is the only
-			// other place the tick is read, so expired leases would go
-			// unreclaimed and done rows unpurged for the whole length of the
-			// backfill. That is when there is most of both, and more workers
-			// makes it worse rather than better, because they are all
-			// draining. Non-blocking, so an idle claim is still what ends the
-			// drain.
 			select {
 			case <-maintain.C:
 				w.maintain(ctx)
@@ -119,8 +99,6 @@ func (w *Worker) Run(ctx context.Context) error {
 			jobs, err := w.client.Claim(ctx)
 			if err != nil {
 				if ctx.Err() == nil {
-					// Waiting for the next tick is the backoff: hammering a
-					// database that is refusing us helps nobody.
 					log.ErrorContext(ctx, "claiming jobs failed", "error", err)
 				}
 				break
@@ -143,10 +121,6 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 }
 
-// runAll runs a claimed batch and waits for it. Claiming again only once the
-// batch is done keeps the number of jobs in flight at Concurrency without a
-// pool of its own, and a batch is one claim round trip rather than one per
-// job.
 func (w *Worker) runAll(ctx context.Context, jobs []Job) {
 	var wg sync.WaitGroup
 	for _, job := range jobs {
@@ -159,13 +133,8 @@ func (w *Worker) runAll(ctx context.Context, jobs []Job) {
 	wg.Wait()
 }
 
-// reportTimeout bounds how long recording an outcome may take once the handler
-// has returned. It is a detached context: a worker shutting down still says
-// what happened to the job it was running, rather than leaving a row for the
-// reclaimer to work out.
 const reportTimeout = 10 * time.Second
 
-// runOne runs one job with its lease kept alive, and records what happened.
 func (w *Worker) runOne(ctx context.Context, job Job) {
 	ctx = telemetry.With(ctx, "job_id", job.ID, "job_attempt", job.Attempt)
 	log := telemetry.Logger(ctx)
@@ -180,7 +149,6 @@ func (w *Worker) runOne(ctx context.Context, job Job) {
 	}()
 
 	err := w.handler(run, job)
-	// The heartbeat is this run's, and the run is over.
 	lost()
 	lease.Wait()
 
@@ -209,8 +177,6 @@ func (w *Worker) runOne(ctx context.Context, job Job) {
 	case state == StateFailed:
 		log.ErrorContext(report, "job failed for good", "error", err, "attempts", job.Attempt)
 	case state == StateDone:
-		// Not an error: the job pending for the same target does this work
-		// against a newer read.
 		log.InfoContext(report, "a failed job was superseded by one already pending for its target, so it will not be retried",
 			"error", err)
 	default:
@@ -218,10 +184,6 @@ func (w *Worker) runOne(ctx context.Context, job Job) {
 	}
 }
 
-// keepLease renews the job's lease while it runs, and cancels the run when the
-// lease turns out to be somebody else's: a reclaimed job is already running
-// elsewhere, and two runs writing the same L1 document is the thing the lease
-// exists to make rare.
 func (w *Worker) keepLease(ctx context.Context, job Job, lost func()) {
 	log := telemetry.Logger(ctx)
 	tick := time.NewTicker(w.client.cfg.HeartbeatInterval())
@@ -236,8 +198,6 @@ func (w *Worker) keepLease(ctx context.Context, job Job, lost func()) {
 		switch {
 		case err != nil:
 			if ctx.Err() == nil {
-				// Not fatal on its own: the lease still has time on it, and
-				// the next tick may reach the database.
 				log.WarnContext(ctx, "renewing a job lease failed", "error", err)
 			}
 		case !held:
@@ -248,9 +208,6 @@ func (w *Worker) keepLease(ctx context.Context, job Job, lost func()) {
 	}
 }
 
-// maintain is the housekeeping a running worker does for its own kind:
-// reclaiming what dead workers left running, and deleting what is finished and
-// past retention.
 func (w *Worker) maintain(ctx context.Context) {
 	log := telemetry.Logger(ctx)
 	if reclaimed, err := w.client.Reclaim(ctx); err != nil {
@@ -270,10 +227,6 @@ func (w *Worker) maintain(ctx context.Context) {
 	}
 }
 
-// listen wakes the loop when a job of this kind is committed. It reconnects
-// for as long as the worker runs: the polling floor is what keeps a listener
-// that cannot connect from being an outage, so a failure here is logged and
-// retried rather than returned.
 func (w *Worker) listen(ctx context.Context, wake chan<- struct{}) {
 	log := telemetry.Logger(ctx)
 	for ctx.Err() == nil {
@@ -288,8 +241,6 @@ func (w *Worker) listen(ctx context.Context, wake chan<- struct{}) {
 	}
 }
 
-// listenOnce holds one connection and forwards its notifications until it
-// breaks or the worker stops.
 func (w *Worker) listenOnce(ctx context.Context, wake chan<- struct{}) error {
 	channel := w.client.cfg.Kind.Channel()
 	conn, err := pgx.ConnectConfig(ctx, w.listenConfig)
@@ -297,8 +248,6 @@ func (w *Worker) listenOnce(ctx context.Context, wake chan<- struct{}) error {
 		return fmt.Errorf("connecting the %s listener: %w", channel, err)
 	}
 	defer func() {
-		// Closing takes a context of its own: the worker's is cancelled by the
-		// time this runs on the way out.
 		closing, done := context.WithTimeout(context.WithoutCancel(ctx), reportTimeout)
 		defer done()
 		conn.Close(closing) //nolint:errcheck // there is nothing to do about a connection that will not close
@@ -307,8 +256,6 @@ func (w *Worker) listenOnce(ctx context.Context, wake chan<- struct{}) error {
 	if _, err := conn.Exec(ctx, "LISTEN "+pgx.Identifier{channel}.Sanitize()); err != nil {
 		return fmt.Errorf("listening on %s: %w", channel, err)
 	}
-	// Anything enqueued while there was no listener was announced to nobody.
-	// Waking now costs one empty claim and saves a poll interval of latency.
 	signal(wake)
 
 	for {
@@ -322,9 +269,6 @@ func (w *Worker) listenOnce(ctx context.Context, wake chan<- struct{}) error {
 	}
 }
 
-// signal wakes the loop without blocking. The channel holds one wake-up,
-// because a second one before the loop has looked changes nothing: it claims
-// everything that is due either way.
 func signal(wake chan<- struct{}) {
 	select {
 	case wake <- struct{}{}:

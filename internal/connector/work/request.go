@@ -96,9 +96,6 @@ func (r *Request) UnmarshalJSON(raw []byte) error {
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return err
 	}
-	// Inspect the shape before decoding values: state and status are forbidden
-	// on updates regardless of their JSON types. Leave type errors to the
-	// strict decoder below, and keep deletions subject to their own shape rule.
 	var kind string
 	var deleted bool
 	for name, field := range fields {

@@ -33,7 +33,6 @@ func TestCurrent(t *testing.T) {
 			want:    "b",
 		},
 		{
-			// It cites the document but was not read from it.
 			name: "superseded by an assertion citing its document is not retired",
 			history: []l2.Stance{
 				{ID: "asserted", Evidence: []string{"d1"}, Supersedes: "a", Assertion: "evt:hearsay:assertion:1"},

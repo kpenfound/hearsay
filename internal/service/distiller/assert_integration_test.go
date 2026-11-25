@@ -3,14 +3,14 @@
 package distiller_test
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
@@ -19,10 +19,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
-// assertJobs is the serial key of every assert job for one document. It reads
-// the table in one statement rather than listing the queue state by state,
-// because a worker in another package's test may move the job between states
-// while it is being looked for.
 func assertJobs(t *testing.T, pool *pgxpool.Pool, docID string) []string {
 	t.Helper()
 	rows, err := pool.Query(t.Context(),
@@ -45,8 +41,6 @@ func assertJobs(t *testing.T, pool *pgxpool.Pool, docID string) []string {
 	return keys
 }
 
-// Equal-time channel messages arrive in sequence order, but L1 chooses its
-// root by artifact ID. Both enqueue paths must use that root's touches.
 func TestChatWindowTouchesScopeIsTheSameAfterRecovery(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
@@ -56,30 +50,21 @@ func TestChatWindowTouchesScopeIsTheSameAfterRecovery(t *testing.T) {
 		{"artifact order", []string{"a", "b"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			pool := newScratchPool(t)
-			src := newSource(t)
+			pool := dbtest.Scratch(t, "distiller_none")
+			src := dbtest.UniqueID()
 			cfg := testConfig(src)
 			cfg.Repo.Sources = []connector.SourceConfig{{ID: src, Type: "slack"}, {ID: "github", Type: "github"}}
 			cfg.Repo.Scopes = []config.Scope{
 				{ID: "scope-a", Sources: []config.ScopeSource{{Source: "github", Containers: []string{"acme/a"}}}},
 				{ID: "scope-b", Sources: []config.ScopeSource{{Source: "github", Containers: []string{"acme/b"}}}},
 			}
-			dir := t.TempDir()
-			for name, body := range map[string]string{
+			dir := configtest.Write(t, map[string]string{
 				"sources/github.yaml":    "id: github\ntype: github\ncontainers: [acme/a, acme/b]\n",
 				"scopes/scope-a.yaml":    "id: scope-a\nsources: [github]\n",
 				"scopes/scope-b.yaml":    "id: scope-b\nsources: [github]\n",
 				"authority/default.yaml": "scope: '*'\nratified_by:\n  principals: []\n  sources: []\n  artifacts: []\n",
 				"authority/scope-a.yaml": "scope: scope-a\nratified_by:\n  sources: ['*']\n  artifacts: [chat_thread]\n",
-			} {
-				full := filepath.Join(dir, name)
-				if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
+			})
 			loaded, err := config.Load(dir)
 			if err != nil {
 				t.Fatal(err)
@@ -105,7 +90,7 @@ func TestChatWindowTouchesScopeIsTheSameAfterRecovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// The recorded chat-scope-recovery answer is the team's decision.
+
 			d, err := distiller.New(pool, registry, newOutcomeJev(t).byDefault("decided").judgments(), cfg)
 			if err != nil {
 				t.Fatal(err)
@@ -146,12 +131,9 @@ func TestChatWindowTouchesScopeIsTheSameAfterRecovery(t *testing.T) {
 	}
 }
 
-// A document whose outcome enters the assertion pipeline is written with its
-// assert job, under the scope that covers the artifact; a re-distillation that
-// changes nothing asks for none.
 func TestADocumentThatAssertsIsWrittenWithItsAssertJob(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	ingest(t, pool, fixtureEvents(src))
 	d := newDistiller(t, pool, src)
 	id := l1.DocID(src, repo+"#12")
@@ -180,11 +162,9 @@ func TestADocumentThatAssertsIsWrittenWithItsAssertJob(t *testing.T) {
 	}
 }
 
-// Recovery must select the same authority scope as the transaction that first
-// wrote a work document, even though its own project container is not covered.
 func TestWorkTouchesScopeIsTheSameAfterRecovery(t *testing.T) {
-	pool := newScratchPool(t)
-	src := newSource(t)
+	pool := dbtest.Scratch(t, "distiller_none")
+	src := dbtest.UniqueID()
 	events := fixtureEvents(src)[:3]
 	for i := range events {
 		events[i].Payload.Container = connector.Container{Kind: "project", NativeID: "work-project"}
@@ -197,23 +177,14 @@ func TestWorkTouchesScopeIsTheSameAfterRecovery(t *testing.T) {
 	cfg.Repo.Sources = []connector.SourceConfig{{ID: src, Type: "work"}, {ID: "github", Type: "github"}}
 	cfg.Repo.Scopes[0].Sources = []config.ScopeSource{{Source: "github", Containers: []string{repo}}}
 	cfg.Repo.Scopes[0].Tracker = config.SourceRef{}
-	// Distinct policies make an accidental source fallback observable.
-	dir := t.TempDir()
-	for name, body := range map[string]string{
+
+	dir := configtest.Write(t, map[string]string{
 		"sources/github.yaml":    "id: github\ntype: github\ncontainers: [acme/api]\n",
 		"principals/kyle.yaml":   "id: kyle\nidentities: [{source: github, native_id: u1}]\n",
 		"scopes/api.yaml":        "id: api\nsources: [github]\n",
 		"authority/default.yaml": "scope: '*'\nratified_by:\n  principals: []\n  sources: []\n  artifacts: []\n",
 		"authority/api.yaml":     "scope: api\nratified_by:\n  principals: [kyle]\n  sources: ['*']\n  artifacts: [issue]\n",
-	} {
-		full := filepath.Join(dir, name)
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
+	})
 	loaded, err := config.Load(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -263,12 +234,11 @@ func TestWorkTouchesScopeIsTheSameAfterRecovery(t *testing.T) {
 	if recovered := l2.RecordedTier(cfg.Repo.Authority.ForScope(keys[0]), stored.Document); recovered != normal {
 		t.Fatalf("recovered tier = %s, normal = %s", recovered, normal)
 	}
-	// Pins select their key from the same root's persisted touches as well.
+
 	gesture, written, err := l2.RecordGesture(t.Context(), pool, cfg.Repo, l2.GestureRequest{
 		Event: connector.EventID(src, "touches-pin"), Principal: "kyle", Action: l2.GesturePin, Documents: []string{id},
 	})
 	if err != nil || !written || gesture.Scope != "api" {
 		t.Fatalf("pin = %+v, %v, %v", gesture, written, err)
 	}
-
 }

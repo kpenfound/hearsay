@@ -22,30 +22,14 @@ type Querier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// Both of pgx's are one.
 var (
 	_ Querier = (*pgxpool.Pool)(nil)
 	_ Querier = (pgx.Tx)(nil)
 )
 
-// jobColumns is a job row, in the order scanJobs reads it. Unqualified, so
-// that it serves a plain SELECT and an UPDATE ... RETURNING alike. The kind is
-// not among them: every statement here is already filtered to one kind, and
-// the client knows whether that kind is serialized, which a row does not.
 const jobColumns = `id, target_id, serial_key, priority, state, attempt,
 	trace_context, enqueued_at, run_after, started_at, finished_at, last_error`
 
-// enqueueSQL inserts the job, or does nothing because one is already pending
-// for this target.
-//
-// ON CONFLICT ... DO NOTHING is not an optimisation here: the enqueue shares
-// the caller's transaction, and a unique violation would abort the L0 or L1
-// write that was the point of it. The WHERE clause is what lets
-// Postgres infer the partial index.
-//
-// The notification is fired from the same statement, which means it is
-// delivered when this transaction commits and not at all if it rolls back —
-// so no worker is ever woken for a job that does not exist.
 const enqueueSQL = `
 WITH inserted AS (
     INSERT INTO queue_job (kind, target_id, serial_key, priority, run_after, trace_context)
@@ -55,11 +39,6 @@ WITH inserted AS (
 )
 SELECT inserted.id FROM inserted, LATERAL (SELECT pg_notify($7, '')) AS announced`
 
-// debounceSQL keeps the original enqueue time and all other job metadata.
-// clock_timestamp() is deliberately the wall clock at the conflict check:
-// now() is the transaction start, and even statement_timestamp() could precede
-// an Expedite whose row lock this statement waited for. ON CONFLICT re-reads
-// that committed row; a job due by then must stay due.
 const debounceSQL = `
 WITH stored AS (
     INSERT INTO queue_job (kind, target_id, serial_key, priority, run_after, trace_context)
@@ -144,8 +123,6 @@ func Expedite(ctx context.Context, q Querier, kind Kind, target string) (bool, e
 	return true, nil
 }
 
-// traceOf is the carrier as it is stored: never null, so the column's default
-// and what Go writes are the same thing.
 func traceOf(carrier map[string]string) map[string]string {
 	if carrier == nil {
 		return map[string]string{}
@@ -178,9 +155,6 @@ func New(pool *pgxpool.Pool, cfg Config) (*Client, error) {
 	return &Client{pool: pool, cfg: cfg}, nil
 }
 
-// Config is the configuration in force, with the defaults filled in.
-func (c *Client) Config() Config { return c.cfg }
-
 // Expedite commits an expedite independently of the caller's transaction.
 // The explicit kind may differ from the client's kind, so a handler can
 // expedite work it is waiting for in another queue.
@@ -197,13 +171,6 @@ func (c *Client) Expedite(ctx context.Context, kind Kind, target string) (bool, 
 	return expedited, nil
 }
 
-// claimSQL is the unserialized claim: a batch, taken with FOR UPDATE SKIP
-// LOCKED so that two workers scanning the same backlog step over each other's
-// rows rather than blocking on them.
-//
-// The id is the last term of the ordering. Jobs enqueued in one transaction
-// share run_after to the microsecond, and FIFO within a kind is only true if
-// something breaks that tie.
 const claimSQL = `
 UPDATE queue_job SET state = 'running', started_at = now(), attempt = attempt + 1,
        lease_expires_at = now() + make_interval(secs => $3)
@@ -215,32 +182,8 @@ WHERE id IN (
     LIMIT $2)
 RETURNING ` + jobColumns
 
-// claimSerialLockSQL takes the kind's claim lock for the rest of the
-// transaction. It is a separate statement on purpose: a snapshot is taken when
-// a statement begins, so a claim that acquired the lock in the same statement
-// as its UPDATE would read the candidates from before the lock was granted —
-// which is the snapshot in which the other worker's job is not running yet.
-//
-// That reasoning is READ COMMITTED's, and the claim requires it rather than
-// merely expecting it — which is why claimSerialized asks for the level
-// explicitly instead of inheriting default_transaction_isolation. Above READ
-// COMMITTED the snapshot belongs to the transaction rather than to the
-// statement, and it is registered by this statement, before the lock is
-// granted: a worker that waited here would then run its UPDATE against a
-// snapshot from before the holder committed, find no running job for the key,
-// and claim a second one. Splitting the statements buys nothing there, and the
-// advisory lock stops enforcing the invariant it exists for.
 const claimSerialLockSQL = `SELECT pg_advisory_xact_lock(hashtext('claim:' || $1))`
 
-// claimSerialSQL is the serialized claim: one job, whose serial key no running
-// job of this kind holds.
-//
-// LIMIT 1 is load-bearing, not a throughput choice. NOT EXISTS is evaluated
-// against this statement's snapshot, in which none of the candidates is
-// running, so a batch would pass every pending job sharing one serial key and
-// set them all running in one UPDATE — with the advisory lock held throughout.
-// The repeated state = 'pending' on the outer UPDATE is the cheap guard
-// against claiming a row the reclaimer moved underneath the subquery.
 const claimSerialSQL = `
 UPDATE queue_job SET state = 'running', started_at = now(), attempt = attempt + 1,
        lease_expires_at = now() + make_interval(secs => $2)
@@ -278,16 +221,6 @@ func (c *Client) Claim(ctx context.Context) ([]Job, error) {
 	return inWorkOrder(jobs), nil
 }
 
-// claimSerialized runs the advisory lock and the claim in one transaction: the
-// lock is held until it commits, which is what makes the running-check and the
-// update atomic against other claims. It is held for one small UPDATE and not
-// for the job, so different serial keys still run in parallel.
-//
-// The isolation level is named rather than inherited. Nothing else pins it —
-// db.Open passes the URL to pgx as it is, so the level is the server's
-// default_transaction_isolation, which an operator sets in postgresql.conf, on
-// the database, on the role, or in the connection URL — and the serialization
-// invariant only holds under READ COMMITTED. See claimSerialLockSQL.
 func (c *Client) claimSerialized(ctx context.Context) ([]Job, error) {
 	fail := func(err error) error {
 		return fmt.Errorf("claiming a %s job: %w", c.cfg.Kind.Name, err)
@@ -315,12 +248,6 @@ func (c *Client) claimSerialized(ctx context.Context) ([]Job, error) {
 	return jobs, nil
 }
 
-// completeSQL finishes a job, and matches on the run rather than on the job:
-// a worker whose lease expired while it was working has had its job reclaimed
-// and possibly re-run, and must not mark that other run done.
-// Notification commits with completion, including CompleteIn's external holds.
-// A queued job's enqueue notification may have arrived while its key was busy;
-// waking on release avoids an otherwise unnecessary full polling interval.
 const completeSQL = `
 WITH completed AS (
  UPDATE queue_job SET state = 'done', finished_at = now(), lease_expires_at = NULL,
@@ -345,32 +272,10 @@ func (c *Client) Complete(ctx context.Context, job Job) (bool, error) {
 	return true, nil
 }
 
-// pendingTargetIndex is the partial unique index that dedupes a kind's pending
-// jobs on their target (migration 00003). Every statement that moves a job
-// back to pending can collide with it, because a running job does not occupy
-// it: a target can have one job running and another pending.
 const pendingTargetIndex = "queue_job_pending_target_idx"
 
-// supersededPrefix starts the last_error of a job that was superseded rather
-// than requeued. A done job otherwise has no last_error at all, so a done row
-// that carries one is always this one.
 const supersededPrefix = "superseded by a pending job for the same target; "
 
-// failSQL either schedules a retry, gives up, or finds the retry superseded, in
-// one statement so that the decision and the write cannot disagree. $3 is
-// whether the attempts are spent: a job that has them left goes back to
-// pending with run_after moved, and one that does not moves to failed and
-// stays there.
-//
-// A retry whose target already has a pending job is not requeued, because that
-// would violate the index that dedupes it: the pending job does the same work
-// against a newer read, so this one is done. A spent job still
-// fails: a failed row is the record that a target used its attempts up, and
-// failing does not touch the index.
-//
-// The EXISTS reads this statement's snapshot, so a pending job committed after
-// it began is not seen and the UPDATE raises 23505 on the index after all;
-// Fail runs it again, and the next snapshot sees that job.
 const failSQL = `
 WITH decided AS (
     SELECT j.id,
@@ -396,14 +301,8 @@ RETURNING q.state, q.run_after, q.kind
 )
 SELECT state,run_after FROM released, LATERAL (SELECT pg_notify('hearsay_job_' || released.kind, '')) AS announced`
 
-// conflictRetries is how many times a statement that lost a race to a
-// concurrent enqueue on the pending-target index is run again. Each run takes
-// a newer snapshot, which sees the job that won, so a second run is enough
-// unless yet another job was enqueued and claimed in between.
 const conflictRetries = 3
 
-// onPendingConflict runs stmt, and runs it again while it fails on the
-// pending-target index.
 func onPendingConflict(stmt func() error) error {
 	var err error
 	for range conflictRetries {
@@ -446,8 +345,6 @@ func (c *Client) Fail(ctx context.Context, job Job, cause error) (State, Retry, 
 		return "", Retry{}, fmt.Errorf("failing %s: %w", job, err)
 	}
 	if state != StatePending {
-		// The job is not running again, and a run_after left where the last
-		// attempt put it is not a schedule.
 		return state, Retry{}, nil
 	}
 	return state, Retry{In: wait, At: runAfter.UTC()}, nil
@@ -462,7 +359,6 @@ type Retry struct {
 	At time.Time
 }
 
-// heartbeatSQL extends the lease on one run.
 const heartbeatSQL = `
 UPDATE queue_job SET lease_expires_at = now() + make_interval(secs => $3)
 WHERE id = $1 AND attempt = $2 AND state = 'running'
@@ -484,24 +380,6 @@ func (c *Client) Heartbeat(ctx context.Context, job Job) (bool, error) {
 	return true, nil
 }
 
-// reclaimSQL takes back the jobs of workers that stopped heartbeating. There
-// is no backoff on a reclaimed job: a worker that died is not a job that is
-// failing, so it runs as soon as something claims it. A job that has used its
-// attempts up fails here rather than being handed round a crashing worker for
-// ever.
-//
-// It is one UPDATE over the whole kind, so a single row that would violate the
-// pending-target index would abort the sweep for every other job of the kind.
-// The decision is therefore made per row before anything is written:
-// an expired job that would go back to pending is done instead when its target
-// already has a pending job, or when a newer expired job for the same target
-// is going back to pending in this same statement — two running jobs for one
-// target are possible, and their expired leases would otherwise collide with
-// each other. The newer one is kept because it was enqueued after the older
-// one started, so its read is the newer one.
-//
-// Like failSQL, a pending job committed after this statement's snapshot still
-// raises 23505; Reclaim runs it again.
 const reclaimSQL = `
 WITH decided AS (
     SELECT j.id,
@@ -582,8 +460,6 @@ func (c *Client) Reclaim(ctx context.Context) (Reclaimed, error) {
 	return out, nil
 }
 
-// purgeSQL deletes done jobs past the retention window. Failed jobs are not
-// mentioned: they are kept.
 const purgeSQL = `
 DELETE FROM queue_job
 WHERE kind = $1 AND state = 'done' AND finished_at < now() - make_interval(secs => $2)`
@@ -599,7 +475,6 @@ func (c *Client) Purge(ctx context.Context) (int64, error) {
 	return tag.RowsAffected(), nil
 }
 
-// listSQL reads one state's jobs, oldest first.
 const listSQL = `
 SELECT ` + jobColumns + `
   FROM queue_job
@@ -676,9 +551,6 @@ func Limit(limit int) int {
 	}
 }
 
-// statsSQL counts one kind by state in a single pass, and takes the age of the
-// oldest job that is ready to run — which is queue latency, as against a
-// backlog of jobs that are simply not due yet.
 const statsSQL = `
 SELECT count(*) FILTER (WHERE state = 'pending'),
        count(*) FILTER (WHERE state = 'running'),
@@ -716,11 +588,6 @@ func (c *Client) Stats(ctx context.Context) (Stats, error) {
 	return s, nil
 }
 
-// inWorkOrder sorts a claimed batch the way the claim chose it: priority
-// first, then oldest first. RETURNING hands rows back in whatever order the
-// UPDATE walked them, which is not the ORDER BY that decided *which* rows it
-// took, so a caller that works a batch in order would otherwise be working it
-// in an arbitrary one.
 func inWorkOrder(jobs []Job) []Job {
 	slices.SortFunc(jobs, func(a, b Job) int {
 		if d := cmp.Compare(b.Priority, a.Priority); d != 0 {
@@ -734,7 +601,6 @@ func inWorkOrder(jobs []Job) []Job {
 	return jobs
 }
 
-// scanJobs reads a result set of job rows and closes it.
 func (c *Client) scanJobs(rows pgx.Rows) ([]Job, error) {
 	defer rows.Close()
 	jobs := []Job{}
@@ -752,9 +618,6 @@ func (c *Client) scanJobs(rows pgx.Rows) ([]Job, error) {
 			return nil, err
 		}
 		job.Kind = c.cfg.Kind
-		// Postgres hands a timestamptz back in the session's time zone, which
-		// is the server's; reading them all in UTC is what keeps two jobs from
-		// looking different when they are not.
 		job.EnqueuedAt = job.EnqueuedAt.UTC()
 		job.RunAfter = job.RunAfter.UTC()
 		if startedAt != nil {

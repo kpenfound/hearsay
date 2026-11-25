@@ -22,7 +22,7 @@ func burstMessages(authors string) []connector.Event {
 	return out
 }
 
-func TestChatBurstGatesAndProvenance(t *testing.T) {
+func TestChatBurstGates(t *testing.T) {
 	for _, tt := range []struct {
 		name, authors string
 		want          int
@@ -34,22 +34,35 @@ func TestChatBurstGatesAndProvenance(t *testing.T) {
 		{"disjoint runs", "AAABBBCDEF", 2},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			messages := burstMessages(tt.authors)
-			docs, err := l1.BuildChatBursts("th1", messages, nil, testRepo)
+			docs, err := l1.BuildChatBursts("th1", burstMessages(tt.authors), nil, testRepo)
 			if err != nil || len(docs) != tt.want {
 				t.Fatalf("BuildChatBursts = %d, %v; want %d", len(docs), err, tt.want)
 			}
-			for _, doc := range docs {
-				if doc.Kind != l1.KindChatBurst || len(doc.L0Refs) != 3 || doc.Source.URL == "" || doc.Source.NativeID == "" {
-					t.Errorf("burst = %+v", doc)
-				}
-				if slices.Contains(doc.L0Refs, connector.EventID(source, "m3")) && tt.name == "disjoint runs" {
-					// m3 belongs only to the second run.
-					if doc.Source.NativeID == l1.BurstPrefix("th1")+"m0" {
-						t.Error("runs overlap")
-					}
-				}
-			}
 		})
+	}
+}
+
+func TestChatBurstQuotesItsRunAndNamesItsSource(t *testing.T) {
+	docs, err := l1.BuildChatBursts("th1", burstMessages("AAABCBDE"), nil, testRepo)
+	if err != nil || len(docs) != 1 {
+		t.Fatalf("BuildChatBursts = %d, %v; want 1", len(docs), err)
+	}
+	if doc := docs[0]; doc.Kind != l1.KindChatBurst || len(doc.L0Refs) != 3 || doc.Source.URL == "" || doc.Source.NativeID == "" {
+		t.Errorf("burst = %+v", doc)
+	}
+}
+
+func TestChatBurstsOfOneThreadDoNotOverlap(t *testing.T) {
+	docs, err := l1.BuildChatBursts("th1", burstMessages("AAABBBCDEF"), nil, testRepo)
+	if err != nil || len(docs) != 2 {
+		t.Fatalf("BuildChatBursts = %d, %v; want 2", len(docs), err)
+	}
+	for _, ref := range docs[0].L0Refs {
+		if slices.Contains(docs[1].L0Refs, ref) {
+			t.Errorf("bursts overlap on %s", ref)
+		}
+	}
+	if docs[0].Source.NativeID == docs[1].Source.NativeID {
+		t.Errorf("bursts share the source id %s", docs[0].Source.NativeID)
 	}
 }

@@ -59,14 +59,12 @@ Two adapters ship, both completion-only, and neither has an embedding model:
 - **The fake is the real registry with the network replaced.** `NewFake` builds
   through `NewRegistry` from the same `Config`, so a test exercises the same
   request validation, the same defaults, the same retry loop and the same
-  accounting. A request nothing recorded is `ErrNoFixture`, which is what a test
-  that would otherwise reach a provider gets.
+  accounting. A request nothing recorded is `ErrNoFixture`.
 
 ## Things to know before changing it
 
 - **Nothing provider-shaped may appear in `Request` or `Response`.** That is the
-  leak the tier abstraction exists to stop: a caller that built a tool block would be a
-  caller that has to be edited to add a second provider. Anthropic's tool call
+  leak the tier abstraction exists to stop. Anthropic's tool call
   and `tool_choice` live in `anthropic/` and nowhere else.
 - **Structured output is validated here, against the caller's schema**, before
   the answer is returned. `SchemaKeywords` is the JSON Schema this package
@@ -122,10 +120,8 @@ Two adapters ship, both completion-only, and neither has an embedding model:
   allow: it is what tells a prompt's author that the model wrote `outcome` where
   the schema says `outcome_kind`, so it is named, and bounded to the size of an
   identifier (`boundedField`).
-- **There is no metric emission yet.** `Registry.Usage` is the read, tagged by
-  tier, provider and model, with calls, failures, tokens and any reported cost,
-  and it is where the per-tier metrics come from once `internal/telemetry` has a
-  meter to report through.
+- **`Registry.Usage` is the usage read**, tagged by tier, provider and model,
+  with calls, failures, tokens and any reported cost.
 - **A caller owes this package a deadline.** A provider's `Retry-After` is
   honoured as asked and is not capped, and the per-attempt timeout does not bound
   the wait between attempts, so a provider or gateway answering
@@ -184,6 +180,6 @@ slow, failing, rate-limited and invalid attempts through the same wrapper.
 Worker stages use `ObserveCompletions` and `AccountCompletions` to collect logical
 calls, all registry provider attempts (including retries) and reported consumption
 through their own contexts. `Response.ReportedUsage` preserves explicit zero;
-legacy zero token fields remain unknown. Failed attempts contribute their reported
+zero token fields without it are unknown. Failed attempts contribute their reported
 usage, absent accounting and overflow remain unknown, and no cost is derived from
 pricing. `Registry.Usage` continues to serve its process-wide usage view.

@@ -10,7 +10,6 @@ import (
 	"unicode/utf8"
 )
 
-// channelPrefix is what a kind's LISTEN/NOTIFY channel is named after it.
 const channelPrefix = "hearsay_job_"
 
 // MaxKindLen is the longest a kind name may be. A channel name is a Postgres
@@ -147,18 +146,11 @@ type Request struct {
 // the layers that mint one.
 const MaxIDLen = 2048
 
-// validID refuses what the text columns cannot store. Postgres rejects a NUL
-// byte and any invalid UTF-8 with a statement error, and a statement error
-// inside the caller's transaction aborts it — which is the one thing Enqueue
-// promises it cannot do. So these are refused here, before any SQL
-// runs, rather than discovered there.
 func validID(kind, field, value string) error {
 	switch {
 	case !utf8.ValidString(value):
 		return fmt.Errorf("%w: the %s of a %s job is not valid UTF-8, which Postgres would refuse mid-transaction", ErrInvalidJob, field, kind)
 	case strings.IndexByte(value, 0) >= 0:
-		// NUL is valid UTF-8 and still not storable in a text column, so it
-		// needs saying separately.
 		return fmt.Errorf("%w: the %s of a %s job holds a NUL byte, which a text column cannot store", ErrInvalidJob, field, kind)
 	case len(value) > MaxIDLen:
 		return fmt.Errorf("%w: the %s of a %s job is %d bytes, over the %d-byte limit", ErrInvalidJob, field, kind, len(value), MaxIDLen)
@@ -179,11 +171,6 @@ func (r Request) Validate() error {
 	if err := validID(r.Kind.Name, "serial key", r.SerialKey); err != nil {
 		return err
 	}
-	// The carrier goes to a jsonb column, which refuses a \u0000 escape
-	// (22P05) exactly as the text columns refuse a NUL byte — a third way to
-	// abort the caller's transaction, so it is checked the same way. Invalid
-	// UTF-8 would not abort anything here, because encoding/json substitutes
-	// U+FFFD for it, but a trace id quietly rewritten is not a trace id.
 	for key, value := range r.TraceContext {
 		if err := validID(r.Kind.Name, "trace context key "+strconv.Quote(key), key); err != nil {
 			return err
@@ -259,39 +246,17 @@ type Job struct {
 	LastError string
 }
 
-// maxErrorLen bounds what a handler's error contributes to a row. A job's
-// error is written to the table and logged, so it is a message about the
-// failure and not a place to put the document that failed.
 const maxErrorLen = 2000
 
-// errorText is the message stored for a failed attempt: a handler's bytes made
-// storable, and then bounded.
-//
-// A handler's error is the least controlled string this package writes — it is
-// whatever a provider, a decoder or an HTTP body put in it — and a text column
-// refuses a NUL byte and invalid UTF-8 alike. Written as they came, either
-// raises 22021 from inside [Client.Fail], which then records nothing: the row
-// keeps a lease nobody is renewing, the cause never reaches the row an
-// operator reads, and the job waits for a reclaim instead of its backoff. So
-// these bytes are coerced rather than trusted.
 func errorText(err error) string {
 	if err == nil {
 		return ""
 	}
-	// Coercion comes before the bound, because the bound assumes valid UTF-8:
-	// utf8.RuneStart reads one byte's top bits, which says nothing about bytes
-	// that were never part of a rune. A run of invalid bytes collapses to one
-	// replacement character, so this shortens rather than grows.
 	msg := strings.ToValidUTF8(err.Error(), "\uFFFD")
-	// A NUL is valid UTF-8 and still not storable. It is dropped rather than
-	// replaced: it carries nothing a reader of the row wants.
 	msg = strings.ReplaceAll(msg, "\x00", "")
 	if len(msg) <= maxErrorLen {
 		return msg
 	}
-	// Cut on a rune boundary, which the coercion above is what makes possible:
-	// the column is text, and a half-encoded rune in it would be a second bug
-	// to find later.
 	cut := maxErrorLen
 	for cut > 0 && !utf8.RuneStart(msg[cut]) {
 		cut--

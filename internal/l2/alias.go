@@ -71,7 +71,6 @@ func (s *Store) VoteAlias(ctx context.Context, entityID, name, docID, prDocID st
 		return fmt.Errorf("decoding alias access: %w", err)
 	}
 	merged := intersectAliasACL(old, voteACL)
-	// The first insert already has this vote's ACL. No grant is broadened.
 	mergedRaw, err := json.Marshal(merged)
 	if err != nil {
 		return fmt.Errorf("encoding alias access: %w", err)

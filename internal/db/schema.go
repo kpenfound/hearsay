@@ -19,13 +19,8 @@ import (
 // column.
 var ErrSchemaBehind = errors.New("the database schema is older than this binary")
 
-// versionTable is goose's own bookkeeping table, at its default name. Reading
-// it with pgx rather than through goose is what keeps a service off the
-// migration path entirely: verifying costs one query and no *sql.DB.
 const versionTable = "goose_db_version"
 
-// undefinedTable is the SQLSTATE Postgres reports for a table that is not
-// there, which is what a database nothing has migrated yet looks like.
 const undefinedTable = "42P01"
 
 // EmbeddedVersion is the version of the newest migration compiled into this
@@ -76,9 +71,6 @@ func CheckSchema(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
-// migrationVersions is the version of every embedded migration, ascending. It
-// is also where the naming rule `NNNNN_short_description.sql` is enforced: a
-// file goose would not version is a file this refuses.
 func migrationVersions() ([]int64, error) {
 	entries, err := fs.ReadDir(Migrations(), ".")
 	if err != nil {
@@ -92,8 +84,6 @@ func migrationVersions() ([]int64, error) {
 		}
 		versions = append(versions, version)
 	}
-	// fs.ReadDir sorts by name, and the names are zero-padded, so the versions
-	// come out ascending. Say so rather than assume it.
 	for i := 1; i < len(versions); i++ {
 		if versions[i] <= versions[i-1] {
 			return nil, fmt.Errorf("migration versions are not ascending and unique: %d follows %d", versions[i], versions[i-1])
@@ -102,7 +92,6 @@ func migrationVersions() ([]int64, error) {
 	return versions, nil
 }
 
-// migrationVersion is the number a migration file name starts with.
 func migrationVersion(name string) (int64, error) {
 	base := path.Base(name)
 	stem, isSQL := strings.CutSuffix(base, ".sql")

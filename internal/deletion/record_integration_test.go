@@ -13,6 +13,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/deletion"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
@@ -24,9 +25,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
-// secret is the text the deleted issue carried, and every piece of L1 and L2
-// derived from it quotes it, so a search of the rows for it is a search for
-// what the deletion left behind.
 const secret = "tangerine-otter-42"
 
 const (
@@ -37,14 +35,6 @@ const (
 
 var public = connector.ACL{{Kind: connector.ACLPublic}}
 
-// graphWorld is an issue that quoted the secret and one that did not, their
-// documents, and three topics:
-//
-//   - only: opened by the secret issue, and nothing else supports it;
-//   - shared: opened by the secret issue, then continued by the other one,
-//     whose stance superseded the first;
-//   - later: opened by the other issue, where the secret issue's stance is the
-//     current one.
 type graphWorld struct {
 	pool                     *pgxpool.Pool
 	secretDoc, otherDoc      string
@@ -55,7 +45,7 @@ type graphWorld struct {
 
 func newGraphWorld(t *testing.T) graphWorld {
 	t.Helper()
-	pool := scratch(t)
+	pool := dbtest.Scratch(t, "deletion")
 	ctx := t.Context()
 	day := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	put := func(artifact, title string, hour int) string {
@@ -124,8 +114,6 @@ func newGraphWorld(t *testing.T) graphWorld {
 
 var repo = config.Repo{Principals: []principal.Principal{{ID: "pat", Kind: principal.KindHuman}}}
 
-// drain runs every job of the kind until none is left, the way a worker would,
-// so that what the queue reports afterwards is what a running service leaves.
 func drain(t *testing.T, pool *pgxpool.Pool, kind queue.Kind, handle func(queue.Job) error) int {
 	t.Helper()
 	client, err := queue.New(pool, queue.Config{Kind: kind})
@@ -153,8 +141,6 @@ func drain(t *testing.T, pool *pgxpool.Pool, kind queue.Kind, handle func(queue.
 	}
 }
 
-// workers are the distiller and the assertion worker. Neither makes a model
-// call here: a deleted document and a stance repair need none.
 func workers(t *testing.T, pool *pgxpool.Pool) (distil, assert func(queue.Job) error) {
 	t.Helper()
 	registry, err := llm.NewFake(llm.Default(), llm.NewFixtures())
@@ -175,8 +161,6 @@ func workers(t *testing.T, pool *pgxpool.Pool) (distil, assert func(queue.Job) e
 		func(job queue.Job) error { return a.Handle(t.Context(), job) }
 }
 
-// rebuild runs the distiller and the assertion worker over whatever is queued,
-// until neither has anything left.
 func rebuild(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	distil, assert := workers(t, pool)
@@ -189,7 +173,6 @@ func rebuild(t *testing.T, pool *pgxpool.Pool) {
 	}
 }
 
-// leftovers is every row of L0, L1 and L2 that still holds the secret.
 func leftovers(t *testing.T, pool *pgxpool.Pool) []string {
 	t.Helper()
 	rows, err := pool.Query(t.Context(), `
@@ -221,7 +204,6 @@ func history(t *testing.T, pool *pgxpool.Pool, topic string) map[string]l2.Stanc
 	return out
 }
 
-// successor is the stance that supersedes id on the topic, or "".
 func successor(h map[string]l2.Stance, id string, withdrawn bool) string {
 	for _, st := range h {
 		if st.Supersedes == id && st.Withdrawn == withdrawn {
@@ -240,11 +222,6 @@ func topicName(t *testing.T, pool *pgxpool.Pool, id string) string {
 	return name
 }
 
-// End to end: an operator deletes the issue that quoted a secret, the
-// distiller and the assertion worker rebuild what rested on it, and afterwards
-// `show` reports complete and names the stances superseded and the topic
-// redacted. No row of L0, L1 or L2 holds the secret, while every stance id and
-// supersession edge is still there.
 func TestAnOperatorDeletionRedactsL2AndRecordsTheRebuild(t *testing.T) {
 	w := newGraphWorld(t)
 	ctx := t.Context()
@@ -264,9 +241,6 @@ func TestAnOperatorDeletionRedactsL2AndRecordsTheRebuild(t *testing.T) {
 		t.Errorf("Show(before the rebuild) = %+v, want the document pending and the deletion rebuilding", pending)
 	}
 
-	// The distiller's half: the document is deleted, and what was already
-	// superseded goes with it, as does the name of the topic nothing else
-	// supports. A current stance keeps its text until its withdrawal.
 	distil, _ := workers(t, pool)
 	drain(t, pool, distiller.JobKind(), distil)
 	if st := history(t, pool, w.shared)[w.sharedStance]; st.Position != l2.Redacted {
@@ -319,7 +293,6 @@ func TestAnOperatorDeletionRedactsL2AndRecordsTheRebuild(t *testing.T) {
 		t.Errorf("rows still holding the deleted text: %v", left)
 	}
 
-	// History keeps every id and edge; the text is what went.
 	for _, tt := range []struct{ topic, stance string }{
 		{w.only, w.onlyStance}, {w.shared, w.sharedStance}, {w.later, w.laterStance},
 	} {
@@ -345,7 +318,6 @@ func TestAnOperatorDeletionRedactsL2AndRecordsTheRebuild(t *testing.T) {
 	if got := topicName(t, pool, w.later); got != "the rotation schedule" {
 		t.Errorf("later's name = %q, want it kept", got)
 	}
-	// Opened by the deleted issue, but still supported by the other one.
 	if got := topicName(t, pool, w.shared); got != "how often keys rotate" {
 		t.Errorf("shared's name = %q, want it kept: %s still supports it", got, w.otherDoc)
 	}
@@ -405,9 +377,6 @@ func TestDeletionAfterMergeReconcilesEveryRowAndKeepsTheOperation(t *testing.T) 
 	}
 }
 
-// A tombstone from the source withdraws the stances exactly as an operator
-// deletion does, and records the withdrawal, but it is not an operator's
-// deletion: no text is redacted and there is no record to show.
 func TestASourceTombstoneRedactsNothing(t *testing.T) {
 	w := newGraphWorld(t)
 	ctx := t.Context()
@@ -420,7 +389,6 @@ func TestASourceTombstoneRedactsNothing(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// What the pump would enqueue for the tombstone.
 	if _, err := queue.Enqueue(ctx, w.pool, queue.Request{Kind: distiller.JobKind(), TargetID: w.secretDoc}); err != nil {
 		t.Fatal(err)
 	}
@@ -449,9 +417,6 @@ func TestASourceTombstoneRedactsNothing(t *testing.T) {
 	}
 }
 
-// A document the deletion re-distilled keeps its stance, text and all, while
-// it is current: a stance is not overwritten. The next reading of the rebuilt
-// document supersedes it, and that is when its text goes.
 func TestARereadOfARebuiltDocumentRedactsTheStanceItReplaces(t *testing.T) {
 	w := newGraphWorld(t)
 	ctx := t.Context()
@@ -459,9 +424,6 @@ func TestARereadOfARebuiltDocumentRedactsTheStanceItReplaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// What the distiller does for a document that survives the deletion: it
-	// writes the new version and records the rebuild in one transaction. The
-	// model call it would make to get the new text is not the point here.
 	stored, err := l1.New(w.pool).Get(ctx, w.secretDoc)
 	if err != nil {
 		t.Fatal(err)
@@ -506,8 +468,6 @@ func TestARereadOfARebuiltDocumentRedactsTheStanceItReplaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The shared topic's stance was already superseded when the document was
-	// rebuilt, so it went then; the later topic's is still current.
 	want := []string{w.onlyStance, w.sharedStance}
 	slices.Sort(want)
 	if !slices.Equal(rec.Stances, want) || len(rec.Topics) != 0 {

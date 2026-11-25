@@ -13,6 +13,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/l1"
 )
 
@@ -20,12 +21,10 @@ import (
 // on one, so that everything one document asserts is written together or not
 // at all.
 type Querier interface {
+	db.Querier
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// Both of pgx's are one.
 var (
 	_ Querier = (*pgxpool.Pool)(nil)
 	_ Querier = (pgx.Tx)(nil)
@@ -41,8 +40,6 @@ type Store struct {
 
 // New returns a store over a pool or a transaction. The caller owns it.
 func New(q Querier) *Store { return &Store{db: q} }
-
-// --- entities ---
 
 const entityColumns = `id, type, name, aliases, path_patterns, part_of, owners, origin`
 
@@ -230,8 +227,6 @@ func scanEntity(row scanner) (Entity, error) {
 	return e, nil
 }
 
-// --- topics ---
-
 const topicColumns = `t.id, t.scope, t.name, t.about, t.join_keys, t.acl, t.opened_by, t.created_at`
 
 // OpenTopic writes a new topic, and reports whether it did: a topic already
@@ -273,17 +268,10 @@ WHERE id = $1`, id, orEmpty(about), orEmpty(joinKeys))
 	return nil
 }
 
-// readableBy is the predicate, over an access-list column, that everyone who
-// may read a document may read what carries it: the list is public, or it
-// carries every grant the document's does — an entry is compared on kind,
-// source and native id, never the label, as in internal/l1.
 func readableBy(column, readers string) string {
 	return fmt.Sprintf(`(%[1]s @> '[{"kind":"public"}]'::jsonb OR %[1]s @> %[2]s::jsonb)`, column, readers)
 }
 
-// topicReadableBy admits an opening document still readable now, or a live
-// stance whose complete surviving evidence is readable. The latter keeps a
-// topic open when its opening document was deleted but another stance lives.
 func topicReadableBy(readers string) string {
 	return `(EXISTS (SELECT 1 FROM l1_docs o WHERE o.id = t.opened_by AND ` + readableBy("o.acl", readers) + `)
 OR (NOT EXISTS (SELECT 1 FROM l1_docs o WHERE o.id = t.opened_by)
@@ -444,8 +432,6 @@ func scanTopic(row scanner) (Topic, error) {
 	return t, nil
 }
 
-// aclJSON is an access list as the containment operator takes it, without
-// labels: a document is not less readable for having been labelled differently.
 func aclJSON(acl connector.ACL) string {
 	stripped := make(connector.ACL, len(acl))
 	for i, entry := range acl {
@@ -454,19 +440,11 @@ func aclJSON(acl connector.ACL) string {
 	}
 	body, err := json.Marshal(stripped)
 	if err != nil {
-		// Four strings per entry; nothing here fails to encode. An access list
-		// that matches no topic is the fail-closed answer if that changes.
 		return `[{"kind":"unencodable"}]`
 	}
 	return string(body)
 }
 
-// --- stances ---
-
-// stanceColumns reads a stance aliased `s`, with whether a later reading of
-// its own origin retired it and the rows of the stances on either end of its
-// supersession edges, which is what a read needs to place those edges
-// ([projection.stance]).
 const stanceColumns = `s.id, s.topic_id, s.position, s.author, s.stated_at, s.evidence, coalesce(s.supersedes, ''),
     s.tier, s.acl, s.created_at, s.judgement, coalesce(s.assertion, ''), s.withdrawn, ` + RetiredSQL + `,
     coalesce((SELECT p.topic_id FROM l2_stances p WHERE p.id = s.supersedes), ''),
@@ -490,21 +468,6 @@ const RetiredSQL = `EXISTS (
     WHERE n.supersedes = s.id
       AND coalesce(n.assertion, n.evidence[1]) = coalesce(s.assertion, s.evidence[1]))`
 
-// predecessorSQL is the stance a new one supersedes, among the stances on its
-// topic, which %s selects: the rows of a topic no operation shaped, or the
-// stances the ledger puts on one it did.
-//
-// A document that already holds a live stance on the topic is being read again
-// in a new version, and the new stance replaces that one, whenever either was
-// stated: one document holds at most one live stance per topic, and a
-// re-distilled document's stance replaces its own old row, while its recorded
-// judgement still compares with the topic's current position shown in the prompt.
-//
-// Otherwise it is the newest live stance on the topic stated no later than the
-// new one. A stance stated earlier than the topic's current one — a document
-// that was read late — supersedes what came before it and is superseded by
-// nothing, so the chain forks rather than a later stance being rewritten to
-// point at it. A stance is never overwritten.
 const predecessorSQL = `
 SELECT s.id FROM l2_stances s
 WHERE %s AND s.id <> $2 AND NOT s.withdrawn AND (coalesce(s.assertion, s.evidence[1]) = $3 OR s.stated_at <= $1)
@@ -581,9 +544,6 @@ ON CONFLICT (id) DO NOTHING`,
 		return Stance{}, false, fmt.Errorf("appending stance %s: %w", st.ID, err)
 	}
 	if tag.RowsAffected() == 1 && predecessor != nil {
-		// The predecessor is superseded now, and may be text an operator
-		// deletion was waiting to redact. It may be on any row the topic
-		// holds stances of.
 		if err := s.redact(ctx, rows); err != nil {
 			return Stance{}, false, err
 		}
@@ -768,8 +728,6 @@ ORDER BY s.stated_at, s.created_at, s.id`, docID)
 	return s.placed(ctx, rows)
 }
 
-// stanceRow is a stance as its row holds it, with the rows of the stances on
-// either end of its supersession edges.
 type stanceRow struct {
 	Stance
 	supersedesTopic string
@@ -826,8 +784,6 @@ func nullableJudgement(j Judgement) *string {
 	v := string(j)
 	return &v
 }
-
-// --- what has been read ---
 
 // Asserted reports which version of a document the assertion worker last read:
 // the document's distilled_at at the time, and false for one it never read.
@@ -895,8 +851,6 @@ ORDER BY d.last_activity_at, d.id`)
 	return out, nil
 }
 
-// orEmpty keeps a nil slice out of a NOT NULL array column: pgx writes one as
-// NULL.
 func orEmpty[T any](s []T) []T {
 	if s == nil {
 		return []T{}

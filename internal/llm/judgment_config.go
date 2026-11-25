@@ -8,8 +8,7 @@ import (
 	"time"
 )
 
-// Jev's bounds. A call is far shorter than a generative one; a job whose
-// judgments fail errors and the queue retries it, like a failed model call.
+// Jev's bounds. A job whose judgments fail errors and the queue retries it.
 const (
 	DefaultJudgmentTimeout      = 2 * time.Second
 	DefaultJudgmentTotalTimeout = 5 * time.Second
@@ -17,8 +16,8 @@ const (
 	// DefaultJudgmentThreshold is the confidence a yes must reach to count.
 	// Anything less, and every no, is a no.
 	DefaultJudgmentThreshold = 0.8
-	// Defaults from the September 28, 2026 model-limit snapshot. Adapters use
-	// a conservative UTF-8 byte upper bound rather than an unverified tokenizer.
+	// Adapters measure state with a conservative UTF-8 byte upper bound rather
+	// than a tokenizer.
 	DefaultJudgmentMaxTotalTokens         = 64000
 	DefaultJudgmentMaxStateQuestionTokens = 32000
 )

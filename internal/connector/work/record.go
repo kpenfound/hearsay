@@ -11,8 +11,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector/push"
 )
 
-// workReader reads the work source that holds the projects. On the work source
-// that is its own sink; on an owner source it is the paired source's.
 func (c *Connector) workReader(own connector.ArtifactReader) (connector.ArtifactReader, error) {
 	if c.ownerOf == "" {
 		return own, nil
@@ -32,8 +30,6 @@ func (c *Connector) peerReader(source string) (connector.ArtifactReader, error) 
 	return reader, nil
 }
 
-// pairSources are the sources whose records one project-wide id spans: the
-// work source and every owner source naming it, each with its reader.
 func (c *Connector) pairSources(own connector.ArtifactReader) ([]SourceReader, error) {
 	ws := c.workSource()
 	out := make([]SourceReader, 0, 2)
@@ -51,9 +47,6 @@ func (c *Connector) pairSources(own connector.ArtifactReader) ([]SourceReader, e
 	return out, nil
 }
 
-// record builds the event for a document or decision. The caller holds the
-// project's pair lock, which is what makes the id and supersession checks here
-// stand until the event is written.
 func (c *Connector) record(ctx context.Context, own connector.ArtifactReader, poster, artifact string, r Request) (connector.Event, error) {
 	works, err := c.workReader(own)
 	if err != nil {
@@ -134,8 +127,6 @@ func (c *Connector) record(ctx context.Context, own connector.ArtifactReader, po
 			}
 		}
 		if r.SpecDocument != "" {
-			// The link resolves like any id, when its document is held. A
-			// document posted later is not a reason to refuse the decision.
 			if doc, ok, err := Resolve(records, KindDocumentRecord, r.SpecDocument); err != nil {
 				return connector.Event{}, err
 			} else if ok {
@@ -159,7 +150,6 @@ func (c *Connector) record(ctx context.Context, own connector.ArtifactReader, po
 
 const maxTitleRunes = 120
 
-// decisionTitle is the outcome's first line, cut to a title's length.
 func decisionTitle(outcome string) string {
 	line, _, _ := strings.Cut(strings.TrimSpace(outcome), "\n")
 	line = strings.TrimSpace(line)
@@ -169,9 +159,6 @@ func decisionTitle(outcome string) string {
 	return line
 }
 
-// decisionText renders the structured fields as prose, for search and for a
-// reader of the document. The fields themselves stay in the payload's native
-// object; nothing reads them back from this text.
 func decisionText(r Request) string {
 	var b strings.Builder
 	section := func(label, value string) {

@@ -7,51 +7,35 @@ import (
 	"context"
 	"errors"
 	"io"
-	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
+	"github.com/kpenfound/hearsay/internal/telemetry/logtest"
 )
 
-// `hearsay all` is local development only, so it migrates for
-// itself because a local database is nobody's production. Every other command
-// verifies and refuses.
 func TestAllMigratesTheDatabaseItIsPointedAt(t *testing.T) {
-	if os.Getenv("HEARSAY_DATABASE_URL") == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
+	dbtest.URL(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	stderr := &syncBuffer{}
+	stderr := &logtest.Buffer{}
 	done := make(chan error, 1)
 	go func() {
-		// Port 0: `all` runs the connectors service, which listens, and a test
-		// binds what the operating system gives it rather than the port a
-		// deployment uses.
 		done <- run(ctx, []string{"all", "--listen", "127.0.0.1:0", "--api-listen", "127.0.0.1:0", "--distiller-listen", "127.0.0.1:0", "--assert-worker-listen", "127.0.0.1:0", "--log-format", "json"}, io.Discard, stderr)
 	}()
 
-	// Cancel once the schema line and the listening services' own lines have
-	// gone out, so that neither the migration nor a service's startup is racing
-	// the shutdown.
-	started := func() bool {
-		out := stderr.String()
+	started := func(out string) bool {
 		return strings.Contains(out, "schema is current") && strings.Contains(out, "connectors started") &&
 			strings.Contains(out, "api started") && strings.Contains(out, `"service":"distiller"`) && strings.Contains(out, `"service":"assert-worker"`) && strings.Count(out, "health probes started") >= 2
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for !started() {
-		if time.Now().After(deadline) {
-			cancel()
-			t.Fatalf("`hearsay all` never reported the schema and its services:\n%s", stderr.String())
-		}
-		time.Sleep(20 * time.Millisecond)
+	if !stderr.WaitFor(10*time.Second, started) {
+		cancel()
+		t.Fatalf("`hearsay all` never reported the schema and its services:\n%s", stderr.String())
 	}
 	cancel()
 	if err := <-done; err != nil {
@@ -60,12 +44,9 @@ func TestAllMigratesTheDatabaseItIsPointedAt(t *testing.T) {
 	if !strings.Contains(stderr.String(), `"schema_version":`) {
 		t.Errorf("the schema line carries no version:\n%s", stderr.String())
 	}
-	// `all` honours --listen rather than binding the default under it: a
-	// machine where something else holds 8081 must still be able to run it.
 	if !strings.Contains(stderr.String(), `"listen":"127.0.0.1:`) {
 		t.Errorf("`hearsay all` did not serve the connectors on the address --listen names:\n%s", stderr.String())
 	}
-	// The same for the API and --api-listen, which would otherwise take 8080.
 	for line := range strings.Lines(stderr.String()) {
 		if strings.Contains(line, `"msg":"api started"`) && !strings.Contains(line, `"listen":"127.0.0.1:`) {
 			t.Errorf("`hearsay all` did not serve the API on the address --api-listen names: %s", line)
@@ -73,49 +54,31 @@ func TestAllMigratesTheDatabaseItIsPointedAt(t *testing.T) {
 	}
 }
 
-// The connectors service against a real database: the wiring from the flags to
-// the pool, the runtime and its listener, and the `source` field every line of
-// this service carries.
 func TestConnectorsRunsAndStops(t *testing.T) {
-	if os.Getenv("HEARSAY_DATABASE_URL") == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
+	dbtest.URL(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	stderr := &syncBuffer{}
+	stderr := &logtest.Buffer{}
 	done := make(chan error, 1)
 	go func() {
-		// Port 0: a test binds what the operating system gives it, not the
-		// port a deployment uses.
 		done <- run(ctx, []string{"connectors", "--listen", "127.0.0.1:0", "--log-format", "json"}, io.Discard, stderr)
 	}()
 
-	deadline := time.Now().Add(10 * time.Second)
-	for !strings.Contains(stderr.String(), "connectors started") {
-		if time.Now().After(deadline) {
-			cancel()
-			t.Fatalf("`hearsay connectors` never started:\n%s", stderr.String())
-		}
-		time.Sleep(20 * time.Millisecond)
+	if !stderr.WaitFor(10*time.Second, func(out string) bool { return strings.Contains(out, "connectors started") }) {
+		cancel()
+		t.Fatalf("`hearsay connectors` never started:\n%s", stderr.String())
 	}
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("run(connectors) = %v, want nil", err)
 	}
-	// Which connectors a process is hosting is the first question asked of one,
-	// so every line it logs says. It is `hosting` and not `source`: the standard
-	// `source` field is the source a line is about, and the runtime writes that.
 	if !strings.Contains(stderr.String(), `"hosting":"all"`) {
 		t.Errorf("the connectors service logged no hosting field:\n%s", stderr.String())
 	}
 }
 
-// `--source` names a configured source. A name nothing is configured under is a
-// startup failure rather than a process that hosts nothing.
 func TestConnectorsRefusesASourceNobodyConfigured(t *testing.T) {
-	if os.Getenv("HEARSAY_DATABASE_URL") == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
+	dbtest.URL(t)
 	var stdout, stderr bytes.Buffer
 	err := run(t.Context(), []string{"connectors", "--source", "githbu", "--listen", "127.0.0.1:0"}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "githbu") {
@@ -123,15 +86,8 @@ func TestConnectorsRefusesASourceNobodyConfigured(t *testing.T) {
 	}
 }
 
-// A database with no Hearsay schema in it is one every command but `migrate`
-// and `all` refuses, saying what to run.
 func TestL0RefusesADatabaseBehindTheBinary(t *testing.T) {
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	// The maintenance database every Postgres server has, and nothing migrates.
-	t.Setenv("HEARSAY_DATABASE_URL", swapDatabaseName(url, "postgres"))
+	t.Setenv("HEARSAY_DATABASE_URL", dbtest.Create(t, "behind"))
 
 	var stdout, stderr bytes.Buffer
 	err := run(t.Context(), []string{"l0", "count"}, &stdout, &stderr)
@@ -143,50 +99,13 @@ func TestL0RefusesADatabaseBehindTheBinary(t *testing.T) {
 	}
 }
 
-// swapDatabaseName points a connection URL at another database on the same
-// server.
-func swapDatabaseName(url, name string) string {
-	base, query, hasQuery := strings.Cut(url, "?")
-	swapped := base[:strings.LastIndex(base, "/")+1] + name
-	if hasQuery {
-		return swapped + "?" + query
-	}
-	return swapped
-}
-
-// syncBuffer is a bytes.Buffer a test can read while a goroutine writes to it.
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
-// The subcommands that talk to Postgres, end to end: the wiring between a flag,
-// a pool and a store is not covered by anything else.
 func TestL0AndMigrateAgainstARealDatabase(t *testing.T) {
-	if os.Getenv("HEARSAY_DATABASE_URL") == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
+	dbtest.URL(t)
 	source := "t" + strconv.FormatInt(time.Now().UnixNano(), 36) + "cli"
 	fake := connector.NewFake(connector.SourceConfig{ID: source, Type: connector.FakeType})
 	event := fake.NewEvent(connector.KindMessage, "m1", "hello from the cli")
 
-	pool, err := db.Connect(t.Context(), os.Getenv("HEARSAY_DATABASE_URL"))
-	if err != nil {
-		t.Fatalf("connecting to postgres: %v", err)
-	}
-	defer pool.Close()
+	pool := dbtest.Pool(t)
 	appended, err := l0.New(pool).Append(t.Context(), event)
 	if err != nil {
 		t.Fatalf("Append() = %v, want no error", err)
@@ -195,7 +114,7 @@ func TestL0AndMigrateAgainstARealDatabase(t *testing.T) {
 	tests := []struct {
 		name string
 		args []string
-		want []string // substrings stdout must contain
+		want []string
 	}{
 		{
 			name: "migrate status lists the migrations",
@@ -237,7 +156,6 @@ func TestL0AndMigrateAgainstARealDatabase(t *testing.T) {
 		})
 	}
 
-	// A listing is read over someone's shoulder, so it carries no payload text.
 	t.Run("l0 list prints no payload", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
 		if err := run(t.Context(), []string{"l0", "list", "--source", source}, &stdout, &stderr); err != nil {
@@ -248,9 +166,6 @@ func TestL0AndMigrateAgainstARealDatabase(t *testing.T) {
 		}
 	})
 
-	// tail follows until the process is interrupted, and ending that way is not
-	// a failure. --source narrows what it follows: an operator watching one
-	// noisy source has to get that source and not the store.
 	t.Run("l0 tail follows one source and returns when the context is cancelled", func(t *testing.T) {
 		other := connector.NewFake(connector.SourceConfig{ID: source + "b", Type: connector.FakeType})
 		if _, err := l0.New(pool).Append(t.Context(), other.NewEvent(connector.KindMessage, "m1", "another source")); err != nil {
@@ -259,24 +174,17 @@ func TestL0AndMigrateAgainstARealDatabase(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
-		var stdout, stderr syncBuffer
+		var stdout, stderr logtest.Buffer
 		done := make(chan error, 1)
 		go func() {
 			done <- run(ctx, []string{"l0", "tail", "--source", source, "--interval", "50ms"}, &stdout, &stderr)
 		}()
 		waitFor := func(id string) bool {
-			deadline := time.Now().Add(10 * time.Second)
-			for !strings.Contains(stdout.String(), id) && time.Now().Before(deadline) {
-				time.Sleep(20 * time.Millisecond)
-			}
-			return strings.Contains(stdout.String(), id)
+			return stdout.WaitFor(10*time.Second, func(out string) bool { return strings.Contains(out, id) })
 		}
 		if !waitFor(appended.ID) {
 			t.Errorf("l0 tail did not print the event within 10s:\nstdout: %s\nstderr: %s", stdout.String(), stderr.String())
 		} else {
-			// While it follows, another source's event and then one of its own
-			// arrive. The feed is ordered, so once the later one is printed the
-			// other source's has been read past, and its absence is the filter.
 			if _, err := l0.New(pool).Append(t.Context(), other.NewEvent(connector.KindMessage, "m2", "another source, later")); err != nil {
 				t.Fatalf("Append(another source) = %v, want no error", err)
 			}

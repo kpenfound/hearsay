@@ -5,7 +5,6 @@ package agent_test
 import (
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,22 +13,13 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/agent"
-	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/connector/connectortest"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 )
 
-// Through the real store: a replayed event writes nothing, and the same event
-// key posted with other content is refused rather than rewritten.
 func TestASessionLandsInL0Once(t *testing.T) {
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	pool, err := db.Connect(t.Context(), url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
+	pool := dbtest.Pool(t)
 
 	src := source()
 	src.ID = "agent" + strconv.FormatInt(time.Now().UnixNano(), 36)
@@ -58,12 +48,11 @@ func TestASessionLandsInL0Once(t *testing.T) {
 		{"the next action's key with another verdict", strings.Replace(next, "real", "spurious", 1), http.StatusConflict},
 	}
 	for _, tt := range tests {
-		if code, body := post(t, srv.URL, env["SHED_TOKEN"], tt.body); code != tt.want {
+		if code, body := connectortest.PostWithToken(t, srv.URL, env["SHED_TOKEN"], tt.body); code != tt.want {
 			t.Errorf("%s: POST = %d %s, want %d", tt.name, code, body, tt.want)
 		}
 	}
 
-	// The artifact's history is the session, in the order it happened.
 	history, err := store.List(t.Context(), l0.ListOptions{Filter: l0.Filter{Source: src.ID, Artifact: "s-01"}, Limit: l0.MaxLimit})
 	if err != nil {
 		t.Fatal(err)

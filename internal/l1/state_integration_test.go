@@ -11,15 +11,14 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 )
 
 func TestStateRoundTripsAndMovesWatermark(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l1.New(pool)
-	doc := storedDoc(t, newSource(t), "acme/api#state", nil)
-	// A repeatable snapshot isolates watermark changes from other integration
-	// suites while keeping this transaction's own trigger inserts visible.
+	doc := storedDoc(t, dbtest.UniqueID(), "acme/api#state", nil)
 	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
 		t.Fatal(err)
@@ -104,8 +103,8 @@ func TestStateRoundTripsAndMovesWatermark(t *testing.T) {
 }
 
 func TestListForStatesAppliesReachAndACL(t *testing.T) {
-	store := l1.New(newPool(t))
-	src := newSource(t)
+	store := l1.New(dbtest.Pool(t))
+	src := dbtest.UniqueID()
 	scope := "state:" + src
 	private := connector.ACLEntry{Kind: connector.ACLGroup, Source: src, NativeID: "team"}
 	for _, tt := range []struct {
@@ -163,8 +162,8 @@ func TestListForStatesAppliesReachAndACL(t *testing.T) {
 }
 
 func TestStateOnlyChangesRewriteDistilledAt(t *testing.T) {
-	store := l1.New(newPool(t))
-	doc := storedDoc(t, newSource(t), "state-time", nil)
+	store := l1.New(dbtest.Pool(t))
+	doc := storedDoc(t, dbtest.UniqueID(), "state-time", nil)
 	put(t, store, doc)
 	previous, err := store.Get(t.Context(), doc.ID)
 	if err != nil {

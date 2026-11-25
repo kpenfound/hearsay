@@ -3,33 +3,22 @@
 package discord_test
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strconv"
 	"testing"
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/discord"
-	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
+	"github.com/kpenfound/hearsay/internal/poll"
 )
 
-// A durable re-sync resumes at its saved message snowflake in a new runtime,
-// then replaces the public current ACL for every artifact in the channel.
 func TestDiscordResyncResumesThroughSQLStore(t *testing.T) {
-	database := os.Getenv("HEARSAY_DATABASE_URL")
-	if database == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	pool, err := db.Connect(t.Context(), database)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
+	pool := dbtest.Pool(t)
 	f := &restFixture{gatewaySilent: true}
 	for i := 0; i < 101; i++ {
 		f.messages = append(f.messages, f.message(testChannel, fmt.Sprint(1551744840499200200-i)))
@@ -55,30 +44,13 @@ func TestDiscordResyncResumesThroughSQLStore(t *testing.T) {
 	if err := resyncs.Owe(t.Context(), src.ID, testChannel); err != nil {
 		t.Fatal(err)
 	}
-	registry := connector.NewRegistry()
-	if err := registry.Register(discord.Type, discord.Factory); err != nil {
-		t.Fatal(err)
-	}
 	start := func() func() {
 		t.Helper()
-		runtime, err := connector.NewRuntime(t.Context(), connector.RuntimeOptions{Sources: []connector.SourceConfig{src}, Registry: registry, Sink: events, Resyncs: resyncs, Lookup: func(string) (string, bool) { return "bot-token", true }, Cadence: connector.Cadence{MinRefresh: time.Millisecond, Refresh: time.Millisecond, MaxBackoff: 5 * time.Millisecond, Shutdown: time.Second}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		ctx, cancel := context.WithCancel(t.Context())
-		done := make(chan error, 1)
-		go func() { done <- runtime.Run(ctx) }()
-		return func() {
-			cancel()
-			select {
-			case err := <-done:
-				if err != nil {
-					t.Error(err)
-				}
-			case <-time.After(5 * time.Second):
-				t.Error("runtime did not stop")
-			}
-		}
+		_, stop := runRuntime(t, src, func(o *connector.RuntimeOptions) {
+			o.Sink = events
+			o.Resyncs = resyncs
+		})
+		return stop
 	}
 	state := func() connector.Resync {
 		t.Helper()
@@ -97,13 +69,7 @@ func TestDiscordResyncResumesThroughSQLStore(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("second page was not requested")
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for state().Cursor == "" {
-		if time.Now().After(deadline) {
-			t.Fatal("first page cursor not stored")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	poll.Until(t, "the first page cursor to be stored", func() bool { return state().Cursor != "" })
 	stop()
 	if r := state(); !r.Owed || r.Cursor == "" {
 		t.Fatalf("interrupted re-sync = %+v", r)
@@ -113,13 +79,7 @@ func TestDiscordResyncResumesThroughSQLStore(t *testing.T) {
 	f.mu.Unlock()
 	stop = start()
 	close(hold)
-	deadline = time.Now().Add(5 * time.Second)
-	for state().Owed {
-		if time.Now().After(deadline) {
-			t.Fatal("resumed re-sync did not finish")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	poll.Until(t, "the resumed re-sync to finish", func() bool { return !state().Owed })
 	stop()
 	f.mu.Lock()
 	resumed := append([]string(nil), f.pages[calls:]...)

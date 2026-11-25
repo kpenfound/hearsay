@@ -7,11 +7,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 )
 
 func TestIdentitiesCommandReadsHintsOnly(t *testing.T) {
 	url, pool := deleteDatabase(t, "identities_cli_")
-	configPath := writeConfig(t, map[string]string{
+	configPath := configtest.Write(t, map[string]string{
 		"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\n",
 		"scopes/api.yaml":     "id: api\nsources: [github]\n",
 		"principals/p.yaml":   "- id: alice\n  name: Alice Smith\n  identities: [{source: github, native_id: known, handle: alice}]\n",

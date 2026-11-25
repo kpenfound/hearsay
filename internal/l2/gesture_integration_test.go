@@ -14,18 +14,17 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
+	"github.com/kpenfound/hearsay/internal/l1/l1test"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/queue"
 )
 
-// ratifiers is an authority under which kyle and sam may ratify by hand, and
-// nobody else.
 const ratifiers = "scope: \"*\"\nratified_by:\n  principals: [kyle, sam]\n"
 
-func gestureEvent() string { return connector.EventID("discord", "reaction:"+unique()) }
+func gestureEvent() string { return connector.EventID("discord", "reaction:"+dbtest.UniqueID()) }
 
-// gesture records one and fails the test on a refusal.
 func gesture(t *testing.T, pool *pgxpool.Pool, repo config.Repo, req l2.GestureRequest) l2.Gesture {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -46,7 +45,6 @@ func ledger(t *testing.T, store *l2.Store, scope string) []l2.Gesture {
 	return gs
 }
 
-// standsAt is where a topic stands for a reader who may read everything.
 func standsAt(t *testing.T, store *l2.Store, topic l2.Topic) string {
 	t.Helper()
 	assessed, err := store.Assess(t.Context(), config.Authority{}, l1.Reader{}, []l2.Topic{topic})
@@ -59,30 +57,26 @@ func standsAt(t *testing.T, store *l2.Store, topic l2.Topic) string {
 	return assessed[0].Standing.Current.Position + " @ " + string(assessed[0].Standing.Tier)
 }
 
-// A ratify or a demote applies to every live stance drawn from the documents
-// it names, across topics: not to one a later reading of its document retired,
-// and not to one an agent asserted citing it. Who may make one, and retrying
-// one, write nothing more.
 func TestAGestureAppliesToTheLiveStancesDrawnFromItsDocuments(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	repo := loadRepo(t, ratifiers)
 	ctx := t.Context()
-	scope, elsewhere := unique(), unique()
+	scope, elsewhere := dbtest.UniqueID(), dbtest.UniqueID()
 	lock := namedTopic(t, store, scope, "the lock")
 	queueTopic := namedTopic(t, store, scope, "the queue")
-	thread, issue := "l1:discord:"+unique(), "l1:github:"+unique()
+	thread, issue := "l1:discord:"+dbtest.UniqueID(), "l1:github:"+dbtest.UniqueID()
 	retired := addStance(t, store, lock, thread, "the queue takes the lock", 1)
 	reread := addStance(t, store, lock, thread, "the queue keeps the lock", 2)
 	onQueue := addStance(t, store, queueTopic, issue, "one queue per service", 3)
-	event := connector.EventID(connector.SelfSource, "assertion:"+unique())
+	event := connector.EventID(connector.SelfSource, "assertion:"+dbtest.UniqueID())
 	asserted := stance(lock, thread, "the agent takes the lock", 4)
 	asserted.ID, asserted.Assertion, asserted.Author = l2.AssertionStanceID(lock.ID, event), event, "shed"
 	if _, _, err := store.AppendStance(ctx, asserted, asserted.StatedAt); err != nil {
 		t.Fatal(err)
 	}
 	other := namedTopic(t, store, elsewhere, "the lock")
-	otherDoc := "l1:discord:" + unique()
+	otherDoc := "l1:discord:" + dbtest.UniqueID()
 	addStance(t, store, other, otherDoc, "the lock is global", 1)
 
 	req := l2.GestureRequest{Event: gestureEvent(), Principal: "kyle", Action: l2.GestureRatify, Documents: []string{issue, thread}}
@@ -92,12 +86,10 @@ func TestAGestureAppliesToTheLiveStancesDrawnFromItsDocuments(t *testing.T) {
 		t.Fatalf("the ratify = %+v, want it on %v in %s, not on the retired %s or the asserted %s", g, want, scope, retired.ID, asserted.ID)
 	}
 
-	// A retry of the same event records nothing and returns the gesture.
 	again, recorded, err := l2.RecordGesture(ctx, pool, repo, req)
 	if err != nil || recorded || again.ID != g.ID {
 		t.Errorf("RecordGesture(again) = %+v, %v, recorded %v; want gesture %d back and nothing recorded", again, err, recorded, g.ID)
 	}
-	// An event is one gesture: another from it is refused.
 	changed := req
 	changed.Action = l2.GestureDemote
 	if _, _, err := l2.RecordGesture(ctx, pool, repo, changed); !errors.Is(err, l2.ErrInvalid) {
@@ -113,7 +105,7 @@ func TestAGestureAppliesToTheLiveStancesDrawnFromItsDocuments(t *testing.T) {
 		{"an agent", l2.GestureRequest{Principal: "bot", Action: l2.GestureDemote, Documents: []string{thread}}, l2.ErrNotAllowed},
 		{"nobody", l2.GestureRequest{Action: l2.GestureDemote, Documents: []string{thread}}, l2.ErrNotAllowed},
 		{"documents in two scopes", l2.GestureRequest{Principal: "kyle", Action: l2.GestureDemote, Documents: []string{thread, otherDoc}}, l2.ErrInvalid},
-		{"a document no live stance is drawn from", l2.GestureRequest{Principal: "kyle", Action: l2.GestureDemote, Documents: []string{"l1:discord:" + unique()}}, l2.ErrNotFound},
+		{"a document no live stance is drawn from", l2.GestureRequest{Principal: "kyle", Action: l2.GestureDemote, Documents: []string{"l1:discord:" + dbtest.UniqueID()}}, l2.ErrNotFound},
 		{"an undo of an event no gesture came from", l2.GestureRequest{Principal: "kyle", Action: l2.GestureUndo, Undoes: gestureEvent()}, l2.ErrNotFound},
 	}
 	for _, tt := range refused {
@@ -133,7 +125,6 @@ func TestAGestureAppliesToTheLiveStancesDrawnFromItsDocuments(t *testing.T) {
 		t.Errorf("the other scope's ledger = %+v, want it empty", got)
 	}
 
-	// A caller running under a serial key records only what is in its scope.
 	err = pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		_, _, err := l2.New(tx).ApplyGesture(ctx, repo, elsewhere, l2.GestureRequest{Event: gestureEvent(), Principal: "kyle", Action: l2.GestureDemote, Documents: []string{thread}})
 		return err
@@ -143,17 +134,14 @@ func TestAGestureAppliesToTheLiveStancesDrawnFromItsDocuments(t *testing.T) {
 	}
 }
 
-// Ratified and demoted are what a read serves, until an undo or a newer
-// stance; an undo is a row of its own, and nothing earlier in the ledger
-// changes.
 func TestGesturesDecideWhereATopicStands(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	repo := loadRepo(t, ratifiers)
 	ctx := t.Context()
-	scope := unique()
+	scope := dbtest.UniqueID()
 	topic := namedTopic(t, store, scope, "the lock")
-	first, second := "l1:discord:"+unique(), "l1:discord:"+unique()
+	first, second := "l1:discord:"+dbtest.UniqueID(), "l1:discord:"+dbtest.UniqueID()
 	addStance(t, store, topic, first, "the queue takes the lock", 1)
 	current := stance(topic, second, "the queue keeps the lock", 2)
 	current.Judgement = l2.JudgementRestates
@@ -199,8 +187,6 @@ func TestGesturesDecideWhereATopicStands(t *testing.T) {
 		}
 	}
 
-	// The ledger only grew: the gestures an undo reversed are as they were,
-	// and say which undo reversed them.
 	after := ledger(t, store, scope)
 	if len(after) != 4 {
 		t.Fatalf("the ledger has %d gestures, want 4", len(after))
@@ -217,42 +203,29 @@ func TestGesturesDecideWhereATopicStands(t *testing.T) {
 		t.Errorf("the ledger = %+v, want each gesture to name its undo", after)
 	}
 
-	// A newer stance the topic stands at is not what was demoted.
 	gesture(t, pool, repo, l2.GestureRequest{Event: gestureEvent(), Principal: "kyle", Action: l2.GestureDemote, Documents: on})
 	if got := standsAt(t, store, topic); got != "the queue keeps the lock @ contested" {
 		t.Errorf("demoted again, the topic stands at %q, want contested", got)
 	}
-	third := "l1:discord:" + unique()
+	third := "l1:discord:" + dbtest.UniqueID()
 	addStance(t, store, topic, third, "the worker keeps the lock", 3)
 	if got := standsAt(t, store, topic); got != "the worker keeps the lock @ inferred" {
 		t.Errorf("with a newer stance, the topic stands at %q, want it inferred", got)
 	}
 }
 
-// A pin writes l2_pins with the pinner and the gesture's time; an undo takes
-// it out, or hands it to the next pin in force, and never touches a pin no
-// gesture made.
 func TestPinGesturesPinAndUnpin(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	repo := loadRepo(t, ratifiers)
 	ctx := t.Context()
-	src := "s" + unique()
+	src := "s" + dbtest.UniqueID()
 	entity, other := "code:acme/"+src, "tracker:"+src+":acme/api#1"
 	put := func(native string, scope ...string) string {
 		t.Helper()
-		when := time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)
-		doc := l1.Document{
-			ID: l1.DocID(src, native), Kind: l1.KindIssue, ArtifactClass: config.ArtifactIssue,
-			Source: l1.Source{System: src, NativeID: native}, Scope: scope,
-			L0Refs: []string{connector.EventID(src, native)}, Time: l1.Times{Created: when, Updated: when, LastActivity: when},
-			ACL: public, Text: "text of " + native, RawText: "raw " + native,
-			Body: l1.Body{Summary: "s", OutcomeKind: l1.OutcomeDecided},
-		}
-		if _, err := l1.New(pool).Put(ctx, doc); err != nil {
-			t.Fatal(err)
-		}
-		return doc.ID
+		doc := issueDoc(src, native)
+		doc.Scope, doc.L0Refs = scope, []string{connector.EventID(src, native)}
+		return l1test.Put(t, pool, doc)
 	}
 	pinsOn := func(scope string) []l2.Pin {
 		t.Helper()
@@ -286,7 +259,6 @@ func TestPinGesturesPinAndUnpin(t *testing.T) {
 		t.Errorf("both undone, Pins = %+v, want none", got)
 	}
 
-	// A pin nobody made by gesture is not a gesture's to take out.
 	spec := put("spec", entity)
 	by := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	if _, err := store.Pin(ctx, l2.Pin{Scope: entity, L1: spec, PinnedBy: "ops", PinnedAt: by}); err != nil {
@@ -312,17 +284,15 @@ func TestPinGesturesPinAndUnpin(t *testing.T) {
 	}
 }
 
-// A gesture takes its turn among the assert jobs of its scope: it waits for
-// the one running and applies to what that job wrote.
 func TestGesturesSerializeWithAssertJobs(t *testing.T) {
-	pool := scratchPool(t)
+	pool := dbtest.Scratch(t, "hearsay_l2")
 	store := l2.New(pool)
 	repo := loadRepo(t, ratifiers)
 	ctx := t.Context()
-	scope := unique()
+	scope := dbtest.UniqueID()
 	lock := namedTopic(t, store, scope, "the lock")
 	queueTopic := namedTopic(t, store, scope, "the queue")
-	thread := "l1:discord:" + unique()
+	thread := "l1:discord:" + dbtest.UniqueID()
 	first := addStance(t, store, lock, thread, "the queue takes the lock", 1)
 
 	client, err := queue.New(pool, queue.Config{Kind: l2.AssertKind(), Lease: 30 * time.Second})
@@ -347,10 +317,11 @@ func TestGesturesSerializeWithAssertJobs(t *testing.T) {
 		g, _, err := l2.RecordGesture(waiting, pool, repo, l2.GestureRequest{Event: gestureEvent(), Principal: "kyle", Action: l2.GestureRatify, Documents: []string{thread}})
 		done <- result{g, err}
 	}()
+	awaitRunning(t, client, 2)
 	select {
 	case r := <-done:
 		t.Fatalf("RecordGesture() = %+v, %v while an assert job runs on its scope, want it to wait", r.g, r.err)
-	case <-time.After(4 * queue.HoldPoll):
+	default:
 	}
 	second := addStance(t, store, queueTopic, thread, "one queue per service", 2)
 	if ok, err := client.Complete(ctx, running[0]); err != nil || !ok {

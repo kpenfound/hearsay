@@ -373,19 +373,11 @@ const (
 // connector: `audit`, `assertion` and `deletion`. No ingest allowlist names it.
 const SelfSource = "hearsay"
 
-// kindRule is what validation requires of a kind. The two flags are per kind
-// because the sources differ: a chat message may be nothing but an image, and
-// a pull request always has a title.
 type kindRule struct {
-	// requiresAuthor is set where the source always knows who acted.
-	requiresAuthor bool
-	// requiresContent is set where the artifact always has a title or text.
-	// An event with neither is nothing for the distiller to read.
+	requiresAuthor  bool
 	requiresContent bool
 }
 
-// coreKinds is the vocabulary, and the rules each kind carries. The table is
-// the same one docs/connector-contract.md prints.
 var coreKinds = map[Kind]kindRule{
 	KindMessage:       {requiresAuthor: true},
 	KindThread:        {requiresAuthor: true, requiresContent: true},
@@ -506,8 +498,6 @@ func (e Event) Validate() error {
 }
 
 func (p Payload) validate(e Event) error {
-	// An extension kind is validated against the core kind it says it behaves
-	// like, which is the same fallback everything above L0 uses.
 	rule, core := coreKinds[e.Kind]
 	if core && p.BaseKind != "" {
 		return fmt.Errorf("%w: base_kind is set on core kind %q", ErrInvalidEvent, e.Kind)
@@ -560,9 +550,6 @@ func (p Payload) validate(e Event) error {
 	case tombstone && p.Target == "":
 		return fmt.Errorf("%w: a tombstone requires payload.target", ErrInvalidEvent)
 	case tombstone && p.Target == p.Artifact:
-		// A tombstone is its own artifact — `<target>:tombstone` by
-		// convention — so that it is emitted the same way twice and so that it
-		// does not read as a revision of the thing it retracts.
 		return fmt.Errorf("%w: a tombstone's payload.artifact is its own, not payload.target %q", ErrInvalidEvent, p.Target)
 	case !tombstone && p.Target != "":
 		return fmt.Errorf("%w: payload.target is set on kind %q, which is not a tombstone", ErrInvalidEvent, e.Kind)
@@ -597,9 +584,6 @@ func (p Payload) validate(e Event) error {
 	return p.validateRevision(e)
 }
 
-// validatePaths holds Payload.Paths to the shape [BoundPaths] makes: bounded,
-// sorted and unique, so that two observations of one change carry one list
-// whichever order the source listed it in.
 func (p Payload) validatePaths() error {
 	switch {
 	case len(p.Paths) > MaxPaths:
@@ -644,12 +628,6 @@ func BoundPaths(paths []string) ([]string, bool) {
 	return out, false
 }
 
-// validateRevision holds the native id and payload.revision to each other. The
-// revision token is the part of the native id after the artifact, so the two
-// agree or the event is lying about which observation it is: a distiller that
-// reads payload.revision to tell an edit from a first appearance would take a
-// revision event for the artifact's first, and an artifact with an empty token
-// would have two event ids for one unchanged observation.
 func (p Payload) validateRevision(e Event) error {
 	if e.NativeID == p.Artifact {
 		if p.Revision != nil {
@@ -667,10 +645,6 @@ func (p Payload) validateRevision(e Event) error {
 	case p.Revision.Token != token:
 		return fmt.Errorf("%w: payload.revision.token %q is not the revision token %q in native_id %q", ErrInvalidEvent, p.Revision.Token, token, e.NativeID)
 	case !p.Revision.EditedAt.IsZero() && p.Revision.EditedAt.Before(e.Time):
-		// Revisions of one artifact share a time — the artifact happened when
-		// it happened — so edited_at is what orders them. A revision that
-		// precedes the thing it revises is a connector putting the artifact's
-		// own time in the field, and it would sort an edit before the original.
 		return fmt.Errorf("%w: payload.revision.edited_at %s is before time %s", ErrInvalidEvent, p.Revision.EditedAt.Format(time.RFC3339), e.Time.Format(time.RFC3339))
 	}
 	return nil
@@ -691,7 +665,6 @@ func (i Identity) validate(field string) error {
 	}
 }
 
-// public reports whether the list lets everyone read.
 func (a ACL) public() bool {
 	return slices.ContainsFunc(a, func(e ACLEntry) bool { return e.Kind == ACLPublic })
 }

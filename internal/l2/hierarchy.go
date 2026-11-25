@@ -62,7 +62,6 @@ func MergeHierarchy(ctx context.Context, in HierarchyInputs) Parents {
 		{HierarchyWork, in.Work},
 		{HierarchyRepoStructure, in.RepoStructure},
 	}
-	// The source each entity takes its parents from.
 	chosen := map[string]HierarchySource{}
 	for _, r := range ranked {
 		for id, parents := range r.parents {
@@ -95,8 +94,6 @@ func MergeHierarchy(ctx context.Context, in HierarchyInputs) Parents {
 	return out
 }
 
-// reaches reports whether the walk up part_of from one entity arrives at
-// another.
 func reaches(parents Parents, from, to string) bool {
 	visited := map[string]bool{}
 	stack := []string{from}
@@ -151,7 +148,6 @@ func NestByPattern(entities []Located) Parents {
 			}
 			depth, ok := covers(parent.PathPatterns, child.PathPatterns)
 			if _, back := covers(child.PathPatterns, parent.PathPatterns); back {
-				// The two cover the same paths: neither is inside the other.
 				ok = false
 			}
 			switch {
@@ -178,9 +174,6 @@ func NestByPattern(entities []Located) Parents {
 	return out
 }
 
-// covers reports whether every child pattern lies under one of the parent's,
-// and how deep the covering is: the sum, over the child's patterns, of the
-// segments in the deepest parent directory covering each.
 func covers(parent, child []string) (int, bool) {
 	total := 0
 	for _, c := range child {
@@ -200,8 +193,6 @@ func covers(parent, child []string) (int, bool) {
 	return total, true
 }
 
-// subtree is the directory a pattern of the form `dir/**` names, and whether
-// the pattern is of that form.
 func subtree(pattern string) (string, bool) {
 	pattern = strings.TrimPrefix(strings.TrimPrefix(pattern, "./"), "/")
 	dir, ok := strings.CutSuffix(pattern, "/**")
@@ -211,7 +202,6 @@ func subtree(pattern string) (string, bool) {
 	return dir, true
 }
 
-// under reports whether every path a pattern matches is inside a directory.
 func under(pattern, dir string) bool {
 	prefix := config.StaticPrefix(pattern)
 	return prefix == dir || strings.HasPrefix(prefix, dir+"/")

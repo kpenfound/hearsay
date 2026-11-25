@@ -47,8 +47,6 @@ func TestParseCommand(t *testing.T) {
 	}
 }
 
-// commentHook is an issue_comment delivery for a comment on issue or pull
-// request n, built from the fixture.
 func commentHook(t *testing.T, action string, n int, id int64, body, created, updated string) []byte {
 	t.Helper()
 	var d map[string]any
@@ -77,105 +75,139 @@ func commentItem(n int, id int64, body, created, updated string) map[string]any 
 	}
 }
 
-// A `/hearsay` comment on an issue or a pull request is a `command`, with the
-// command read from it; Hearsay's reply to one is a `github.reply`, based on
-// `command`, whatever it says, so its webhook echo is never a command and
-// never team content; anything else is a `message`. In a read-only source a
-// `/hearsay` comment is a `message` too, what the person wrote and nothing
-// more, and a reply is still a reply. A backfill that reads the same comment
-// emits the same event.
-func TestCommentCommandsAndRepliesAreControlTraffic(t *testing.T) {
-	const at = "2026-09-24T12:00:00Z"
-	tests := []struct {
-		name     string
-		n        int
-		body     string
-		updated  string
-		readOnly bool
-		wantKind connector.Kind
-		wantBase connector.Kind
-		// wantNative is the event's native, as JSON.
-		wantNative string
-	}{
-		{name: "ratify on an issue", n: 1, body: "/hearsay ratify", wantKind: connector.KindCommand,
-			wantNative: `{"id":5001,"repository":"acme/api","issue":1,"command":"ratify"}`},
-		{name: "merge on a pull request", n: 2, body: "/hearsay merge `topic:a` topic:b", wantKind: connector.KindCommand,
-			wantNative: `{"id":5001,"repository":"acme/api","issue":2,"command":"merge","args":["topic:a","topic:b"]}`},
-		{name: "a malformed command is a command", n: 1, body: "/hearsay", wantKind: connector.KindCommand,
-			wantNative: `{"id":5001,"repository":"acme/api","issue":1,"command":""}`},
-		{name: "an edited command says so", n: 1, body: "/hearsay demote", updated: "2026-09-24T12:05:00Z", wantKind: connector.KindCommand,
-			wantNative: `{"id":5001,"repository":"acme/api","issue":1,"command":"demote","edited":true}`},
-		{name: "a comment that mentions the command", n: 1, body: "Try /hearsay ratify here.", wantKind: connector.KindMessage,
-			wantNative: `{"id":5001}`},
-		{name: "Hearsay's reply", n: 1, body: "Ratified 2 stances.\n\n" + github.ReplyMarker(4999), wantKind: github.KindReply, wantBase: connector.KindCommand,
-			wantNative: `{"id":5001,"reply_to":4999}`},
-		{name: "a reply that starts like a command is still a reply", n: 2, body: "/hearsay ratify\n\n" + github.ReplyMarker(4999), wantKind: github.KindReply, wantBase: connector.KindCommand,
-			wantNative: `{"id":5001,"reply_to":4999}`},
-		{name: "ratify in a read-only source is a message", n: 1, body: "/hearsay ratify", readOnly: true, wantKind: connector.KindMessage,
-			wantNative: `{"id":5001}`},
-		{name: "merge on a pull request in a read-only source is a message", n: 2, body: "/hearsay merge `topic:a` topic:b", readOnly: true, wantKind: connector.KindMessage,
-			wantNative: `{"id":5001}`},
-		{name: "Hearsay's reply in a read-only source is still a reply", n: 1, body: "Ratified 2 stances.\n\n" + github.ReplyMarker(4999), readOnly: true, wantKind: github.KindReply, wantBase: connector.KindCommand,
-			wantNative: `{"id":5001,"reply_to":4999}`},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			updated := tt.updated
-			if updated == "" {
-				updated = at
-			}
-			gh := newFakeGitHub(t)
-			src := newSource(t, gh, sourceID, nil)
-			src.ReadOnly = tt.readOnly
-			c := newConnector(t, src)
-			if got := slices.Contains(c.Describe().Kinds, connector.KindCommand); got == tt.readOnly {
-				t.Errorf("Describe() declares command: %v, want %v", got, !tt.readOnly)
-			}
-			live := &connector.Recorder{}
-			if code := deliver(t, c.Handler(gateFor(src, c, live)), "issue_comment", commentHook(t, "created", tt.n, 5001, tt.body, at, updated)); code != http.StatusAccepted {
-				t.Fatalf("status = %d, want 202", code)
-			}
-			events := live.Events()
-			if len(events) != 1 {
-				t.Fatalf("events = %s, want one", asJSON(t, events))
-			}
-			ev := events[0]
-			wantParent := fmt.Sprintf("acme/api#%d", tt.n)
-			if ev.Kind != tt.wantKind || ev.Payload.BaseKind != tt.wantBase || string(ev.Payload.Native) != tt.wantNative ||
-				ev.Payload.Parent != wantParent || ev.Payload.Thread != wantParent || ev.Payload.Text != tt.body || ev.Payload.Author == nil {
-				t.Errorf("event = %s, want kind %q base %q native %s on %s", asJSON(t, ev), tt.wantKind, tt.wantBase, tt.wantNative, wantParent)
-			}
-			if tt.wantKind == connector.KindCommand {
-				cmd, err := github.CommandOf(ev)
-				if err != nil || cmd.Comment != 5001 || cmd.Issue != tt.n || cmd.Repo != "acme/api" {
-					t.Errorf("CommandOf() = %+v, %v", cmd, err)
-				}
-			} else if _, err := github.CommandOf(ev); err == nil {
-				t.Errorf("CommandOf(a %s) = nil error, want a refusal", ev.Kind)
-			}
+const commentAt = "2026-09-24T12:00:00Z"
 
-			gh.setList("/repos/acme/api/issues/comments", []map[string]any{commentItem(tt.n, 5001, tt.body, at, updated)})
-			backfilled := &connector.Recorder{}
-			backfillAll(t, c, gateFor(src, c, backfilled))
-			i := slices.IndexFunc(backfilled.Events(), func(b connector.Event) bool { return b.ID == ev.ID })
-			if i < 0 {
-				t.Fatalf("the backfill did not emit %s", ev.NativeID)
+type commentCase struct {
+	name       string
+	n          int
+	body       string
+	updated    string
+	readOnly   bool
+	wantKind   connector.Kind
+	wantBase   connector.Kind
+	wantNative string
+}
+
+var commentCases = []commentCase{
+	{name: "ratify on an issue", n: 1, body: "/hearsay ratify", wantKind: connector.KindCommand,
+		wantNative: `{"id":5001,"repository":"acme/api","issue":1,"command":"ratify"}`},
+	{name: "merge on a pull request", n: 2, body: "/hearsay merge `topic:a` topic:b", wantKind: connector.KindCommand,
+		wantNative: `{"id":5001,"repository":"acme/api","issue":2,"command":"merge","args":["topic:a","topic:b"]}`},
+	{name: "a malformed command is a command", n: 1, body: "/hearsay", wantKind: connector.KindCommand,
+		wantNative: `{"id":5001,"repository":"acme/api","issue":1,"command":""}`},
+	{name: "an edited command says so", n: 1, body: "/hearsay demote", updated: "2026-09-24T12:05:00Z", wantKind: connector.KindCommand,
+		wantNative: `{"id":5001,"repository":"acme/api","issue":1,"command":"demote","edited":true}`},
+	{name: "a comment that mentions the command", n: 1, body: "Try /hearsay ratify here.", wantKind: connector.KindMessage,
+		wantNative: `{"id":5001}`},
+	{name: "Hearsay's reply", n: 1, body: "Ratified 2 stances.\n\n" + github.ReplyMarker(4999), wantKind: github.KindReply, wantBase: connector.KindCommand,
+		wantNative: `{"id":5001,"reply_to":4999}`},
+	{name: "a reply that starts like a command is still a reply", n: 2, body: "/hearsay ratify\n\n" + github.ReplyMarker(4999), wantKind: github.KindReply, wantBase: connector.KindCommand,
+		wantNative: `{"id":5001,"reply_to":4999}`},
+	{name: "ratify in a read-only source is a message", n: 1, body: "/hearsay ratify", readOnly: true, wantKind: connector.KindMessage,
+		wantNative: `{"id":5001}`},
+	{name: "merge on a pull request in a read-only source is a message", n: 2, body: "/hearsay merge `topic:a` topic:b", readOnly: true, wantKind: connector.KindMessage,
+		wantNative: `{"id":5001}`},
+	{name: "Hearsay's reply in a read-only source is still a reply", n: 1, body: "Ratified 2 stances.\n\n" + github.ReplyMarker(4999), readOnly: true, wantKind: github.KindReply, wantBase: connector.KindCommand,
+		wantNative: `{"id":5001,"reply_to":4999}`},
+}
+
+type deliveredComment struct {
+	gh      *fakeGitHub
+	src     connector.SourceConfig
+	c       *github.Connector
+	event   connector.Event
+	updated string
+}
+
+func deliverComment(t *testing.T, tc commentCase) deliveredComment {
+	t.Helper()
+	updated := tc.updated
+	if updated == "" {
+		updated = commentAt
+	}
+	gh := newFakeGitHub(t)
+	src := newSource(t, gh, sourceID, nil)
+	src.ReadOnly = tc.readOnly
+	c := newConnector(t, src)
+	live := &connector.Recorder{}
+	if code := deliver(t, c.Handler(gateFor(src, c, live)), "issue_comment", commentHook(t, "created", tc.n, 5001, tc.body, commentAt, updated)); code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", code)
+	}
+	events := live.Events()
+	if len(events) != 1 {
+		t.Fatalf("events = %s, want one", asJSON(t, events))
+	}
+	return deliveredComment{gh: gh, src: src, c: c, event: events[0], updated: updated}
+}
+
+func TestDescribeDeclaresCommandsUnlessReadOnly(t *testing.T) {
+	for _, readOnly := range []bool{false, true} {
+		t.Run(fmt.Sprintf("read_only=%v", readOnly), func(t *testing.T) {
+			src := newSource(t, newFakeGitHub(t), sourceID, nil)
+			src.ReadOnly = readOnly
+			c := newConnector(t, src)
+			if got := slices.Contains(c.Describe().Kinds, connector.KindCommand); got == readOnly {
+				t.Errorf("Describe() declares command: %v, want %v", got, !readOnly)
 			}
-			if a, b := asJSON(t, ev), asJSON(t, backfilled.Events()[i]); a != b {
+		})
+	}
+}
+
+func TestCommentEventKindAndNative(t *testing.T) {
+	for _, tc := range commentCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ev := deliverComment(t, tc).event
+			wantParent := fmt.Sprintf("acme/api#%d", tc.n)
+			if ev.Kind != tc.wantKind || ev.Payload.BaseKind != tc.wantBase || string(ev.Payload.Native) != tc.wantNative ||
+				ev.Payload.Parent != wantParent || ev.Payload.Thread != wantParent || ev.Payload.Text != tc.body || ev.Payload.Author == nil {
+				t.Errorf("event = %s, want kind %q base %q native %s on %s", asJSON(t, ev), tc.wantKind, tc.wantBase, tc.wantNative, wantParent)
+			}
+		})
+	}
+}
+
+func TestCommandOfReadsOnlyCommandEvents(t *testing.T) {
+	for _, tc := range commentCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ev := deliverComment(t, tc).event
+			if tc.wantKind != connector.KindCommand {
+				if _, err := github.CommandOf(ev); err == nil {
+					t.Errorf("CommandOf(a %s) = nil error, want a refusal", ev.Kind)
+				}
+				return
+			}
+			cmd, err := github.CommandOf(ev)
+			if err != nil || cmd.Comment != 5001 || cmd.Issue != tc.n || cmd.Repo != "acme/api" {
+				t.Errorf("CommandOf() = %+v, %v", cmd, err)
+			}
+		})
+	}
+}
+
+func TestCommentWebhookEventEqualsBackfilledEvent(t *testing.T) {
+	for _, tc := range commentCases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := deliverComment(t, tc)
+			d.gh.setList("/repos/acme/api/issues/comments", []map[string]any{commentItem(tc.n, 5001, tc.body, commentAt, d.updated)})
+			backfilled := &connector.Recorder{}
+			backfillAll(t, d.c, gateFor(d.src, d.c, backfilled))
+			i := slices.IndexFunc(backfilled.Events(), func(b connector.Event) bool { return b.ID == d.event.ID })
+			if i < 0 {
+				t.Fatalf("the backfill did not emit %s", d.event.NativeID)
+			}
+			if a, b := asJSON(t, d.event), asJSON(t, backfilled.Events()[i]); a != b {
 				t.Errorf("webhook event differs from the backfilled one:\n%s\nwant\n%s", a, b)
 			}
 		})
 	}
 }
 
-// Deleting a command comment is a tombstone for it, like any comment's.
 func TestADeletedCommandIsATombstone(t *testing.T) {
 	gh := newFakeGitHub(t)
 	src := newSource(t, gh, sourceID, nil)
 	c := newConnector(t, src)
 	rec := &connector.Recorder{}
-	const at = "2026-09-24T12:00:00Z"
-	if code := deliver(t, c.Handler(gateFor(src, c, rec)), "issue_comment", commentHook(t, "deleted", 1, 5001, "/hearsay ratify", at, at)); code != http.StatusAccepted {
+	if code := deliver(t, c.Handler(gateFor(src, c, rec)), "issue_comment", commentHook(t, "deleted", 1, 5001, "/hearsay ratify", commentAt, commentAt)); code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202", code)
 	}
 	events := rec.Events()
@@ -184,8 +216,6 @@ func TestADeletedCommandIsATombstone(t *testing.T) {
 	}
 }
 
-// fakeComments is the part of GitHub's REST API a replier calls: one
-// issue's comments, which it lists, posts to and edits.
 type fakeComments struct {
 	t   *testing.T
 	srv *httptest.Server
@@ -247,8 +277,6 @@ func (f *fakeComments) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// A read-only source has no replier, whatever its token could do: Hearsay
-// posts nothing to it.
 func TestNoReplierForAReadOnlySource(t *testing.T) {
 	f := newFakeComments(t)
 	r, err := github.NewReplier(connector.SourceConfig{
@@ -274,46 +302,80 @@ func newReplier(t *testing.T, f *fakeComments) *github.Replier {
 	return r
 }
 
-// A reply is posted once: a second call finds the one the first posted by the
-// marker naming its command, and posts nothing. It is revised in place, and a
-// reply somebody deleted is ErrReplyGone.
-func TestReplierPostsOneReplyPerCommand(t *testing.T) {
-	f := newFakeComments(t)
-	r := newReplier(t, f)
-	since := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
-	f.comments = []map[string]any{{"id": 6000, "body": "Ratified.\n\n" + github.ReplyMarker(4000)}}
+var replySince = time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
 
-	id, err := r.Reply(t.Context(), "acme/api", 1, 5001, since, "Ratified 1 stance.")
+func newReplyFixture(t *testing.T) (*fakeComments, *github.Replier) {
+	t.Helper()
+	f := newFakeComments(t)
+	f.comments = []map[string]any{{"id": 6000, "body": "Ratified.\n\n" + github.ReplyMarker(4000)}}
+	return f, newReplier(t, f)
+}
+
+func TestReplierPostsOneReplyPerCommand(t *testing.T) {
+	f, r := newReplyFixture(t)
+	id, err := r.Reply(t.Context(), "acme/api", 1, 5001, replySince, "Ratified 1 stance.")
 	if err != nil {
 		t.Fatalf("Reply() = %v", err)
 	}
-	again, err := r.Reply(t.Context(), "acme/api", 1, 5001, since, "Ratified 1 stance.")
+	again, err := r.Reply(t.Context(), "acme/api", 1, 5001, replySince, "Ratified 1 stance.")
 	if err != nil || again != id {
 		t.Fatalf("Reply(again) = %d, %v, want %d: the reply already there", again, err, id)
 	}
 	if f.posts != 1 || id != 7001 {
-		t.Fatalf("posts = %d, id = %d, want one reply, 7001: another command's reply is not this one's", f.posts, id)
+		t.Errorf("posts = %d, id = %d, want one reply, 7001: another command's reply is not this one's", f.posts, id)
+	}
+}
+
+func TestReplyEndsWithTheCommandMarker(t *testing.T) {
+	f, r := newReplyFixture(t)
+	if _, err := r.Reply(t.Context(), "acme/api", 1, 5001, replySince, "Ratified 1 stance."); err != nil {
+		t.Fatalf("Reply() = %v", err)
 	}
 	if body := f.comments[1]["body"]; body != "Ratified 1 stance.\n\n"+github.ReplyMarker(5001) {
 		t.Errorf("reply = %q, want the text and the marker", body)
 	}
+}
+
+func TestReplyLooksForItsOwnReplyFromAMinuteBeforeTheCommand(t *testing.T) {
+	f, r := newReplyFixture(t)
+	if _, err := r.Reply(t.Context(), "acme/api", 1, 5001, replySince, "Ratified 1 stance."); err != nil {
+		t.Fatalf("Reply() = %v", err)
+	}
 	if len(f.queries) == 0 || !strings.Contains(f.queries[0], "since=2026-09-24T11%3A59%3A00Z") {
 		t.Errorf("queries = %q, want comments since a minute before the command", f.queries)
 	}
+}
 
+func TestReviseEditsTheReplyInPlace(t *testing.T) {
+	f, r := newReplyFixture(t)
+	id, err := r.Reply(t.Context(), "acme/api", 1, 5001, replySince, "Ratified 1 stance.")
+	if err != nil {
+		t.Fatalf("Reply() = %v", err)
+	}
 	if err := r.Revise(t.Context(), "acme/api", 5001, id, "Ratified 1 stance.\n\nUndone."); err != nil {
 		t.Fatalf("Revise() = %v", err)
 	}
 	if body := f.comments[1]["body"]; body != "Ratified 1 stance.\n\nUndone.\n\n"+github.ReplyMarker(5001) {
 		t.Errorf("revised reply = %q", body)
 	}
+	if f.posts != 1 || f.patches != 1 {
+		t.Errorf("posts = %d, patches = %d, want 1 and 1", f.posts, f.patches)
+	}
+}
+
+func TestReviseOfADeletedReplyIsErrReplyGone(t *testing.T) {
+	_, r := newReplyFixture(t)
 	if err := r.Revise(t.Context(), "acme/api", 5001, 9999, "gone"); !errors.Is(err, github.ErrReplyGone) {
 		t.Errorf("Revise(a deleted reply) = %v, want ErrReplyGone", err)
 	}
-	if _, err := r.Reply(t.Context(), "acme/other", 1, 5001, since, "x"); err == nil {
+}
+
+func TestReplyInARepositoryTheSourceDoesNotNameIsRefused(t *testing.T) {
+	f, r := newReplyFixture(t)
+	if _, err := r.Reply(t.Context(), "acme/other", 1, 5001, replySince, "x"); err == nil {
 		t.Error("Reply() in a repository the source does not name = nil, want a refusal")
 	}
-	if f.posts != 1 || f.patches != 2 {
-		t.Errorf("posts = %d, patches = %d, want 1 and 2", f.posts, f.patches)
+	if f.posts != 0 {
+		t.Errorf("posts = %d, want none", f.posts)
 	}
 }

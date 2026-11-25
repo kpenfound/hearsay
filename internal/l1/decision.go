@@ -82,7 +82,6 @@ func BuildDecision(root connector.Event, resolver *principal.Resolver, repo conf
 	return doc, nil
 }
 
-// line is the first non-empty line of a text, trimmed.
 func line(text string) string {
 	for _, l := range strings.Split(text, "\n") {
 		if l = strings.TrimSpace(l); l != "" {
@@ -92,8 +91,6 @@ func line(text string) string {
 	return ""
 }
 
-// renderDecision is the decision as the prose search finds it by and a reader
-// of the document reads: the same fields, in a fixed order.
 func renderDecision(outcome string, d *Decision) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Outcome: %s\n\nDecider: %s\n\n", outcome, d.Decider)

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"testing"
 
@@ -16,9 +15,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/api"
 )
 
-// traverseReaderDB holds nothing: every query answers with no rows. Reader
-// construction reads deferred grants from it, and an invalid call must be
-// refused as a bad request rather than read as an empty result.
 type traverseReaderDB struct{ api.DB }
 
 func (traverseReaderDB) Query(context.Context, string, ...any) (pgx.Rows, error) {
@@ -81,23 +77,23 @@ func TestTraverseInvalidCallsAreBadRequests(t *testing.T) {
 			}
 		})
 	}
-	tools := api.Tools()
-	names := []string{}
-	for _, tool := range tools {
-		names = append(names, tool.Name)
-		if tool.Name == "traverse" {
-			var schema map[string]any
-			if err := json.Unmarshal(tool.InputSchema, &schema); err != nil {
-				t.Fatal(err)
-			}
-			for _, word := range []string{"get_bundle", "stance_history", "get_l1", "ledger", "every hop", "line"} {
-				if !strings.Contains(tool.Description, word) {
-					t.Errorf("tool description lacks %q", word)
-				}
+}
+
+func TestTraverseToolDescriptionNamesTheFollowUpCalls(t *testing.T) {
+	for _, tool := range api.Tools() {
+		if tool.Name != "traverse" {
+			continue
+		}
+		var schema map[string]any
+		if err := json.Unmarshal(tool.InputSchema, &schema); err != nil {
+			t.Fatal(err)
+		}
+		for _, word := range []string{"get_bundle", "stance_history", "get_l1", "ledger", "every hop", "line"} {
+			if !strings.Contains(tool.Description, word) {
+				t.Errorf("tool description lacks %q", word)
 			}
 		}
+		return
 	}
-	if len(names)-len(slices.Compact(slices.Clone(names))) != 0 || !slices.Contains(names, "traverse") {
-		t.Fatalf("tools=%v", names)
-	}
+	t.Fatal("traverse is not offered")
 }

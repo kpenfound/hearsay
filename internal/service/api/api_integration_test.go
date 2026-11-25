@@ -10,11 +10,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,8 +19,9 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/bundle"
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
-	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
@@ -32,41 +30,15 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/api"
 )
 
-func newPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	pool, err := db.Connect(context.Background(), url)
-	if err != nil {
-		t.Fatalf("connecting to postgres: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
-// The database outlives a test, so every test takes a source id nothing else
-// uses and puts everything it reads under it.
-var sources atomic.Int64
-
-func newSource() string {
-	return "t" + strconv.FormatInt(time.Now().UnixNano(), 36) + "x" + strconv.FormatInt(sources.Add(1), 36)
-}
-
 var day = time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
 
-// world is one scope's worth of data: a tracker item with its issue, a pull
-// request on it, a private issue only kyle may read, the events they cite and a
-// topic with two stances.
 type world struct {
 	src, scope, project string
 	issue, pr, secret   string
-	server              *httptest.Server
-	calls               *api.Calls
-	pool                *pgxpool.Pool
-	// putIn writes an event and its document, about an entity of the caller's
-	// choosing and the project's code entity, as l1.Build would.
+	client
+	calls *api.Calls
+	pool  *pgxpool.Pool
+
 	putIn func(scope, artifact string, kind l1.Kind, hour int, summary string, acl connector.ACL, questions ...string) string
 }
 
@@ -91,8 +63,8 @@ func newWorld(t *testing.T) *world {
 	t.Setenv("HEARSAY_TEST_SAM_TOKEN", "test-sam-api-credential")
 	t.Setenv("HEARSAY_TEST_SHED_TOKEN", "test-shed-api-credential")
 	t.Setenv("HEARSAY_TEST_PEEK_TOKEN", "test-peek-api-credential")
-	pool := newPool(t)
-	w := &world{src: newSource(), pool: pool}
+	pool := dbtest.Pool(t)
+	w := &world{src: dbtest.UniqueID(), pool: pool, client: client{credential: testCredential}}
 	w.project = "acme/" + w.src
 	w.scope = "tracker:" + w.src + ":" + w.project + "#12"
 	ctx := t.Context()
@@ -105,38 +77,10 @@ func newWorld(t *testing.T) *world {
 
 	w.putIn = func(scope, artifact string, kind l1.Kind, hour int, summary string, acl connector.ACL, questions ...string) string {
 		t.Helper()
-		ev := connector.Event{
-			Source: w.src, NativeID: artifact, Kind: connector.KindIssue, Time: day.Add(time.Duration(hour) * time.Hour),
-			Payload: connector.Payload{
-				Artifact: artifact, Title: summary,
-				Container: connector.Container{Kind: connector.ContainerRepository, NativeID: w.project},
-				Author:    &connector.Identity{Source: w.src, Kind: connector.IdentityUser, NativeID: kyleNode},
-			},
-			ACL: acl,
-		}
-		class := config.ArtifactIssue
-		if kind == l1.KindPR {
-			// Every pull request in these fixtures merged: it is the
-			// authoritative artifact the ratified stances rest on.
-			ev.Kind, class = connector.KindPullRequest, config.ArtifactMergedPR
-		}
-		if _, err := events.Append(ctx, ev); err != nil {
-			t.Fatalf("Append(%s) = %v", artifact, err)
-		}
-		at := day.Add(time.Duration(hour) * time.Hour)
-		doc := l1.Document{
-			ID: l1.DocID(w.src, artifact), Kind: kind, ArtifactClass: class,
-			Source: l1.Source{System: w.src, NativeID: artifact},
-			L0Refs: []string{connector.EventID(w.src, artifact)},
-			Time:   l1.Times{Created: at, Updated: at, LastActivity: at},
-			Scope:  []string{scope, "code:" + w.project},
-			ACL:    acl, Text: summary, RawText: summary,
-			Body: l1.Body{Summary: summary, OutcomeKind: l1.OutcomeDecided, OpenQuestions: questions},
-		}
-		if _, err := docs.Put(ctx, doc); err != nil {
-			t.Fatalf("Put(%s) = %v", doc.ID, err)
-		}
-		return doc.ID
+		return putDocument(t, events, docs, documentSpec{
+			src: w.src, project: w.project, artifact: artifact, kind: kind, hour: hour, text: summary, acl: acl,
+			scope: []string{scope, "code:" + w.project}, questions: questions,
+		})
 	}
 	put := func(artifact string, kind l1.Kind, hour int, summary string, acl connector.ACL, questions ...string) string {
 		t.Helper()
@@ -174,7 +118,7 @@ func newWorld(t *testing.T) *world {
 			t.Fatal(err)
 		}
 	}
-	// A private stance on a public topic, older than everything else on it.
+
 	stance(topic, w.secret, "an early private note", 0, l2.TierInferred, l2.JudgementUnknown, private)
 	stance(topic, w.issue, "in the request path, behind a flag", 1, l2.TierInferred, l2.JudgementUnknown, public)
 	stance(topic, w.pr, "in the worker", 2, l2.TierRatified, l2.JudgementChanges, public)
@@ -189,81 +133,6 @@ func newWorld(t *testing.T) *world {
 	w.server = httptest.NewServer(api.Handler(calls, pool))
 	t.Cleanup(w.server.Close)
 	return w
-}
-
-func (w *world) post(t *testing.T, path string, caller api.Caller, body string) (int, []byte) {
-	t.Helper()
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, w.server.URL+path, strings.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if caller.Principal != "" {
-		req.Header.Set(api.PrincipalHeader, caller.Principal)
-		switch caller.Principal {
-		case "kyle":
-			req.Header.Set(api.AuthorizationHeader, "Bearer test-kyle-api-credential")
-		case "sam":
-			req.Header.Set(api.AuthorizationHeader, "Bearer test-sam-api-credential")
-		case "shed":
-			req.Header.Set(api.AuthorizationHeader, "Bearer test-shed-api-credential")
-		}
-	}
-	if caller.Agent != "" {
-		req.Header.Set(api.AgentHeader, caller.Agent)
-		switch caller.Agent {
-		case "sam":
-			req.Header.Set(api.AgentTokenHeader, "test-sam-api-credential")
-		case "shed":
-			req.Header.Set(api.AgentTokenHeader, "test-shed-api-credential")
-		case "peek":
-			req.Header.Set(api.AgentTokenHeader, "test-peek-api-credential")
-		}
-	}
-	if caller.Session != "" {
-		req.Header.Set(api.SessionHeader, caller.Session)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	got, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return resp.StatusCode, got
-}
-
-// http calls over HTTP and fails the test on anything but a 200.
-func (w *world) http(t *testing.T, caller api.Caller, call string, args any) []byte {
-	t.Helper()
-	body, _ := json.Marshal(args)
-	status, got := w.post(t, "/v1/"+call, caller, string(body))
-	if status != http.StatusOK {
-		t.Fatalf("POST /v1/%s = %d %s", call, status, got)
-	}
-	return got
-}
-
-// mcp calls the same over MCP and returns the tool result's text.
-func (w *world) mcp(t *testing.T, caller api.Caller, call string, args any) ([]byte, bool) {
-	t.Helper()
-	body, _ := json.Marshal(map[string]any{
-		"jsonrpc": "2.0", "id": 7, "method": "tools/call",
-		"params": map[string]any{"name": call, "arguments": args},
-	})
-	status, got := w.post(t, "/mcp", caller, string(body))
-	if status != http.StatusOK {
-		t.Fatalf("POST /mcp = %d %s", status, got)
-	}
-	var resp struct {
-		Result api.ToolResult `json:"result"`
-		Error  any            `json:"error"`
-	}
-	if err := json.Unmarshal(got, &resp); err != nil || resp.Error != nil || len(resp.Result.Content) != 1 {
-		t.Fatalf("tools/call answered %s", got)
-	}
-	return []byte(resp.Result.Content[0].Text), resp.Result.IsError
 }
 
 var (
@@ -281,8 +150,6 @@ func decodeBundle(t *testing.T, body []byte) bundle.Bundle {
 	return b
 }
 
-// The same request over MCP and HTTP returns byte-identical bundles — and the
-// same for every other call, and for a refusal.
 func TestTheSameRequestIsByteIdenticalOverMCPAndHTTP(t *testing.T) {
 	w := newWorld(t)
 	cases := []struct {
@@ -328,8 +195,6 @@ func TestTheSameRequestIsByteIdenticalOverMCPAndHTTP(t *testing.T) {
 	})
 }
 
-// Same scope, same principal, no new events yields the same bundle; a new event
-// on the scope changes it.
 func TestABundleChangesOnlyWhenTheScopeDoes(t *testing.T) {
 	w := newWorld(t)
 	args := map[string]any{"scope": w.scope}
@@ -339,8 +204,6 @@ func TestABundleChangesOnlyWhenTheScopeDoes(t *testing.T) {
 		t.Fatalf("two bundles with nothing new between them differ:\n%s\n%s", first, again)
 	}
 
-	// Serving a bundle writes an audit event; that is an event, and it is not
-	// one on the scope, so it must not move the bundle.
 	docs := l1.New(w.pool)
 	at := day.Add(5 * time.Hour)
 	artifact := w.project + "#15"
@@ -361,8 +224,6 @@ func TestABundleChangesOnlyWhenTheScopeDoes(t *testing.T) {
 	}
 }
 
-// Every line in a bundle carries an L1 or L0 id that resolves through get_l1 or
-// get_l0 — for the reader it was served to.
 func TestEveryLineCarriesAnIDThatResolves(t *testing.T) {
 	w := newWorld(t)
 	for _, caller := range []api.Caller{kyle, sam, shedKyle} {
@@ -408,8 +269,6 @@ func TestEveryLineCarriesAnIDThatResolves(t *testing.T) {
 	}
 }
 
-// Every read is filtered by principal: what kyle may read and sam may not is
-// nowhere in sam's bundle, and is refused by the handles the way a missing id is.
 func TestEveryReadIsFilteredByPrincipal(t *testing.T) {
 	w := newWorld(t)
 	kyles := string(w.http(t, kyle, "get_bundle", map[string]any{"scope": w.scope}))
@@ -496,18 +355,13 @@ func TestEveryReadIsFilteredByPrincipal(t *testing.T) {
 			t.Errorf("%s: get_bundle = %d %s, want %d", tc.name, status, got, tc.status)
 		}
 	}
-	// An agent nobody configured is named as such, not as a malformed id.
+
 	if status, got := w.post(t, "/v1/get_bundle", api.Caller{Principal: "kyle", Agent: "mallory"}, `{"scope":"`+w.scope+`"}`); status != http.StatusForbidden ||
 		!strings.Contains(string(got), `mallory\" is not a configured principal`) {
 		t.Errorf("an unknown agent: get_bundle = %d %s, want 403 naming it", status, got)
 	}
 }
 
-// A topic and every stance on it are served on what their documents allow now.
-// When the repository's documents are re-synced private, an outside reader
-// loses the topic and its whole history — the superseded stances too — and a
-// retracted document takes stances resting only on it with it. A topic with no
-// surviving stance becomes unavailable.
 func TestStancesAndTopicsFollowTheirEvidenceAfterAResync(t *testing.T) {
 	w := newWorld(t)
 	ctx := t.Context()
@@ -537,9 +391,6 @@ func TestStancesAndTopicsFollowTheirEvidenceAfterAResync(t *testing.T) {
 		return string(w.http(t, caller, "get_bundle", map[string]any{"scope": w.scope}))
 	}
 
-	// The merged pull request goes private: its stance, the topic's current
-	// one, goes from sam's bundle and from sam's history, and the older one is
-	// not offered as current in its place.
 	resync(w.pr, private)
 	if status, got := history(sam); status != http.StatusOK || strings.Contains(got, "in the worker") ||
 		!strings.Contains(got, "in the request path, behind a flag") {
@@ -555,8 +406,6 @@ func TestStancesAndTopicsFollowTheirEvidenceAfterAResync(t *testing.T) {
 		t.Errorf("kyle's bundle lost what kyle may read: %s", kyles)
 	}
 
-	// The issue that opened the topic goes private too: the topic is gone for
-	// sam, and with it every stance on it, superseded or not.
 	resync(w.issue, private)
 	if status, got := history(sam); status != http.StatusNotFound || strings.Contains(got, "behind a flag") {
 		t.Errorf("sam's history of a topic whose document went private = %d %s, want 404", status, got)
@@ -566,8 +415,6 @@ func TestStancesAndTopicsFollowTheirEvidenceAfterAResync(t *testing.T) {
 		t.Errorf("kyle's history = %d %s, want every stance", status, got)
 	}
 
-	// The pull request is retracted: its stance goes for everyone, and the
-	// topic it opened with it.
 	if _, err := docs.Delete(ctx, w.pr); err != nil {
 		t.Fatal(err)
 	}
@@ -583,8 +430,6 @@ func TestStancesAndTopicsFollowTheirEvidenceAfterAResync(t *testing.T) {
 	}
 }
 
-// Every bundle served writes an L0 audit event: who asked, on whose behalf,
-// what scope and what was filtered.
 func TestEveryBundleServedIsAnAuditEvent(t *testing.T) {
 	w := newWorld(t)
 	body := w.http(t, shedKyle, "get_bundle", map[string]any{"scope": w.scope})
@@ -602,8 +447,7 @@ func TestEveryBundleServedIsAnAuditEvent(t *testing.T) {
 		}
 		if rec.Scope == w.scope {
 			records = append(records, rec)
-			// The one who asked is the author; the person they asked for, where
-			// that is someone else, took part.
+
 			author := ev.Payload.Author
 			switch {
 			case rec.Agent == "shed" && (author.Kind != connector.IdentityAgent || author.NativeID != "shed" ||
@@ -615,8 +459,7 @@ func TestEveryBundleServedIsAnAuditEvent(t *testing.T) {
 			if len(ev.ACL) != 1 || ev.ACL[0].NativeID != rec.Principal {
 				t.Errorf("the audit event's acl = %+v, want the principal it was served for alone", ev.ACL)
 			}
-			// get_l0 serves it to nobody — not even the principal it was
-			// served for, who holds no identity in the `hearsay` source.
+
 			body, _ := json.Marshal(map[string]string{"id": ev.ID})
 			if status, got := w.post(t, "/v1/get_l0", api.Caller{Principal: rec.Principal}, string(body)); status != http.StatusNotFound {
 				t.Errorf("get_l0 of %s's own audit event = %d %s, want 404", rec.Principal, status, got)
@@ -638,11 +481,6 @@ func TestEveryBundleServedIsAnAuditEvent(t *testing.T) {
 	}
 }
 
-// Every topic any document in a repository opened is about the repository's
-// code entity, because a document's scope is. Another item's topics are
-// inherited by this one, never its own, and however many ratified stances they
-// carry the bundle stays within its budget — while the item whose topics they
-// are still holds them as its own.
 func TestAnotherItemsTopicsAreInheritedAndDropFirst(t *testing.T) {
 	w := newWorld(t)
 	public := connector.ACL{{Kind: connector.ACLPublic}}
@@ -692,8 +530,6 @@ func TestAnotherItemsTopicsAreInheritedAndDropFirst(t *testing.T) {
 	}
 }
 
-// The budget holds over the wire: a small one drops recent before stances and
-// never drops the ratified stance.
 func TestTheBudgetHoldsOverTheWire(t *testing.T) {
 	w := newWorld(t)
 	w.calls.WithBudget(1)
@@ -749,9 +585,8 @@ func TestMCPSpeaksTheProtocol(t *testing.T) {
 	}
 }
 
-// Readiness is the database, and says so when it is gone.
 func TestReadinessSaysWhenTheDatabaseIsGone(t *testing.T) {
-	closed := newPool(t)
+	closed := dbtest.Pool(t)
 	closed.Close()
 	calls, err := api.NewCalls(closed, config.Repo{}, nil)
 	if err != nil {
@@ -771,10 +606,8 @@ func TestReadinessSaysWhenTheDatabaseIsGone(t *testing.T) {
 	}
 }
 
-// Run serves on its listener, answers health and readiness, and stops when its
-// context does.
 func TestRunServesUntilCancelled(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	var lc net.ListenConfig
 	listener, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
@@ -785,22 +618,12 @@ func TestRunServesUntilCancelled(t *testing.T) {
 	go func() { done <- api.Run(ctx, &config.Config{}, api.Deps{Pool: pool, Listener: listener}) }()
 
 	base := "http://" + listener.Addr().String()
-	// A client of its own that keeps nothing open: a connection dialed and never
-	// used is one the server's shutdown waits on, and this test is about Run
-	// stopping, not about somebody else's idle socket.
+
 	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 	defer client.CloseIdleConnections()
 	for _, path := range []string{"/healthz", "/readyz"} {
-		var resp *http.Response
-		deadline := time.Now().Add(5 * time.Second)
-		for {
-			req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, base+path, nil)
-			resp, err = client.Do(req)
-			if err == nil || time.Now().After(deadline) {
-				break
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, base+path, nil)
+		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatalf("GET %s: %v", path, err)
 		}
@@ -869,8 +692,7 @@ func TestEventDirectiveUsesCurrentRevisionAndPermission(t *testing.T) {
 			t.Fatalf("non-agent mention gave %+v", got.Directive)
 		}
 	}
-	// A later revision narrows the ACL and changes the text. The old event id
-	// cannot replay its earlier, public payload on a repeated request.
+
 	edit := base
 	edit.NativeID = artifact + "@edit1"
 	edit.Payload.Revision = &connector.Revision{Token: "edit1", EditedAt: day.Add(time.Hour)}
@@ -888,7 +710,7 @@ func TestEventDirectiveUsesCurrentRevisionAndPermission(t *testing.T) {
 	if !bytes.Equal(denied, absent) {
 		t.Fatalf("denied event disclosed its existence: %s versus %s", denied, absent)
 	}
-	// Private channel membership is resolved from the configured group at read time.
+
 	private := edit
 	private.NativeID = artifact + "@edit2"
 	private.Payload.Revision = &connector.Revision{Token: "edit2", EditedAt: day.Add(2 * time.Hour)}
@@ -900,7 +722,7 @@ func TestEventDirectiveUsesCurrentRevisionAndPermission(t *testing.T) {
 	if got := decodeBundle(t, w.http(t, sam, "get_bundle", args)).Directive; got != nil {
 		t.Fatalf("non-member saw private channel: %+v", got)
 	}
-	// An inaccessible replacement ACL takes effect even for an old event id.
+
 	removed := private
 	removed.NativeID = artifact + "@edit3"
 	removed.Payload.Revision = &connector.Revision{Token: "edit3", EditedAt: day.Add(3 * time.Hour)}
@@ -961,15 +783,10 @@ func mustJSON(t *testing.T, v any) []byte {
 	return b
 }
 
-// standing is where one topic stands as each read serves it: the current
-// position and tier in the bundle and in the L3 view, and the current stance
-// and tier in stance_history.
 type standing struct {
 	bundle, view, history string
 }
 
-// standingOf reads one topic three ways for kyle, through the given call layer
-// and the L3 view under the given authority.
 func (w *world) standingOf(t *testing.T, calls *api.Calls, authority config.Authority, topic l2.Topic) standing {
 	t.Helper()
 	var got standing
@@ -1011,11 +828,6 @@ func (w *world) standingOf(t *testing.T, calls *api.Calls, authority config.Auth
 	return got
 }
 
-// A topic becomes contested when an issue changes what another issue said, and
-// settles when a merged pull request lands — and L3, the bundle and
-// stance_history serve the same current stance and tier at every step. The tier
-// is computed on the read, so a scope's policy that stops merged pull requests
-// ratifying takes effect with nothing rewritten.
 func TestATopicIsContestedUntilAMergedPullRequestSettlesIt(t *testing.T) {
 	w := newWorld(t)
 	ctx := t.Context()
@@ -1055,22 +867,11 @@ func TestATopicIsContestedUntilAMergedPullRequestSettlesIt(t *testing.T) {
 	stance(merged, "each service team", 12, l2.TierRatified, l2.JudgementRestates)
 	same("a merged pull request lands", "each service team @ ratified")
 
-	// The same rows under a policy for this scope in which nothing ratifies on
-	// its own: the tier the rows were written with does not decide.
-	dir := t.TempDir()
-	for name, body := range map[string]string{
+	dir := configtest.Write(t, map[string]string{
 		"sources/github.yaml": "id: " + w.src + "\ntype: github\ncontainers: [" + w.project + "]\n",
 		"scopes/scope.yaml":   "id: " + w.src + "\nsources: [" + w.src + "]\n",
 		"authority/a.yaml":    "scope: " + w.src + "\nratified_by:\n  artifacts: []\n",
-	} {
-		full := filepath.Join(dir, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
+	})
 	loaded, err := config.Load(dir)
 	if err != nil {
 		t.Fatalf("Load() = %v", err)
@@ -1087,9 +888,6 @@ func TestATopicIsContestedUntilAMergedPullRequestSettlesIt(t *testing.T) {
 	}
 }
 
-// A stance only kyle may read changes nothing for sam: the topic is contested
-// for kyle, who reads both sides of the disagreement, and inferred for sam, who
-// reads one. Both are served the same current stance.
 func TestAStanceAReaderMayNotReadDoesNotContestForThem(t *testing.T) {
 	w := newWorld(t)
 	ctx := t.Context()
@@ -1155,4 +953,49 @@ func TestAStanceAReaderMayNotReadDoesNotContestForThem(t *testing.T) {
 			t.Errorf("sam's history holds the private position: %s", body)
 		}
 	}
+}
+
+type documentSpec struct {
+	src, project, artifact string
+	kind                   l1.Kind
+	hour                   int
+	text                   string
+	acl                    connector.ACL
+	scope                  []string
+	refs                   []l1.Reference
+	questions              []string
+}
+
+func putDocument(t *testing.T, events *l0.Store, docs *l1.Store, d documentSpec) string {
+	t.Helper()
+	at := day.Add(time.Duration(d.hour) * time.Hour)
+	ev := connector.Event{
+		Source: d.src, NativeID: d.artifact, Kind: connector.KindIssue, Time: at,
+		Payload: connector.Payload{
+			Artifact: d.artifact, Title: d.text,
+			Container: connector.Container{Kind: connector.ContainerRepository, NativeID: d.project},
+			Author:    &connector.Identity{Source: d.src, Kind: connector.IdentityUser, NativeID: kyleNode},
+		},
+		ACL: d.acl,
+	}
+	class := config.ArtifactIssue
+	if d.kind == l1.KindPR {
+		ev.Kind, class = connector.KindPullRequest, config.ArtifactMergedPR
+	}
+	if _, err := events.Append(t.Context(), ev); err != nil {
+		t.Fatalf("Append(%s) = %v", d.artifact, err)
+	}
+	doc := l1.Document{
+		ID: l1.DocID(d.src, d.artifact), Kind: d.kind, ArtifactClass: class,
+		Source: l1.Source{System: d.src, NativeID: d.artifact},
+		L0Refs: []string{connector.EventID(d.src, d.artifact)},
+		Time:   l1.Times{Created: at, Updated: at, LastActivity: at},
+		Scope:  d.scope, References: d.refs,
+		ACL: d.acl, Text: d.text, RawText: d.text,
+		Body: l1.Body{Summary: d.text, OutcomeKind: l1.OutcomeDecided, OpenQuestions: d.questions},
+	}
+	if _, err := docs.Put(t.Context(), doc); err != nil {
+		t.Fatalf("Put(%s) = %v", doc.ID, err)
+	}
+	return doc.ID
 }

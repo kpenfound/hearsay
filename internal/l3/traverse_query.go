@@ -153,7 +153,6 @@ func (q Query) Validate() error {
 
 func validateWhere(typ string, where map[string]json.RawMessage) error {
 	allowed := map[string]string{"entity": " type state ", "document": " kind class state since ", "topic": " tier since ", "stance": " current since "}
-	// Sorting also makes the first validation error deterministic.
 	for _, key := range sortedWhere(where) {
 		raw := where[key]
 		if !strings.Contains(allowed[typ], " "+key+" ") {

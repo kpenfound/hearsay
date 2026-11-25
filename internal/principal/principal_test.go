@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
@@ -23,6 +24,10 @@ func TestKindValid(t *testing.T) {
 			t.Errorf("%q is valid", k)
 		}
 	}
+}
+
+func TestKindsDoesNotShareItsSlice(t *testing.T) {
+	kinds := principal.Kinds()
 	kinds[0] = "robot"
 	if principal.Kinds()[0] != principal.KindHuman {
 		t.Error("Kinds() shares its slice")
@@ -46,12 +51,12 @@ func TestFoldHandle(t *testing.T) {
 }
 
 func TestValidID(t *testing.T) {
-	for _, id := range []string{"kyle", "api-team", "shed_2", "a", "0", strings.Repeat("a", principal.MaxIDLen)} {
+	for _, id := range []string{"kyle", "api-team", "shed_2", "a", "0", strings.Repeat("a", connector.MaxSourceIDLen)} {
 		if !principal.ValidID(id) {
 			t.Errorf("%q is not a principal id", id)
 		}
 	}
-	for _, id := range []string{"", "Kyle", "kyle penfound", "-kyle", "_kyle", "kyle@acme", strings.Repeat("a", principal.MaxIDLen+1)} {
+	for _, id := range []string{"", "Kyle", "kyle penfound", "-kyle", "_kyle", "kyle@acme", strings.Repeat("a", connector.MaxSourceIDLen+1)} {
 		if principal.ValidID(id) {
 			t.Errorf("%q is a principal id", id)
 		}

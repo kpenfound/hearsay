@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/llm"
 )
 
@@ -70,16 +71,6 @@ func (in JudgmentInputs) DocumentRevision() (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// The query has one MVCC snapshot. No source text is returned: complete row
-// hashes cover revisions even when a caller changed text without a timestamp.
-// Markers cover input artifact pairs, conversation membership and operations on
-// the conservative connected-topic closure (including undone operations).
-// Unknown derived membership uses a source-wide fallback. Counts see committed
-// markers, including late commits that a sequence watermark would miss.
-// Membership also follows artifact markers for every historical member, even
-// those omitted by the ACL fold: a concurrent tombstone/revision trigger may
-// not have seen that member's uncommitted history. Only identity hashes for
-// these additional artifacts enter the state; they are not question evidence.
 const judgmentInputsSQL = `WITH RECURSIVE
  topic_ids(id) AS (
    SELECT unnest($3::text[])
@@ -176,10 +167,6 @@ func (s *Store) CaptureJudgmentInputs(ctx context.Context, spec JudgmentInputSpe
 	return out, nil
 }
 
-// SourceBuilt has no output row from which to infer conversation identity.
-// Ordinary artifact documents read replies on their artifact key; channel
-// windows carry a parseable key. Derived bursts/sections/segments have no
-// unambiguous conversation key here, so retain the source-wide fallback.
 func judgmentMembership(spec JudgmentInputSpec) json.RawMessage {
 	if !spec.SourceBuilt {
 		return json.RawMessage(`{}`)
@@ -221,16 +208,18 @@ type JudgmentRecord struct {
 	ModelVersion    string
 	Mode            string
 	Policy          string
-	Outcome         string // answer, abstain, fallback
-	Label           string
-	FallbackReason  string
-	Probabilities   map[string]float64
-	Confidence      *float64
-	Attempts        *int64
-	Usage           llm.JudgmentUsage
-	State           string // attempt or committed (read-only)
-	StartedAt       time.Time
-	CommittedAt     *time.Time
+	// Outcome is answer, abstain or fallback.
+	Outcome        string
+	Label          string
+	FallbackReason string
+	Probabilities  map[string]float64
+	Confidence     *float64
+	Attempts       *int64
+	Usage          llm.JudgmentUsage
+	// State is attempt or committed. It is read-only.
+	State       string
+	StartedAt   time.Time
+	CommittedAt *time.Time
 }
 
 // JournalRefusal is a sanitized journal refusal. None of these errors expose
@@ -304,9 +293,6 @@ func CommitJudgments(ctx context.Context, tx pgx.Tx, records []JudgmentRecord, o
 	for _, o := range observations {
 		batchInputs = append(batchInputs, o.Inputs)
 	}
-	// A batch's records usually share one input snapshot, one record per
-	// atomic judgment. Each distinct snapshot is captured once, under the
-	// guard, and every input naming it is still checked against that capture.
 	canonical := make(map[string]JudgmentInputs, len(batchInputs))
 	for _, in := range batchInputs {
 		current, seen := canonical[in.Hash]
@@ -360,34 +346,12 @@ func deletedInputs(in JudgmentInputs) bool {
 	return json.Unmarshal(in.State, &state) != nil || state.Deleted
 }
 
-// BeginJudgment records a durable attempt on the store's connection. Use an
-// autocommit store before calling the provider so a crash leaves an attempt.
-// Its ID is supplied to CommitJudgments, which completes that same attempt.
-func (s *Store) BeginJudgment(ctx context.Context, r JudgmentRecord) (string, error) {
-	current, err := s.CaptureJudgmentInputs(ctx, r.Inputs.Spec)
-	if err != nil {
-		return "", journalRefusal(err)
-	}
-	if current.Hash != r.Inputs.Hash || deletedInputs(current) {
-		return "", JournalInputsChanged
-	}
-	r.Inputs = current
-	if r.ID == "" {
-		var b [16]byte
-		if _, err := rand.Read(b[:]); err != nil {
-			return "", fmt.Errorf("minting judgment id: %w", err)
-		}
-		r.ID = "jud_" + hex.EncodeToString(b[:])
-	}
-	if err := s.writeJudgment(ctx, r, false); err != nil {
-		return "", JournalStorageFailure
-	}
-	return r.ID, nil
-}
-
-// BeginJudgments records attempts for a batch of questions that share one
-// input snapshot, capturing it once and writing every attempt in one round trip
-// where the store's connection can batch. It returns the ids in record order.
+// BeginJudgments records durable attempts for a batch of questions that share
+// one input snapshot, capturing it once and writing every attempt in one round
+// trip where the store's connection can batch. Use an autocommit store before
+// calling the provider so a crash leaves an attempt. It returns the ids in
+// record order, and each id is supplied to CommitJudgments, which completes
+// that same attempt.
 func (s *Store) BeginJudgments(ctx context.Context, records []JudgmentRecord) ([]string, error) {
 	if len(records) == 0 {
 		return nil, nil
@@ -428,14 +392,11 @@ func (s *Store) BeginJudgments(ctx context.Context, records []JudgmentRecord) ([
 	return ids, nil
 }
 
-// batcher is what pgx's pool and transactions offer beyond [Querier].
 type batcher interface {
 	SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults
 }
 
-// sendJudgments runs queued journal writes, in one round trip when db can
-// batch and one by one otherwise. Every write must return its row.
-func sendJudgments(ctx context.Context, db Querier, batch *pgx.Batch) error {
+func sendJudgments(ctx context.Context, db db.Querier, batch *pgx.Batch) error {
 	if b, ok := db.(batcher); ok {
 		results := b.SendBatch(ctx, batch)
 		for range batch.QueuedQueries {
@@ -456,18 +417,6 @@ func sendJudgments(ctx context.Context, db Querier, batch *pgx.Batch) error {
 	return nil
 }
 
-func (s *Store) writeJudgment(ctx context.Context, r JudgmentRecord, committed bool) error {
-	args, err := judgmentArgs(r, committed)
-	if err != nil {
-		return err
-	}
-	var id string
-	return s.db.QueryRow(ctx, writeJudgmentSQL, args...).Scan(&id)
-}
-
-// writeJudgmentsBatch writes committed records in one round trip. Each row
-// must be written, exactly as writeJudgment would; any row the conflict rule
-// refuses fails the batch.
 func writeJudgmentsBatch(ctx context.Context, tx pgx.Tx, records []JudgmentRecord) error {
 	if len(records) == 0 {
 		return nil
@@ -539,44 +488,15 @@ const writeJudgmentSQL = `INSERT INTO judgment_journal
             excluded.probabilities,excluded.confidence,excluded.attempts,excluded.input_tokens,excluded.output_tokens,excluded.cost_usd)))
       RETURNING id`
 
-// LookupJudgment returns only committed results for exactly matching current
-// inputs and question identity. Model configuration is deliberately not a key:
-// a restart or model upgrade must not reinterpret a consumed decision.
-func (s *Store) LookupJudgment(ctx context.Context, reader Reader, task, version, questionHash string, inputs JudgmentInputs) (*JudgmentRecord, error) {
-	spec, err := json.Marshal(inputs.Spec)
-	if err != nil {
-		return nil, JournalStorageFailure
-	}
-	// State validation and record selection share one SQL snapshot. A source
-	// edit between two round trips must not make an old result reusable.
-	q := &query{args: []any{inputs.Spec.DocumentID, orEmpty(inputs.Spec.EventIDs), orEmpty(inputs.Spec.CandidateTopicIDs), orEmpty(inputs.Spec.ComparedStanceIDs), judgmentMembership(inputs.Spec), spec, inputs.Hash, task, version, questionHash}}
-	filter, ok := reader.predicate(q, "")
-	if !ok {
-		return nil, nil
-	}
-	q.sql = `WITH current_inputs AS (` + judgmentInputQuery(inputs.Spec) + `) SELECT ` + judgmentColumns + ` FROM judgment_journal WHERE ` + filter + `
-      AND state='committed' AND inputs->'spec'=$6::jsonb AND input_hash=$7
-      AND task=$8 AND question_version=$9 AND question_hash=$10
-      AND inputs->'state'=(SELECT state FROM current_inputs)
-      AND NOT (SELECT (state->>'deleted')::boolean FROM current_inputs)
-      ORDER BY started_at DESC,id DESC`
-	records, err := s.readJudgments(ctx, reader, q)
-	if err != nil {
-		return nil, err
-	}
-	if len(records) == 0 {
-		return nil, nil
-	}
-	return &records[0], nil
-}
-
 // JudgmentKey names one question of a batch: its task, question version and
 // question hash.
 type JudgmentKey struct{ Task, Version, QuestionHash string }
 
-// LookupJudgments is [Store.LookupJudgment] for a batch of questions over the
-// same inputs, in one query and one snapshot. The result maps each key that
-// has a reusable committed record to the newest one.
+// LookupJudgments returns only committed results for exactly matching current
+// inputs and question identity, for a batch of questions over the same inputs,
+// in one query and one snapshot. Model configuration is deliberately not a key:
+// a restart or model upgrade must not reinterpret a consumed decision. The
+// result maps each key that has a reusable committed record to the newest one.
 func (s *Store) LookupJudgments(ctx context.Context, reader Reader, keys []JudgmentKey, inputs JudgmentInputs) (map[JudgmentKey]JudgmentRecord, error) {
 	out := map[JudgmentKey]JudgmentRecord{}
 	if len(keys) == 0 {

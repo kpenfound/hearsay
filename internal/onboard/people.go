@@ -48,13 +48,9 @@ type SlackReader interface {
 	Users(ctx context.Context) ([]slack.User, error)
 }
 
-// person is one human principal being written.
 type person struct {
-	id, name string
-	// login is their GitHub login, when GitHub said they are a collaborator.
-	login string
-	// email is the address their GitHub profile makes public, which is what
-	// a Drive account is matched on.
+	id, name                         string
+	login                            string
 	email                            string
 	github, discord, slackID, gdrive *principal.Identity
 	operator                         bool
@@ -70,10 +66,6 @@ func (p *person) identities() []principal.Identity {
 	return out
 }
 
-// people seeds the human principals: the operator, as they described
-// themselves, and with GitHub credentials every collaborator of the
-// repositories, with a Discord or Drive identity only where the sources
-// confirm one without a guess. notes says what was left out and why.
 func people(ctx context.Context, in Input, dir Directory) (all []*person, notes []string, err error) {
 	op := &person{id: in.Operator.ID, name: in.Operator.Name, operator: true}
 	if in.Operator.GitHub != "" {
@@ -161,8 +153,6 @@ func people(ctx context.Context, in Input, dir Directory) (all []*person, notes 
 	return all, notes, nil
 }
 
-// slackIdentities joins only a unique email on both sides. The operator's
-// stated Slack id is kept, but never assigned to somebody else as well.
 func slackIdentities(ctx context.Context, all []*person, reader SlackReader) ([]string, error) {
 	users, err := reader.Users(ctx)
 	if errors.Is(err, slack.ErrEmailScope) {
@@ -217,12 +207,6 @@ func slackIdentities(ctx context.Context, all []*person, reader SlackReader) ([]
 	return notes, nil
 }
 
-// discordIdentities adds the Discord account each collaborator links from
-// their GitHub profile, where exactly one of them links it and it is a member
-// of the guild. Discord shows a bot no email address and no linked accounts,
-// so the link a person published on GitHub, confirmed by the guild, is the
-// only match the sources give: a Discord username that happens to equal a
-// GitHub login is no evidence (docs/config.md, "Matching is per source").
 func discordIdentities(ctx context.Context, all []*person, dir Directory) ([]string, error) {
 	var notes []string
 	claims := map[string][]*person{}
@@ -253,8 +237,6 @@ func discordIdentities(ctx context.Context, all []*person, dir Directory) ([]str
 		if !p.operator || p.discord == nil {
 			continue
 		}
-		// The operator's own word about their account is written as given; the
-		// guild only adds the username to it.
 		m, ok, err := dir.Discord.Member(ctx, p.discord.NativeID)
 		if err != nil {
 			return nil, err
@@ -307,10 +289,6 @@ func discordTaken(all []*person, id string) bool {
 	return false
 }
 
-// driveIdentities adds the Drive account whose address a collaborator's
-// GitHub profile makes public, where the folders are shared with exactly that
-// address and no other collaborator publishes it. The operator's own address,
-// if they gave one, stands for theirs.
 func driveIdentities(ctx context.Context, in Input, all []*person, dir Directory) ([]string, error) {
 	var notes []string
 	shared := map[string][]drive.User{}
@@ -361,8 +339,6 @@ func driveIdentities(ctx context.Context, in Input, all []*person, dir Directory
 
 func foldEmail(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 
-// logins names people for a note: the GitHub login, or the principal id of
-// the operator who is not a collaborator.
 func logins(ps []*person) []string {
 	out := make([]string, 0, len(ps))
 	for _, p := range ps {

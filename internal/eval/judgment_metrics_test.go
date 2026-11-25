@@ -19,19 +19,30 @@ func observation(stage string) l1.PipelineObservation {
 	return l1.PipelineObservation{Stage: stage, Cohort: "accepted", HandlerNS: count(int64(time.Second)), QueueDelayNS: count(int64(2 * time.Second)), GenerativeCalls: count(2), GenerativeAttempts: count(3), GenerativeUsage: usage(100, 10, .25), JudgmentRequests: count(1), JudgmentAttempts: count(1), JudgmentUsage: usage(20, 1, .05), CandidateCount: count(5)}
 }
 
-func TestPipelineTotals(t *testing.T) {
+func pipelineReport() eval.PipelineReport {
 	a, b, c := observation("distill"), observation("assert"), observation("assert")
 	c.JudgmentUsage = llm.JudgmentUsage{}
-	b.JudgmentAttempts = count(3) // retries do not inflate requests
-	report := eval.SummarizePipelines([]l1.PipelineObservation{a, b, c, observation("replay")})
-	if m := report.Distill; m.Runs != 1 || m.TotalCostUSD == nil || math.Abs(*m.TotalCostUSD-.30) > 1e-12 || *m.GenerativeCalls != 2 || m.GenerativeAttempts == nil || *m.GenerativeAttempts != 3 || *m.CandidateCount != 5 || *m.HandlerSeconds != 1 || *m.QueueDelaySeconds != 2 {
+	b.JudgmentAttempts = count(3)
+	return eval.SummarizePipelines([]l1.PipelineObservation{a, b, c, observation("replay")})
+}
+
+func TestPipelineDistillTotals(t *testing.T) {
+	m := pipelineReport().Distill
+	if m.Runs != 1 || m.TotalCostUSD == nil || math.Abs(*m.TotalCostUSD-.30) > 1e-12 || *m.GenerativeCalls != 2 || m.GenerativeAttempts == nil || *m.GenerativeAttempts != 3 || *m.CandidateCount != 5 || *m.HandlerSeconds != 1 || *m.QueueDelaySeconds != 2 {
 		t.Fatalf("distill=%+v", m)
 	}
-	if m := report.Assert; m.Runs != 2 || *m.JudgmentRequests != 2 || *m.JudgmentAttempts != 4 || m.TotalCostUSD != nil {
+}
+
+func TestPipelineAssertTotalsLeaveCostUnknownWhenAnyRunHasNone(t *testing.T) {
+	m := pipelineReport().Assert
+	if m.Runs != 2 || *m.JudgmentRequests != 2 || *m.JudgmentAttempts != 4 || m.TotalCostUSD != nil {
 		t.Fatalf("assert=%+v", m)
 	}
-	if report.UnclassifiedRuns != 1 {
-		t.Fatalf("report=%+v", report)
+}
+
+func TestPipelineCountsRunsOfAnotherStageAsUnclassified(t *testing.T) {
+	if got := pipelineReport().UnclassifiedRuns; got != 1 {
+		t.Fatalf("UnclassifiedRuns = %d, want 1", got)
 	}
 }
 
@@ -102,8 +113,9 @@ func TestPipelineUnknownAndOverflow(t *testing.T) {
 			}
 		})
 	}
-	// A finite cross-provider sum may itself overflow even without per-provider
-	// aggregation overflow.
+}
+
+func TestPipelineCostOverflowOfOneRunIsUnknown(t *testing.T) {
 	o := observation("assert")
 	o.GenerativeUsage.CostUSD = share(math.MaxFloat64)
 	o.JudgmentUsage.CostUSD = share(math.MaxFloat64)
@@ -112,13 +124,16 @@ func TestPipelineUnknownAndOverflow(t *testing.T) {
 	}
 }
 
-func TestPipelineEmptyAndPartialDelay(t *testing.T) {
+func TestPipelineWithNoObservationsReportsNothing(t *testing.T) {
 	r := eval.SummarizePipelines(nil)
 	for _, c := range []eval.PipelineStage{r.Distill, r.Assert} {
 		if c.Runs != 0 || c.TotalCostUSD != nil || c.GenerativeCalls != nil || c.HandlerSeconds != nil || c.QueueDelaySeconds != nil {
 			t.Fatal(c)
 		}
 	}
+}
+
+func TestPipelinePartialQueueDelayLeavesTheTotalUnknownAndTheMeanKnown(t *testing.T) {
 	a, b := observation("distill"), observation("distill")
 	b.QueueDelayNS = nil
 	c := eval.SummarizePipelines([]l1.PipelineObservation{a, b}).Distill

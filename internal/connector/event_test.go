@@ -15,8 +15,6 @@ import (
 
 var eventTime = time.Date(2026, time.September, 9, 12, 0, 0, 0, time.UTC)
 
-// validEvent is the event the validation cases mutate: a GitHub issue comment,
-// with everything the contract requires and nothing more.
 func validEvent() connector.Event {
 	return connector.Event{
 		Source:   "github-acme",
@@ -41,8 +39,6 @@ func validEvent() connector.Event {
 }
 
 func TestEventStateKinds(t *testing.T) {
-	// Exercise every core kind, and its extension fallback, so new kinds do
-	// not accidentally become eligible for state.
 	for _, kind := range connector.CoreKinds() {
 		allowed := kind == connector.KindIssue || kind == connector.KindPullRequest || kind == connector.KindDocument
 		for _, extension := range []bool{false, true} {
@@ -73,7 +69,6 @@ func TestEventStateKinds(t *testing.T) {
 			})
 		}
 	}
-	// A bare comment is not a core kind (source comments use message).
 	t.Run("comment", func(t *testing.T) {
 		e := validEvent()
 		e.Kind = "comment"
@@ -211,19 +206,14 @@ func TestEventIDRoundTrip(t *testing.T) {
 	}
 }
 
-// Whoever sizes the id column reads MaxEventIDLen, so it has to be the bound
-// the encoding actually produces rather than the native id's length: a native
-// id of non-ASCII text passes validation and encodes to three bytes per byte.
 func TestEventIDLengthBound(t *testing.T) {
 	source := strings.Repeat("s", connector.MaxSourceIDLen)
-	nativeID := strings.Repeat("ü", connector.MaxNativeIDLen/2) // two bytes each, both escaped
+	nativeID := strings.Repeat("ü", connector.MaxNativeIDLen/2)
 	ev := connector.Event{Source: source, NativeID: nativeID}
 	if len(ev.NativeID) != connector.MaxNativeIDLen {
 		t.Fatalf("the fixture is %d bytes, want %d", len(ev.NativeID), connector.MaxNativeIDLen)
 	}
 
-	// This is the worst case exactly: the longest source, and a native id of
-	// nothing but bytes that percent-encode to three each.
 	if got, want := len(connector.EventID(source, nativeID)), connector.MaxEventIDLen; got != want {
 		t.Errorf("EventID() on the worst case is %d bytes, and MaxEventIDLen says %d", got, want)
 	}
@@ -249,9 +239,7 @@ func TestParseEventIDErrors(t *testing.T) {
 
 func TestEventValidate(t *testing.T) {
 	tests := []struct {
-		name string
-		// mutate turns the valid event into the case under test. A nil mutate
-		// is the valid event itself.
+		name    string
 		mutate  func(*connector.Event)
 		wantErr bool
 	}{
@@ -345,7 +333,6 @@ func TestEventValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			// An ACL re-sync: same payload, same time, later edited_at.
 			name: "a revision edited after the artifact happened",
 			mutate: func(e *connector.Event) {
 				e.NativeID = e.Payload.Artifact + "@perm:private"
@@ -354,8 +341,6 @@ func TestEventValidate(t *testing.T) {
 			},
 		},
 		{
-			// The contract tells a connector whose source gives no time for
-			// the change to omit it and let ingest order decide.
 			name: "a revision the source gives no time for",
 			mutate: func(e *connector.Event) {
 				e.NativeID = e.Payload.Artifact + "@perm:h2"
@@ -370,8 +355,6 @@ func TestEventValidate(t *testing.T) {
 			},
 		},
 		{
-			// The artifact's own time in the revision's field would sort the
-			// edit before the original, which is how a stale ACL survives.
 			name: "a revision edited before the artifact happened",
 			mutate: func(e *connector.Event) {
 				e.NativeID = e.Payload.Artifact + "@2"
@@ -408,9 +391,6 @@ func TestEventValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			// The empty token agrees with the empty native id suffix, so only
-			// the rule against a bare @ catches this one — and without it an
-			// artifact that never changed would have two event ids.
 			name: "a native id ending in @ and an empty revision token",
 			mutate: func(e *connector.Event) {
 				e.NativeID = e.Payload.Artifact + "@"
@@ -626,7 +606,6 @@ func TestEventValidate(t *testing.T) {
 	}
 }
 
-// manyPaths is n distinct paths, in descending order.
 func manyPaths(n int) []string {
 	paths := make([]string, n)
 	for i := range paths {
@@ -662,7 +641,6 @@ func TestBoundPaths(t *testing.T) {
 			if !slices.Equal(got, tt.want) || truncated != tt.wantTruncated {
 				t.Errorf("BoundPaths() = %d paths %v, %v; want %d paths, %v", len(got), got[:min(len(got), 3)], truncated, len(tt.want), tt.wantTruncated)
 			}
-			// The order the source listed them in does not matter.
 			reversed := slices.Clone(tt.paths)
 			slices.Reverse(reversed)
 			if again, _ := connector.BoundPaths(reversed); !slices.Equal(again, got) {
@@ -672,8 +650,6 @@ func TestBoundPaths(t *testing.T) {
 	}
 }
 
-// A rejected event is a bug in a connector someone has to find, so the error
-// names the field rather than the event.
 func TestValidateNamesTheFieldThatIsWrong(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -745,11 +721,8 @@ func TestKindValid(t *testing.T) {
 	}
 }
 
-// The JSON encoding is the contract for a connector that is not written in Go,
-// so the field names are pinned here rather than left to the struct tags.
 func TestEventJSONIsTheWireFormat(t *testing.T) {
 	ev := validEvent()
-	// An edit, so that the revision fields are on the wire too.
 	ev.NativeID = ev.Payload.Artifact + "@2"
 	ev.ID = connector.EventID(ev.Source, ev.NativeID)
 	ev.Payload.Revision = &connector.Revision{Token: "2", EditedAt: eventTime}
@@ -793,8 +766,6 @@ func TestEventJSONIsTheWireFormat(t *testing.T) {
 	}
 }
 
-// An empty payload field is left out, so an event from a source with little
-// metadata does not carry a wall of nulls into JSONB.
 func TestEventJSONOmitsEmptyPayloadFields(t *testing.T) {
 	ev := validEvent()
 	encoded, err := json.Marshal(ev)

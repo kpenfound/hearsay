@@ -20,14 +20,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
-// runTopics is `hearsay topics`: a configured human reading a scope's topics
-// and its topic ledger, and merging, splitting and undoing by hand. Every
-// read is the one the API serves that person
-// (`stance_history`): the topics as the ledger makes them now, filtered by
-// their reach and by what the evidence's access lists allow now. A topic, a
-// stance or an operation they may not read is answered exactly as one that
-// does not exist. The operations themselves are [l2.Operate], which refuses a
-// person the scope's authority does not let ratify by hand.
 func runTopics(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, cfg, configPath := newFlagSet("topics", stderr)
 	resolveDatabase := databaseFlag(fs, cfg)
@@ -42,8 +34,6 @@ func runTopics(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	if err != nil {
 		return err
 	}
-	// Everything about the command line is settled before anything is read,
-	// so a typo is a typo rather than a connection failure.
 	var undoes int64
 	var from time.Time
 	switch action {
@@ -150,8 +140,6 @@ func runTopics(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	return nil
 }
 
-// topicView is the graph as one person reads it: the reader the API builds
-// for a person calling it directly ([l2.View]).
 type topicView struct {
 	*l2.View
 }
@@ -164,8 +152,6 @@ func newTopicView(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, hum
 	return &topicView{v}, nil
 }
 
-// operation reports whether the person may read an operation: every topic it
-// covers reads, as the ledger makes it now, as a topic they may read.
 func (v *topicView) operation(ctx context.Context, op l2.Operation) (bool, error) {
 	for _, id := range op.Topics {
 		a, err := v.Topic(ctx, id)
@@ -189,9 +175,6 @@ func (v *topicView) checkMerge(ctx context.Context, req l2.OperationRequest) err
 	return nil
 }
 
-// checkSplit refuses a split of a topic the person may not read, or naming a
-// stance they may not read on it: a split that moved a stance they cannot see
-// would tell them where it went.
 func (v *topicView) checkSplit(ctx context.Context, req l2.OperationRequest) error {
 	a, err := v.Topic(ctx, req.Topic)
 	if err != nil || a == nil {
@@ -220,8 +203,6 @@ func (v *topicView) checkUndo(ctx context.Context, id int64) error {
 	return nil
 }
 
-// conflict is an operation's refusal as the person may read it: an undo in
-// conflict names only the operations in the way that they may read.
 func (v *topicView) conflict(ctx context.Context, err error) error {
 	var c *l2.ConflictError
 	if !errors.As(err, &c) {
@@ -243,10 +224,6 @@ func (v *topicView) conflict(ctx context.Context, err error) error {
 	return shown
 }
 
-// list prints the topics in a scope the person may read, oldest first, with
-// the number of stances in each one's history they may see. A scope that
-// does not exist and a scope with nothing they may read both print the
-// header alone.
 func (v *topicView) list(ctx context.Context, w io.Writer, scope string) error {
 	assessed, err := v.Topics(ctx, scope)
 	if err != nil {
@@ -267,24 +244,20 @@ func (v *topicView) list(ctx context.Context, w io.Writer, scope string) error {
 	return tw.Flush()
 }
 
-// operationRecord is one operation as `topics ops --json` prints it.
 type operationRecord struct {
 	ID        int64     `json:"id"`
 	Kind      string    `json:"kind"`
 	Scope     string    `json:"scope"`
 	Principal string    `json:"principal"`
 	At        time.Time `json:"at"`
-	// Topics are every topic the operation covers; Stances only those the
-	// person may read.
-	Topics   []string `json:"topics"`
-	Stances  []string `json:"stances"`
-	Name     string   `json:"name,omitempty"`
-	Undoes   int64    `json:"undoes,omitempty"`
-	Undone   bool     `json:"undone"`
-	UndoneBy int64    `json:"undone_by,omitempty"`
+	Topics    []string  `json:"topics"`
+	Stances   []string  `json:"stances"`
+	Name      string    `json:"name,omitempty"`
+	Undoes    int64     `json:"undoes,omitempty"`
+	Undone    bool      `json:"undone"`
+	UndoneBy  int64     `json:"undone_by,omitempty"`
 }
 
-// ops prints the ledger the person may read, oldest first.
 func (v *topicView) ops(ctx context.Context, w io.Writer, f l2.OperationFilter, asJSON bool) error {
 	ops, err := v.Store().Operations(ctx, f)
 	if err != nil {
@@ -328,8 +301,6 @@ func (v *topicView) ops(ctx context.Context, w io.Writer, f l2.OperationFilter, 
 	return tw.Flush()
 }
 
-// stance reports whether the person may see a stance an operation covers,
-// wherever the ledger puts it now, remembering the answer in seen.
 func (v *topicView) stance(ctx context.Context, seen map[string]bool, id string) (bool, error) {
 	if ok, done := seen[id]; done {
 		return ok, nil
@@ -365,7 +336,6 @@ func joinOrDash(ids []string) string {
 	return strings.Join(ids, ",")
 }
 
-// repeated collects a flag given once per value.
 type repeated []string
 
 func (r *repeated) String() string { return strings.Join(*r, ",") }

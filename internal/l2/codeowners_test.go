@@ -43,17 +43,12 @@ func TestOwnersOf(t *testing.T) {
 	}{
 		{"engine", []string{"@kpenfound"}},
 		{"engine/client", []string{"@kpenfound"}},
-		// Later lines win, and an unanchored directory pattern matches at any
-		// depth.
 		{"engine/server", []string{"@samr", "@nobody-mapped"}},
 		{"engine/server/storage", []string{"@samr", "@nobody-mapped"}},
-		// A rule for files does not own a directory.
 		{"guides", []string{"@acme/api-team"}},
 		{"site/docs", []string{"ops@example.com"}},
 		{"internal/queue", []string{"@kpenfound", "@acme/api-team"}},
-		// An anchored pattern only matches at the root.
 		{"third_party/internal/queue", []string{"@acme/api-team"}},
-		// A line with no owners owns nothing, so what came before stands.
 		{"vendor", []string{"@acme/api-team"}},
 	}
 	for _, tt := range tests {

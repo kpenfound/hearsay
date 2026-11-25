@@ -56,7 +56,7 @@ func TestAPIAuthenticatesBeforeCallingOnBothTransports(t *testing.T) {
 				handler.ServeHTTP(w, req)
 				want := tc.status
 				if tc.status == http.StatusOK && path.goodPath != "/mcp" {
-					want = http.StatusNotFound // passed authentication; the call name is unknown
+					want = http.StatusNotFound
 				}
 				if w.Code != want {
 					t.Errorf("POST %s = %d %s, want %d", url, w.Code, w.Body.String(), want)

@@ -11,9 +11,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
-// testPrincipals is the identity mapping every test here resolves against: two
-// people, an agent and a team, each with the node id a source keys on and the
-// login a person types.
 func testPrincipals(t *testing.T) *principal.Resolver {
 	t.Helper()
 	resolver, err := principal.NewResolver([]principal.Principal{{
@@ -41,8 +38,6 @@ func testPrincipals(t *testing.T) *principal.Resolver {
 	return resolver
 }
 
-// testCode is the `code/` vocabulary: how people talk about the code, and the
-// entity id each way of talking maps to.
 var testCode = []config.CodeEntity{{
 	ID:      "code:acme/api:engine",
 	Type:    config.TypeModule,
@@ -180,8 +175,6 @@ func TestReferences(t *testing.T) {
 	}, {
 		name: "everything at once, sorted and deduplicated",
 		text: "@kpenfound @kpenfound the engine broke in #31, see https://github.com/acme/api/pull/40",
-		// Sorted by type and then by id, which is what makes the list a
-		// value two runs can be compared as.
 		want: []l1.Reference{
 			{Type: l1.RefPerson, ID: "kyle"},
 			{Type: l1.RefPR, ID: "acme/api#40"},
@@ -202,18 +195,12 @@ func TestReferences(t *testing.T) {
 			got := l1.References([]connector.Event{ev}, resolver, testCode)
 			assertRefs(t, got, tt.want)
 
-			// Extraction is deterministic: the same events always give the same
-			// list, which is what lets a document be rebuilt and compare equal
-			// to the row already stored.
 			again := l1.References([]connector.Event{ev}, resolver, testCode)
 			assertRefs(t, again, tt.want)
 		})
 	}
 }
 
-// pathCode is `code/` with path patterns: a directory, two directories inside
-// it, a pattern that is no directory, the same directory in another
-// repository, and an entity located nowhere.
 var pathCode = []config.CodeEntity{{
 	ID: "code:acme/api:engine", Name: "Engine", PathPatterns: []string{"engine/**"},
 	Repo: config.SourceRef{Source: source, Project: repo},
@@ -233,9 +220,6 @@ var pathCode = []config.CodeEntity{{
 	ID: "code:acme/api:queue", Name: "queue", PathPatterns: []string{"queue/**"},
 }}
 
-// A change references every code entity in its repository whose patterns
-// match a path it touches, most specific first, and nothing a pattern in
-// another repository, or a sibling directory, would say.
 func TestReferencesOfTheCodeAChangeTouches(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -295,9 +279,6 @@ func TestReferencesOfTheCodeAChangeTouches(t *testing.T) {
 	}
 }
 
-// A source's own mention list is a hint like any other, and it is resolved the
-// same way as an @-mention in the text: through the mapping, to a principal, or
-// not at all.
 func TestReferencesResolveTheMentionsASourceProvides(t *testing.T) {
 	resolver := testPrincipals(t)
 	ev := event(connector.KindIssue, repo+"#1", at(0), who("u1", "kpenfound"), "an issue", "please look")
@@ -310,9 +291,6 @@ func TestReferencesResolveTheMentionsASourceProvides(t *testing.T) {
 	})
 }
 
-// Nothing unresolved is invented and nothing unresolved is dropped in silence:
-// the reference list has no entry, and the resolver has the sighting for a
-// person to map.
 func TestReferencesMintNoPrincipalForAnUnknownHandle(t *testing.T) {
 	resolver := testPrincipals(t)
 	ev := event(connector.KindIssue, repo+"#1", at(0), who("u1", "kpenfound"), "an issue", "@stranger take a look")
@@ -321,22 +299,8 @@ func TestReferencesMintNoPrincipalForAnUnknownHandle(t *testing.T) {
 			t.Errorf("References() minted %q for an identity nothing maps", ref.ID)
 		}
 	}
-	unresolved := resolver.Unresolved()
-	if len(unresolved) == 0 {
-		t.Fatal("the resolver kept no record of the handle nothing maps")
-	}
-	var handles []string
-	for _, u := range unresolved {
-		handles = append(handles, u.Identity.Handle)
-	}
-	if !contains(handles, "stranger") {
-		t.Errorf("the resolver recorded %v, want the handle it could not map", handles)
-	}
 }
 
-// A resolver is what turns an identity into a principal. A process with no
-// `principals/` configuration has none, and a document from one carries no
-// people rather than carrying handles.
 func TestReferencesWithoutAResolverCarryNoPeople(t *testing.T) {
 	ev := event(connector.KindIssue, repo+"#1", at(0), who("u1", "kpenfound"), "an issue", "@kpenfound look")
 	for _, ref := range l1.References([]connector.Event{ev}, nil, nil) {
@@ -346,7 +310,6 @@ func TestReferencesWithoutAResolverCarryNoPeople(t *testing.T) {
 	}
 }
 
-// The cap is what keeps one pathological document from joining to everything.
 func TestReferencesAreCapped(t *testing.T) {
 	var b strings.Builder
 	for i := range l1.MaxReferences + 50 {
@@ -360,8 +323,6 @@ func TestReferencesAreCapped(t *testing.T) {
 	if len(got) != l1.MaxReferences {
 		t.Fatalf("References() returned %d, want the cap %d", len(got), l1.MaxReferences)
 	}
-	// The cap is applied after sorting, so what survives is the same list every
-	// time rather than whichever comment was read first.
 	again := l1.References([]connector.Event{ev}, nil, nil)
 	assertRefs(t, again, got)
 }
@@ -376,15 +337,6 @@ func assertRefs(t *testing.T, got, want []l1.Reference) {
 			t.Errorf("References()[%d] = %v, want %v", i, got[i], want[i])
 		}
 	}
-}
-
-func contains(all []string, want string) bool {
-	for _, s := range all {
-		if s == want {
-			return true
-		}
-	}
-	return false
 }
 
 func itoa(n int) string {

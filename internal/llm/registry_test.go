@@ -13,8 +13,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/llm"
 )
 
-// cfg is a configuration naming one tier, with retries turned down so that a
-// test that exercises them does not sleep for seconds.
 func cfg(tier llm.Tier, tc llm.TierConfig) llm.Config {
 	if tc.Backoff == 0 {
 		tc.Backoff = time.Millisecond
@@ -122,15 +120,13 @@ func TestNewRegistryRefusesWhatItCannotBuild(t *testing.T) {
 			if err == nil {
 				t.Fatalf("NewRegistry() built a registry, want an error about %q", tt.wantErr)
 			}
-			if !contains(err.Error(), tt.wantErr) {
+			if !strings.Contains(err.Error(), tt.wantErr) {
 				t.Errorf("NewRegistry() = %q, want it to mention %q", err, tt.wantErr)
 			}
 		})
 	}
 }
 
-// Every problem is reported, not the first: one failed startup should list
-// everything to fix.
 func TestNewRegistryReportsEveryProblem(t *testing.T) {
 	config := llm.Config{Tiers: map[llm.Tier]llm.TierConfig{
 		llm.TierDistill: {Provider: "nowhere", Model: "m"},
@@ -141,13 +137,14 @@ func TestNewRegistryReportsEveryProblem(t *testing.T) {
 		t.Fatal("NewRegistry() built a registry, want two problems")
 	}
 	for _, want := range []string{`no provider called "nowhere"`, "dimensions is required"} {
-		if !contains(err.Error(), want) {
+		if !strings.Contains(err.Error(), want) {
 			t.Errorf("NewRegistry() = %q, want it to mention %q", err, want)
 		}
 	}
 }
 
-func TestRegistryResolvesTiers(t *testing.T) {
+func completionRegistry(t *testing.T) (llm.Registry, llm.Config) {
+	t.Helper()
 	config := llm.Config{Tiers: map[llm.Tier]llm.TierConfig{
 		llm.TierDistill: {Provider: "anthropic", Model: "small"},
 		llm.TierAssert:  {Provider: "anthropic", Model: "strong"},
@@ -156,6 +153,11 @@ func TestRegistryResolvesTiers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRegistry() = %v", err)
 	}
+	return registry, config
+}
+
+func TestRegistryResolvesTiers(t *testing.T) {
+	registry, config := completionRegistry(t)
 	for _, tier := range llm.CompletionTiers {
 		completer, err := registry.Completer(tier)
 		if err != nil {
@@ -169,19 +171,22 @@ func TestRegistryResolvesTiers(t *testing.T) {
 			t.Errorf("the %s tier answered as %q, want %q", tier, resp.Model, want)
 		}
 	}
+}
 
-	// The embed tier is served by an embedder, and asking the wrong way says so
-	// rather than falling back to something.
+func TestTheEmbedTierHasNoCompleter(t *testing.T) {
+	registry, _ := completionRegistry(t)
 	if _, err := registry.Completer(llm.TierEmbed); err == nil {
 		t.Error("Completer(embed) returned a completer")
 	}
-	// A tier nothing configured is not defaulted to another one.
+}
+
+func TestAnEmbedderNeedsAnEmbedTier(t *testing.T) {
+	registry, _ := completionRegistry(t)
 	if _, err := registry.Embedder(); !errors.Is(err, llm.ErrTierNotConfigured) {
 		t.Errorf("Embedder() = %v, want ErrTierNotConfigured", err)
 	}
 }
 
-// The defaults are filled in where configuration is silent, and only there.
 func TestRegistryFillsDefaultsIn(t *testing.T) {
 	var builds []llm.Build
 	provider := newStub("anthropic")
@@ -209,8 +214,6 @@ func TestRegistryFillsDefaultsIn(t *testing.T) {
 	}
 }
 
-// Swapping a tier's provider and model is a configuration edit and no code
-// change: two registries, two configurations, one caller.
 func TestSwappingProviderInConfiguration(t *testing.T) {
 	answers := map[string]string{"anthropic": "from anthropic", "elsewhere": "from elsewhere"}
 	provider := func(name string) *stubProvider {
@@ -307,7 +310,7 @@ func TestCompleteRefusesRequestsNoProviderWouldTake(t *testing.T) {
 			if err == nil {
 				t.Fatalf("Complete() = nil, want an error about %q", tt.wantErr)
 			}
-			if !contains(err.Error(), tt.wantErr) {
+			if !strings.Contains(err.Error(), tt.wantErr) {
 				t.Errorf("Complete() = %q, want it to mention %q", err, tt.wantErr)
 			}
 			if called {
@@ -369,15 +372,13 @@ func TestCompleteStructuredOutput(t *testing.T) {
 				}
 			case err == nil:
 				t.Fatalf("Complete() = %+v, want an error about %q", resp, tt.wantErr)
-			case !contains(err.Error(), tt.wantErr):
+			case !strings.Contains(err.Error(), tt.wantErr):
 				t.Errorf("Complete() = %q, want it to mention %q", err, tt.wantErr)
 			}
 		})
 	}
 }
 
-// The token budget the tier is configured with is what a request that does not
-// ask for its own gets; a request that asks for its own gets that.
 func TestCompleteAppliesTheTokenBudget(t *testing.T) {
 	var seen []int
 	provider := newStub("anthropic")
@@ -443,7 +444,7 @@ func TestRetries(t *testing.T) {
 				t.Fatalf("Complete() = %v, want no error", err)
 			case tt.wantErr != "" && err == nil:
 				t.Fatalf("Complete() = nil, want an error about %q", tt.wantErr)
-			case tt.wantErr != "" && !contains(err.Error(), tt.wantErr):
+			case tt.wantErr != "" && !strings.Contains(err.Error(), tt.wantErr):
 				t.Errorf("Complete() = %q, want it to mention %q", err, tt.wantErr)
 			}
 			if got := int(attempts.Load()); got != tt.wantAttempts {
@@ -453,8 +454,6 @@ func TestRetries(t *testing.T) {
 	}
 }
 
-// A rate-limited provider that says how long to wait is waited for, rather than
-// being asked again on this package's own schedule.
 func TestRetryAfterIsHonoured(t *testing.T) {
 	var attempts atomic.Int64
 	var gap time.Duration
@@ -481,15 +480,11 @@ func TestRetryAfterIsHonoured(t *testing.T) {
 	}
 }
 
-// The per-attempt timeout is the abstraction's, so an adapter that hangs is
-// still bounded — and a timeout is transient, so it is retried.
 func TestTimeoutBoundsAnAttempt(t *testing.T) {
 	var attempts atomic.Int64
 	provider := newStub("anthropic")
 	provider.complete = func(ctx context.Context, _ llm.Request) (llm.Response, error) {
 		if attempts.Add(1) == 1 {
-			// A bound rather than a block: an attempt that is not cut off
-			// should fail this test rather than hang it.
 			select {
 			case <-ctx.Done():
 				return llm.Response{}, ctx.Err()
@@ -514,8 +509,6 @@ func TestTimeoutBoundsAnAttempt(t *testing.T) {
 	}
 }
 
-// The caller's context stops the retry loop: a worker shutting down does not
-// sit through a backoff.
 func TestCancellationStopsRetrying(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	var attempts atomic.Int64
@@ -535,9 +528,8 @@ func TestCancellationStopsRetrying(t *testing.T) {
 	if err == nil {
 		t.Fatal("Complete() = nil, want the cancelled call to fail")
 	}
-	// What comes back is why the call failed, not just that the context is
-	// done: a worker logging this should see the provider's answer.
-	if !contains(err.Error(), "overloaded") {
+
+	if !strings.Contains(err.Error(), "overloaded") {
 		t.Errorf("Complete() = %q, want the provider's error rather than the cancellation", err)
 	}
 	if attempts.Load() != 1 {
@@ -545,13 +537,18 @@ func TestCancellationStopsRetrying(t *testing.T) {
 	}
 }
 
-func TestEmbedder(t *testing.T) {
+func embedRegistry(t *testing.T) llm.Registry {
+	t.Helper()
 	config := cfg(llm.TierEmbed, llm.TierConfig{Provider: "anthropic", Model: "embed-1", Dimensions: 4})
 	registry, err := llm.NewRegistry(config, []llm.Provider{newStub("anthropic")})
 	if err != nil {
 		t.Fatalf("NewRegistry() = %v", err)
 	}
-	embedder, err := registry.Embedder()
+	return registry
+}
+
+func TestEmbedder(t *testing.T) {
+	embedder, err := embedRegistry(t).Embedder()
 	if err != nil {
 		t.Fatalf("Embedder() = %v", err)
 	}
@@ -573,14 +570,14 @@ func TestEmbedder(t *testing.T) {
 			t.Errorf("vector %d is the vector for input %v, want the inputs in order", i, v[0])
 		}
 	}
-	// A completion tier is not an embedder.
-	if _, err := registry.Completer(llm.TierDistill); !errors.Is(err, llm.ErrTierNotConfigured) {
+}
+
+func TestACompleterNeedsACompletionTier(t *testing.T) {
+	if _, err := embedRegistry(t).Completer(llm.TierDistill); !errors.Is(err, llm.ErrTierNotConfigured) {
 		t.Errorf("Completer(distill) = %v, want ErrTierNotConfigured", err)
 	}
 }
 
-// Vectors of the wrong width are what would be written into the vector(N)
-// column as garbage, so they are refused rather than returned.
 func TestEmbedRefusesTheWrongShape(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
@@ -623,15 +620,13 @@ func TestEmbedRefusesTheWrongShape(t *testing.T) {
 			if err == nil {
 				t.Fatalf("Embed() = nil, want an error about %q", tt.wantErr)
 			}
-			if !contains(err.Error(), tt.wantErr) {
+			if !strings.Contains(err.Error(), tt.wantErr) {
 				t.Errorf("Embed() = %q, want it to mention %q", err, tt.wantErr)
 			}
 		})
 	}
 }
 
-// Cost is observable per tier by construction: every call goes through one
-// place that knows which tier, provider and model it was.
 func TestUsageIsCountedPerTierProviderAndModel(t *testing.T) {
 	provider := newStub("anthropic")
 	provider.complete = func(_ context.Context, req llm.Request) (llm.Response, error) {
@@ -663,8 +658,6 @@ func TestUsageIsCountedPerTierProviderAndModel(t *testing.T) {
 	}
 
 	want := []llm.Usage{
-		// The model that answered is what is counted, not the model that was
-		// asked for: a provider may resolve an alias.
 		{Tier: llm.TierDistill, Provider: "anthropic", Model: "small", Failures: 1},
 		{Tier: llm.TierDistill, Provider: "anthropic", Model: "small-2", Calls: 2, InputTokens: 20, OutputTokens: 6},
 		{Tier: llm.TierEmbed, Provider: "anthropic", Model: "embed-1", Calls: 1, InputTokens: 2},

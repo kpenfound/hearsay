@@ -19,8 +19,6 @@ type ArtifactRef struct {
 	Source, Artifact string
 }
 
-// artifactLockKey is the advisory-lock key an artifact is serialized under. A
-// collision between two artifacts only makes them wait for each other.
 func artifactLockKey(a ArtifactRef) int64 {
 	sum := sha256.Sum256([]byte("hearsay/l0/artifact\x00" + a.Source + "\x00" + a.Artifact))
 	return int64(binary.BigEndian.Uint64(sum[:8]))
@@ -47,7 +45,6 @@ func HoldArtifacts(ctx context.Context, conn *pgxpool.Conn, artifacts []Artifact
 		ctx := context.WithoutCancel(ctx)
 		for _, key := range slices.Backward(held) {
 			if _, err := conn.Exec(ctx, `SELECT pg_advisory_unlock($1)`, key); err != nil {
-				// A lock that cannot be released dies with its session.
 				_ = conn.Conn().Close(ctx)
 				return
 			}

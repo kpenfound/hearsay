@@ -152,8 +152,6 @@ const (
 	SecretWebhook = "webhook_secret"
 )
 
-// requestTimeout bounds one REST call, so a hung connection is a failed
-// backfill call the runtime retries rather than a backfill that never returns.
 const requestTimeout = 30 * time.Second
 
 // Settings is the connector's own configuration: the `settings` of a source.
@@ -167,22 +165,17 @@ type Settings struct {
 
 // Connector is the GitHub connector for one configured source.
 type Connector struct {
-	source string
-	// repos are the configured repositories, sorted, which is the order a
-	// backfill walks them in.
-	repos  []string
-	since  time.Time
-	secret []byte
-	api    *client
-	// readOnly is a source Hearsay never writes to, whose `/hearsay` comments
-	// are therefore ordinary comments ([connector.SourceConfig.ReadOnly]).
+	source   string
+	repos    []string
+	since    time.Time
+	secret   []byte
+	api      *client
 	readOnly bool
 
 	mu          sync.Mutex
 	lastEventAt time.Time
 }
 
-// Compile-time checks that the connector implements the modes it claims.
 var (
 	_ connector.Pusher     = (*Connector)(nil)
 	_ connector.Backfiller = (*Connector)(nil)
@@ -218,17 +211,12 @@ func New(src connector.SourceConfig) (*Connector, error) {
 	}, nil
 }
 
-// sourceConfig is what the connector and the [Reader] both take from a source:
-// the repositories, the start date, and a client for the configured API with
-// the token.
 type sourceConfig struct {
 	repos []string
 	since time.Time
 	api   *client
 }
 
-// parseSource checks the settings, the containers and the token. The webhook
-// secret is the connector's alone, and is checked by [New].
 func parseSource(src connector.SourceConfig) (sourceConfig, error) {
 	var settings Settings
 	if err := src.DecodeSettings(&settings); err != nil {
@@ -264,9 +252,6 @@ func parseSource(src connector.SourceConfig) (sourceConfig, error) {
 	}, nil
 }
 
-// repositories checks the containers are repository full names. `*` is
-// refused: a backfill walks named repositories, and the connector has no way to
-// honour "everything the token can see" that is not a different connector.
 func repositories(containers []string) ([]string, error) {
 	if len(containers) == 0 {
 		return nil, errors.New("containers is empty: name the repositories to ingest, as owner/name")
@@ -343,7 +328,6 @@ func (c *Connector) Health(context.Context) connector.Health {
 // re-sync is driven by the runtime, which reports how it is going.
 func (c *Connector) Close(context.Context) error { return nil }
 
-// emit writes one event and notes when the connector last did.
 func (c *Connector) emit(ctx context.Context, sink connector.Sink, ev connector.Event) error {
 	if err := sink.Emit(ctx, ev); err != nil {
 		return err
@@ -354,16 +338,8 @@ func (c *Connector) emit(ctx context.Context, sink connector.Sink, ev connector.
 	return nil
 }
 
-// canonical is the spelling of a repository name the connector uses in ids and
-// containers: the configured one where the source's name matches it but for
-// case, because GitHub's names are case-insensitive and the allowlist and every
-// artifact id compare bytes.
-func (c *Connector) canonical(fullName string) string { return canonicalIn(c.repos, fullName) }
-
-// view is one repository as an event is built in it, spelled the configured
-// way.
 func (c *Connector) view(fullName string, private bool) view {
-	return view{source: c.source, repo: c.canonical(fullName), private: private, repos: c.repos, readOnly: c.readOnly}
+	return view{source: c.source, repo: canonicalIn(c.repos, fullName), private: private, repos: c.repos, readOnly: c.readOnly}
 }
 
 func canonicalIn(repos []string, fullName string) string {

@@ -3,7 +3,6 @@
 package obsidian_test
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,21 +11,15 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/connector/connectortest"
 	"github.com/kpenfound/hearsay/internal/connector/obsidian"
-	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
+	"github.com/kpenfound/hearsay/internal/poll"
 )
 
 func TestPollReconcilesVaultThroughL0(t *testing.T) {
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	pool, err := db.Connect(t.Context(), url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
+	pool := dbtest.Pool(t)
 	root := t.TempDir()
 	put(t, root, "Notes/edit.md", "first")
 	put(t, root, "Notes/rename.md", "rename")
@@ -66,24 +59,21 @@ func TestPollReconcilesVaultThroughL0(t *testing.T) {
 	if err := c.Poll(t.Context(), sink); err != nil {
 		t.Fatal(err)
 	}
-	// Changes is ordered by committed transactions across every source. Wait for
-	// this source's initial rows before using the feed as a baseline.
 	changes := func(want int) []l0.Change {
 		t.Helper()
-		deadline := time.Now().Add(30 * time.Second)
-		for {
-			got, err := store.Changes(t.Context(), l0.Cursor{}, l0.Filter{Source: src.ID}, l0.MaxLimit)
+		var got []l0.Change
+		poll.Within(t, fmt.Sprintf("%d visible events of %q", want, src.ID), 30*time.Second, func() bool {
+			var err error
+			got, err = store.Changes(t.Context(), l0.Cursor{}, l0.Filter{Source: src.ID}, l0.MaxLimit)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(got) == want {
-				return got
-			}
-			if len(got) > want || time.Now().After(deadline) {
+			if len(got) > want {
 				t.Fatalf("Changes(%q) = %d visible events, want %d", src.ID, len(got), want)
 			}
-			time.Sleep(10 * time.Millisecond)
-		}
+			return len(got) == want
+		})
+		return got
 	}
 	changes(4)
 	put(t, root, "Notes/edit.md", "second")
@@ -100,7 +90,7 @@ func TestPollReconcilesVaultThroughL0(t *testing.T) {
 	if err := c.Close(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	src.Containers = []string{"Notes"} // a config restart removes Projects
+	src.Containers = []string{"Notes"}
 	c = connect()
 	defer func() { _ = c.Close(t.Context()) }()
 	sink = connector.NewGate(store, src.ID, c.Describe(), connector.NewAllowlist(src))
@@ -118,8 +108,6 @@ func TestPollReconcilesVaultThroughL0(t *testing.T) {
 	if !artifacts["Notes/edit.md"] || !artifacts["Notes/renamed.md"] {
 		t.Fatalf("current artifacts = %v", artifacts)
 	}
-	// Two document revisions for edit.md, one for renamed.md, and three
-	// tombstones remain visible. The three retracted documents are hidden.
 	after := changes(6)
 	targets := map[string]bool{}
 	for _, change := range after {
@@ -157,12 +145,7 @@ func TestPollReconcilesVaultThroughL0(t *testing.T) {
 	if err := c.Close(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	var settings obsidian.Settings
-	if err := json.Unmarshal(src.Settings, &settings); err != nil {
-		t.Fatal(err)
-	}
-	settings.Public = true
-	src.Settings, _ = json.Marshal(settings)
+	src = withSettings(t, src, func(s *obsidian.Settings) { s.Public = true })
 	c = connect()
 	sink = connector.NewGate(store, src.ID, c.Describe(), connector.NewAllowlist(src))
 	if err := c.Poll(t.Context(), sink); err != nil {
@@ -184,15 +167,7 @@ func TestPollReconcilesVaultThroughL0(t *testing.T) {
 }
 
 func TestBackfillThroughGateAndSQL(t *testing.T) {
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	pool, err := db.Connect(t.Context(), url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
+	pool := dbtest.Pool(t)
 	root := t.TempDir()
 	for i := 0; i < 120; i++ {
 		put(t, root, fmt.Sprintf("Notes/n%03d.md", i), "# note")
@@ -220,22 +195,9 @@ func TestBackfillThroughGateAndSQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, err := cursors.Load(t.Context(), src.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for !state.Done {
-		result, err := c.Backfill(t.Context(), connector.NewGate(sink, src.ID, c.Describe(), connector.NewAllowlist(src)), state.Cursor)
-		if err != nil {
-			t.Fatal(err)
-		}
-		state.Cursor = result.Next
-		state.Done = result.Done
-		state.Events += int64(result.Events)
-		if err := cursors.Save(t.Context(), src.ID, state); err != nil {
-			t.Fatal(err)
-		}
-	}
+	connectortest.Finish(t, cursors, src.ID, func(cursor connector.Cursor) (connector.BackfillResult, error) {
+		return c.Backfill(t.Context(), connector.NewGate(sink, src.ID, c.Describe(), connector.NewAllowlist(src)), cursor)
+	})
 	if err := c.Close(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -251,12 +213,7 @@ func TestBackfillThroughGateAndSQL(t *testing.T) {
 			t.Fatalf("private ACL = %+v", ev.ACL)
 		}
 	}
-	var settings obsidian.Settings
-	if err := json.Unmarshal(src.Settings, &settings); err != nil {
-		t.Fatal(err)
-	}
-	settings.Public = true
-	src.Settings, _ = json.Marshal(settings)
+	src = withSettings(t, src, func(s *obsidian.Settings) { s.Public = true })
 	c, err = obsidian.New(src)
 	if err != nil {
 		t.Fatal(err)

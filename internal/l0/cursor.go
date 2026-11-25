@@ -13,12 +13,10 @@ import (
 //
 // It is a pair rather than a single number because a sequence value is handed
 // out before the transaction that took it commits, so sequence order is not the
-// order rows become readable. See the comment on l0_events in migration 2.
+// order rows become readable.
 type Cursor struct {
-	// xact is the transaction that wrote the row, from Postgres's xid8.
 	xact uint64
-	// seq is the row's position within that transaction.
-	seq int64
+	seq  int64
 }
 
 // String is the cursor's wire form, `<xact>.<seq>`, and the empty string for
@@ -76,9 +74,7 @@ func (c Cursor) Compare(other Cursor) int {
 // holds it, as a [Cursor] is, and the zero value is the beginning of the feed.
 type Mark struct {
 	// From is where the feed is read from.
-	From Cursor
-	// committed are transactions after From that had committed at the mark,
-	// in order.
+	From      Cursor
 	committed []uint64
 }
 

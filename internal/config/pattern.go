@@ -44,7 +44,6 @@ func matchSegments(pattern, path []string) bool {
 	return len(path) == 0
 }
 
-// matchSegment is one segment against one glob segment.
 func matchSegment(pattern, name string) bool {
 	for len(pattern) > 0 {
 		switch pattern[0] {

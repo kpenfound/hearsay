@@ -59,8 +59,9 @@ const (
 // never carries an error from Postgres, a model or a source.
 //
 // Code is a stable machine-readable reason beside the message. Only a call that
-// documents its refusals sets one (`decide`); the failures every call shares,
-// and every other call's, have none and are served without a `code` field.
+// documents its refusals sets one (`decide`, `delete`, `coverage` and a refused
+// `search` window); the failures every call shares, and every other call's,
+// have none and are served without a `code` field.
 type Error struct {
 	Status  int
 	Message string
@@ -73,8 +74,6 @@ func fail(status int, format string, args ...any) *Error {
 	return &Error{Status: status, Message: fmt.Sprintf(format, args...)}
 }
 
-// errInternal is what every failure that is not the caller's is served as. What
-// went wrong is in the log.
 var errInternal = &Error{Status: http.StatusInternalServerError, Message: "the call failed; the server log says why"}
 
 // ErrorBody is how an [Error] is encoded, on every interface.
@@ -99,32 +98,19 @@ type Tool struct {
 // interface serves verbatim. That is what makes the same request over MCP and
 // HTTP byte-identical — there is one encoding, and it happens here.
 type Calls struct {
-	db     DB
-	docs   *l1.Store
-	events *l0.Store
-	graph  *l2.Store
-	// reach is what a caller's reach is read from: the graph, but for a test.
-	reach principal.Graph
-	// pool and repo are what `decide` records a gesture with: the ledger takes a
-	// pool, to hold the scope's serial key, and the configuration, for the
-	// scope's ratify policy. A call layer over anything but a pool has no pool,
-	// and `decide` then fails as an internal error.
-	pool           *pgxpool.Pool
-	repo           config.Repo
-	authority      config.Authority
-	assembler      *bundle.Assembler
-	cache          *bundleCache
-	resolver       *principal.Resolver
-	auth           *authenticator
-	embedder       l1.Embedder
-	sessionSources []string
-	// now and id are the clock and the audit event id, replaceable by a test.
-	// The clock is also an assertion event's time.
-	now func() time.Time
-	id  func() string
-	// watchWait and watchPoll are how long a watch waits and how often it
-	// reads the feed meanwhile (WithWatch); stopping is closed when the server
-	// stops, and ends every wait.
+	db                   DB
+	docs                 *l1.Store
+	events               *l0.Store
+	graph                *l2.Store
+	pool                 *pgxpool.Pool
+	repo                 config.Repo
+	authority            config.Authority
+	assembler            *bundle.Assembler
+	cache                *bundleCache
+	resolver             *principal.Resolver
+	auth                 *authenticator
+	embedder             l1.Embedder
+	sessionSources       []string
 	watchWait, watchPoll time.Duration
 	stopping             chan struct{}
 	stopOnce             sync.Once
@@ -164,7 +150,6 @@ func NewCalls(q DB, repo config.Repo, embedder l1.Embedder) (*Calls, error) {
 		docs:           l1.New(q),
 		events:         l0.New(q),
 		graph:          graph,
-		reach:          graph,
 		assembler:      bundle.New(q).WithDirectiveSources(repo, resolver).WithAuthority(repo.Authority),
 		cache:          newBundleCache(),
 		authority:      repo.Authority,
@@ -172,8 +157,6 @@ func NewCalls(q DB, repo config.Repo, embedder l1.Embedder) (*Calls, error) {
 		auth:           auth,
 		embedder:       embedder,
 		sessionSources: sessionSources,
-		now:            time.Now,
-		id:             randomID,
 		watchWait:      DefaultWatchWait,
 		watchPoll:      DefaultWatchPoll,
 		stopping:       make(chan struct{}),
@@ -191,7 +174,6 @@ type call struct {
 	run  func(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, args json.RawMessage) (any, error)
 }
 
-// calls is the whole API surface, in the order the design lists it.
 var calls = []call{
 	{Tool{"get_bundle", "The context bundle for a scope, with an optional directive from a triggering L0 message id; its other sections contain entities, current stances, recent activity, open questions and up to three conflicts. Each conflict carries a topic_id, current position, tier and stakes.",
 		schema(`{"scope":{"type":"string","description":"the entity id the bundle is for, such as tracker:github:acme/api#12"},"directive":{"type":"string","description":"L0 event id of the triggering message"}}`, "scope")}, getBundle},
@@ -209,7 +191,6 @@ var calls = []call{
 		schema(`{"query":{"type":"string"},"scope":{"type":"string","description":"an entity id to search within"},"limit":{"type":"integer"},"since":{"type":"string","description":"RFC 3339: only documents last active at or after this time"},"until":{"type":"string","description":"RFC 3339: only documents created before this time"}}`, "query")}, search},
 	{Tool{"traverse", "Traverse typed graph edges, returning ids plus one line per node. Follows the topic ledger and is access-filtered at every hop. Continue with get_bundle for an entity briefing, stance_history for a topic's positions and provenance, or get_l1 for a document. Principals are terminal; L0 is excluded.",
 		schema(`{"start":{"type":"array","minItems":1,"maxItems":10,"items":{"type":"object","properties":{"type":{"type":"string","enum":["entity","topic","stance","document"]},"id":{"type":"string"}},"required":["type","id"],"additionalProperties":false}},"steps":{"type":"array","minItems":1,"maxItems":4,"items":{"type":"object","properties":{"edge":{"type":"string","enum":["part_of","has_part","topics","about","documents","scope","anchors","owners","stances","topic","evidence","cited_by","supersedes","superseded_by","author","participants"]},"depth":{"type":"string","description":"n or m..n, default 1; at most 6 on part_of, has_part, supersedes, superseded_by"},"where":{"type":"object","description":"Target filters: entity type/state; document kind/class/state/since; topic tier/since; stance current/since. since is RFC3339; current is boolean; other values are strings."}},"required":["edge"],"additionalProperties":false}},"limit":{"type":"integer","minimum":1,"maximum":200,"default":50}}`, "start", "steps")}, traverse},
-
 	{Tool{"watch", "Long-poll for new events on a scope: the L0 events after the cursor whose L1 documents are about the scope or an entity under it, oldest first, once they are distilled. The debounce can add up to the maximum delay before a document's distillation becomes due, on top of worker poll and distillation time. A notification is an event id, kind, source, time and document id, and no content. With none to return it waits up to 25 seconds and returns an empty list. Pass the returned cursor as after next time; omit after to start from now. An agent needs class orchestrator or above.",
 		schema(`{"scope":{"type":"string","description":"the entity id to watch"},"filter":{"type":"object","properties":{"kinds":{"type":"array","items":{"type":"string"}},"sources":{"type":"array","items":{"type":"string"}}},"additionalProperties":false,"description":"only these event kinds and sources; an empty list is every one"},"after":{"type":"string","description":"the cursor the previous watch returned"}}`, "scope")}, watch},
 	{Tool{"assert", "Propose a position on an existing topic, citing the L1 documents it rests on. Only an agent of class worker or above may; the stance is appended by the assertion worker, ranks as class agent and does not ratify on its own under the default authority policy. Returns the id of the L0 assertion event; repeating a request returns the same id and writes nothing more.",
@@ -285,26 +266,6 @@ func (c *Calls) Call(ctx context.Context, caller Caller, name string, args json.
 	return body, nil
 }
 
-// readerFor is the effective principal a call runs as, and what it may read.
-//
-// An agent is held to its class and to the person it acts for by
-// [principal.AgentRead]. A caller the mapping does not hold is refused: a read
-// nobody is accountable for is not one Hearsay serves.
-//
-// Every call then runs within the effective reach ([principal.Reach]): the
-// person's configured scopes and the agent's, each with everything under it in
-// the entity hierarchy, intersected, and capped by the agent's class — an
-// observer reads its scopes, a worker or an orchestrator the code entities
-// they link to as well, a steward whatever the person reaches. A person reading
-// directly reaches their scopes and the code they link to. The reach is read
-// from the graph on every call, so an entity placed under a granted one is in
-// reach on the next call. The access lists still filter everything in it
-// ([l1.Reader.Allows]); the reach narrows what is relevant, never what is
-// permitted.
-//
-// What reach leaves out is answered exactly as what does not exist is: every
-// handle that takes an id serves the same not-found body for either, and a
-// bundle for a scope out of reach is the bundle for an unknown one.
 func (c *Calls) readerFor(ctx context.Context, caller Caller) (l1.Reader, error) {
 	if caller.Principal == "" {
 		return l1.Reader{}, fail(http.StatusUnauthorized, "no principal: name the person the call is for in the %s header", PrincipalHeader)
@@ -329,7 +290,7 @@ func (c *Calls) readerFor(ctx context.Context, caller Caller) (l1.Reader, error)
 	if err != nil {
 		return l1.Reader{}, fail(http.StatusForbidden, "%s", err.Error())
 	}
-	if eff, err = principal.Reach(ctx, c.reach, eff, human.Grant.Scopes, agentScopes); err != nil {
+	if eff, err = principal.Reach(ctx, c.graph, eff, human.Grant.Scopes, agentScopes); err != nil {
 		return l1.Reader{}, err
 	}
 	reader, err := l1.ReaderFor(ctx, c.db, c.resolver, eff)
@@ -339,8 +300,6 @@ func (c *Calls) readerFor(ctx context.Context, caller Caller) (l1.Reader, error)
 	return reader, nil
 }
 
-// decode reads a call's arguments, refusing a field the call does not take: an
-// argument accepted and ignored is a filter nobody knows was dropped.
 func decode(args json.RawMessage, into any) error {
 	dec := json.NewDecoder(bytes.NewReader(args))
 	dec.DisallowUnknownFields()
@@ -388,9 +347,7 @@ func getBundle(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, r
 		}
 		entry = bundleValue{key: key, body: body, report: report}
 	}
-	// A bundle is served only once the record that it was is written
-	// (docs/design.md#access-control): a bundle nobody can account for is the
-	// thing the audit trail exists to rule out.
+
 	if err := c.audit(ctx, caller, reader, args.Scope, entry.body, entry.report); err != nil {
 		return nil, err
 	}
@@ -509,8 +466,7 @@ func (c *Calls) auditHandle(ctx context.Context, caller Caller, reader l1.Reader
 		Topic string `json:"topic"`
 		Scope string `json:"scope"`
 	}
-	// The successful call already validated its arguments. Decode only the
-	// fields needed for the audit; search query and resolve text stay unread.
+
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return err
@@ -567,7 +523,6 @@ func (c *Calls) appendAudit(ctx context.Context, caller Caller, audit AuditRecor
 	author := connector.Identity{Source: AuditSource, Kind: connector.IdentityUser, NativeID: caller.Principal}
 	participants := []connector.Participant(nil)
 	if caller.Agent != "" {
-		// The agent asked; the person is who it asked for.
 		participants = []connector.Participant{{Identity: author, Role: connector.RoleAuthor}}
 		author = connector.Identity{Source: AuditSource, Kind: connector.IdentityAgent, NativeID: caller.Agent}
 	}
@@ -575,12 +530,12 @@ func (c *Calls) appendAudit(ctx context.Context, caller Caller, audit AuditRecor
 	if audit.Call != "get_bundle" {
 		prefix = "handle:"
 	}
-	artifact := prefix + c.id()
+	artifact := prefix + randomID()
 	ev := connector.Event{
 		Source:   AuditSource,
 		NativeID: artifact,
 		Kind:     connector.KindAudit,
-		Time:     c.now().UTC(),
+		Time:     time.Now().UTC(),
 		Payload: connector.Payload{
 			Artifact:     artifact,
 			Container:    connector.Container{Kind: connector.ContainerWorkspace, NativeID: "api"},
@@ -588,11 +543,7 @@ func (c *Calls) appendAudit(ctx context.Context, caller Caller, audit AuditRecor
 			Participants: participants,
 			Native:       record,
 		},
-		// Who was served what is itself something to keep from the people who
-		// were not. The entry names the principal in Hearsay's own source, which
-		// no configured identity is in and so no reader's audience holds: the
-		// get_l0 does not serve this record; get_session returns it only after
-		// checking the linked session and assertion. Unlinked audits stay closed.
+
 		ACL: connector.ACL{{Kind: connector.ACLIdentity, Source: AuditSource, NativeID: caller.Principal}},
 	}
 	appended, err := c.events.Append(ctx, ev)
@@ -606,7 +557,7 @@ func (c *Calls) appendAudit(ctx context.Context, caller Caller, audit AuditRecor
 
 func randomID() string {
 	var b [16]byte
-	_, _ = rand.Read(b[:]) // crypto/rand.Read never fails (Go 1.24).
+	_, _ = rand.Read(b[:])
 	return hex.EncodeToString(b[:])
 }
 
@@ -620,9 +571,6 @@ type EntityMatch struct {
 	Paths   []string `json:"paths_matched,omitempty"`
 }
 
-// resolve reads configured names and learned names whose evidence the reader
-// may inspect, and serves the entities in the reader's reach: one out of it is
-// left out as one that does not exist would be.
 func resolve(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json.RawMessage) (any, error) {
 	var args struct {
 		Text string `json:"text"`
@@ -719,10 +667,7 @@ func stanceHistory(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, ra
 	if err := required("topic", args.Topic); err != nil {
 		return nil, err
 	}
-	// Who may read the topic and each stance is what their documents allow
-	// now (l2.Access), not what they allowed when the worker read them, so a
-	// superseded or retired stance goes with its evidence too. A withdrawal
-	// records no readable position and can be shown to a topic reader.
+
 	topic, err := c.graph.Topic(ctx, args.Topic)
 	if errors.Is(err, l2.ErrNotFound) {
 		return nil, fail(http.StatusNotFound, "no topic %q", args.Topic)
@@ -736,8 +681,6 @@ func stanceHistory(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, ra
 	}
 	a := assessed[0]
 	if !a.Access.Topic(reader, topic) {
-		// One answer for both, so a topic somebody may not read is not
-		// distinguishable from one that does not exist. Handles fail closed.
 		return nil, fail(http.StatusNotFound, "no topic %q", args.Topic)
 	}
 	visible := map[string]bool{}
@@ -777,7 +720,6 @@ func stanceHistory(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, ra
 		out.Stances = append(out.Stances, rec)
 	}
 	for i := range out.Stances {
-		// A stance the reader may not read is not named by one they may.
 		if !visible[out.Stances[i].Supersedes] && !out.Stances[i].Withdrawn {
 			out.Stances[i].Supersedes = ""
 		}
@@ -785,9 +727,6 @@ func stanceHistory(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, ra
 	return out, nil
 }
 
-// readableAcross is which of the stances on other topics that a history's
-// supersession edges cross to the reader may read, with the topic each is on:
-// an edge to one they may not is not shown.
 func (c *Calls) readableAcross(ctx context.Context, reader l1.Reader, history []l2.Stance) (map[string]bool, error) {
 	var ids []string
 	for _, st := range history {
@@ -859,8 +798,6 @@ func getL1(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json.R
 	return visibleDocumentEntities(doc.Document, hidden), nil
 }
 
-// Document scopes and references are entity listings too. A readable document
-// does not grant permission to discover every entity it happens to mention.
 func visibleDocumentEntities(doc l1.Document, hidden l2.WorkEntityVisibility) l1.Document {
 	doc.Scope = slices.DeleteFunc(slices.Clone(doc.Scope), func(id string) bool { return hidden.Hidden(id) })
 	doc.References = slices.DeleteFunc(slices.Clone(doc.References), func(ref l1.Reference) bool { return hidden.Hidden(ref.ID) })
@@ -887,10 +824,7 @@ func getL0(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json.R
 	case !reader.Allows(ev.ACL):
 		return nil, notFound
 	}
-	// A revision an artifact has since replaced is read under its current
-	// revision's access list too: narrowing who may read an artifact — a
-	// project whose repos changed, say — takes its earlier revisions with it,
-	// and does not leave them readable by whoever the old list let in.
+
 	current, err := c.events.Current(ctx, l0.ListOptions{Filter: l0.Filter{Source: ev.Source, Artifact: ev.Payload.Artifact}, Limit: 1})
 	if err != nil {
 		return nil, err
@@ -898,9 +832,7 @@ func getL0(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json.R
 	if len(current) == 1 && current[0].ID != ev.ID && !reader.Allows(current[0].ACL) {
 		return nil, notFound
 	}
-	// An event is in reach when its artifact's document is: one out of reach,
-	// or with no document where the reader's reach is not everything, is
-	// answered as one that does not exist.
+
 	in, err := c.docs.ArtifactInReach(ctx, reader, ev.Source, ev.Payload.Artifact)
 	if err != nil {
 		return nil, err
@@ -948,7 +880,6 @@ func search(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json.
 		return nil, err
 	}
 	if hidden.Hidden(args.Scope) {
-		// Use the ordinary empty search path, including argument validation.
 		reader.Effective.Grant.Scopes = principal.SomeScopes()
 	}
 	found, err := c.docs.Search(ctx, reader, l1.SearchOptions{
@@ -975,19 +906,8 @@ type Asserted struct {
 	ID string `json:"id"`
 }
 
-// errUnreadable is the one answer for a topic or a piece of evidence that does
-// not exist or that the caller may not read, whichever it is and whichever id:
-// handles fail closed, and a refusal that named the id would tell the caller
-// which private document exists.
 var errUnreadable = &Error{Status: http.StatusNotFound, Message: "the topic and the evidence are not all ones you may read"}
 
-// assertStance is `assert(topic, position, evidence)`
-// (docs/design.md#read-and-assert-api): an agent's stance, written as an L0
-// `assertion` event under source hearsay, with the assert job that appends it
-// to the topic enqueued in the same transaction under the topic's scope. No
-// model is called. The request is its own idempotency key: the event's native
-// id is derived from the agent, the person, the topic, the position and the
-// evidence, so a retry is the same event and the same stance.
 func assertStance(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, raw json.RawMessage) (any, error) {
 	if err := c.mayAssert(caller); err != nil {
 		return nil, err
@@ -1003,7 +923,7 @@ func assertStance(ctx context.Context, c *Calls, caller Caller, reader l1.Reader
 	if err := required("topic", args.Topic); err != nil {
 		return nil, err
 	}
-	// Cleaned the way the assertion worker cleans a model's positions.
+
 	position, _ := l1.Scrub(strings.TrimSpace(args.Position))
 	position = strings.TrimSpace(position)
 	if err := required("position", position); err != nil {
@@ -1032,9 +952,7 @@ func assertStance(ctx context.Context, c *Calls, caller Caller, reader l1.Reader
 	if err != nil {
 		return nil, err
 	}
-	// The same test every read of the stance will make (l2.Access): the topic
-	// by its opening document or a surviving live stance, and the proposed
-	// stance by every document it cites, as L1 holds them now.
+
 	proposed := l2.Stance{Evidence: evidence}
 	access, err := c.graph.Access(ctx, []l2.Topic{topic}, []l2.Stance{proposed})
 	if err != nil {
@@ -1060,29 +978,21 @@ func assertStance(ctx context.Context, c *Calls, caller Caller, reader l1.Reader
 		Source:   AuditSource,
 		NativeID: nativeID,
 		Kind:     connector.KindAssertion,
-		Time:     c.now().UTC(),
+		Time:     time.Now().UTC(),
 		Payload: connector.Payload{
 			Artifact:  nativeID,
 			Container: connector.Container{Kind: connector.ContainerWorkspace, NativeID: "api"},
 			Text:      position,
 			Author:    &agent,
-			// The agent asserted; the person is who it acted for.
+
 			Participants: []connector.Participant{{Identity: person, Role: connector.RoleAuthor}},
 			Native:       native,
 		},
-		// Who may read the stance is decided on every read from all of its
-		// evidence as it is then, which an access list written once cannot
-		// say: it would neither be the intersection of several documents' lists
-		// nor follow a re-sync. So get_l0 fails closed. A linked
-		// assertion id can lead to get_session after current evidence checks.
+
 		ACL: connector.ACL{{Kind: connector.ACLIdentity, Source: AuditSource, NativeID: caller.Principal}},
 	}
 	id := connector.EventID(AuditSource, nativeID)
 	err = pgx.BeginFunc(ctx, c.db, func(tx pgx.Tx) error {
-		// A retry is the same event at a later time, which L0 refuses as a
-		// rewrite and keeps the first of. The job is asked for again: it
-		// collapses into a pending one, and writes nothing where the stance is
-		// already there.
 		if _, err := l0.New(tx).Append(ctx, ev); err != nil && !errors.Is(err, l0.ErrRewrite) {
 			return fmt.Errorf("writing an assertion event: %w", err)
 		}
@@ -1097,10 +1007,6 @@ func assertStance(ctx context.Context, c *Calls, caller Caller, reader l1.Reader
 	return Asserted{ID: id}, nil
 }
 
-// mayAssert refuses a caller that is not an agent whose class may assert:
-// people take positions in their own tools, and an observer writes nothing
-// (docs/design.md#access-control). Rights are not configured yet, so the
-// agent's class is the whole of what it may write.
 func (c *Calls) mayAssert(caller Caller) error {
 	if caller.Agent == "" {
 		return fail(http.StatusForbidden, "assert is for agents: name the agent acting for you in the %s header", AgentHeader)

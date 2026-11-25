@@ -169,7 +169,6 @@ func ClosesCycle(records []Held, id, supersedes string) (bool, error) {
 			return true, nil
 		}
 		if seen[cur] {
-			// A cycle that does not include id: not one this post closes.
 			return false, nil
 		}
 		seen[cur] = true

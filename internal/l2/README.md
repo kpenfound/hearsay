@@ -85,8 +85,8 @@ text that is no longer current (below).
   are read: the same content returns the original and says it was not newly
   recorded, other content is [ErrEventConflict]. Refusals are told apart:
   [ErrNotAllowed], [ErrNotFound], [ErrNotLive], [ErrNotUndoable],
-  [ErrEventConflict] and [ErrInvalid]; the last two the old undo and event
-  refusals also wrap, so test the specific kind first.
+  [ErrEventConflict] and [ErrInvalid]; [ErrNotUndoable] and [ErrEventConflict]
+  also wrap [ErrInvalid], so test the specific kind first.
 - **Chat commands are applied here, for whichever process received them**
   ([Commands]).
   It maps the invoker to a configured human, reads through their [View], and

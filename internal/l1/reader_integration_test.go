@@ -7,17 +7,18 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
 func TestReaderResolvesAllContainerAccessLists(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	for _, tt := range []struct {
 		name   string
-		lists  []string // pub=public, id=reader, group=reader's team, hidden=another identity
-		second string   // ACL for the second container, empty means no current revisions
+		lists  []string
+		second string
 		want   bool
 	}{
 		{"public", []string{"pub"}, "pub", true},
@@ -36,8 +37,8 @@ func TestReaderResolvesAllContainerAccessLists(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() { _ = tx.Rollback(t.Context()) }()
-			src := newSource(t)
-			other := newSource(t)
+			src := dbtest.UniqueID()
+			other := dbtest.UniqueID()
 			res, err := principal.NewResolver([]principal.Principal{
 				{ID: "reader", Kind: principal.KindHuman, Identities: []principal.Identity{{Source: src, NativeID: "u1"}}},
 				{ID: "team", Kind: principal.KindTeam, Members: []string{"reader"}, Identities: []principal.Identity{{Source: src, NativeID: "g1"}}},
@@ -124,7 +125,7 @@ func TestReaderResolvesAllContainerAccessLists(t *testing.T) {
 }
 
 func TestReaderRefusesMalformedContainerGrants(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	for _, tt := range []struct {
 		name   string
 		change func(*connector.ACLEntry)
@@ -140,15 +141,13 @@ func TestReaderRefusesMalformedContainerGrants(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() { _ = tx.Rollback(t.Context()) }()
-			src := newSource(t)
+			src := dbtest.UniqueID()
 			containers, key, err := connector.CanonicalContainers([]connector.ContainerRef{{Source: src, NativeID: "repo"}})
 			if err != nil {
 				t.Fatal(err)
 			}
 			entry := connector.ACLEntry{Kind: connector.ACLContainers, NativeID: key, Containers: containers}
 			tt.change(&entry)
-			// L1's envelope checks the kind. Readers must still prove the
-			// deferred grant even for a row not derived through the L0 gate.
 			put(t, l1.New(tx), searchDoc(t, src, "project", "unproven", connector.ACL{entry}))
 			fake := connector.NewFake(connector.SourceConfig{ID: src})
 			event := fake.NewEvent(connector.KindIssue, "repo-issue", "public content")

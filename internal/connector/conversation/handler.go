@@ -96,8 +96,6 @@ func (c *Connector) Handler(sink connector.Sink) http.Handler {
 	})
 }
 
-// readRequest decodes exactly one JSON object, refusing unknown fields. It
-// returns a non-zero status when it could not.
 func readRequest(w http.ResponseWriter, r *http.Request, req *Request) (int, Refusal) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, push.MaxRequest))
 	if err != nil {
@@ -122,7 +120,6 @@ func readRequest(w http.ResponseWriter, r *http.Request, req *Request) (int, Ref
 	return 0, Refusal{}
 }
 
-// statusOf is the status and code an error is answered with.
 func statusOf(err error) (int, string) {
 	switch push.Status(err) {
 	case http.StatusBadRequest:

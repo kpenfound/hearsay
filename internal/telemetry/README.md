@@ -1,17 +1,14 @@
 # internal/telemetry
 
-Logging, tracing and metrics.
+Logging.
 
-**Belongs here:** the `log/slog` handler construction, the logger carried in
-`context.Context`, and — when they land — the OpenTelemetry trace and metric
-providers, which are no-ops unless an OTLP endpoint is configured. Nothing is
-exported by default: Hearsay must run with no observability stack at all.
+**Belongs here:** the `log/slog` handler construction and the logger carried in
+`context.Context`. Hearsay runs with no observability stack.
 
 **Logs go to stderr, not stdout.** `hearsay version` and `hearsay help` write
 their answers to stdout, and a binary whose logs share that stream cannot be
 piped into anything. Every container runtime collects both streams, so
-`docker compose logs` is unaffected. This is recorded here for contributors to
-the shipped Compose and Helm deployments.
+`docker compose logs` is unaffected.
 
 **How logging works:** the process attaches a logger with `service`, `version`
 and `instance` at startup and puts it in the context. `instance` is the

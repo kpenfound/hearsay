@@ -9,8 +9,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/l1"
 )
 
-// TestBuildChatReplies: on a two-level chat source a reply's thread is the
-// message it answers, and that message heads a conversation of its own.
 func TestBuildChatReplies(t *testing.T) {
 	channel := func(ev connector.Event) connector.Event {
 		ev.Payload.Container = connector.Container{Kind: connector.ContainerChannel, NativeID: "C1"}
@@ -34,7 +32,7 @@ func TestBuildChatReplies(t *testing.T) {
 		name   string
 		root   connector.Event
 		events []connector.Event
-		want   []connector.Event // the replies kept; nil is no document
+		want   []connector.Event
 	}{
 		{"a message and its replies", root, []connector.Event{inline, answer, reaction}, []connector.Event{answer}},
 		{"a message nobody answered", root, nil, nil},

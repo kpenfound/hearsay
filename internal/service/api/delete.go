@@ -21,14 +21,11 @@ import (
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
-// The most event ids one `delete` names, and the longest idempotency id.
 const (
 	maxDeleteEvents  = 100
 	maxIdempotencyID = 256
 )
 
-// kept is what a deletion leaves in Hearsay, which a re-sent copy of a deleted
-// message is recognised by: the redaction keeps these and nothing of the words.
 var kept = []string{"ids", "times", "kinds"}
 
 var deleteTool = Tool{"delete", "Delete messages of the caller's own conversation, by event id: the owner of a conversation source, calling directly or with that source's allowed agent carrying the request. Any revision's event id names the whole message, and every revision of it is redacted, under one deletion record and one deletion event for the request; the documents built from it are queued for rebuild. idempotency_id is the request's own id: repeating a request, sequentially, concurrently or after a lost answer, returns the original answer and records nothing more. An event that is not in the caller's own conversation sources, or does not exist, refuses the whole request as not_found and deletes nothing. Returns the deletion id, the event ids deleted, and kept: the ids, times and kinds that stay so that a re-sent copy stays deleted. Refusals carry a code: invalid_request, not_allowed, not_found, conflict or internal. Makes no model call.",
@@ -44,9 +41,6 @@ type Deleted struct {
 	Kept []string `json:"kept"`
 }
 
-// errDeleteNotFound is the one answer for an event that does not exist, one in
-// a source that is not the caller's conversation, and one in another person's
-// conversation.
 var errDeleteNotFound = refusal(http.StatusNotFound, ReasonNotFound, "no such event in your own conversation")
 
 func deleteEvents(ctx context.Context, c *Calls, caller Caller, _ l1.Reader, raw json.RawMessage) (any, error) {
@@ -65,19 +59,12 @@ func deleteEvents(ctx context.Context, c *Calls, caller Caller, _ l1.Reader, raw
 	return nil, refusal(errInternal.Status, ReasonInternal, errInternal.Message)
 }
 
-// deletionID is the id of the deletion record a request is recorded under,
-// which is its idempotency key: derived from the human, the carrier and the
-// caller's idempotency id, so another person's ids never collide with this
-// one's, in the form `del_` and 128 bits in hex.
 func deletionID(human, carrier, idempotency string) string {
 	key, _ := json.Marshal([]string{human, carrier, idempotency})
 	sum := sha256.Sum256(key)
 	return "del_" + hex.EncodeToString(sum[:16])
 }
 
-// ownSources are the conversation sources the caller may delete from: those
-// whose configured owner is the person, and, when an agent carries the request,
-// that allow the agent to post.
 func (c *Calls) ownSources(caller Caller) map[string]bool {
 	own := map[string]bool{}
 	for _, src := range c.repo.Sources {
@@ -92,18 +79,6 @@ func (c *Calls) ownSources(caller Caller) map[string]bool {
 	return own
 }
 
-// deleteEvents is `delete(event_ids, idempotency_id)`
-// (docs/design.md#read-and-assert-api): the configured owner of a conversation
-// source deletes messages of it, through the operator deletion, as one
-// request. No model is called.
-//
-// The request is authorized as a whole: every named event must exist in a
-// conversation source the person owns and, if an agent carries it, allows that
-// agent, or the call is refused as not found and nothing is written. The
-// events' artifacts are then deleted, with the one deletion record, the one
-// `deletion` event and the queued rebuilds, in one transaction that also
-// checks the authorization again. A request whose idempotency id is already
-// recorded is answered with the original deletion and writes nothing.
 func (c *Calls) deleteEvents(ctx context.Context, caller Caller, raw json.RawMessage) (*Deleted, error) {
 	var args struct {
 		EventIDs      []string `json:"event_ids"`
@@ -190,13 +165,8 @@ func nonNil(s []string) []string {
 	return s
 }
 
-// errNotOwned is returned inside the deletion's transaction for an event the
-// caller does not own.
 var errNotOwned = errors.New("an event is not in the caller's own conversation")
 
-// deleteSelectors resolves the named events to one artifact selector per
-// message, refusing the request as not found if any does not exist or is not
-// in a source the caller owns.
 func (c *Calls) deleteSelectors(ctx context.Context, own map[string]bool, named []string) ([]deletion.Selector, error) {
 	rows, err := c.pool.Query(ctx, `SELECT id, source, artifact FROM l0_events WHERE id = ANY($1)`, named)
 	if err != nil {
@@ -226,9 +196,6 @@ func (c *Calls) deleteSelectors(ctx context.Context, own map[string]bool, named 
 	return slices.Compact(selectors), nil
 }
 
-// authorizeDeletion is the check that stands with the deletion: every event
-// named is among those to be redacted, and every event to be redacted is in a
-// conversation source the caller owns.
 func authorizeDeletion(ctx context.Context, tx pgx.Tx, own map[string]bool, named, events []string) error {
 	for _, id := range named {
 		if !slices.Contains(events, id) {
@@ -251,8 +218,6 @@ func authorizeDeletion(ctx context.Context, tx pgx.Tx, own map[string]bool, name
 	return nil
 }
 
-// alreadyDeleted answers a request whose every message an earlier deletion
-// had redacted: it names that deletion, and deletes and records nothing.
 func (c *Calls) alreadyDeleted(ctx context.Context, named []string) (*Deleted, error) {
 	var id string
 	err := c.pool.QueryRow(ctx, `SELECT deletion FROM l0_events WHERE id = ANY($1) AND deletion IS NOT NULL ORDER BY deletion LIMIT 1`, named).Scan(&id)

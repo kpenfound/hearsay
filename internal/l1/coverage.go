@@ -98,11 +98,6 @@ func (s *Store) Coverage(ctx context.Context, reader Reader, eventIDs []string) 
 	return out, nil
 }
 
-// messageReadable is whether an id is a conversation message this reader may
-// read: the current revision's access list and the asked revision's both allow
-// them, the way `get_l0` reads a superseded revision under the current list.
-// There is no document to judge reach by until a distillation makes one, so a
-// message is as readable as its access lists say.
 func messageReadable(reader Reader, h l0.Held) bool {
 	return h.Kind == KindConversationMessage && reader.Allows(h.ACL) && reader.Allows(h.Asked)
 }

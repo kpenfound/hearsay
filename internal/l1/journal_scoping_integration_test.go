@@ -13,8 +13,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/l1"
 )
 
-// The root can be a native thread or a message heading its replies. Both
-// distiller reads use the same source/conversation membership predicate.
 func scopedRecord(t *testing.T, pool *pgxpool.Pool, shape string) l1.JudgmentRecord {
 	t.Helper()
 	if shape == "stored" {
@@ -48,7 +46,6 @@ func TestJournalScopedUnrelatedChangesSurviveCommitAndRestart(t *testing.T) {
 		t.Run(shape, func(t *testing.T) {
 			pool := journalDB(t)
 			r := scopedRecord(t, pool, shape)
-			// Other artifact/thread, container, adjacent half-open window, and source.
 			journalExec(t, pool, `INSERT INTO l0_events(id,source,native_id,kind,artifact,occurred_at,payload,acl) VALUES
     ('evt:test:unrelated','test','unrelated','message','unrelated','2026-01-01 00:10:00Z','{"thread":"another"}','[{"kind":"public"}]'),
     ('evt:test:container','test','container','message','container','2026-01-01 00:10:00Z','{"container":{"kind":"channel","native_id":"other"}}','[{"kind":"public"}]'),
@@ -57,8 +54,6 @@ func TestJournalScopedUnrelatedChangesSurviveCommitAndRestart(t *testing.T) {
 			journalExec(t, pool, `INSERT INTO l2_topic_operations(kind,scope,principal,topics,stances)
     VALUES('merge','elsewhere','reader',ARRAY['unrelated-a','unrelated-b'],'{}')`)
 			journalCommit(t, pool, []l1.JudgmentRecord{r}, nil)
-			// Recapture through a new store, as after restart; exercise both current
-			// identity hashing and Lookup's independent one-snapshot revalidation.
 			in, err := l1.New(pool).CaptureJudgmentInputs(t.Context(), r.Inputs.Spec)
 			if err != nil {
 				t.Fatal(err)
@@ -159,9 +154,6 @@ func TestJournalUnknownSourceBuiltMembershipFallsBackToSource(t *testing.T) {
 	}
 }
 
-// A member omitted from the evidence (for example by the ACL fold) still
-// belongs to the conversation's read set. Test changes under that unseen id,
-// including tombstones with no membership payload and revisions moving away.
 func TestJournalMembershipChangesCoverUncapturedMembers(t *testing.T) {
 	for _, shape := range []string{"thread", "window"} {
 		for _, mutation := range []string{"edit", "ACL", "tombstone", "delete", "move revision", "move update"} {
@@ -254,9 +246,6 @@ func TestJournalLateMembershipCommitIsVisible(t *testing.T) {
 	}
 }
 
-// The mutation trigger cannot see the new member until its writer commits.
-// The member is private and deliberately absent from EventIDs, so artifact
-// markers for captured evidence cannot mask missing membership invalidation.
 func TestJournalOverlappingUncapturedMemberMutation(t *testing.T) {
 	for _, shape := range []string{"thread", "window"} {
 		for _, mutation := range []string{"tombstone", "move revision"} {
@@ -279,7 +268,6 @@ func TestJournalOverlappingUncapturedMemberMutation(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer writer.Rollback(t.Context())
-				// Bound the test if a future change serializes L0 writers instead.
 				journalExec(t, writer, `SET LOCAL lock_timeout='1s'`)
 				if mutation == "tombstone" {
 					journalExec(t, writer, `INSERT INTO l0_events(id,source,native_id,kind,artifact,target,occurred_at,payload,acl)
@@ -306,8 +294,6 @@ func TestJournalOverlappingUncapturedMemberMutation(t *testing.T) {
 				if err = l1.CommitJudgments(t.Context(), tx, []l1.JudgmentRecord{r}, nil, l1.JournalCommitOptions{}); !errors.Is(err, l1.JournalInputsChanged) {
 					t.Errorf("overlapping member mutation commit = %v; want inputs_changed", err)
 				}
-				// Commit even on an unexpected acceptance, so the lookup checks
-				// below also detect a wrongly committed reusable result.
 				if err = tx.Commit(t.Context()); err != nil {
 					t.Fatal(err)
 				}

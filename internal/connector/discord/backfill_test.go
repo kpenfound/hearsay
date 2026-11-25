@@ -16,6 +16,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/discord"
+	"github.com/kpenfound/hearsay/internal/poll"
 )
 
 const (
@@ -160,14 +161,21 @@ func (*restFixture) message(channel, id string) map[string]any {
 	return map[string]any{"id": id, "guild_id": testGuild, "channel_id": channel, "content": "decision", "timestamp": "2026-09-22T00:00:00Z", "author": map[string]any{"id": "1551744840499200007", "username": "alice"}}
 }
 
-func TestChannelReplyKeepsParent(t *testing.T) {
-	f := &restFixture{}
-	first := f.message(testChannel, "1551744840499200011")
-	reply := f.message(testChannel, "1551744840499200012")
-	reply["message_reference"] = map[string]any{"message_id": "1551744840499200011"}
-	f.messages = []map[string]any{reply, first}
+func artifactEvent(t *testing.T, rec *connector.Recorder, artifact string) connector.Event {
+	t.Helper()
+	for _, ev := range rec.Events() {
+		if ev.Payload.Artifact == artifact {
+			return ev
+		}
+	}
+	t.Fatalf("no event for artifact %s", artifact)
+	return connector.Event{}
+}
+
+func backfillRecorded(t *testing.T, f *restFixture) *connector.Recorder {
+	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(f.serve))
-	defer server.Close()
+	t.Cleanup(server.Close)
 	src := discordSource(server.URL)
 	c, err := discord.New(src)
 	if err != nil {
@@ -175,16 +183,19 @@ func TestChannelReplyKeepsParent(t *testing.T) {
 	}
 	rec := &connector.Recorder{}
 	walkDiscord(t, c, connector.NewGate(rec, src.ID, c.Describe(), connector.NewAllowlist(src)), "")
-	for _, ev := range rec.Events() {
-		if ev.Payload.Artifact != "1551744840499200012" {
-			continue
-		}
-		if ev.Payload.Parent != "1551744840499200011" || ev.Payload.Container.NativeID != testChannel {
-			t.Errorf("channel reply = %+v", ev.Payload)
-		}
-		return
+	return rec
+}
+
+func TestChannelReplyKeepsParent(t *testing.T) {
+	f := &restFixture{}
+	first := f.message(testChannel, "1551744840499200011")
+	reply := f.message(testChannel, "1551744840499200012")
+	reply["message_reference"] = map[string]any{"message_id": "1551744840499200011"}
+	f.messages = []map[string]any{reply, first}
+	got := artifactEvent(t, backfillRecorded(t, f), "1551744840499200012")
+	if got.Payload.Parent != "1551744840499200011" || got.Payload.Container.NativeID != testChannel {
+		t.Errorf("channel reply = %+v", got.Payload)
 	}
-	t.Fatal("channel reply missing")
 }
 
 func discordSource(api string) connector.SourceConfig {
@@ -229,8 +240,6 @@ func TestRESTBackfillResumesAfterFailedPage(t *testing.T) {
 	if first.Done || first.Events != 100 {
 		t.Fatalf("first page = %+v", first)
 	}
-	// A new connector has no gateway cache. The stored cursor still names the
-	// next page; a 429 does not advance it.
 	c, err = discord.New(src)
 	if err != nil {
 		t.Fatal(err)
@@ -253,26 +262,9 @@ func TestRESTBackfillResumesAfterFailedPage(t *testing.T) {
 
 func TestPrivateThreadBackfillKeepsParentContainer(t *testing.T) {
 	f := &restFixture{thread: true, messages: []map[string]any{}}
-	server := httptest.NewServer(http.HandlerFunc(f.serve))
-	defer server.Close()
-	src := discordSource(server.URL)
-	c, err := discord.New(src)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rec := &connector.Recorder{}
-	walkDiscord(t, c, connector.NewGate(rec, src.ID, c.Describe(), connector.NewAllowlist(src)), "")
-	var found bool
-	for _, ev := range rec.Events() {
-		if ev.Payload.Artifact == "1551744840499200012" {
-			found = true
-			if ev.Payload.Container.NativeID != testChannel || ev.Payload.Thread != "thread:"+testThread || len(ev.ACL) != 1 || ev.ACL[0].Kind != connector.ACLGroup || ev.ACL[0].NativeID != testThread {
-				t.Errorf("private thread event = %+v", ev)
-			}
-		}
-	}
-	if !found {
-		t.Fatal("thread message missing")
+	ev := artifactEvent(t, backfillRecorded(t, f), "1551744840499200012")
+	if ev.Payload.Container.NativeID != testChannel || ev.Payload.Thread != "thread:"+testThread || len(ev.ACL) != 1 || ev.ACL[0].Kind != connector.ACLGroup || ev.ACL[0].NativeID != testThread {
+		t.Errorf("private thread event = %+v", ev)
 	}
 }
 
@@ -285,37 +277,19 @@ func TestArchivedThreadBackfill(t *testing.T) {
 		{"private", connector.ACLGroup},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			f := &restFixture{archived: tt.name}
-			server := httptest.NewServer(http.HandlerFunc(f.serve))
-			defer server.Close()
-			src := discordSource(server.URL)
-			c, err := discord.New(src)
-			if err != nil {
-				t.Fatal(err)
-			}
-			rec := &connector.Recorder{}
-			walkDiscord(t, c, connector.NewGate(rec, src.ID, c.Describe(), connector.NewAllowlist(src)), "")
-			var found bool
-			for _, ev := range rec.Events() {
-				if ev.Payload.Artifact == "1551744840499200012" {
-					found = true
-					if ev.Payload.Container.NativeID != testChannel || len(ev.ACL) != 1 || ev.ACL[0].Kind != tt.acl {
-						t.Errorf("archived message = %+v", ev)
-					}
-				}
-			}
-			if !found {
-				t.Fatal("archived thread message missing")
+			ev := artifactEvent(t, backfillRecorded(t, &restFixture{archived: tt.name}), "1551744840499200012")
+			if ev.Payload.Container.NativeID != testChannel || len(ev.ACL) != 1 || ev.ACL[0].Kind != tt.acl {
+				t.Errorf("archived message = %+v", ev)
 			}
 		})
 	}
 }
 
 func TestPermissionResyncUsesDurableRuntimeStore(t *testing.T) {
-	f := &restFixture{gatewaySilent: true, messages: []map[string]any{}}
+	f := &restFixture{gatewaySilent: true}
 	f.messages = []map[string]any{f.message(testChannel, "1551744840499200011")}
 	server := httptest.NewServer(http.HandlerFunc(f.serve))
-	defer server.Close()
+	t.Cleanup(server.Close)
 	src := discordSource(server.URL)
 	c, err := discord.New(src)
 	if err != nil {
@@ -332,134 +306,73 @@ func TestPermissionResyncUsesDurableRuntimeStore(t *testing.T) {
 	f.private = true
 	f.mu.Unlock()
 	store := connector.NewMemoryResyncs()
-	registry := connector.NewRegistry()
-	if err := registry.Register(discord.Type, discord.Factory); err != nil {
-		t.Fatal(err)
-	}
-	runtime, err := connector.NewRuntime(t.Context(), connector.RuntimeOptions{Sources: []connector.SourceConfig{src}, Registry: registry, Sink: rec, Resyncs: store, Exposure: rec, Lookup: func(string) (string, bool) { return "bot-token", true }, Cadence: connector.Cadence{MinRefresh: time.Millisecond, Refresh: time.Millisecond, MaxBackoff: 5 * time.Millisecond, Shutdown: time.Second}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() { done <- runtime.Run(ctx) }()
-	defer func() {
-		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Error(err)
-			}
-		case <-time.After(5 * time.Second):
-			t.Error("runtime did not stop")
-		}
-	}()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	startRuntime(t, src, func(o *connector.RuntimeOptions) {
+		o.Sink = rec
+		o.Resyncs = store
+		o.Exposure = rec
+	})
+	var changed connector.Event
+	poll.Until(t, "the startup check to settle the re-sync", func() bool {
 		record := store.Get(src.ID, testChannel)
-		var changed connector.Event
 		for _, ev := range rec.Events() {
 			if ev.Payload.Artifact == original.Payload.Artifact && ev.NativeID != original.NativeID {
 				changed = ev
 			}
 		}
-		if record.Generation > 0 && !record.Owed && changed.NativeID != "" {
-			if !strings.Contains(changed.NativeID, "@perm:") || len(changed.ACL) != 1 || changed.ACL[0].Kind != connector.ACLGroup || !changed.Time.Equal(original.Time) || changed.Payload.Text != original.Payload.Text {
-				t.Errorf("re-emitted event = %+v", changed)
-			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("startup check never settled re-sync: %+v", record)
-		}
-		time.Sleep(time.Millisecond)
+		return record.Generation > 0 && !record.Owed && changed.NativeID != ""
+	})
+	if !strings.Contains(changed.NativeID, "@perm:") || len(changed.ACL) != 1 || changed.ACL[0].Kind != connector.ACLGroup || !changed.Time.Equal(original.Time) || changed.Payload.Text != original.Payload.Text {
+		t.Errorf("re-emitted event = %+v", changed)
 	}
 }
 
 func TestGatewayChannelUpdateRequestsResync(t *testing.T) {
-	f := &restFixture{private: true, gatewayUpdate: true, messages: []map[string]any{}}
+	f := &restFixture{private: true, gatewayUpdate: true}
 	f.messages = []map[string]any{f.message(testChannel, "1551744840499200011")}
 	server := httptest.NewServer(http.HandlerFunc(f.serve))
-	defer server.Close()
+	t.Cleanup(server.Close)
 	src := discordSource(server.URL)
-	registry := connector.NewRegistry()
-	if err := registry.Register(discord.Type, discord.Factory); err != nil {
-		t.Fatal(err)
-	}
 	store := connector.NewMemoryResyncs()
-	runtime, err := connector.NewRuntime(t.Context(), connector.RuntimeOptions{Sources: []connector.SourceConfig{src}, Registry: registry, Sink: &connector.Recorder{}, Resyncs: store, Lookup: func(string) (string, bool) { return "bot-token", true }, Cadence: connector.Cadence{MinRefresh: time.Millisecond, Refresh: time.Millisecond, MaxBackoff: 5 * time.Millisecond, Shutdown: time.Second}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() { done <- runtime.Run(ctx) }()
-	defer func() {
-		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Error(err)
-			}
-		case <-time.After(5 * time.Second):
-			t.Error("runtime did not stop")
-		}
-	}()
-	deadline := time.Now().Add(5 * time.Second)
-	for store.Get(src.ID, testChannel).Generation < 2 {
-		if time.Now().After(deadline) {
-			t.Fatal("gateway update did not record re-sync")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	startRuntime(t, src, func(o *connector.RuntimeOptions) { o.Resyncs = store })
+	poll.Until(t, "the gateway update to record a re-sync", func() bool { return store.Get(src.ID, testChannel).Generation >= 2 })
 }
 
 func TestFreshGatewaySessionWalksOutageGap(t *testing.T) {
 	f := &restFixture{}
 	f.messages = []map[string]any{f.message(testChannel, "1551744840499200011")}
 	server := httptest.NewServer(http.HandlerFunc(f.serve))
-	defer server.Close()
+	t.Cleanup(server.Close)
 	src := discordSource(server.URL)
-	registry := connector.NewRegistry()
-	if err := registry.Register(discord.Type, discord.Factory); err != nil {
-		t.Fatal(err)
-	}
 	cursors := connector.NewMemoryCursors()
 	cursors.Set(src.ID, connector.BackfillState{Done: true})
 	store := connector.NewMemoryResyncs()
 	rec := &connector.Recorder{}
-	runtime, err := connector.NewRuntime(t.Context(), connector.RuntimeOptions{Sources: []connector.SourceConfig{src}, Registry: registry, Sink: rec, Cursors: cursors, Resyncs: store, Lookup: func(string) (string, bool) { return "bot-token", true }, Cadence: connector.Cadence{MinRefresh: time.Millisecond, Refresh: time.Millisecond, MaxBackoff: 5 * time.Millisecond, Shutdown: time.Second}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() { done <- runtime.Run(ctx) }()
-	defer func() {
-		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Error(err)
-			}
-		case <-time.After(5 * time.Second):
-			t.Error("runtime did not stop")
-		}
-	}()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	startRuntime(t, src, func(o *connector.RuntimeOptions) {
+		o.Sink = rec
+		o.Cursors = cursors
+		o.Resyncs = store
+	})
+	poll.Until(t, "the restart gap to be ingested", func() bool {
 		record := store.Get(src.ID, testChannel)
-		if record.Generation > 0 && !record.Owed && len(rec.Events()) > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("restart gap not ingested: %+v", record)
-		}
-		time.Sleep(time.Millisecond)
-	}
+		return record.Generation > 0 && !record.Owed && len(rec.Events()) > 0
+	})
 	if got := cursors.Saves(src.ID); len(got) != 0 {
 		t.Errorf("finished initial backfill was restarted: %+v", got)
 	}
+}
+
+type emitSignal struct {
+	connector.Sink
+	emitted chan struct{}
+}
+
+func (s emitSignal) Emit(ctx context.Context, ev connector.Event) error {
+	err := s.Sink.Emit(ctx, ev)
+	select {
+	case s.emitted <- struct{}{}:
+	default:
+	}
+	return err
 }
 
 func TestBackfillAndGatewayUseSameMessageIdentity(t *testing.T) {
@@ -468,31 +381,30 @@ func TestBackfillAndGatewayUseSameMessageIdentity(t *testing.T) {
 	f.messages[0]["content"] = "ask <@1551744840499200099>"
 	f.messages[0]["mentions"] = []map[string]any{{"id": "1551744840499200099", "username": "shed", "bot": true}}
 	server := httptest.NewServer(http.HandlerFunc(f.serve))
-	defer server.Close()
+	t.Cleanup(server.Close)
 	src := discordSource(server.URL)
 	c, err := discord.New(src)
 	if err != nil {
 		t.Fatal(err)
 	}
 	rec := &connector.Recorder{}
-	gate := connector.NewGate(rec, src.ID, c.Describe(), connector.NewAllowlist(src))
+	signal := emitSignal{Sink: rec, emitted: make(chan struct{}, 1)}
+	gate := connector.NewGate(signal, src.ID, c.Describe(), connector.NewAllowlist(src))
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- c.Stream(ctx, gate) }()
-	defer func() {
+	t.Cleanup(func() {
 		cancel()
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):
 			t.Error("gateway did not stop")
 		}
-	}()
-	deadline := time.Now().Add(5 * time.Second)
-	for len(rec.Events()) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("gateway message never arrived")
-		}
-		time.Sleep(time.Millisecond)
+	})
+	select {
+	case <-signal.emitted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("gateway message never arrived")
 	}
 	first := rec.Events()[0]
 	walkDiscord(t, c, gate, "")

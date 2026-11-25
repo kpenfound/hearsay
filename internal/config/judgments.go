@@ -2,10 +2,6 @@ package config
 
 import "github.com/kpenfound/hearsay/internal/llm"
 
-// buildJudgments reads `llm.judgments`, Jev's configuration. Every field is
-// optional here: the distiller and the assertion worker refuse to start
-// without a model and a key (llm.NewJudgments), and the other commands never
-// call Jev.
 func (l *loader) buildJudgments() llm.JudgmentConfig {
 	cfg := llm.JudgmentConfig{}.WithDefaults()
 	defined := ""

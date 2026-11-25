@@ -117,33 +117,26 @@ func TestTokenRegistration(t *testing.T) {
 	}
 }
 
-func TestTokenEmptyAndEnvironment(t *testing.T) {
-	tests := []struct {
-		name      string
-		add       func(*push.Tokens) error
-		wantEmpty bool
-	}{
-		{"empty direct token", func(tokens *push.Tokens) error { return tokens.Add("poster", "") }, true},
-		{"process environment", func(tokens *push.Tokens) error {
-			t.Setenv("PUSH_TEST_TOKEN", "from-env")
-			return tokens.AddEnv("poster", "PUSH_TEST_TOKEN", nil)
-		}, false},
+func TestAnEmptyDirectTokenIsRefused(t *testing.T) {
+	var tokens push.Tokens
+	if err := tokens.Add("poster", ""); !errors.Is(err, push.ErrEmptyToken) {
+		t.Fatalf("Add() = %v, want ErrEmptyToken", err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var tokens push.Tokens
-			err := tt.add(&tokens)
-			if errors.Is(err, push.ErrEmptyToken) != tt.wantEmpty {
-				t.Fatalf("Add() = %v, want empty token %v", err, tt.wantEmpty)
-			}
-			if _, ok := tokens.Match(""); ok {
-				t.Fatal("Match(empty) authenticated a principal")
-			}
-			if !tt.wantEmpty {
-				if id, ok := tokens.Match("from-env"); !ok || id != "poster" {
-					t.Fatalf("Match() = %q, %v, want poster, true", id, ok)
-				}
-			}
-		})
+	if id, ok := tokens.Match(""); ok {
+		t.Fatalf("Match(empty) authenticated %q", id)
+	}
+}
+
+func TestTokensAreReadFromTheProcessEnvironmentWhenNoLookupIsGiven(t *testing.T) {
+	var tokens push.Tokens
+	t.Setenv("PUSH_TEST_TOKEN", "from-env")
+	if err := tokens.AddEnv("poster", "PUSH_TEST_TOKEN", nil); err != nil {
+		t.Fatalf("AddEnv() = %v, want nil", err)
+	}
+	if id, ok := tokens.Match("from-env"); !ok || id != "poster" {
+		t.Fatalf("Match() = %q, %v, want poster, true", id, ok)
+	}
+	if id, ok := tokens.Match(""); ok {
+		t.Fatalf("Match(empty) authenticated %q", id)
 	}
 }

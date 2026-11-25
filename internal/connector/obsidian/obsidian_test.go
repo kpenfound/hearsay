@@ -16,6 +16,20 @@ func source(root string) connector.SourceConfig {
 	settings, _ := json.Marshal(obsidian.Settings{Root: root, Owner: connector.Identity{Source: "people", Kind: connector.IdentityUser, NativeID: "owner-1", Handle: "owner"}, Templates: []string{"Notes/Templates"}})
 	return connector.SourceConfig{ID: "vault", Type: obsidian.Type, Containers: []string{"Notes"}, Settings: settings}
 }
+func withSettings(t *testing.T, src connector.SourceConfig, change func(*obsidian.Settings)) connector.SourceConfig {
+	t.Helper()
+	var settings obsidian.Settings
+	if err := json.Unmarshal(src.Settings, &settings); err != nil {
+		t.Fatal(err)
+	}
+	change(&settings)
+	raw, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src.Settings = raw
+	return src
+}
 func put(t *testing.T, root, name, body string) {
 	t.Helper()
 	p := filepath.Join(root, filepath.FromSlash(name))
@@ -49,7 +63,8 @@ func walk(t *testing.T, c *obsidian.Connector, sink connector.Sink, from connect
 	t.Fatal("backfill did not finish")
 	return nil
 }
-func TestBackfillGateAndExclusions(t *testing.T) {
+func backfillFixture(t *testing.T) (connector.SourceConfig, []connector.Event) {
+	t.Helper()
 	root := t.TempDir()
 	put(t, root, "Notes/a.md", "---\ntags: [one, two]\nstatus: draft\n---\n# A\n[[B]]\n")
 	put(t, root, "Notes/Deep/b.md", "# B")
@@ -73,7 +88,11 @@ func TestBackfillGateAndExclusions(t *testing.T) {
 	defer c.Close(t.Context())
 	rec := &connector.Recorder{}
 	walk(t, c, gate(src, c, rec), "")
-	events := rec.Events()
+	return src, rec.Events()
+}
+
+func TestBackfillEmitsOnlyAllowlistedMarkdown(t *testing.T) {
+	_, events := backfillFixture(t)
 	ids := []string{}
 	for _, ev := range events {
 		ids = append(ids, ev.Payload.Artifact)
@@ -81,22 +100,36 @@ func TestBackfillGateAndExclusions(t *testing.T) {
 	if !slices.Equal(ids, []string{"Notes/Deep/b.md", "Notes/With%20Space.md", "Notes/a.md"}) {
 		t.Fatalf("artifacts = %v", ids)
 	}
+}
+
+func TestBackfillEventPayload(t *testing.T) {
+	_, events := backfillFixture(t)
 	a := events[2]
 	if a.Payload.Container.NativeID != "Notes" || a.Payload.Text != "---\ntags: [one, two]\nstatus: draft\n---\n# A\n[[B]]\n" || a.Payload.Author.NativeID != "owner-1" || a.Payload.Author.Source != "people" {
 		t.Errorf("event = %+v", a)
-	}
-	if len(a.ACL) != 1 || a.ACL[0].Kind != connector.ACLIdentity || a.ACL[0].NativeID != "owner-1" {
-		t.Errorf("acl = %+v", a.ACL)
 	}
 	var native map[string]any
 	if err := json.Unmarshal(a.Payload.Native, &native); err != nil || native["status"] != "draft" {
 		t.Errorf("frontmatter = %s, %v", a.Payload.Native, err)
 	}
+	if events[0].Payload.Container.NativeID != "Notes/Deep" {
+		t.Errorf("nested container = %+v", events[0].Payload.Container)
+	}
+}
+
+func TestBackfillEventIdentity(t *testing.T) {
+	src, events := backfillFixture(t)
+	a := events[2]
 	if !strings.HasPrefix(a.NativeID, "Notes/a.md@") || a.ID != connector.EventID(src.ID, a.NativeID) {
 		t.Errorf("identity = %q %q", a.NativeID, a.ID)
 	}
-	if events[0].Payload.Container.NativeID != "Notes/Deep" {
-		t.Errorf("nested container = %+v", events[0].Payload.Container)
+}
+
+func TestBackfillEventACLNamesOwnerAlone(t *testing.T) {
+	_, events := backfillFixture(t)
+	a := events[2]
+	if len(a.ACL) != 1 || a.ACL[0].Kind != connector.ACLIdentity || a.ACL[0].NativeID != "owner-1" {
+		t.Errorf("acl = %+v", a.ACL)
 	}
 }
 
@@ -138,12 +171,7 @@ func TestACLPermissionRevision(t *testing.T) {
 	}
 	walk(t, c, gate(src, c, rec), "")
 	c.Close(t.Context())
-	var settings obsidian.Settings
-	if err := json.Unmarshal(src.Settings, &settings); err != nil {
-		t.Fatal(err)
-	}
-	settings.Public = true
-	src.Settings, _ = json.Marshal(settings)
+	src = withSettings(t, src, func(s *obsidian.Settings) { s.Public = true })
 	c, err = obsidian.New(src)
 	if err != nil {
 		t.Fatal(err)
@@ -153,9 +181,10 @@ func TestACLPermissionRevision(t *testing.T) {
 	if len(rec.Events()) != 2 || rec.Events()[0].NativeID == rec.Events()[1].NativeID || rec.Events()[1].ACL[0].Kind != connector.ACLPublic {
 		t.Fatalf("permission revisions = %+v", rec.Events())
 	}
-	settings.Public = false
-	settings.Owner.NativeID = "owner-2"
-	src.Settings, _ = json.Marshal(settings)
+	src = withSettings(t, src, func(s *obsidian.Settings) {
+		s.Public = false
+		s.Owner.NativeID = "owner-2"
+	})
 	c, err = obsidian.New(src)
 	if err != nil {
 		t.Fatal(err)
@@ -167,9 +196,7 @@ func TestACLPermissionRevision(t *testing.T) {
 	}
 }
 
-// Vault folders are named like any other folder, spaces included; a configured
-// "Dagger Content" kept the connectors service from starting.
-func TestAFolderWithASpaceIsIngested(t *testing.T) {
+func TestFolderWithSpaceIsIngested(t *testing.T) {
 	root := t.TempDir()
 	put(t, root, "Side Projects/Hearsay.md", "# Hearsay")
 	put(t, root, "Side Projects/Deep Dive/notes.md", "# Notes")

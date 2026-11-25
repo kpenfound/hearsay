@@ -100,8 +100,8 @@ func assertMeasure(t *testing.T, m eval.ErrorMeasure, n, d int) {
 	}
 }
 
-func TestDownstreamAndEmptyJudgments(t *testing.T) {
-	c := corpus(example("a", llm.TaskStanceSameAnswer, "no", "held_out"), example("b", llm.TaskStanceSameAnswer, "yes", "held_out"), example("missing", llm.TaskStanceSameAnswer, "yes", "held_out"))
+func TestDownstreamJudgmentMeasures(t *testing.T) {
+	c := corpus(example("a", llm.TaskStanceSameAnswer, "no", "held_out"), example("b", llm.TaskStanceSameAnswer, "yes", "held_out"))
 	yes, no := true, false
 	a, b := prediction("a", "no"), prediction("b", "yes")
 	a.ConflictFlag = &yes
@@ -117,8 +117,16 @@ func TestDownstreamAndEmptyJudgments(t *testing.T) {
 	m := got[llm.TaskStanceSameAnswer].Jev
 	assertMeasure(t, m.ConflictPrecision, 1, 2)
 	assertMeasure(t, m.Corrections, 1, 2)
-	if m.Missing != 1 {
-		t.Fatal(m)
+}
+
+func TestExamplesWithoutPredictionsAreMissingAndMeasureNothing(t *testing.T) {
+	c := corpus(example("a", llm.TaskStanceSameAnswer, "no", "held_out"), example("b", llm.TaskStanceSameAnswer, "yes", "held_out"), example("missing", llm.TaskStanceSameAnswer, "yes", "held_out"))
+	got, err := eval.CompareJudgments(c, eval.Predictions{Jev: []eval.Prediction{prediction("a", "no"), prediction("b", "yes")}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := got[llm.TaskStanceSameAnswer].Jev; m.Missing != 1 {
+		t.Fatalf("jev missing = %d, want 1", m.Missing)
 	}
 	for task, c := range got {
 		m := c.Baseline
@@ -131,19 +139,25 @@ func TestDownstreamAndEmptyJudgments(t *testing.T) {
 	}
 }
 
-func TestSeedRecordedFixtures(t *testing.T) {
-	var c eval.Corpus
-	var ps eval.Predictions
-	var responses []llm.JudgmentResponse
-	readFixture(t, "testdata/seed-corpus.json", &c)
-	readFixture(t, "testdata/seed-predictions.json", &ps)
-	readFixture(t, "testdata/seed-judgments.json", &responses)
-	if err := c.Validate(); err != nil {
-		t.Fatal(err)
-	}
-	categories := map[string]bool{}
+type seedFixtures struct {
+	corpus    eval.Corpus
+	recorded  eval.Predictions
+	responses []llm.JudgmentResponse
+}
+
+func readSeedFixtures(t *testing.T) seedFixtures {
+	t.Helper()
+	var f seedFixtures
+	readFixture(t, "testdata/seed-corpus.json", &f.corpus)
+	readFixture(t, "testdata/seed-predictions.json", &f.recorded)
+	readFixture(t, "testdata/seed-judgments.json", &f.responses)
+	return f
+}
+
+func (f seedFixtures) replay(t *testing.T) (predictions []eval.Prediction, calls int) {
+	t.Helper()
 	steps := []llm.JudgmentStep{}
-	for _, r := range responses {
+	for _, r := range f.responses {
 		steps = append(steps, llm.JudgmentStep{Response: r})
 	}
 	fake := llm.NewFakeJudgmentProvider(steps...)
@@ -151,9 +165,7 @@ func TestSeedRecordedFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var replayed []eval.Prediction
-	for _, e := range c.Examples {
-		categories[e.Category] = true
+	for _, e := range f.corpus.Examples {
 		r := judge.YesNo(t.Context(), e.Sources[0].Text, llm.JudgmentQuestion{ID: e.ID, Question: "Answer the recorded source's judgment"})
 		if r.Failure != "" || len(r.Answers) != 1 || r.Answers[0].Yes == nil {
 			t.Fatalf("%s: %+v", e.ID, r)
@@ -162,37 +174,66 @@ func TestSeedRecordedFixtures(t *testing.T) {
 		if *r.Answers[0].Yes {
 			label = "yes"
 		}
-		replayed = append(replayed, eval.Prediction{ExampleID: e.ID, ModelVersion: r.ModelVersion, Label: label, Confidence: share(r.Answers[0].Confidence)})
+		predictions = append(predictions, eval.Prediction{ExampleID: e.ID, ModelVersion: r.ModelVersion, Label: label, Confidence: share(r.Answers[0].Confidence)})
+	}
+	return predictions, fake.Calls()
+}
+
+func TestSeedCorpusIsValidAndCoversEveryCategory(t *testing.T) {
+	f := readSeedFixtures(t)
+	if err := f.corpus.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	categories := map[string]bool{}
+	for _, e := range f.corpus.Examples {
+		categories[e.Category] = true
 	}
 	for _, category := range []string{"paraphrase", "negation", "proposal_versus_decision", "source_edits", "private_evidence", "adversarial_source_text"} {
 		if !categories[category] {
-			t.Fatalf("missing category %s", category)
+			t.Errorf("missing category %s", category)
 		}
 	}
-	if fake.Calls() != len(responses) {
-		t.Fatal("fixtures were not all replayed")
+}
+
+func TestSeedJudgmentFixturesReplayToTheRecordedPredictions(t *testing.T) {
+	f := readSeedFixtures(t)
+	replayed, calls := f.replay(t)
+	if calls != len(f.responses) {
+		t.Errorf("replayed %d of %d recorded responses", calls, len(f.responses))
 	}
-	if !reflect.DeepEqual(ps.Jev, replayed) {
-		t.Fatal("replayed predictions differ from recorded selections")
+	if !reflect.DeepEqual(f.recorded.Jev, replayed) {
+		t.Error("replayed predictions differ from recorded selections")
 	}
-	ps.Jev = replayed
-	report, err := eval.CompareJudgments(c, ps, "held_out")
+}
+
+func TestSeedReportScoresJevBetterThanTheBaseline(t *testing.T) {
+	f := readSeedFixtures(t)
+	f.recorded.Jev, _ = f.replay(t)
+	report, err := eval.CompareJudgments(f.corpus, f.recorded, "held_out")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for task, m := range report {
 		if m.Jev.Examples == 0 || m.Jev.Errors.Count != 0 || m.Baseline.Errors.Count == 0 {
-			t.Fatalf("%s: jev=%+v baseline errors=%+v", task, m.Jev, m.Baseline.Errors)
+			t.Errorf("%s: jev=%+v baseline errors=%+v", task, m.Jev, m.Baseline.Errors)
 		}
+	}
+}
+
+func TestSeedReportLeaksNoSourceText(t *testing.T) {
+	f := readSeedFixtures(t)
+	report, err := eval.CompareJudgments(f.corpus, f.recorded, "held_out")
+	if err != nil {
+		t.Fatal(err)
 	}
 	encoded, err := json.Marshal(report)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, e := range c.Examples {
+	for _, e := range f.corpus.Examples {
 		for _, s := range e.Sources {
 			if bytes.Contains(encoded, []byte(s.Text)) {
-				t.Fatal("report leaked source text")
+				t.Fatalf("report leaked source text of %s", e.ID)
 			}
 		}
 	}
@@ -228,10 +269,15 @@ func TestCorpusRefusals(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDecodeEvaluationRefusesUnknownFieldsAndTrailingValues(t *testing.T) {
 	for _, s := range []string{`{"version":1,"typo":1}`, `{} {}`} {
-		var c eval.Corpus
-		if err := eval.DecodeEvaluation(strings.NewReader(s), &c); err == nil {
-			t.Fatal("invalid input accepted")
-		}
+		t.Run(s, func(t *testing.T) {
+			var c eval.Corpus
+			if err := eval.DecodeEvaluation(strings.NewReader(s), &c); err == nil {
+				t.Fatal("invalid input accepted")
+			}
+		})
 	}
 }

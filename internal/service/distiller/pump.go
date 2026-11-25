@@ -23,9 +23,7 @@ const Consumer = "distiller"
 // The pump's defaults.
 const (
 	// DefaultPumpInterval is how often the feed is read when it was empty last
-	// time. L0 has no notification of its own — a connector's write is one
-	// statement, and adding one would be a second mechanism to keep in step
-	// with the cursor — so this bounds how long a new event waits to be enqueued.
+	// time. It bounds how long a new event waits to be enqueued.
 	DefaultPumpInterval = 2 * time.Second
 	// DefaultPumpBatch is how many events one read takes. A full batch means
 	// there is more, and the pump goes round again without waiting.
@@ -43,11 +41,8 @@ type PumpOptions struct {
 	MaxDelay time.Duration
 	// Interval is how long the pump waits after a read that found nothing.
 	Interval time.Duration
-	// Batch is how many events one read takes. It is held to what one read of
-	// the feed actually returns, because the drain loop reads a full batch as
-	// "there is more": a batch above the store's own cap could never be
-	// reached, and the pump would wait an interval between batches for the
-	// whole of a backfill.
+	// Batch is how many events one read takes, held to what one read of the
+	// feed returns.
 	Batch int
 }
 
@@ -66,12 +61,10 @@ func (o PumpOptions) withDefaults() PumpOptions {
 // L0 change feed and enqueues a `distill` job for the document each event
 // belongs to.
 //
-// It is deliberately not the half that distils. An event is small and arrives
-// in bursts — a pull request opened, then five reviews in a minute — and the
-// queue debounces each document when Quiet > 0: a burst waits for Quiet,
-// capped by MaxDelay from its first enqueue, then costs one model call.
-// The CLI settings are --distill-quiet and --distill-max-delay; zero Quiet
-// keeps the ordinary pending-job deduplication.
+// When Quiet > 0 the queue debounces each document: a burst waits for Quiet,
+// capped by MaxDelay from its first enqueue, then costs one model call. The
+// CLI settings are --distill-quiet and --distill-max-delay; zero Quiet keeps
+// the ordinary pending-job deduplication.
 type Pump struct {
 	pool    *pgxpool.Pool
 	events  *l0.Store
@@ -89,12 +82,6 @@ func NewPump(pool *pgxpool.Pool, opts PumpOptions) *Pump {
 	}
 }
 
-// Batch is how many events one read of the feed takes, after the defaults and
-// the store's own cap have been applied. It is exported because it is what the
-// drain loop compares a read against, and a caller that asked for more than one
-// read returns should be able to see what it got.
-func (p *Pump) Batch() int { return p.opts.Batch }
-
 // Run reads the feed until ctx is cancelled, and returns nil when it stops that
 // way. A read that fails is logged and retried at the next tick: the feed is a
 // cursor over a table, so nothing is lost by being late.
@@ -106,9 +93,6 @@ func (p *Pump) Run(ctx context.Context) error {
 	tick := time.NewTicker(p.opts.Interval)
 	defer tick.Stop()
 	for {
-		// Drain: a full batch means there is more of the feed to read, and
-		// waiting for the next tick between batches would make a backfill take
-		// one interval per batch.
 		for ctx.Err() == nil {
 			progress, err := p.Once(ctx)
 			if err != nil {
@@ -143,11 +127,9 @@ type Progress struct {
 
 // Once reads one batch of the feed and enqueues what it implies.
 //
-// The jobs and the new cursor are one transaction. That is what makes the pump
-// safe to restart: either a batch's jobs exist and the cursor has moved past
-// them, or neither happened and the batch is read again. Enqueueing is
-// deduplicated on (kind, target), so reading a batch twice costs one statement
-// rather than one distillation.
+// The jobs and the new cursor are one transaction: either a batch's jobs exist
+// and the cursor has moved past them, or neither happened and the batch is read
+// again. Enqueueing is deduplicated on (kind, target).
 func (p *Pump) Once(ctx context.Context) (Progress, error) {
 	from, err := p.cursors.Load(ctx, Consumer)
 	if err != nil {
@@ -168,9 +150,7 @@ func (p *Pump) Once(ctx context.Context) (Progress, error) {
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	progress := Progress{Events: len(changes), Cursor: changes[len(changes)-1].Cursor}
-	// One job per document per batch. The queue collapses duplicates against
-	// what is already pending; this collapses them against this batch, which is
-	// where a burst of reviews on one pull request actually arrives.
+
 	seen := map[string]bool{}
 	events := l0.New(tx)
 	for _, change := range changes {
@@ -190,9 +170,7 @@ func (p *Pump) Once(ctx context.Context) (Progress, error) {
 				continue
 			}
 			seen[target.id] = true
-			// No trace carrier: internal/telemetry has no propagator yet, and
-			// a carrier this package invented would be one the worker could
-			// not read.
+
 			req := queue.Request{Kind: JobKind(), TargetID: target.id}
 			if p.opts.Quiet > 0 {
 				req.Debounce = &queue.Debounce{Quiet: p.opts.Quiet, Max: p.opts.MaxDelay}
@@ -227,22 +205,14 @@ type Hidden interface {
 //
 // An artifact that makes a document of its own is its own target. Everything
 // else — a comment, a review, a reply — is part of the conversation it hangs
-// off, which is what makes a pull request with its reviews one document rather
-// than five.
+// off.
 //
 // A tombstone re-derives the document the retracted artifact belonged to: the
 // conversation it was part of, or its own document if it made one. A tombstone
 // that names the conversation (`thread`, else `parent`) is taken at its word.
-// One that names only its `target` — which is all docs/connector-contract.md
-// requires, and what the GitHub connector sends for a deleted comment — is
-// resolved by reading the retracted artifact from behind the tombstone and
-// asking the same question of it. Without that read, a deleted comment's job
-// would go to the comment's own document, which never existed, and the issue
-// that quotes the comment would keep it. A tombstone for an artifact L0 holds
-// nothing of belongs to no document.
-//
-// Distillation then deletes or re-reads L1, and deletion enqueues the affected
-// L2 stances on their serialized scope keys.
+// One that names only its `target` is resolved by reading the retracted
+// artifact from behind the tombstone and asking the same question of it. A
+// tombstone for an artifact L0 holds nothing of belongs to no document.
 func TargetOf(ctx context.Context, ev connector.Event, hidden Hidden) (string, bool, error) {
 	if ev.Kind != connector.KindTombstone && ev.Payload.BaseKind != connector.KindTombstone {
 		target, ok := targetOf(ev)
@@ -251,8 +221,7 @@ func TargetOf(ctx context.Context, ev connector.Event, hidden Hidden) (string, b
 	if root := conversationOf(ev); root != "" && ev.Payload.Container.Kind != connector.ContainerChannel {
 		return l1.DocID(ev.Source, root), true, nil
 	}
-	// The target is there: Event.Validate refuses a tombstone without one before
-	// it reaches L0.
+
 	retracted, err := hidden.Retracted(ctx, ev.Source, ev.Payload.Target)
 	if errors.Is(err, l0.ErrNotFound) {
 		return "", false, nil
@@ -264,12 +233,6 @@ func TargetOf(ctx context.Context, ev connector.Event, hidden Hidden) (string, b
 	return target, ok, nil
 }
 
-// threadHeadOf is the second document an event changes, where it has one: a
-// channel message that replies name as their `thread` heads a conversation of
-// its own ([l1.ChatRoot]), so an edit to it or its retraction changes that
-// conversation as well as the channel window [TargetOf] names. A message
-// nothing hangs off yet heads nothing, and one whose replies all name it only
-// as `parent` gets a job that finds nothing to write.
 func threadHeadOf(ctx context.Context, ev connector.Event, events *l0.Store) (string, bool, error) {
 	if ev.Kind == connector.KindTombstone || ev.Payload.BaseKind == connector.KindTombstone {
 		if ev.Payload.Container.Kind != connector.ContainerChannel {
@@ -297,22 +260,12 @@ func threadHeadOf(ctx context.Context, ev connector.Event, events *l0.Store) (st
 	return l1.DocID(ev.Source, ev.Payload.Artifact), true, nil
 }
 
-// undistilled are the kinds that belong to no document. An agent's session,
-// its turns, tool calls and next actions are provenance — what an agent was doing when
-// it said something — rather than team knowledge, and distilling every tool
-// call would flood L1. A command a person gave Hearsay is control
-// traffic, not team content.
 var undistilled = []connector.Kind{connector.KindAgentSession, connector.KindAgentTurn, connector.KindToolCall, connector.KindNextAction, connector.KindCommand}
 
-// distilled reports whether an event's kind, or the core kind an extension
-// kind behaves like, is one the distiller makes documents from. Whatever the
-// event says about the conversation it is part of, an agent session event is
-// not.
 func distilled(ev connector.Event) bool {
 	return !slices.Contains(undistilled, ev.Kind) && !slices.Contains(undistilled, ev.Payload.BaseKind)
 }
 
-// targetOf is the document an event that is not a tombstone belongs to.
 func targetOf(ev connector.Event) (string, bool) {
 	if !distilled(ev) {
 		return "", false
@@ -335,9 +288,6 @@ func targetOf(ev connector.Event) (string, bool) {
 	return "", false
 }
 
-// conversationOf is the artifact an event hangs off: its thread, or the thing
-// it is a reply to on a source that has no threads
-// (docs/connector-contract.md).
 func conversationOf(ev connector.Event) string {
 	if ev.Payload.Thread != "" {
 		return ev.Payload.Thread

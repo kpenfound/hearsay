@@ -29,8 +29,6 @@ func CheckOperator(repo config.Repo, scope, id string) error {
 	return checkHand(repo, scope, id, "a topic operation", "changes topics")
 }
 
-// checkHand is the rule a correction by hand is held to: a configured human
-// whom the scope's authority lets ratify by hand.
 func checkHand(repo config.Repo, scope, id, what, does string) error {
 	p, ok := repo.Principal(id)
 	switch {
@@ -77,7 +75,7 @@ func Operate(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, req Oper
 	if err != nil {
 		return Operation{}, err
 	}
-	target, err := operationTarget()
+	target, err := holdTarget(OperationTarget)
 	if err != nil {
 		return Operation{}, err
 	}
@@ -100,7 +98,6 @@ func Operate(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, req Oper
 		return nil
 	})
 	if err != nil {
-		// The transaction did not complete the hold; let the scope go.
 		if _, released := client.Complete(context.WithoutCancel(ctx), job); released != nil {
 			return Operation{}, errors.Join(err, released)
 		}
@@ -130,8 +127,6 @@ func (s *Store) ApplyOperation(ctx context.Context, repo config.Repo, scope stri
 	return s.operate(ctx, scope, req)
 }
 
-// operate decides a request against the scope's ledger and appends it, in the
-// transaction holding the scope's key.
 func (s *Store) operate(ctx context.Context, scope string, req OperationRequest) (Operation, error) {
 	state, err := s.scopeState(ctx, scope)
 	if err != nil {
@@ -144,12 +139,6 @@ func (s *Store) operate(ctx context.Context, scope string, req OperationRequest)
 	return s.appendOperation(ctx, decided)
 }
 
-func operationTarget() (string, error) {
-	return holdTarget(OperationTarget)
-}
-
-// holdTarget mints the target of a hold's assert job: prefix and 128 random
-// bits, so no two holds share a job.
 func holdTarget(prefix string) (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -158,9 +147,6 @@ func holdTarget(prefix string) (string, error) {
 	return prefix + hex.EncodeToString(b[:]), nil
 }
 
-// operationScope is the scope a request's topics are in, read before the
-// scope is held: a topic never changes scope, and neither does an operation.
-// A merge of topics in two scopes is refused here.
 func (s *Store) operationScope(ctx context.Context, req OperationRequest) (string, error) {
 	if req.Kind == OperationUndo {
 		var scope string
@@ -192,7 +178,6 @@ func (s *Store) operationScope(ctx context.Context, req OperationRequest) (strin
 	return scopes[0], nil
 }
 
-// topicScope is the scope of a topic row, or of a topic a split created.
 func (s *Store) topicScope(ctx context.Context, id string) (string, error) {
 	var scope string
 	err := s.db.QueryRow(ctx, `
@@ -209,7 +194,6 @@ LIMIT 1`, id).Scan(&scope)
 	return scope, nil
 }
 
-// scopeState reads what an operation on a scope is decided against.
 func (s *Store) scopeState(ctx context.Context, scope string) (ScopeState, error) {
 	state := ScopeState{Scope: scope, Stances: map[string]string{}}
 	rows, err := s.db.Query(ctx, `
@@ -241,7 +225,6 @@ WHERE t.scope = $1 ORDER BY t.id, s.id`, scope)
 	return state, nil
 }
 
-// appendOperation writes a decided operation to the ledger.
 func (s *Store) appendOperation(ctx context.Context, op Operation) (Operation, error) {
 	var name *string
 	if op.Name != "" {

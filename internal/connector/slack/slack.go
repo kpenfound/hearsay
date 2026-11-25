@@ -101,13 +101,9 @@ const (
 	SecretBotToken = "bot_token"
 
 	defaultAPI = "https://slack.com/api"
-	// keepalive is how often the connector pings Slack. A connection that
-	// shows no frame for three of these is treated as dead.
-	keepalive = 30 * time.Second
+	keepalive  = 30 * time.Second
 )
 
-// errRefresh ends a connection Slack asked the connector to replace, which
-// Stream does at once rather than through the runtime's backoff.
 var errRefresh = errors.New("slack asked for a new connection")
 
 // Settings configures a workspace's Socket Mode stream.
@@ -225,9 +221,6 @@ func New(src connector.SourceConfig) (*Connector, error) {
 	}, nil
 }
 
-// channelClass refuses a container whose id alone says it is not a public
-// channel. Slack's id prefixes: C for a channel, D for a direct message, G for
-// a private channel or group direct message created before 2021.
 func channelClass(id string) error {
 	switch {
 	case id == connector.AllowAll:
@@ -242,8 +235,6 @@ func channelClass(id string) error {
 	return nil
 }
 
-// slackID reports an id of Slack's shape: a type letter, then upper-case
-// letters and digits.
 func slackID(s string, prefix byte) bool {
 	if len(s) < 3 || s[0] != prefix {
 		return false
@@ -256,8 +247,6 @@ func slackID(s string, prefix byte) bool {
 	return true
 }
 
-// apiURL is the Web API base a source's settings name, without a trailing
-// slash.
 func apiURL(api string) (string, error) {
 	if api == "" {
 		api = defaultAPI
@@ -355,7 +344,6 @@ func (c *Connector) Stream(ctx context.Context, sink connector.Sink) error {
 	}
 }
 
-// envelope is one Socket Mode frame.
 type envelope struct {
 	Type       string          `json:"type"`
 	EnvelopeID string          `json:"envelope_id"`
@@ -363,8 +351,6 @@ type envelope struct {
 	Reason     string          `json:"reason"`
 }
 
-// session is one connection: check the channels, open, read hello, then
-// events until it ends.
 func (c *Connector) session(ctx context.Context, sink connector.Sink) error {
 	if err := c.verifyChannels(ctx, sink); err != nil {
 		return err
@@ -456,9 +442,6 @@ func (c *Connector) session(ctx context.Context, sink connector.Sink) error {
 			if !hello {
 				return errors.New("slack sent an event before hello")
 			}
-			// The envelope is acknowledged once what it carries is through
-			// the gate. An emit that fails leaves it unacknowledged, and Slack
-			// delivers it again.
 			if err := c.dispatch(ctx, sink, e.Payload); err != nil {
 				return err
 			}
@@ -490,8 +473,6 @@ func (c *Connector) session(ctx context.Context, sink connector.Sink) error {
 	}
 }
 
-// connected records a hello: ok, or degraded where a configured channel does
-// not have the app in it and so sends nothing.
 func (c *Connector) connected() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -504,15 +485,12 @@ func (c *Connector) connected() {
 	c.detail = "connected"
 }
 
-// apiError is a Web API call Slack answered with ok: false.
 type apiError struct {
 	method, code string
 }
 
 func (e *apiError) Error() string { return "slack " + e.method + ": " + e.code }
 
-// permanent reports an answer no retry changes: the token or its scopes are
-// wrong, or the channel is not one the token can see.
 func (e *apiError) permanent() bool {
 	switch e.code {
 	case "invalid_auth", "not_authed", "account_inactive", "token_revoked", "token_expired",
@@ -522,8 +500,6 @@ func (e *apiError) permanent() bool {
 	return false
 }
 
-// call makes one Web API request and decodes its answer into out, which
-// embeds [response].
 func (c *Connector) call(ctx context.Context, method, token string, form url.Values, out interface{ result() response }) error {
 	c.mu.Lock()
 	delay := time.Until(c.nextRequest)
@@ -576,8 +552,6 @@ func (c *Connector) call(ctx context.Context, method, token string, form url.Val
 	return nil
 }
 
-// fail turns a Web API refusal no retry can change into failed health and a
-// permanent stream error.
 func (c *Connector) fail(err error, detail string) error {
 	var api *apiError
 	if errors.As(err, &api) && api.permanent() {
@@ -594,7 +568,6 @@ type response struct {
 
 func (r response) result() response { return r }
 
-// openConnection asks Slack for a Socket Mode URL with the app-level token.
 func (c *Connector) openConnection(ctx context.Context) (string, error) {
 	var r struct {
 		response
@@ -610,7 +583,6 @@ func (c *Connector) openConnection(ctx context.Context) (string, error) {
 	return r.URL, nil
 }
 
-// channelInfo is what conversations.info says about a channel's class.
 type channelInfo struct {
 	ID                 string `json:"id"`
 	IsChannel          bool   `json:"is_channel"`
@@ -624,7 +596,6 @@ type channelInfo struct {
 	IsArchived         bool   `json:"is_archived"`
 }
 
-// unsupported says why a channel is not one this version ingests, or "".
 func (ch channelInfo) unsupported() string {
 	switch {
 	case ch.IsIM:
@@ -641,9 +612,6 @@ func (ch channelInfo) unsupported() string {
 	return ""
 }
 
-// verifyChannels reads every configured channel with the bot token. A channel
-// of a class this version does not ingest is a configuration error, so it
-// stops the source; one the app is not in is remembered for health.
 func (c *Connector) verifyChannels(ctx context.Context, sink connector.Sink) error {
 	var notMember []string
 	for _, id := range c.containers {

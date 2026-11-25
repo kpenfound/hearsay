@@ -1,10 +1,12 @@
 package work_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,6 +21,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector/work"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/principal"
+	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
 const sourceID = "projects"
@@ -26,6 +29,7 @@ const sourceID = "projects"
 func source() connector.SourceConfig {
 	return connector.SourceConfig{ID: sourceID, Type: work.Type, Containers: []string{"*"}, Settings: json.RawMessage(`{"attributors":["factory"]}`)}
 }
+
 func principals() []principal.Principal {
 	return []principal.Principal{
 		{ID: "factory", Kind: principal.KindAgent, Class: principal.ClassObserver, TokenEnv: "FACTORY_TOKEN"},
@@ -34,6 +38,7 @@ func principals() []principal.Principal {
 		{ID: "team", Kind: principal.KindTeam},
 	}
 }
+
 func lookup(env string) (string, bool) {
 	switch env {
 	case "FACTORY_TOKEN":
@@ -43,6 +48,7 @@ func lookup(env string) (string, bool) {
 	}
 	return "", false
 }
+
 func build(t *testing.T, src connector.SourceConfig) *work.Connector {
 	t.Helper()
 	c, err := work.New(src, principals(), []string{sourceID, "github", "github-other"}, lookup)
@@ -52,9 +58,6 @@ func build(t *testing.T, src connector.SourceConfig) *work.Connector {
 	return c
 }
 
-// memoryStore models L0's deduplication and edited_at/ingest ordering, unlike a
-// recorder that simply treats the last emission as current. Every call checks
-// cancellation. Hooks interrupt an emission without needing a database.
 type memoryStore struct {
 	mu             sync.Mutex
 	events         []connector.Event
@@ -89,6 +92,7 @@ func (s *memoryStore) Emit(ctx context.Context, ev connector.Event) error {
 	s.events = append(s.events, ev)
 	return nil
 }
+
 func (s *memoryStore) current(source string) []connector.Event {
 	current := map[string]connector.Event{}
 	tombstones := map[string]int{}
@@ -113,6 +117,7 @@ func (s *memoryStore) current(source string) []connector.Event {
 	slices.SortFunc(out, func(a, b connector.Event) int { return strings.Compare(a.Payload.Artifact, b.Payload.Artifact) })
 	return out
 }
+
 func (s *memoryStore) CurrentArtifact(ctx context.Context, source, artifact string) (connector.Event, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return connector.Event{}, false, err
@@ -129,6 +134,7 @@ func (s *memoryStore) CurrentArtifact(ctx context.Context, source, artifact stri
 	}
 	return connector.Event{}, false, nil
 }
+
 func (s *memoryStore) CurrentArtifacts(ctx context.Context, source string) ([]connector.Event, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -144,14 +150,17 @@ func (s *memoryStore) CurrentArtifacts(ctx context.Context, source string) ([]co
 	}
 	return out, nil
 }
+
 func (s *memoryStore) history() []connector.Event {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return slices.Clone(s.events)
 }
+
 func handler(c *work.Connector, s connector.Sink) http.Handler {
 	return c.Handler(connector.NewGate(s, sourceID, c.Describe(), connector.NewAllowlist(source())))
 }
+
 func request(ctx context.Context, h http.Handler, method, token, body string) *httptest.ResponseRecorder {
 	r := httptest.NewRequestWithContext(ctx, method, "/hooks/projects", strings.NewReader(body))
 	if token != "" {
@@ -161,6 +170,7 @@ func request(ctx context.Context, h http.Handler, method, token, body string) *h
 	h.ServeHTTP(w, r)
 	return w
 }
+
 func send(t *testing.T, h http.Handler, body string, want int) string {
 	t.Helper()
 	w := request(t.Context(), h, http.MethodPost, "factory-token", body)
@@ -169,6 +179,7 @@ func send(t *testing.T, h http.Handler, body string, want int) string {
 	}
 	return w.Body.String()
 }
+
 func fixture(t *testing.T, name string) string {
 	t.Helper()
 	b, err := os.ReadFile("testdata/" + name + ".json")
@@ -177,6 +188,7 @@ func fixture(t *testing.T, name string) string {
 	}
 	return string(b)
 }
+
 func with(t *testing.T, body string, fields map[string]any) string {
 	t.Helper()
 	var value map[string]any
@@ -196,6 +208,7 @@ func with(t *testing.T, body string, fields map[string]any) string {
 	}
 	return string(b)
 }
+
 func held(t *testing.T, s *memoryStore, artifact string) connector.Event {
 	t.Helper()
 	ev, ok, err := s.CurrentArtifact(t.Context(), sourceID, artifact)
@@ -205,7 +218,7 @@ func held(t *testing.T, s *memoryStore, artifact string) connector.Event {
 	return ev
 }
 
-func TestStartup(t *testing.T) {
+func TestStartupRefusesASourceItCannotServe(t *testing.T) {
 	tests := []struct {
 		name   string
 		mutate func(*connector.SourceConfig, *[]principal.Principal, map[string]string)
@@ -284,6 +297,9 @@ func TestStartup(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPosterClassDoesNotGovernPosting(t *testing.T) {
 	for _, class := range []principal.Class{principal.ClassObserver, principal.ClassWorker, principal.ClassOrchestrator, principal.ClassSteward, "unused"} {
 		t.Run("class "+string(class), func(t *testing.T) {
 			p := principals()
@@ -295,33 +311,35 @@ func TestStartup(t *testing.T) {
 			send(t, handler(c, &memoryStore{}), fixture(t, "project"), 202)
 		})
 	}
-	t.Run("defaults", func(t *testing.T) {
-		src := source()
-		src.Settings = nil
-		c := build(t, src)
-		s := &memoryStore{}
-		h := handler(c, s)
-		body := with(t, fixture(t, "project"), map[string]any{"author": nil})
-		send(t, h, body, 202)
-		w := request(t.Context(), h, http.MethodPost, "shed-token", with(t, body, map[string]any{"project": "second"}))
-		if w.Code != 202 {
-			t.Fatal(w.Code, w.Body.String())
+}
+
+func TestEveryTokenBearingAgentMayPostByDefault(t *testing.T) {
+	src := source()
+	src.Settings = nil
+	c := build(t, src)
+	s := &memoryStore{}
+	h := handler(c, s)
+	body := with(t, fixture(t, "project"), map[string]any{"author": nil})
+	send(t, h, body, 202)
+	w := request(t.Context(), h, http.MethodPost, "shed-token", with(t, body, map[string]any{"project": "second"}))
+	if w.Code != 202 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	send(t, h, fixture(t, "project"), 403)
+}
+
+func TestAnExcludedPostersUnsetTokenDoesNotFailStartup(t *testing.T) {
+	src := source()
+	src.Settings = []byte(`{"posters":["factory"]}`)
+	_, err := work.New(src, principals(), []string{"github"}, func(k string) (string, bool) {
+		if k == "FACTORY_TOKEN" {
+			return "one", true
 		}
-		send(t, h, fixture(t, "project"), 403)
+		return "", false
 	})
-	t.Run("excluded unset token is harmless", func(t *testing.T) {
-		src := source()
-		src.Settings = []byte(`{"posters":["factory"]}`)
-		_, err := work.New(src, principals(), []string{"github"}, func(k string) (string, bool) {
-			if k == "FACTORY_TOKEN" {
-				return "one", true
-			}
-			return "", false
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-	})
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestRequestRules(t *testing.T) {
@@ -347,7 +365,6 @@ func TestRequestRules(t *testing.T) {
 		{"update array status", with(t, update, map[string]any{"status": []any{}}), "not allowed on an update"},
 		{"update x status", with(t, update, map[string]any{"status": "x"}), "not allowed on an update"},
 		{"update both", with(t, update, map[string]any{"state": "started", "status": "Building"}), "not allowed on an update"},
-
 		{"update null state", with(t, update, map[string]any{"state": json.RawMessage("null")}), "not allowed on an update"},
 		{"update null status", with(t, update, map[string]any{"status": json.RawMessage("null")}), "not allowed on an update"},
 		{"update case variant state", with(t, update, map[string]any{"STATE": "started"}), "not allowed on an update"},
@@ -371,7 +388,6 @@ func TestRequestRules(t *testing.T) {
 		{"empty repo source", with(t, project, map[string]any{"repos": []work.Repo{{Project: "acme/api"}}}), "configured source"},
 		{"empty repo project", with(t, project, map[string]any{"repos": []work.Repo{{Source: "github"}}}), "a project"},
 		{"unknown touch source", with(t, stream, map[string]any{"touches": []connector.Touch{{Source: "absent", Project: "acme/api"}}}), "configured source"},
-
 		{"empty touch project", with(t, stream, map[string]any{"touches": []connector.Touch{{Source: "github"}}}), "a project"},
 		{"no created_at", with(t, project, map[string]any{"created_at": nil}), "created_at is required"},
 		{"zero created_at", with(t, update, map[string]any{"created_at": "0001-01-01T00:00:00Z"}), "created_at is required"},
@@ -416,8 +432,6 @@ func TestRequestRules(t *testing.T) {
 		paths[i] = fmt.Sprint(i)
 	}
 	tests = append(tests, struct{ name, body, want string }{"301 paths total", with(t, stream, map[string]any{"touches": []connector.Touch{{Source: "github", Project: "acme/api", Paths: paths[:150]}, {Source: "github", Project: "acme/api", Paths: paths[150:]}}}), "at most 300"})
-	// Deletions have a deliberately stricter shape than the tracker. Presence,
-	// rather than truthiness, is what prevents empty extra fields slipping in.
 	for _, field := range []string{"name", "description", "text", "state", "status", "repos", "touches", "url", "author", "created_at", "updated_at"} {
 		var value any = ""
 		switch field {
@@ -452,6 +466,8 @@ func TestRequestRules(t *testing.T) {
 func TestResponses(t *testing.T) {
 	tests := []struct {
 		name, method, token, body string
+		settings                  string
+		seedProject               bool
 		setup                     func(*memoryStore)
 		status                    int
 		want                      string
@@ -459,7 +475,7 @@ func TestResponses(t *testing.T) {
 		{name: "accepted", token: "factory-token", status: 202},
 		{name: "missing token", status: 401},
 		{name: "unknown token", token: "unknown", status: 401},
-		{name: "poster excluded", token: "shed-token", status: 403, want: "not allowed by posters"},
+		{name: "poster excluded", token: "shed-token", settings: `{"posters":["factory"],"attributors":["factory"]}`, status: 403, want: "not allowed by posters"},
 		{name: "non-attributor", token: "shed-token", status: 403, want: "not allowed to attribute"},
 		{name: "unknown author", token: "factory-token", body: with(t, fixture(t, "project"), map[string]any{"author": "unknown"}), status: 403, want: "configured human or agent"},
 		{name: "team author", token: "factory-token", body: with(t, fixture(t, "project"), map[string]any{"author": "team"}), status: 403, want: "configured human or agent"},
@@ -472,7 +488,7 @@ func TestResponses(t *testing.T) {
 		{name: "stream project missing", token: "factory-token", body: fixture(t, "workstream"), status: 409, want: "project is not held"},
 		{name: "project update project missing", token: "factory-token", body: with(t, fixture(t, "update"), map[string]any{"workstream": nil}), status: 409, want: "project is not held"},
 		{name: "stream update project missing", token: "factory-token", body: fixture(t, "update"), status: 409, want: "project is not held"},
-		{name: "update stream missing", token: "factory-token", body: fixture(t, "update"), status: 409, want: "workstream is not held"},
+		{name: "update stream missing", token: "factory-token", body: fixture(t, "update"), seedProject: true, status: 409, want: "workstream is not held"},
 		{name: "missing project deletion", token: "factory-token", body: fixture(t, "delete"), status: 204},
 		{name: "missing stream deletion", token: "factory-token", body: `{"kind":"workstream","project":"p","workstream":"w","deleted":true}`, status: 204},
 		{name: "missing update deletion", token: "factory-token", body: `{"kind":"update","project":"p","update":"u","deleted":true}`, status: 204},
@@ -485,13 +501,13 @@ func TestResponses(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			src := source()
-			if tt.name == "poster excluded" {
-				src.Settings = []byte(`{"posters":["factory"],"attributors":["factory"]}`)
+			if tt.settings != "" {
+				src.Settings = []byte(tt.settings)
 			}
 			c := build(t, src)
 			s := &memoryStore{}
 			h := handler(c, s)
-			if tt.name == "update stream missing" {
+			if tt.seedProject {
 				send(t, h, fixture(t, "project"), 202)
 			}
 			if tt.setup != nil {
@@ -519,33 +535,47 @@ func TestResponses(t *testing.T) {
 	}
 }
 
-func TestMappingAndReposts(t *testing.T) {
-	c := build(t, source())
-	s := &memoryStore{}
-	h := handler(c, s)
+type mappingCase struct {
+	name, body, artifact                    string
+	kind                                    connector.Kind
+	title, text, parent, partOf, at, edited string
+	author, poster                          string
+	touches                                 []connector.Touch
+	state                                   connector.CoreState
+	status                                  string
+}
+
+func mappingCases(t *testing.T) []mappingCase {
+	t.Helper()
 	created := "2026-10-14T17:00:00Z"
-	cases := []struct {
-		name, body, artifact                    string
-		kind                                    connector.Kind
-		title, text, parent, partOf, at, edited string
-		author, poster                          string
-		touches                                 []connector.Touch
-		state                                   connector.CoreState
-		status                                  string
-	}{
+	return []mappingCase{
 		{name: "project", body: fixture(t, "project"), artifact: "payments-rewrite", kind: connector.KindIssue, title: "Payments rewrite", text: "Move settlement off the legacy queue.", at: created, edited: "2026-10-14T18:00:00Z", author: "kyle", poster: "factory", touches: []connector.Touch{{Source: "github", Project: "acme/api"}}, state: "started", status: "Building"},
 		{name: "workstream", body: fixture(t, "workstream"), artifact: "payments-rewrite#retry-policy", kind: connector.KindIssue, title: "Retry policy", text: "Bounded retries for settlement calls.", partOf: "payments-rewrite", at: "2026-10-14T17:05:00Z", edited: "2026-10-14T18:10:00Z", author: "shed", poster: "factory", touches: []connector.Touch{{Source: "github", Project: "acme/api", Paths: []string{"engine/server/retry.go"}}}, state: "blocked", status: "Waiting on review"},
 		{name: "update on workstream", body: fixture(t, "update"), artifact: "payments-rewrite#retry-policy:update:u-17", kind: connector.KindMessage, text: "Decided: cap retries at 5 with jittered backoff; the queue handles the rest.", parent: "payments-rewrite#retry-policy", at: "2026-10-14T18:09:00Z", edited: "2026-10-14T18:09:00Z", author: "kyle", poster: "factory"},
 		{name: "update on project", body: with(t, fixture(t, "update"), map[string]any{"workstream": nil, "author": nil}), artifact: "payments-rewrite:update:u-17", kind: connector.KindMessage, text: "Decided: cap retries at 5 with jittered backoff; the queue handles the rest.", parent: "payments-rewrite", at: "2026-10-14T18:09:00Z", edited: "2026-10-14T18:09:00Z", author: "factory", poster: "factory"},
 	}
+}
+
+func postWithParents(t *testing.T, h http.Handler, tt mappingCase) {
+	t.Helper()
+	send(t, h, fixture(t, "project"), 202)
+	send(t, h, fixture(t, "workstream"), 202)
+	send(t, h, tt.body, 202)
+}
+
+func TestARequestMapsToTheEventTheContractDescribes(t *testing.T) {
 	refs, key, err := connector.CanonicalContainers([]connector.ContainerRef{{Source: "github", NativeID: "acme/api"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	wantACL := connector.ACL{{Kind: connector.ACLContainers, NativeID: key, Containers: refs}}
-	for _, tt := range cases {
+	for _, tt := range mappingCases(t) {
 		t.Run(tt.name, func(t *testing.T) {
-			response := send(t, h, tt.body, 202)
+			c := build(t, source())
+			s := &memoryStore{}
+			h := handler(c, s)
+			postWithParents(t, h, tt)
+			send(t, h, tt.body, 202)
 			ev := held(t, s, tt.artifact)
 			if ev.Kind != tt.kind || ev.Source != sourceID || ev.Payload.Artifact != tt.artifact || ev.NativeID != tt.artifact+"@"+ev.Payload.Revision.Token || ev.ID != connector.EventID(sourceID, ev.NativeID) {
 				t.Errorf("event identity = %+v", ev)
@@ -604,24 +634,47 @@ func TestMappingAndReposts(t *testing.T) {
 			if tt.name == "project" && ev.Payload.URL != "https://factory.example/p/payments-rewrite" {
 				t.Error("url missing")
 			}
+		})
+	}
+}
+
+func TestAnIdenticalRepostWritesNothingAndAnswersTheSameID(t *testing.T) {
+	for _, tt := range mappingCases(t) {
+		t.Run(tt.name, func(t *testing.T) {
+			c := build(t, source())
+			s := &memoryStore{}
+			h := handler(c, s)
+			postWithParents(t, h, tt)
 			n := len(s.history())
-			again := send(t, h, tt.body, 202)
-			if response != again || len(s.history()) != n {
+			first := send(t, h, tt.body, 202)
+			if len(s.history()) != n || first != send(t, h, tt.body, 202) {
 				t.Fatal("identical repost changed id or emitted events")
 			}
 		})
 	}
-	t.Run("equivalent JSON and timezone", func(t *testing.T) {
-		original := fixture(t, "project")
-		first := send(t, h, original, 202)
-		n := len(s.history())
-		again := send(t, h, with(t, original, map[string]any{"created_at": "2026-10-14T19:00:00+02:00", "updated_at": "2026-10-14T20:00:00+02:00"}), 202)
-		if first != again || len(s.history()) != n {
-			t.Fatal("JSON order or timezone changed revision")
-		}
-	})
-	for _, artifact := range []string{"payments-rewrite#retry-policy:update:u-17", "payments-rewrite:update:u-17", "payments-rewrite#retry-policy", "payments-rewrite"} {
-		t.Run("deletion "+artifact, func(t *testing.T) {
+}
+
+func TestEquivalentJSONAndTimezoneAreTheSameRevision(t *testing.T) {
+	c := build(t, source())
+	s := &memoryStore{}
+	h := handler(c, s)
+	original := fixture(t, "project")
+	first := send(t, h, original, 202)
+	n := len(s.history())
+	again := send(t, h, with(t, original, map[string]any{"created_at": "2026-10-14T19:00:00+02:00", "updated_at": "2026-10-14T20:00:00+02:00"}), 202)
+	if first != again || len(s.history()) != n {
+		t.Fatal("JSON order or timezone changed revision")
+	}
+}
+
+func TestADeletionEmitsATombstoneOfTheCurrentRevisionAndIsRepeatableAsNoContent(t *testing.T) {
+	for _, tt := range mappingCases(t) {
+		t.Run(tt.name, func(t *testing.T) {
+			c := build(t, source())
+			s := &memoryStore{}
+			h := handler(c, s)
+			postWithParents(t, h, tt)
+			artifact := tt.artifact
 			old := held(t, s, artifact)
 			var deletion map[string]any
 			if err := json.Unmarshal(old.Payload.Native, &deletion); err != nil {
@@ -656,8 +709,6 @@ func TestMappingAndReposts(t *testing.T) {
 	}
 }
 
-// A project with no repositories is readable by its poster and its author,
-// and its workstreams and updates carry the same access list.
 func TestAPrivateProjectIsReadByItsPosterAndAuthor(t *testing.T) {
 	for _, author := range []string{"", "kyle", "shed", "factory"} {
 		t.Run("author "+author, func(t *testing.T) {
@@ -730,10 +781,12 @@ func seedChildren(t *testing.T, h http.Handler) {
 	send(t, h, fixture(t, "update"), 202)
 	send(t, h, with(t, fixture(t, "update"), map[string]any{"workstream": nil, "update": "project-update"}), 202)
 }
+
 func restrictedProject(t *testing.T) string {
 	t.Helper()
 	return with(t, fixture(t, "project"), map[string]any{"repos": []work.Repo{{Source: "github", Project: "acme/private"}}, "updated_at": "2026-10-15T17:00:00Z"})
 }
+
 func assertMirrored(t *testing.T, s *memoryStore) {
 	t.Helper()
 	root := held(t, s, "payments-rewrite")
@@ -755,18 +808,27 @@ func assertMirrored(t *testing.T, s *memoryStore) {
 	}
 }
 
-func TestPropagation(t *testing.T) {
+func propagated(t *testing.T) (*work.Connector, *memoryStore, http.Handler, []connector.Event, string) {
+	t.Helper()
 	c := build(t, source())
 	s := &memoryStore{}
 	h := handler(c, s)
 	seedChildren(t, h)
 	before := s.history()
-	n := len(before)
 	response := send(t, h, restrictedProject(t), 202)
-	if len(s.history()) != n+4 {
-		t.Fatalf("propagation emitted %d events, want 4", len(s.history())-n)
+	return c, s, h, before, response
+}
+
+func TestAProjectPostPropagatesItsAccessToEveryChild(t *testing.T) {
+	_, s, _, before, _ := propagated(t)
+	if got := len(s.history()) - len(before); got != 4 {
+		t.Fatalf("propagation emitted %d events, want 4", got)
 	}
 	assertMirrored(t, s)
+}
+
+func TestPropagationRevisesEachChildWithoutChangingItsContent(t *testing.T) {
+	_, s, _, before, _ := propagated(t)
 	for _, old := range before[1:] {
 		current := held(t, s, old.Payload.Artifact)
 		if old.ID == current.ID || !old.Time.Equal(current.Time) {
@@ -783,18 +845,29 @@ func TestPropagation(t *testing.T) {
 			t.Error("first ACL revision unnecessarily changed source edited_at")
 		}
 	}
-	n = len(s.history())
+}
+
+func TestAnUnchangedProjectRepostPropagatesNothing(t *testing.T) {
+	_, s, h, _, response := propagated(t)
+	n := len(s.history())
 	if again := send(t, h, restrictedProject(t), 202); again != response || len(s.history()) != n {
 		t.Fatal("unchanged repost emitted anything or changed id")
 	}
+}
+
+func TestReconciliationOfMirroredChildrenEmitsNothing(t *testing.T) {
+	c, s, _, _, _ := propagated(t)
+	n := len(s.history())
 	if err := c.Poll(t.Context(), connector.NewGate(s, sourceID, c.Describe(), connector.NewAllowlist(source()))); err != nil {
 		t.Fatal(err)
 	}
 	if len(s.history()) != n {
 		t.Fatal("reconciliation emitted unchanged children")
 	}
-	// A second transition back to a previously held ACL must survive real L0
-	// deduplication, including unchanged child timestamps.
+}
+
+func TestEveryAccessChangeOfAProjectIsMirroredOnItsChildren(t *testing.T) {
+	_, s, h, _, _ := propagated(t)
 	reverted := with(t, fixture(t, "project"), map[string]any{"updated_at": "2026-10-16T17:00:00Z"})
 	send(t, h, reverted, 202)
 	assertMirrored(t, s)
@@ -819,8 +892,6 @@ func TestInterruptedPropagationRecovery(t *testing.T) {
 				s.before = func(_ context.Context, ev connector.Event) error {
 					if ev.Payload.Artifact == "payments-rewrite" {
 						if interruption == "stop after project written" {
-							// Commit the project before simulating process loss; the handler's
-							// next read sees cancellation and cannot acknowledge the post.
 							s.mu.Lock()
 							s.events = append(s.events, ev)
 							s.mu.Unlock()
@@ -847,7 +918,6 @@ func TestInterruptedPropagationRecovery(t *testing.T) {
 				if recovery == "identical repost" {
 					send(t, h, restricted, 202)
 				} else {
-					// Exercise the actual runtime startup lifecycle, with no recovery post.
 					registry := connector.NewRegistry()
 					if err := registry.Register(work.Type, work.NewFactory(principals(), []string{sourceID, "github"}, lookup)); err != nil {
 						t.Fatal(err)
@@ -879,8 +949,6 @@ func TestInterruptedPropagationRecovery(t *testing.T) {
 						stop()
 						t.Fatal("startup did not reconcile")
 					}
-					// The verified inventory contains the repaired children;
-					// stop and join the runtime before inspecting the store.
 					stop()
 					if err := <-exited; err != nil {
 						t.Fatal(err)
@@ -937,9 +1005,6 @@ func TestConcurrentChildAndProjectPosts(t *testing.T) {
 			} else {
 				go postChild()
 			}
-			// The second request must not finish while the first holds the project's
-			// lock. Without serialization, a child can finish an old-ACL emission
-			// after the project's inventory walk has already missed it.
 			select {
 			case w := <-childResponse:
 				close(release)
@@ -969,18 +1034,21 @@ func TestConcurrentChildAndProjectPosts(t *testing.T) {
 	}
 }
 
-func TestContractFixtures(t *testing.T) {
+func TestTheContractShowsEveryRequestFixture(t *testing.T) {
 	raw, err := os.ReadFile("../../../docs/connector-contract.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"project", "workstream", "update", "delete", "event"} {
+	for _, name := range []string{"project", "workstream", "update", "delete", "event", "document", "decision"} {
 		t.Run(name, func(t *testing.T) {
 			if !strings.Contains(string(raw), strings.TrimSpace(fixture(t, name))) {
 				t.Errorf("contract is missing %s fixture", name)
 			}
 		})
 	}
+}
+
+func TestAProjectPostWritesTheEventTheContractShows(t *testing.T) {
 	c := build(t, source())
 	s := &memoryStore{}
 	send(t, handler(c, s), fixture(t, "project"), 202)
@@ -989,7 +1057,6 @@ func TestContractFixtures(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := s.history()[0]
-	// Native is raw JSON; compare the encoded objects to ignore indentation.
 	gotRaw, _ := json.Marshal(got)
 	wantRaw, _ := json.Marshal(want)
 	var a, b any
@@ -1048,5 +1115,36 @@ func TestPropagationSkipsDeletedChildren(t *testing.T) {
 	}
 	if _, ok, err := s.CurrentArtifact(t.Context(), sourceID, "payments-rewrite#retry-policy:update:u-17"); ok || err != nil {
 		t.Fatal("deleted child came back")
+	}
+}
+
+func TestNoLevelLogsAPayloadAttributedTextOrACredential(t *testing.T) {
+	var out bytes.Buffer
+	ctx := telemetry.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&out, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	c := build(t, source())
+	s := &memoryStore{}
+	h := handler(c, s)
+	project := fixture(t, "project")
+	for _, req := range []struct{ token, body string }{
+		{"factory-token", project},
+		{"factory-token", project},
+		{"shed-token", project},
+		{"unknown-token", project},
+		{"factory-token", with(t, project, map[string]any{"author": "stranger"})},
+		{"factory-token", fixture(t, "update")},
+	} {
+		request(ctx, h, http.MethodPost, req.token, req.body)
+	}
+	s.before = func(context.Context, connector.Event) error { return errors.New("store unavailable") }
+	request(ctx, h, http.MethodPost, "factory-token", with(t, project, map[string]any{"updated_at": "2026-10-20T00:00:00Z"}))
+
+	var payload struct{ Name, Description string }
+	if err := json.Unmarshal([]byte(project), &payload); err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{payload.Name, payload.Description, "kyle", "stranger", "factory-token", "shed-token", "unknown-token"} {
+		if strings.Contains(out.String(), secret) {
+			t.Errorf("logs carry %q: %s", secret, out.String())
+		}
 	}
 }

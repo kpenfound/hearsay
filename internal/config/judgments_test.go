@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/llm"
 )
 
@@ -19,7 +20,7 @@ func TestJudgmentsDefaultsAndForms(t *testing.T) {
 		{"single", map[string]string{"hearsay.yaml": "sources:\n  - id: github\n    type: github\n    containers: [acme/api]\nscopes:\n  - id: api\n    sources: [github]\nllm:\n  judgments:\n    model: pinned-v1\n"}, "pinned-v1"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			repo, err := config.Load(writeFiles(t, tt.files))
+			repo, err := config.Load(configtest.Write(t, tt.files))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -32,7 +33,7 @@ func TestJudgmentsDefaultsAndForms(t *testing.T) {
 }
 
 func TestJudgmentsThreshold(t *testing.T) {
-	repo, err := config.Load(writeFiles(t, with(map[string]string{"llm/judgments.yaml": "judgments:\n  model: pinned-v1\n  threshold: 0.9\n  api_key_env: OPENROUTER_API_KEY\n"})))
+	repo, err := config.Load(configtest.Write(t, with(map[string]string{"llm/judgments.yaml": "judgments:\n  model: pinned-v1\n  threshold: 0.9\n  api_key_env: OPENROUTER_API_KEY\n"})))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +57,7 @@ func TestJudgmentsValidation(t *testing.T) {
 		{"credential value", "api_key_env: sk-not-a-variable", "api_key_env"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := config.Load(writeFiles(t, with(map[string]string{"llm/judgments.yaml": "judgments:\n  " + tt.body + "\n"})))
+			_, err := config.Load(configtest.Write(t, with(map[string]string{"llm/judgments.yaml": "judgments:\n  " + tt.body + "\n"})))
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("Load()=%v want %q", err, tt.want)
 			}
@@ -65,7 +66,7 @@ func TestJudgmentsValidation(t *testing.T) {
 }
 
 func TestJudgmentsDuplicateRefused(t *testing.T) {
-	_, err := config.Load(writeFiles(t, with(map[string]string{"llm/a.yaml": "judgments:\n  model: a\n", "llm/b.yaml": "judgments:\n  model: b\n"})))
+	_, err := config.Load(configtest.Write(t, with(map[string]string{"llm/a.yaml": "judgments:\n  model: a\n", "llm/b.yaml": "judgments:\n  model: b\n"})))
 	if err == nil || !strings.Contains(err.Error(), "already configured") {
 		t.Fatalf("Load()=%v", err)
 	}

@@ -10,18 +10,15 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/deletion"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
-// Deleting the event a gesture came from takes the gesture out of force: a
-// ratification no longer ratifies, and a pin is taken out, or handed to the
-// next pin in force. The ledger keeps the gesture, which holds ids and no
-// content, and the preview names it.
 func TestDeletingAGesturesEventTakesItOutOfForce(t *testing.T) {
-	pool := scratch(t)
+	pool := dbtest.Scratch(t, "deletion")
 	ctx := t.Context()
 	when := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	reaction := func(native, user string) string {
@@ -131,7 +128,6 @@ VALUES('l1:chat:thread','chat_thread','chat','thread',ARRAY['evt:chat:thread'],$
 	if len(gs) != 3 || gs[0].ID != ratify.ID || !slices.Equal(gs[0].Stances, []string{st.ID}) {
 		t.Errorf("the ledger = %+v, want every gesture kept", gs)
 	}
-	// A retry of the deleted event records nothing and brings nothing back.
 	if _, recorded, err := l2.RecordGesture(ctx, pool, repo, l2.GestureRequest{Event: ratifyEvent, Principal: "kyle", Action: l2.GestureRatify, Documents: []string{"l1:chat:thread"}}); err != nil || recorded {
 		t.Errorf("RecordGesture(the deleted event again) = %v, recorded %v; want nothing recorded", err, recorded)
 	}

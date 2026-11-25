@@ -348,8 +348,6 @@ func (w *traversal) read(ctx context.Context, ref NodeRef) (*walkValue, error) {
 		value.visible = true
 		value.node.ID = a.Topic.ID
 		value.node.Name = Line(a.Topic.Name)
-		// Scope is an entity handle too; readable topic evidence does not
-		// authorize disclosure of a hidden work entity it names.
 		if !w.hiddenWork.Hidden(a.Topic.Scope) {
 			value.node.Scope = a.Topic.Scope
 		}
@@ -410,8 +408,6 @@ func (w *traversal) read(ctx context.Context, ref NodeRef) (*walkValue, error) {
 
 func stampLine(at time.Time) string { return at.UTC().Format(time.RFC3339Nano) }
 
-// decision is the decision a stance is, for the reader, or nil where it is not
-// a decision's.
 func (w *traversal) decision(ctx context.Context, st l2.Stance) (*Decision, error) {
 	if st.Assertion != "" || len(st.Evidence) == 0 {
 		return nil, nil

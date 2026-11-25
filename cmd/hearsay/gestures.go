@@ -23,8 +23,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
-// runGestures records human gestures through the shared L2 ledger. Visibility
-// is checked with the same direct-person reader used by topics and the API.
 func runGestures(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, cfg, configPath := newFlagSet("gestures", stderr)
 	resolveDatabase := databaseFlag(fs, cfg)
@@ -158,9 +156,6 @@ type gestureView struct {
 func noDocument(id string) error { return fmt.Errorf("no document %q", id) }
 func noGesture(id int64) error   { return fmt.Errorf("no gesture %d", id) }
 
-// An artifact can make several L1 documents (for example, meeting segments).
-// Match its L0 artifact provenance, then apply the same visibility check to
-// every document it resolves to. No match and a hidden match have one result.
 func (v gestureView) documents(ctx context.Context, words []string, source, artifact string) ([]string, error) {
 	var ids []string
 	label := ""
@@ -341,7 +336,6 @@ func (v gestureView) list(ctx context.Context, w io.Writer, scope string, since 
 	return tw.Flush()
 }
 
-// carrierOrDash is the agent that carried a gesture, or a dash where none did.
 func carrierOrDash(carrier string) string {
 	if carrier == "" {
 		return "-"

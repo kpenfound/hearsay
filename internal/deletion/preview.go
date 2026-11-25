@@ -84,7 +84,6 @@ func emptyPreview(sel Selector, reason string) Preview {
 	return Preview{Selector: sel, Reason: reason, Events: []string{}, Documents: []string{}, Stances: []string{}, Topics: []string{}, AliasCandidates: []string{}, Pins: []string{}, Gestures: []int64{}}
 }
 
-// check refuses a selector or reason before any database is touched.
 func check(sel Selector, reason string) error {
 	if strings.TrimSpace(reason) == "" {
 		return fmt.Errorf("--reason is required")
@@ -113,13 +112,10 @@ func check(sel Selector, reason string) error {
 	return nil
 }
 
-// queryer is what a selection reads through: a transaction, or a connection
-// outside one.
 type queryer interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-// walk is the forward walk of everything the selectors select.
 func walk(ctx context.Context, tx pgx.Tx, repo config.Repo, sels []Selector, reason string) (Preview, error) {
 	p := emptyPreview(sels[0], reason)
 	if len(sels) > 1 {
@@ -135,7 +131,6 @@ func walk(ctx context.Context, tx pgx.Tx, repo config.Repo, sels []Selector, rea
 	return forward(ctx, tx, p)
 }
 
-// selectEvents is the L0 events a selector names, sorted.
 func selectEvents(ctx context.Context, q queryer, repo config.Repo, sel Selector) ([]string, error) {
 	var (
 		rows pgx.Rows
@@ -180,7 +175,6 @@ func selectEvents(ctx context.Context, q queryer, repo config.Repo, sel Selector
 	return ids, nil
 }
 
-// forward walks provenance forward from p.Events.
 func forward(ctx context.Context, tx pgx.Tx, p Preview) (Preview, error) {
 	var err error
 	p.Events = unique(p.Events)

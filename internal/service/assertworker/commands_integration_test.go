@@ -7,8 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -18,24 +16,24 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/github"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/llm"
+	"github.com/kpenfound/hearsay/internal/poll"
 	"github.com/kpenfound/hearsay/internal/queue"
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
-// fakeReplier is GitHub's side of the replies: one comment per command it is
-// asked to answer, found again rather than posted twice, as github.Replier
-// does.
 type fakeReplier struct {
 	mu      sync.Mutex
-	replies map[int64]int64  // command comment → reply comment
-	bodies  map[int64]string // reply comment → text
+	replies map[int64]int64
+	bodies  map[int64]string
 	posts   int
 	revises int
 	fail    error
@@ -75,8 +73,6 @@ func (f *fakeReplier) Revise(_ context.Context, repo string, command, reply int6
 	return nil
 }
 
-// reply is the text of the reply to a command comment, and false where there
-// is none.
 func (f *fakeReplier) reply(command int64) (string, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -84,10 +80,6 @@ func (f *fakeReplier) reply(command int64) (string, bool) {
 	return f.bodies[id], ok
 }
 
-// commands is a GitHub source, its configuration and its L0 and L1 state for
-// running commands against: the fixture's issue #12 and pull request #31,
-// distilled; two topics a stance from the issue and one from the pull request
-// open; and a third topic kyle may not read, from a document only u9 may.
 type commands struct {
 	t       *testing.T
 	pool    *pgxpool.Pool
@@ -96,18 +88,14 @@ type commands struct {
 	a       *assertworker.Asserter
 	replies *fakeReplier
 	f       fixture
-	// topics are the two readable topics, and hidden the one kyle may not
-	// read.
+
 	topics [2]string
 	hidden string
 	next   int64
 }
 
-// commandConfig is the configuration the commands run under: kyle and sam
-// are people, only kyle may ratify by hand, and bot is an agent.
 func commandConfig(t *testing.T, src string) config.Repo {
 	t.Helper()
-	dir := t.TempDir()
 	files := map[string]string{
 		"sources/github.yaml": "id: " + src + "\ntype: github\ncontainers: [" + repo + "]\n",
 		"scopes/s.yaml":       "id: " + src + "\nsources: [" + src + "]\n",
@@ -116,15 +104,7 @@ func commandConfig(t *testing.T, src string) config.Repo {
 			"- id: bot\n  kind: agent\n  class: orchestrator\n  scopes: ['*']\n  token_env: BOT_TOKEN\n  identities: [{source: " + src + ", native_id: u3}]\n",
 		"authority/a.yaml": "scope: \"*\"\nratified_by:\n  principals: [kyle]\n",
 	}
-	for name, body := range files {
-		full := filepath.Join(dir, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
+	dir := configtest.Write(t, files)
 	repo, err := config.Load(dir)
 	if err != nil {
 		t.Fatalf("config.Load() = %v", err)
@@ -134,7 +114,7 @@ func commandConfig(t *testing.T, src string) config.Repo {
 
 func newCommands(t *testing.T, pool *pgxpool.Pool) *commands {
 	t.Helper()
-	src := newSource(t)
+	src := dbtest.UniqueID()
 	c := &commands{t: t, pool: pool, src: src, repo: commandConfig(t, src), replies: newFakeReplier(), f: store(t, pool, src), next: 5000}
 	cfg := config.Default()
 	cfg.Repo = c.repo
@@ -177,16 +157,12 @@ func newCommands(t *testing.T, pool *pgxpool.Pool) *commands {
 	return c
 }
 
-// comment appends a comment on issue or pull request n as the GitHub
-// connector emits it, by the GitHub user nativeID, and returns its event.
 func (c *commands) comment(n int, nativeID, body string) connector.Event {
 	c.t.Helper()
 	c.next++
 	return c.revision(n, c.next, nativeID, body, at(10), at(10), "")
 }
 
-// revision appends one revision of comment id on n, with a suffix to its
-// revision token such as a private repository's.
 func (c *commands) revision(n int, id int64, nativeID, body string, created, updated time.Time, suffix string) connector.Event {
 	c.t.Helper()
 	parent := fmt.Sprintf("%s#%d", repo, n)
@@ -207,7 +183,6 @@ func (c *commands) revision(n int, id int64, nativeID, body string, created, upd
 	return c.append(ev)
 }
 
-// delete appends the tombstone of a comment.
 func (c *commands) delete(comment connector.Event) connector.Event {
 	c.t.Helper()
 	artifact := comment.Payload.Artifact + ":tombstone"
@@ -226,8 +201,6 @@ func (c *commands) append(ev connector.Event) connector.Event {
 	return ev
 }
 
-// handle runs the job the follower enqueues for an event, under the scope's
-// key.
 func (c *commands) handle(ev connector.Event) error {
 	return c.a.Handle(c.t.Context(), queue.Job{Kind: l2.AssertKind(), TargetID: l2.GestureTarget + ev.ID, SerialKey: c.src, Attempt: queue.DefaultMaxAttempts})
 }
@@ -257,13 +230,9 @@ func (c *commands) operations() []l2.Operation {
 	return ops
 }
 
-// followUntil runs the follower until it has enqueued the job for last. The
-// feed holds events back while any transaction in the cluster is open, so one
-// read may return nothing; and it is read in order, so once last's job is
-// there every event appended before it has been read.
 func (c *commands) followUntil(f *assertworker.CommandFollower, last connector.Event) {
 	c.t.Helper()
-	waitFor(c.t, "the follower to read "+last.ID, func() bool {
+	poll.Until(c.t, "the follower to read "+last.ID, func() bool {
 		if _, err := f.Once(c.t.Context()); err != nil {
 			c.t.Fatalf("Once() = %v", err)
 		}
@@ -284,19 +253,14 @@ func commentID(t *testing.T, ev connector.Event) int64 {
 	return cmd.Comment
 }
 
-// Each command, run by the person it names, on an issue or a pull request,
-// does what it says or refuses, and is answered with one reply saying which
-// and how to undo it. A refusal changes nothing.
 func TestGitHubCommands(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	tests := []struct {
 		name string
 		n    int
-		// author is the GitHub user's node id: u1 is kyle, u2 sam, who may
-		// not ratify by hand, u3 an agent and u8 nobody Hearsay knows.
+
 		author string
-		// body is the comment; {a} and {b} are the readable topics and
-		// {hidden} the one kyle may not read.
+
 		body       string
 		wantReply  []string
 		wantAction l2.GestureAction
@@ -382,11 +346,8 @@ func TestGitHubCommands(t *testing.T) {
 	}
 }
 
-// A command runs once and is answered once: a retried job posts no second
-// reply and records no second gesture, a reply that could not be posted is
-// posted by the retry, and an edit of a command runs nothing.
 func TestAGitHubCommandRunsOnceAndIsAnsweredOnce(t *testing.T) {
-	c := newCommands(t, newPool(t))
+	c := newCommands(t, dbtest.Pool(t))
 	ev := c.comment(12, "u1", "/hearsay ratify")
 	c.replies.fail = errors.New("GitHub is down")
 	if err := c.handle(ev); err == nil {
@@ -405,8 +366,7 @@ func TestAGitHubCommandRunsOnceAndIsAnsweredOnce(t *testing.T) {
 	id := commentID(t, ev)
 	for _, edit := range []connector.Event{
 		c.revision(12, id, "u1", "/hearsay demote", at(10), at(11), ""),
-		// The repository went private: a new revision of the same comment,
-		// not an edit, and it is the same command, which has run.
+
 		c.revision(12, id, "u1", "/hearsay ratify", at(10), at(10), "+perm:private"),
 	} {
 		c.mustHandle(edit)
@@ -418,11 +378,8 @@ func TestAGitHubCommandRunsOnceAndIsAnsweredOnce(t *testing.T) {
 	}
 }
 
-// A comment that is not a command, and Hearsay's own reply echoed back by the
-// webhook, are not commands: the follower puts neither on the queue, and a
-// job for one does nothing.
 func TestOnlyCommandsAreRun(t *testing.T) {
-	c := newCommands(t, scratchPool(t))
+	c := newCommands(t, dbtest.Scratch(t, "hearsay_assert"))
 	message := c.comment(12, "u1", "Let's /hearsay ratify this later.")
 	echo := event(c.src, github.KindReply, repo+"#12:comment:6100", at(10), "hearsay[bot]", "b1", "", "/hearsay ratify\n\n"+github.ReplyMarker(5001))
 	echo.Payload.BaseKind = connector.KindCommand
@@ -446,12 +403,8 @@ func TestOnlyCommandsAreRun(t *testing.T) {
 	}
 }
 
-// The follower enqueues each command as written, under the scope it acts on —
-// for a merge, its topics' — and the tombstone of each deleted one under the
-// same key; not an edit, not another source's comment, and not a deleted
-// comment that was not a command.
 func TestTheCommandFollowerEnqueuesCommandsAndTheirDeletions(t *testing.T) {
-	pool := scratchPool(t)
+	pool := dbtest.Scratch(t, "hearsay_assert")
 	c := newCommands(t, pool)
 	graph := l2.New(pool)
 	elsewhere := [2]string{}
@@ -498,13 +451,10 @@ func TestTheCommandFollowerEnqueuesCommandsAndTheirDeletions(t *testing.T) {
 	}
 }
 
-// Deleting a command comment undoes what it did — a gesture, or a merge — and
-// the one reply is revised to say so. Applying the deletion again does
-// nothing more.
 func TestDeletingACommandUndoesIt(t *testing.T) {
 	for _, body := range []string{"/hearsay ratify", "/hearsay pin", "/hearsay merge {a} {b}"} {
 		t.Run(body, func(t *testing.T) {
-			c := newCommands(t, newPool(t))
+			c := newCommands(t, dbtest.Pool(t))
 			ev := c.comment(12, "u1", strings.NewReplacer("{a}", c.topics[0], "{b}", c.topics[1]).Replace(body))
 			c.mustHandle(ev)
 			tomb := c.delete(ev)
@@ -538,12 +488,8 @@ func TestDeletingACommandUndoesIt(t *testing.T) {
 	}
 }
 
-// A merge a later operation builds on is not undone when its command is
-// deleted, and the one reply says why and what to undo first. A command that
-// was refused has nothing to undo, and its reply is not revised; a reply
-// somebody deleted is not replaced.
 func TestUndoingAMergeALaterOperationDependsOnIsRefused(t *testing.T) {
-	c := newCommands(t, newPool(t))
+	c := newCommands(t, dbtest.Pool(t))
 	issue, _ := documents(t, c.src)
 	third := l2.Topic{ID: l2.TopicID(c.src, issue.ID, 9, "third"), Scope: c.src, Name: "third", ACL: issue.ACL, OpenedBy: issue.ID}
 	if _, err := l2.New(c.pool).OpenTopic(t.Context(), third); err != nil {
@@ -584,10 +530,8 @@ func TestUndoingAMergeALaterOperationDependsOnIsRefused(t *testing.T) {
 	}
 }
 
-// A command deleted before it ran runs nothing, and its deletion finds nothing
-// to undo.
 func TestACommandDeletedBeforeItRanRunsNothing(t *testing.T) {
-	c := newCommands(t, newPool(t))
+	c := newCommands(t, dbtest.Pool(t))
 	ev := c.comment(12, "u1", "/hearsay ratify")
 	tomb := c.delete(ev)
 	c.mustHandle(ev)
@@ -597,12 +541,8 @@ func TestACommandDeletedBeforeItRanRunsNothing(t *testing.T) {
 	}
 }
 
-// A ratify of an issue whose document is still being distilled waits for it
-// rather than answering that there is nothing to ratify, until its last
-// attempt.
 func TestACommandWaitsForItsDocument(t *testing.T) {
-	// Its own database: another package's distiller would take the job.
-	c := newCommands(t, scratchPool(t))
+	c := newCommands(t, dbtest.Scratch(t, "hearsay_assert"))
 	fresh := event(c.src, connector.KindIssue, repo+"#77", at(9), "kpenfound", "u1", "a new issue", "Nothing distilled yet.")
 	c.append(fresh)
 	doc := l1.DocID(c.src, repo+"#77")
@@ -620,11 +560,8 @@ func TestACommandWaitsForItsDocument(t *testing.T) {
 	}
 }
 
-// A command whose reply could not be posted in all its job's attempts, or
-// whose reply was not revised after it was deleted, is put back on the queue
-// at startup, under the scope it ran under; one that has been answered is not.
 func TestStartupSweepsTheRepliesStillOwed(t *testing.T) {
-	c := newCommands(t, scratchPool(t))
+	c := newCommands(t, dbtest.Scratch(t, "hearsay_assert"))
 	answered := c.comment(12, "u1", "/hearsay pin")
 	c.mustHandle(answered)
 	c.replies.fail = errors.New("GitHub is down")
@@ -678,15 +615,8 @@ func TestStartupSweepsTheRepliesStillOwed(t *testing.T) {
 	}
 }
 
-// A read-only GitHub source takes no commands. Its connector emits a
-// `/hearsay` comment as a `message` (the connector's tests), but L0 may hold
-// commands from before the source became read-only: the follower enqueues
-// none of them nor their deletions, a job for one enqueued before then runs
-// nothing and posts nothing, a deletion undoes nothing, and the startup sweep
-// owes none of them a reply. The same commands on a source that is not
-// read-only are the tests above.
 func TestAReadOnlySourceTakesNoCommands(t *testing.T) {
-	c := newCommands(t, scratchPool(t))
+	c := newCommands(t, dbtest.Scratch(t, "hearsay_assert"))
 	answered := c.comment(12, "u1", "/hearsay ratify")
 	c.mustHandle(answered)
 	c.replies.fail = errors.New("GitHub is down")
@@ -711,8 +641,7 @@ func TestAReadOnlySourceTakesNoCommands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The binary builds no replier for a read-only source; this one is here
-	// to show that nothing would be posted through it if it did.
+
 	c.a = a.WithReplies(assertworker.Replies{c.src: c.replies})
 
 	merge := c.comment(12, "u1", "/hearsay merge "+c.topics[0]+" "+c.topics[1])
@@ -727,7 +656,6 @@ func TestAReadOnlySourceTakesNoCommands(t *testing.T) {
 		t.Errorf("posts = %d, revises = %d, want only the reply from before", c.replies.posts, c.replies.revises)
 	}
 
-	// Appending the last command again reads where it sits in the feed.
 	appended, err := l0.New(c.pool).Append(t.Context(), c.revision(12, 8000, "u1", "/hearsay demote", at(12), at(12), ""))
 	if err != nil {
 		t.Fatal(err)
@@ -745,8 +673,6 @@ func TestAReadOnlySourceTakesNoCommands(t *testing.T) {
 	}
 }
 
-// A waiting Handle attempt must commit its expedite independently of the
-// rolled-back command transaction. Retry through the real queue and handler.
 func TestAWaitingCommandExpeditesDistillationAcrossRollbackAndPumpReads(t *testing.T) {
 	for _, tc := range []struct {
 		name, verb string
@@ -756,15 +682,15 @@ func TestAWaitingCommandExpeditesDistillationAcrossRollbackAndPumpReads(t *testi
 		{name: "no gesture target", verb: "ratify", readable: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c := newCommands(t, scratchPool(t))
+			c := newCommands(t, dbtest.Scratch(t, "hearsay_assert"))
 			ctx := t.Context()
 			distills, err := queue.New(c.pool, queue.Config{Kind: distiller.JobKind()})
 			if err != nil {
 				t.Fatal(err)
 			}
-			// Skip the fixture state the test helper has already distilled.
+
 			immediate := distiller.NewPump(c.pool, distiller.PumpOptions{Quiet: 0})
-			commandPumpRead(t, immediate, 4) // issue, PR, review and secret
+			commandPumpRead(t, immediate, 4)
 			jobs, err := distills.Claim(ctx)
 			if err != nil {
 				t.Fatal(err)
@@ -816,8 +742,7 @@ func TestAWaitingCommandExpeditesDistillationAcrossRollbackAndPumpReads(t *testi
 			if err := c.pool.QueryRow(ctx, `SELECT count(*) FROM github_command_replies WHERE event=$1`, ev.ID).Scan(&records); err != nil || records != 0 {
 				t.Fatalf("waiting reply records=%d, %v, want none", records, err)
 			}
-			// List is a new database transaction after Handle's rollback. It sees
-			// the expedite committed, even before another enqueue or claim.
+
 			due := commandPending(t, distills, doc)
 			var now time.Time
 			if err := c.pool.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
@@ -861,7 +786,6 @@ func TestAWaitingCommandExpeditesDistillationAcrossRollbackAndPumpReads(t *testi
 				t.Fatal(err)
 			}
 			if tc.verb == "ratify" {
-				// The assertion stage makes the target available after distillation.
 				graph := l2.New(c.pool)
 				topic := l2.Topic{ID: l2.TopicID(c.src, doc, 0, "new proposal"), Scope: c.src, Name: "new proposal", ACL: fresh.ACL, OpenedBy: doc}
 				if _, err := graph.OpenTopic(ctx, topic); err != nil {
@@ -873,7 +797,7 @@ func TestAWaitingCommandExpeditesDistillationAcrossRollbackAndPumpReads(t *testi
 				}
 			}
 			var retry queue.Job
-			waitFor(t, "the command retry to become claimable", func() bool {
+			poll.Until(t, "the command retry to become claimable", func() bool {
 				jobs, err := commands.Claim(ctx)
 				if err != nil {
 					t.Fatal(err)
@@ -906,7 +830,7 @@ func TestAWaitingCommandExpeditesDistillationAcrossRollbackAndPumpReads(t *testi
 func commandPumpRead(t *testing.T, p *distiller.Pump, want int) {
 	t.Helper()
 	read := 0
-	waitFor(t, "the pump to read command test events", func() bool {
+	poll.Until(t, "the pump to read command test events", func() bool {
 		got, err := p.Once(t.Context())
 		if err != nil {
 			t.Fatal(err)
@@ -934,7 +858,7 @@ func commandPending(t *testing.T, c *queue.Client, target string) queue.Job {
 func TestACommandUsesReadableL1WhileADebouncedRebuildIsPending(t *testing.T) {
 	for _, verb := range []string{"pin", "ratify"} {
 		t.Run(verb, func(t *testing.T) {
-			c := newCommands(t, scratchPool(t))
+			c := newCommands(t, dbtest.Scratch(t, "hearsay_assert"))
 			doc := l1.DocID(c.src, repo+"#12")
 			if _, err := queue.Enqueue(t.Context(), c.pool, queue.Request{Kind: distiller.JobKind(), TargetID: doc, Debounce: &queue.Debounce{Quiet: time.Minute, Max: 5 * time.Minute}}); err != nil {
 				t.Fatal(err)

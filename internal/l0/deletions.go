@@ -106,8 +106,6 @@ SELECT id FROM l0_events
 			Author:    &operator,
 			Native:    record,
 		},
-		// Like an audit event: an entry in Hearsay's own source, which no
-		// configured identity is in, so no reader's audience holds it.
 		ACL: connector.ACL{{Kind: connector.ACLIdentity, Source: connector.SelfSource, NativeID: d.Operator}},
 	})
 	if err != nil {
@@ -126,9 +124,6 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 	return Deleted{Events: covered, Retraction: appended.ID}, nil
 }
 
-// redactSQL replaces a payload with the fields that place the event and a
-// marker naming the deletion. jsonb_strip_nulls drops the fields the event
-// never had, so a redacted payload claims nothing it did not.
 const redactSQL = `
 UPDATE l0_events e
    SET deletion = $1,

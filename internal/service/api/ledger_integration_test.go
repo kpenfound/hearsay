@@ -31,7 +31,6 @@ func (w *world) operate(t *testing.T, req l2.OperationRequest) l2.Operation {
 	return op
 }
 
-// stances is the ids of a history's stances.
 func stances(h api.History) []string {
 	out := make([]string, len(h.Stances))
 	for i, st := range h.Stances {
@@ -49,8 +48,6 @@ func record(h api.History, id string) api.StanceRecord {
 	return api.StanceRecord{}
 }
 
-// stance_history, the bundle and assert serve topics as the topic ledger makes
-// them, through either side of a merge, and filtered for the reader.
 func TestReadsFollowTheTopicLedger(t *testing.T) {
 	w := newWorld(t)
 	ctx := t.Context()
@@ -94,8 +91,6 @@ func TestReadsFollowTheTopicLedger(t *testing.T) {
 		}
 	}
 
-	// Merged: one history through either id, naming the merge, standing on
-	// every stance of both.
 	merged := w.operate(t, l2.OperationRequest{Kind: l2.OperationMerge, Into: a.ID, From: b.ID})
 	throughA := w.http(t, kyle, "stance_history", map[string]any{"topic": a.ID})
 	throughB := w.http(t, kyle, "stance_history", map[string]any{"topic": b.ID})
@@ -126,8 +121,6 @@ func TestReadsFollowTheTopicLedger(t *testing.T) {
 		t.Errorf("sam's bundle serves %v, want the merged topic once, at %s", onCache, b2.ID)
 	}
 
-	// An agent asserting on the merged-away topic writes on the topic it went
-	// into.
 	var asserted api.Asserted
 	if err := json.Unmarshal(w.http(t, shedKyle, "assert", map[string]any{"topic": b.ID, "position": "the edge team", "evidence": []string{d41}}), &asserted); err != nil {
 		t.Fatal(err)
@@ -148,9 +141,6 @@ func TestReadsFollowTheTopicLedger(t *testing.T) {
 		t.Fatalf("the asserted stance = %+v, %v, want it on %s", asStance, err, a.ID)
 	}
 
-	// Split: the private stance alone is a topic kyle reads and sam does not,
-	// and the edge the split cut is shown to kyle from both ends and to sam
-	// from neither.
 	split := w.operate(t, l2.OperationRequest{Kind: l2.OperationSplit, Topic: a.ID, Name: "the platform team's cache", Stances: []string{b1.ID}})
 	s := split.Topics[1]
 	hs = w.history(t, kyle, s)
@@ -172,7 +162,6 @@ func TestReadsFollowTheTopicLedger(t *testing.T) {
 		t.Errorf("sam's b2 = %+v, want no edge to a stance sam may not read", got)
 	}
 
-	// Undone, without the agent's stance each read is as it was.
 	w.operate(t, l2.OperationRequest{Kind: l2.OperationUndo, Undoes: split.ID})
 	w.operate(t, l2.OperationRequest{Kind: l2.OperationUndo, Undoes: merged.ID})
 	if _, err := w.pool.Exec(ctx, `DELETE FROM l2_stances WHERE id = $1`, asStance.ID); err != nil {

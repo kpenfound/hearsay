@@ -33,8 +33,6 @@ func (c *Connector) Handler(sink connector.Sink) http.Handler {
 			if err != nil {
 				return push.Result{}, err
 			}
-			// Attribution is authorization, including on a deletion (whose shape
-			// already refuses author). Nothing untrusted reaches an identity hint.
 			if req.fields["author"] {
 				p, ok := c.principals[req.Author]
 				if !c.attributors[poster] {
@@ -62,8 +60,6 @@ func (c *Connector) Handler(sink connector.Sink) http.Handler {
 			if err == nil && held {
 				err = c.emit(ctx, sink, reader, ev)
 			}
-			// Always use the project's *current* revision, even after an identical
-			// repost or a stale revision that L0 stores without making it current.
 			if err == nil && req.Kind == "project" && !req.Deleted {
 				err = c.reconcile(ctx, sink, reader, req.Project)
 			}
@@ -157,8 +153,6 @@ func (c *Connector) event(ctx context.Context, reader connector.ArtifactReader, 
 	return push.Revise(ev, edited.UTC())
 }
 
-// emit writes ev to the source it names, which is this one or a paired one,
-// through the sink and reader that belong to that source.
 func (c *Connector) emit(ctx context.Context, sink connector.Sink, reader connector.ArtifactReader, ev connector.Event) error {
 	if ev.Kind != connector.KindTombstone {
 		current, ok, err := reader.CurrentArtifact(ctx, ev.Source, ev.Payload.Artifact)

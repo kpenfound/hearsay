@@ -115,10 +115,11 @@ func walk(t *testing.T, c *drive.Connector, sink connector.Sink, from connector.
 	return result.Next, result.Done
 }
 
-func TestBackfillRestartAndGate(t *testing.T) {
+func backfillThroughRestart(t *testing.T) (connector.SourceConfig, *connector.Recorder) {
+	t.Helper()
 	f := &fixture{}
 	server := httptest.NewServer(http.HandlerFunc(f.serve))
-	defer server.Close()
+	t.Cleanup(server.Close)
 	src := source(t, server.URL)
 	c, err := drive.New(src)
 	if err != nil {
@@ -138,26 +139,55 @@ func TestBackfillRestartAndGate(t *testing.T) {
 	for !done {
 		cur, done = walk(t, c, gate, cur)
 	}
-	events := rec.Events()
-	if len(events) != 3 {
-		t.Fatalf("events = %+v, want 3", events)
-	}
+	return src, rec
+}
+
+func TestBackfillResumesFromCursorAfterRestart(t *testing.T) {
+	_, rec := backfillThroughRestart(t)
 	ids := []string{}
-	for _, ev := range events {
+	for _, ev := range rec.Events() {
 		ids = append(ids, ev.NativeID)
 	}
 	if want := []string{"doc1@r1", "doc2@r2", "tagged@head"}; !slices.Equal(ids, want) {
 		t.Errorf("native IDs = %v, want %v", ids, want)
 	}
+}
+
+func TestBackfillSkipsNestedAndIneligibleFiles(t *testing.T) {
+	_, rec := backfillThroughRestart(t)
+	for _, ev := range rec.Events() {
+		if slices.Contains([]string{"nested", "untagged", "other", "unreadable"}, ev.Payload.Artifact) {
+			t.Errorf("emitted %s", ev.Payload.Artifact)
+		}
+	}
+}
+
+func TestBackfillKindsAndContainers(t *testing.T) {
+	_, rec := backfillThroughRestart(t)
+	events := rec.Events()
 	if events[0].Kind != connector.KindDocument || events[2].Kind != connector.KindTranscript || events[2].Payload.Container.NativeID != "meet" {
 		t.Errorf("kinds and containers = %+v", events)
 	}
-	if events[0].Payload.URL != "https://drive.google.com/open?id=doc1" || events[0].Payload.Text != "original text" || len(events[0].Payload.Participants) != 1 || events[0].Payload.Participants[0].Role != connector.RoleAttendee {
-		t.Errorf("document payload = %+v", events[0].Payload)
+}
+
+func TestBackfillDocumentPayload(t *testing.T) {
+	_, rec := backfillThroughRestart(t)
+	p := rec.Events()[0].Payload
+	if p.URL != "https://drive.google.com/open?id=doc1" || p.Text != "original text" || len(p.Participants) != 1 || p.Participants[0].Role != connector.RoleAttendee {
+		t.Errorf("document payload = %+v", p)
 	}
-	if events[0].ACL[0].Kind != connector.ACLIdentity || events[0].ACL[1].Kind != connector.ACLGroup || events[0].ACL[2].Kind != connector.ACLPublic {
-		t.Errorf("ACL = %+v", events[0].ACL)
+}
+
+func TestBackfillACLFromPermissions(t *testing.T) {
+	_, rec := backfillThroughRestart(t)
+	acl := rec.Events()[0].ACL
+	if len(acl) != 3 || acl[0].Kind != connector.ACLIdentity || acl[1].Kind != connector.ACLGroup || acl[2].Kind != connector.ACLPublic {
+		t.Errorf("ACL = %+v", acl)
 	}
+}
+
+func TestBackfillThroughGateStampsEventIDs(t *testing.T) {
+	src, rec := backfillThroughRestart(t)
 	if rec.IDs()[0] != connector.EventID(src.ID, "doc1@r1") {
 		t.Errorf("gate did not stamp event ID: %v", rec.IDs())
 	}

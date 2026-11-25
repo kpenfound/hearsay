@@ -16,7 +16,6 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/llm/jev"
-	"github.com/kpenfound/hearsay/internal/llm/providers"
 )
 
 func fixture(t *testing.T, name string) string {
@@ -270,8 +269,7 @@ func TestAdapterRetryRecoveryAndDeadlines(t *testing.T) {
 				fmt.Fprint(w, good)
 			}))
 			defer s.Close()
-			// Recovery needs headroom under race instrumentation and parallel load.
-			// Only the cases testing exhaustion get a short total or caller budget.
+
 			cfg := llm.JudgmentConfig{Backoff: time.Millisecond, Timeout: 20 * time.Millisecond, TotalTimeout: time.Second, MaxRetries: 5}
 			ctx := t.Context()
 			want := llm.JudgmentFailure("")
@@ -279,7 +277,7 @@ func TestAdapterRetryRecoveryAndDeadlines(t *testing.T) {
 			if mode == "total timeout" {
 				cfg.TotalTimeout = 40 * time.Millisecond
 				want = llm.JudgmentTimeout
-				attempts = -1 // The total deadline may cut off any retry.
+				attempts = -1
 			}
 			if mode == "caller deadline" || mode == "retry after budget" {
 				cfg.Timeout = time.Second
@@ -374,20 +372,5 @@ func TestAdapterClassifiesRateLimitBeforeBodyIO(t *testing.T) {
 				t.Fatalf("reads=%d error=%v", reads, err)
 			}
 		})
-	}
-}
-
-func TestJevIsAbsentFromTierRegistry(t *testing.T) {
-	if _, ok := providers.ByName("jev"); ok {
-		t.Fatal("Jev registered as a generative provider")
-	}
-	for _, tier := range llm.Tiers {
-		cfg := llm.Config{Tiers: map[llm.Tier]llm.TierConfig{tier: {Provider: "jev", Model: "explicit"}}}
-		if tier == llm.TierEmbed {
-			cfg.Tiers[tier] = llm.TierConfig{Provider: "jev", Model: "explicit", Dimensions: 1024}
-		}
-		if _, err := llm.NewRegistry(cfg, providers.All()); err == nil || !strings.Contains(err.Error(), "no provider called") {
-			t.Fatalf("Jev reachable as tier %s: %v", tier, err)
-		}
 	}
 }

@@ -12,12 +12,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/eval"
 )
 
-// runEval is `hearsay eval`: the evaluation metrics over a window
-// (docs/design.md#evaluation), for an operator. It reads the database and
-// writes nothing, and it prints aggregates and ids only — no L0 payload, L1
-// text, stance position or topic name — so it reads everything and takes no
-// principal. Standing is computed under the configured authority, which is
-// why it needs --config.
 func runEval(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) > 0 && args[0] == "judgments" {
 		return runJudgmentEval(ctx, args[1:], stdout, stderr)
@@ -35,8 +29,6 @@ func runEval(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	if len(words) > 0 {
 		return fmt.Errorf("unexpected argument %q", words[0])
 	}
-	// Everything about the command line is settled before anything is read,
-	// so a typo is a typo rather than a connection failure.
 	opts := eval.Options{Scope: *scope, Until: time.Now().UTC()}
 	if *since != "" {
 		if opts.Since, err = time.Parse(time.RFC3339, *since); err != nil {

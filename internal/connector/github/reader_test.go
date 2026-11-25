@@ -12,7 +12,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector/github"
 )
 
-// wantCodeOwners is testdata/api/contents-codeowners.json's content, decoded.
 const wantCodeOwners = `# Owners of acme/api. The last matching rule wins.
 *                 @kpenfound
 /engine/          @samr
@@ -31,20 +30,19 @@ func newReader(t *testing.T, gh *fakeGitHub) *github.Reader {
 	return r
 }
 
-// Seeding reads the repository's metadata, its root listing — names and types,
-// no content — and the one file configuration names, and nothing else.
-func TestReaderReadsTheLayoutAndTheFileAskedFor(t *testing.T) {
-	gh := newFakeGitHub(t)
-	r := newReader(t, gh)
-
+func TestReaderListsTheRootDirectories(t *testing.T) {
+	r := newReader(t, newFakeGitHub(t))
 	dirs, err := r.TopLevel(t.Context(), "acme/api")
 	if err != nil {
 		t.Fatalf("TopLevel = %v", err)
 	}
-	// Directories only: not the files at the root, and not the submodule.
 	if want := []string{".github", "cmd", "docs", "engine"}; !slices.Equal(dirs, want) {
 		t.Errorf("TopLevel = %q, want %q", dirs, want)
 	}
+}
+
+func TestReaderReadsTheFileAskedFor(t *testing.T) {
+	r := newReader(t, newFakeGitHub(t))
 	content, err := r.ReadFile(t.Context(), "acme/api", ".github/CODEOWNERS")
 	if err != nil {
 		t.Fatalf("ReadFile = %v", err)
@@ -52,7 +50,17 @@ func TestReaderReadsTheLayoutAndTheFileAskedFor(t *testing.T) {
 	if string(content) != wantCodeOwners {
 		t.Errorf("ReadFile = %q, want %q", content, wantCodeOwners)
 	}
+}
 
+func TestReaderReadsOnlyMetadataListingAndTheFileAskedFor(t *testing.T) {
+	gh := newFakeGitHub(t)
+	r := newReader(t, gh)
+	if _, err := r.TopLevel(t.Context(), "acme/api"); err != nil {
+		t.Fatalf("TopLevel = %v", err)
+	}
+	if _, err := r.ReadFile(t.Context(), "acme/api", ".github/CODEOWNERS"); err != nil {
+		t.Fatalf("ReadFile = %v", err)
+	}
 	want := []string{"/repos/acme/api", "/repos/acme/api/contents", "/repos/acme/api/contents/.github/CODEOWNERS"}
 	if got := gh.seen(); !slices.Equal(got, want) {
 		t.Errorf("requests = %q, want %q: the metadata, the root listing and the one file", got, want)
@@ -61,14 +69,11 @@ func TestReaderReadsTheLayoutAndTheFileAskedFor(t *testing.T) {
 
 func TestReaderFailures(t *testing.T) {
 	tests := []struct {
-		name string
-		// arrange changes the fake before the call.
-		arrange func(gh *fakeGitHub)
-		call    func(ctx context.Context, r *github.Reader) error
-		// wantErr is part of the error; notExist is whether it is a missing file.
-		wantErr  string
-		notExist bool
-		// wantRequests is every request made, in order.
+		name         string
+		arrange      func(gh *fakeGitHub)
+		call         func(ctx context.Context, r *github.Reader) error
+		wantErr      string
+		notExist     bool
 		wantRequests []string
 	}{
 		{
@@ -80,8 +85,6 @@ func TestReaderFailures(t *testing.T) {
 			wantRequests: []string{"/repos/acme/api/contents/.github/CODEOWNERS", "/repos/acme/api"},
 		},
 		{
-			// The connector's own error for a repository it cannot read, the
-			// one a backfill or a visibility check fails with.
 			name:         "a repository the token cannot read fails the layout",
 			arrange:      func(gh *fakeGitHub) { gh.fail("/repos/acme/api", http.StatusNotFound) },
 			call:         topLevel,
@@ -173,8 +176,6 @@ func TestReaderFailures(t *testing.T) {
 func TestReaderOfAnEmptyRepositoryListsNothing(t *testing.T) {
 	gh := newFakeGitHub(t)
 	r := newReader(t, gh)
-	// GitHub answers the root listing of a repository with no commits with a
-	// 404, and the repository itself with its metadata.
 	gh.setContents("/repos/acme/api/contents", nil)
 	dirs, err := r.TopLevel(t.Context(), "acme/api")
 	if err != nil || len(dirs) != 0 {

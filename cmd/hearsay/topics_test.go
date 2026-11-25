@@ -4,13 +4,12 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 )
 
-// Everything `hearsay topics` refuses on its command line or its principal is
-// refused before the database is opened: an unreachable one does not change
-// the answer, and nothing is printed.
 func TestTopicsRefusesBeforeOpeningTheDatabase(t *testing.T) {
-	configPath := writeConfig(t, map[string]string{
+	configPath := configtest.Write(t, map[string]string{
 		"sources/github.yaml":  "id: github\ntype: github\ncontainers: [acme/api]\n",
 		"scopes/api.yaml":      "id: api\nsources: [github]\n",
 		"principals/kyle.yaml": "id: kyle\nidentities: [{source: github, native_id: u1}]\n",

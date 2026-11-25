@@ -11,21 +11,11 @@ import (
 	"github.com/kpenfound/hearsay/internal/llm"
 )
 
-// The prompts belong to this package, not to internal/l2: what a topic and a
-// stance are is the layer's; how a model is asked to find them in a document is
-// the assertion worker's. The system prompt and the schema are both
-// here because they say the same thing twice.
-
-// MaxAssertions is the most positions one document takes. A document is about
-// one thing; one that takes more than a handful of positions is one the model is
-// reading too generously.
+// MaxAssertions is the most positions one document takes.
 const MaxAssertions = 4
 
-// maxTopicName bounds what the model may call a topic. It is a question in a
-// line, far under what the table allows.
 const maxTopicName = 300
 
-// maxPosition bounds one position: a sentence or two.
 const maxPosition = 1000
 
 var systemPrompt = `You are Hearsay's assertion worker. You read one distilled document from a team's tools and write down the positions it takes: what the team proposed, decided or did, each as an answer to one question.
@@ -38,22 +28,18 @@ Take at most ` + strconv.Itoa(MaxAssertions) + ` positions, and none where the d
 
 // Candidate is one existing topic a document may be continuing, as Jev is
 // shown it: its name and the position currently recorded on it, when the
-// document's readers may read that position. It carries no id — a question
-// names it by label — so that a judgment depends on nothing but what the team
-// said.
+// document's readers may read that position. It carries no id: a question
+// names it by label.
 type Candidate struct {
 	Name    string
 	Current string
 }
 
-// label is how a judgment refers to the i-th candidate it is shown.
 func label(i int) string { return "T" + strconv.Itoa(i+1) }
 
 // RequestFor is the model call one document takes. It depends on the document
-// alone: the model extracts positions and is shown no topics. It is exported so
-// that whatever records a fixture asks for exactly what the worker asks for;
-// budget is the answer budget, left zero by a call so the registry fills in the
-// tier's.
+// alone: the model extracts positions and is shown no topics. budget is the
+// answer budget, left zero by a call so the registry fills in the tier's.
 func RequestFor(doc l1.Document, budget int) llm.Request {
 	return llm.Request{
 		System:    systemPrompt,
@@ -68,7 +54,6 @@ func promptFor(doc l1.Document) string {
 		strings.TrimSpace(doc.StanceText())
 }
 
-// answer is the JSON the model returns, already checked against schemaFor.
 type answer struct {
 	Assertions []assertion `json:"assertions"`
 }
@@ -78,7 +63,6 @@ type assertion struct {
 	Position  string `json:"position"`
 }
 
-// schema is the answer's shape: positions, each with the question it answers.
 var schema = schemaFor()
 
 func schemaFor() *llm.Schema {
@@ -116,7 +100,6 @@ func schemaFor() *llm.Schema {
 		AdditionalProperties: &closed,
 	})
 	if err != nil {
-		// The tree is this file's and holds nothing that fails to encode.
 		panic(fmt.Sprintf("encoding the assertion schema: %v", err))
 	}
 	return &llm.Schema{
@@ -126,7 +109,6 @@ func schemaFor() *llm.Schema {
 	}
 }
 
-// node is one level of a JSON Schema, in the subset internal/llm enforces.
 type node struct {
 	Type                 string          `json:"type"`
 	Description          string          `json:"description,omitempty"`
@@ -140,8 +122,6 @@ type node struct {
 	AdditionalProperties *bool           `json:"additionalProperties,omitempty"`
 }
 
-// The schema's bounds have to fit the table's, or an answer the schema accepts
-// is one the store refuses. This does not compile if they stop fitting.
 const (
 	_ = uint(l2.MaxTopicName - maxTopicName)
 	_ = uint(l2.MaxPosition - maxPosition)

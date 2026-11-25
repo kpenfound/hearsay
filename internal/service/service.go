@@ -25,15 +25,9 @@ type RunFunc func(ctx context.Context) error
 // returned. The first service to return — with an error or without one — stops
 // the others: a process that is running four services is not useful with three.
 //
-// It is what `hearsay all` is built from, and it is deliberately the only way
-// that subcommand differs from running the four services separately, so the dev
-// path cannot drift from the deployed one.
-//
-// `all` runs all four with a WaitGroup and [errors.Join] rather than an
-// errgroup, which keeps the module free of dependencies, and the
-// semantics differ on purpose: an errgroup cancels on the first *error*, and a
-// service of ours returning nil is just as much a reason to stop as one
-// returning an error. Every error is reported rather than only the first.
+// It is what `hearsay all` is built from. A service returning nil is as much a
+// reason to stop as one returning an error, and every error is reported rather
+// than only the first.
 func RunAll(ctx context.Context, fns map[string]RunFunc) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

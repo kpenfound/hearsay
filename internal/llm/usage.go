@@ -36,16 +36,12 @@ type Usage struct {
 	CostReported bool
 }
 
-// usageKey is what usage is counted per.
 type usageKey struct {
 	tier     Tier
 	provider string
 	model    string
 }
 
-// usageTable accumulates usage across the tiers of one registry. Every method
-// of it is safe to call from several goroutines: a distiller running four jobs
-// at once shares one registry.
 type usageTable struct {
 	mu   sync.Mutex
 	rows map[usageKey]*Usage
@@ -53,7 +49,6 @@ type usageTable struct {
 
 func newUsageTable() *usageTable { return &usageTable{rows: map[usageKey]*Usage{}} }
 
-// row returns the counter for one key, creating it.
 func (u *usageTable) row(k usageKey) *Usage {
 	row, ok := u.rows[k]
 	if !ok {
@@ -63,8 +58,6 @@ func (u *usageTable) row(k usageKey) *Usage {
 	return row
 }
 
-// answered records a call that returned. cost is what the provider reported
-// the call cost, nil when it reported none.
 func (u *usageTable) answered(k usageKey, t Tokens, cost *float64) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -78,15 +71,12 @@ func (u *usageTable) answered(k usageKey, t Tokens, cost *float64) {
 	}
 }
 
-// failed records a call that ran out of attempts.
 func (u *usageTable) failed(k usageKey) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.row(k).Failures++
 }
 
-// snapshot is every counter, in a stable order: tier as documented, then
-// provider, then model.
 func (u *usageTable) snapshot() []Usage {
 	u.mu.Lock()
 	defer u.mu.Unlock()

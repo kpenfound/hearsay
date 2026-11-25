@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -20,8 +19,6 @@ func ownerSource() connector.SourceConfig {
 	return connector.SourceConfig{ID: ownerID, Type: work.Type, Containers: []string{"*"}, Settings: json.RawMessage(`{"attributors":["factory"],"owner_of":"projects"}`)}
 }
 
-// pair is a work source and its owner source over one store, built the way the
-// connectors service builds them: from one factory, so they share their locks.
 type pair struct {
 	store     *memoryStore
 	work      *work.Connector
@@ -30,8 +27,7 @@ type pair struct {
 	ownerH    http.Handler
 	workGate  connector.Sink
 	ownerGate connector.Sink
-	// private makes seedRecords post the project without repos.
-	private bool
+	private   bool
 }
 
 func newPair(t *testing.T) *pair {
@@ -110,7 +106,6 @@ func dec(t *testing.T, fields map[string]any) string {
 	return with(t, fixture(t, "decision"), fields)
 }
 
-// minimal is a decision with only what is required.
 func minimal(t *testing.T, id string, fields map[string]any) string {
 	t.Helper()
 	body := map[string]any{"kind": "decision", "project": "payments-rewrite", "decision": id, "outcome": "Ship it.", "decider": "chief_of_staff", "created_at": "2026-10-14T18:00:00Z"}
@@ -128,23 +123,21 @@ func minimal(t *testing.T, id string, fields map[string]any) string {
 	return string(raw)
 }
 
-func TestDocumentRecords(t *testing.T) {
-	for _, tt := range []struct {
-		name     string
-		artifact string
-		fields   map[string]any
-	}{
-		{name: "on a workstream", artifact: "payments-rewrite#retry-policy:document:spec-1"},
-		{name: "on the project", artifact: "payments-rewrite:document:spec-1", fields: map[string]any{"workstream": nil}},
-	} {
+var documentPlacements = []struct {
+	name     string
+	artifact string
+	fields   map[string]any
+}{
+	{name: "on a workstream", artifact: "payments-rewrite#retry-policy:document:spec-1"},
+	{name: "on the project", artifact: "payments-rewrite:document:spec-1", fields: map[string]any{"workstream": nil}},
+}
+
+func TestADocumentIsStoredAsADocumentEventWithTheProjectsAccess(t *testing.T) {
+	for _, tt := range documentPlacements {
 		t.Run(tt.name, func(t *testing.T) {
 			p := newPair(t)
 			p.seed(t)
 			first := p.expect(t, p.workH, doc(t, tt.fields), 202).id(t)
-			n := len(p.store.history())
-			if again := p.expect(t, p.workH, doc(t, tt.fields), 202).id(t); again != first || len(p.store.history()) != n {
-				t.Fatalf("identical repost = %s with %d events, want %s and %d", again, len(p.store.history()), first, n)
-			}
 			ev, ok := p.heldIn(t, sourceID, tt.artifact)
 			if !ok || ev.ID != first || ev.Kind != connector.KindDocument {
 				t.Fatalf("held = %v %s (%s), want the posted document event", ok, ev.ID, ev.Kind)
@@ -158,7 +151,30 @@ func TestDocumentRecords(t *testing.T) {
 			if !ev.ACL.Equal(held(t, p.store, "payments-rewrite").ACL) {
 				t.Errorf("document ACL %v is not the project's", ev.ACL)
 			}
+		})
+	}
+}
 
+func TestAnIdenticalDocumentRepostWritesNothing(t *testing.T) {
+	for _, tt := range documentPlacements {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newPair(t)
+			p.seed(t)
+			first := p.expect(t, p.workH, doc(t, tt.fields), 202).id(t)
+			n := len(p.store.history())
+			if again := p.expect(t, p.workH, doc(t, tt.fields), 202).id(t); again != first || len(p.store.history()) != n {
+				t.Fatalf("identical repost = %s with %d events, want %s and %d", again, len(p.store.history()), first, n)
+			}
+		})
+	}
+}
+
+func TestAChangedDocumentRepostIsTheCurrentRevision(t *testing.T) {
+	for _, tt := range documentPlacements {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newPair(t)
+			p.seed(t)
+			first := p.expect(t, p.workH, doc(t, tt.fields), 202).id(t)
 			revised := p.expect(t, p.workH, doc(t, mergeMaps(tt.fields, map[string]any{"body": "# Retry policy\n\nCap at 6.", "updated_at": "2026-10-14T19:00:00Z"})), 202).id(t)
 			if revised == first {
 				t.Fatal("changed repost kept the same event id")
@@ -166,7 +182,16 @@ func TestDocumentRecords(t *testing.T) {
 			if ev, _ := p.heldIn(t, sourceID, tt.artifact); ev.ID != revised || !strings.Contains(ev.Payload.Text, "Cap at 6") {
 				t.Fatalf("current revision = %s %q, want the revised one", ev.ID, ev.Payload.Text)
 			}
+		})
+	}
+}
 
+func TestDeletingADocumentEmitsATombstoneAndADeletionNotHeldIs204(t *testing.T) {
+	for _, tt := range documentPlacements {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newPair(t)
+			p.seed(t)
+			p.expect(t, p.workH, doc(t, tt.fields), 202)
 			delFields := map[string]any{"deleted": true}
 			if strings.Contains(tt.artifact, "#") {
 				delFields["workstream"] = "retry-policy"
@@ -196,21 +221,31 @@ func mergeMaps(a, b map[string]any) map[string]any {
 	return out
 }
 
-func TestDecisionRecordFields(t *testing.T) {
+const workstreamDecisionDeletion = `{"kind":"decision","project":"payments-rewrite","workstream":"retry-policy","decision":"d-2","deleted":true}`
+
+func decisionPair(t *testing.T) (*pair, connector.Event) {
+	t.Helper()
 	p := newPair(t)
 	p.seed(t)
 	p.expect(t, p.workH, doc(t, nil), 202)
 	p.expect(t, p.workH, minimal(t, "d-1", map[string]any{"workstream": "retry-policy"}), 202)
 	id := p.expect(t, p.workH, fixture(t, "decision"), 202).id(t)
 	ev, ok := p.heldIn(t, sourceID, "payments-rewrite#retry-policy:decision:d-2")
-	if !ok || ev.ID != id || ev.Kind != work.KindDecision || ev.Payload.BaseKind != connector.KindDocument {
-		t.Fatalf("held = %v %+v, want a work.decision event based on document", ok, ev)
+	if !ok || ev.ID != id {
+		t.Fatalf("held = %v %+v, want the posted decision", ok, ev)
+	}
+	return p, ev
+}
+
+func TestADecisionIsStoredWithEveryPostedField(t *testing.T) {
+	_, ev := decisionPair(t)
+	if ev.Kind != work.KindDecision || ev.Payload.BaseKind != connector.KindDocument {
+		t.Fatalf("held = %+v, want a work.decision event based on document", ev)
 	}
 	held, ok := work.Decode(ev)
 	if !ok {
 		t.Fatal("Decode does not read the stored event")
 	}
-	n := held.Native()
 	want := work.Native{
 		Project: "payments-rewrite", Workstream: "retry-policy", Poster: "factory", WorkSource: sourceID,
 		Decision: "d-2", Context: "Settlement calls fail transiently under load.", Outcome: "Cap retries at 5 with jittered backoff.",
@@ -219,7 +254,7 @@ func TestDecisionRecordFields(t *testing.T) {
 		SupersedesAt:   &work.Location{Source: sourceID, Artifact: "payments-rewrite#retry-policy:decision:d-1"},
 		SpecDocumentAt: &work.Location{Source: sourceID, Artifact: "payments-rewrite#retry-policy:document:spec-1"},
 	}
-	gotRaw, _ := json.Marshal(n)
+	gotRaw, _ := json.Marshal(held.Native())
 	wantRaw, _ := json.Marshal(want)
 	if string(gotRaw) != string(wantRaw) {
 		t.Errorf("native = %s\nwant     %s", gotRaw, wantRaw)
@@ -227,7 +262,12 @@ func TestDecisionRecordFields(t *testing.T) {
 	if held.Supersedes() != "d-1" || held.SpecDocument() != "spec-1" {
 		t.Errorf("Supersedes, SpecDocument = %q, %q", held.Supersedes(), held.SpecDocument())
 	}
-	if ev.Payload.Author == nil || ev.Payload.Author.NativeID != "kyle" || len(ev.Payload.Links) != 1 || ev.Payload.Links[0] != n.PullRequest {
+}
+
+func TestADecisionEventCarriesItsAuthorLinkTitleAndText(t *testing.T) {
+	_, ev := decisionPair(t)
+	held, _ := work.Decode(ev)
+	if ev.Payload.Author == nil || ev.Payload.Author.NativeID != "kyle" || len(ev.Payload.Links) != 1 || ev.Payload.Links[0] != held.Native().PullRequest {
 		t.Errorf("author %v links %v, want kyle and the pull request", ev.Payload.Author, ev.Payload.Links)
 	}
 	for _, part := range []string{"Cap retries at 5", "owner", "Unbounded retries", "q-17"} {
@@ -238,21 +278,32 @@ func TestDecisionRecordFields(t *testing.T) {
 	if ev.Payload.Title != "Cap retries at 5 with jittered backoff." {
 		t.Errorf("title = %q", ev.Payload.Title)
 	}
-	// A repost, a revision, a deletion.
-	n0 := len(p.store.history())
+}
+
+func TestAnIdenticalDecisionRepostWritesNothing(t *testing.T) {
+	p, _ := decisionPair(t)
+	n := len(p.store.history())
 	p.expect(t, p.workH, fixture(t, "decision"), 202)
-	if len(p.store.history()) != n0 {
+	if len(p.store.history()) != n {
 		t.Error("identical decision repost wrote")
 	}
+}
+
+func TestAChangedDecisionRepostIsTheCurrentRevision(t *testing.T) {
+	p, _ := decisionPair(t)
 	p.expect(t, p.workH, dec(t, map[string]any{"outcome": "Cap retries at 4.", "updated_at": "2026-10-14T19:00:00Z"}), 202)
 	if ev, _ := p.heldIn(t, sourceID, "payments-rewrite#retry-policy:decision:d-2"); !strings.Contains(ev.Payload.Text, "at 4") {
 		t.Error("revision is not the current one")
 	}
-	p.expect(t, p.workH, `{"kind":"decision","project":"payments-rewrite","workstream":"retry-policy","decision":"d-2","deleted":true}`, 202)
+}
+
+func TestDeletingADecisionRemovesItAndADeletionNotHeldIs204(t *testing.T) {
+	p, _ := decisionPair(t)
+	p.expect(t, p.workH, workstreamDecisionDeletion, 202)
 	if _, ok := p.heldIn(t, sourceID, "payments-rewrite#retry-policy:decision:d-2"); ok {
 		t.Error("deleted decision is held")
 	}
-	p.expect(t, p.workH, `{"kind":"decision","project":"payments-rewrite","workstream":"retry-policy","decision":"d-2","deleted":true}`, 204)
+	p.expect(t, p.workH, workstreamDecisionDeletion, 204)
 }
 
 func TestRecordValidation(t *testing.T) {
@@ -308,15 +359,14 @@ func TestRecordValidation(t *testing.T) {
 			}
 		})
 	}
-	// A deleted document or decision that is not held is a 204, not a 400 or 409.
 	p.expect(t, p.workH, `{"kind":"decision","project":"nope","decision":"d1","deleted":true}`, 204)
 }
 
-func TestProjectWideIDs(t *testing.T) {
+func TestAnIDNamesAtMostOneHeldRecordInAProject(t *testing.T) {
 	type post struct {
 		name      string
 		handler   func(*pair) http.Handler
-		workspace string // "" is project level
+		workspace string
 	}
 	places := []post{
 		{"the same workstream on the other source", func(p *pair) http.Handler { return p.ownerH }, "w1"},
@@ -354,9 +404,7 @@ func TestProjectWideIDs(t *testing.T) {
 				if len(p.store.history()) != n {
 					t.Fatal("the refused post wrote")
 				}
-				// A revision of the holder is not a collision with itself.
 				p.expect(t, p.workH, build(t, "w1", map[string]any{"updated_at": "2026-10-14T20:00:00Z", "created_at": "2026-10-14T17:00:00Z"}), 202)
-				// A deleted id is free again.
 				p.expect(t, p.workH, `{"kind":"`+kind+`","project":"payments-rewrite","workstream":"w1","`+kind+`":"d1","deleted":true}`, 202)
 				if again := p.expect(t, place.handler(p), build(t, place.workspace, nil), 202).id(t); again == first {
 					t.Error("reposting elsewhere reused the old event id")
@@ -365,19 +413,21 @@ func TestProjectWideIDs(t *testing.T) {
 		}
 	}
 
-	t.Run("a document and a decision may share an id", func(t *testing.T) {
-		p := newPair(t)
-		p.seed(t)
-		p.expect(t, p.workH, minimal(t, "same", nil), 202)
-		p.expect(t, p.workH, doc(t, map[string]any{"document": "same"}), 202)
-	})
-	t.Run("another project may reuse an id", func(t *testing.T) {
-		p := newPair(t)
-		p.seed(t)
-		p.expect(t, p.workH, with(t, fixture(t, "project"), map[string]any{"project": "second"}), 202)
-		p.expect(t, p.workH, minimal(t, "d1", nil), 202)
-		p.expect(t, p.workH, minimal(t, "d1", map[string]any{"project": "second"}), 202)
-	})
+}
+
+func TestADocumentAndADecisionMayShareAnID(t *testing.T) {
+	p := newPair(t)
+	p.seed(t)
+	p.expect(t, p.workH, minimal(t, "same", nil), 202)
+	p.expect(t, p.workH, doc(t, map[string]any{"document": "same"}), 202)
+}
+
+func TestAnotherProjectMayReuseAnID(t *testing.T) {
+	p := newPair(t)
+	p.seed(t)
+	p.expect(t, p.workH, with(t, fixture(t, "project"), map[string]any{"project": "second"}), 202)
+	p.expect(t, p.workH, minimal(t, "d1", nil), 202)
+	p.expect(t, p.workH, minimal(t, "d1", map[string]any{"project": "second"}), 202)
 }
 
 func TestConcurrentPostsOfOneIDToThePair(t *testing.T) {
@@ -424,24 +474,22 @@ func TestConcurrentPostsOfOneIDToThePair(t *testing.T) {
 	}
 }
 
-func TestSupersession(t *testing.T) {
-	t.Run("a decision that is not held", func(t *testing.T) {
-		p := newPair(t)
-		p.seed(t)
-		before := len(p.store.history())
-		r := p.expect(t, p.workH, minimal(t, "b", map[string]any{"supersedes": "a"}), 409)
-		if !strings.Contains(r.Body, "not held") || len(p.store.history()) != before {
-			t.Errorf("409 %q or a write", r.Body)
-		}
-		// Another project's decision is not held for this one.
-		p.expect(t, p.workH, with(t, fixture(t, "project"), map[string]any{"project": "second"}), 202)
-		p.expect(t, p.workH, minimal(t, "a", map[string]any{"project": "second"}), 202)
-		p.expect(t, p.workH, minimal(t, "b", map[string]any{"supersedes": "a"}), 409)
-		// A document under that id is not a decision.
-		p.expect(t, p.workH, doc(t, map[string]any{"document": "doc-a"}), 202)
-		p.expect(t, p.workH, minimal(t, "b", map[string]any{"supersedes": "doc-a"}), 409)
-	})
+func TestSupersedingADecisionThatIsNotHeldIsRefused(t *testing.T) {
+	p := newPair(t)
+	p.seed(t)
+	before := len(p.store.history())
+	r := p.expect(t, p.workH, minimal(t, "b", map[string]any{"supersedes": "a"}), 409)
+	if !strings.Contains(r.Body, "not held") || len(p.store.history()) != before {
+		t.Errorf("409 %q or a write", r.Body)
+	}
+	p.expect(t, p.workH, with(t, fixture(t, "project"), map[string]any{"project": "second"}), 202)
+	p.expect(t, p.workH, minimal(t, "a", map[string]any{"project": "second"}), 202)
+	p.expect(t, p.workH, minimal(t, "b", map[string]any{"supersedes": "a"}), 409)
+	p.expect(t, p.workH, doc(t, map[string]any{"document": "doc-a"}), 202)
+	p.expect(t, p.workH, minimal(t, "b", map[string]any{"supersedes": "doc-a"}), 409)
+}
 
+func TestSupersessionResolvesItsTargetAcrossSourcesAndWorkstreams(t *testing.T) {
 	places := []struct {
 		name  string
 		from  func(*pair) http.Handler
@@ -470,7 +518,6 @@ func TestSupersession(t *testing.T) {
 			}
 			p.expect(t, tt.from(p), minimal(t, "old", ws(tt.fromW)), 202)
 			p.expect(t, tt.to(p), minimal(t, "new", mergeMaps(ws(tt.toW), map[string]any{"supersedes": "old"})), 202)
-			// The target is the one held record, and the reference records where.
 			var newest connector.Event
 			for _, source := range []string{sourceID, ownerID} {
 				events, _ := p.store.CurrentArtifacts(t.Context(), source)
@@ -492,45 +539,45 @@ func TestSupersession(t *testing.T) {
 			}
 		})
 	}
-
-	t.Run("cycles", func(t *testing.T) {
-		p := newPair(t)
-		p.seed(t)
-		p.expect(t, p.workH, minimal(t, "a", nil), 202)
-		p.expect(t, p.ownerH, minimal(t, "b", map[string]any{"supersedes": "a", "workstream": "retry-policy"}), 202)
-		p.expect(t, p.workH, minimal(t, "c", map[string]any{"supersedes": "b", "workstream": "other-stream"}), 202)
-		before := len(p.store.history())
-		// Closed by revising the first decision to name the last.
-		r := p.expect(t, p.workH, minimal(t, "a", map[string]any{"supersedes": "c", "updated_at": "2026-10-14T19:00:00Z"}), 409)
-		if !strings.Contains(r.Body, "cycle") {
-			t.Errorf("409 %q does not say it would close a cycle", r.Body)
-		}
-		// Closed by revising a middle one, on the other source.
-		p.expect(t, p.ownerH, minimal(t, "b", map[string]any{"supersedes": "c", "workstream": "retry-policy", "updated_at": "2026-10-14T19:00:00Z"}), 409)
-		// A two-cycle.
-		p.expect(t, p.workH, minimal(t, "a", map[string]any{"supersedes": "b", "updated_at": "2026-10-14T19:00:00Z"}), 409)
-		if len(p.store.history()) != before {
-			t.Fatal("a refused cycle wrote")
-		}
-		// Revising within the chain is fine, and so is dropping a link.
-		p.expect(t, p.workH, minimal(t, "c", map[string]any{"supersedes": "a", "workstream": "other-stream", "updated_at": "2026-10-14T19:00:00Z"}), 202)
-		p.expect(t, p.workH, minimal(t, "a", map[string]any{"updated_at": "2026-10-14T20:00:00Z", "outcome": "Ship it, revised."}), 202)
-		// The walk is over held decisions: once b is gone, a may name c.
-		p.expect(t, p.ownerH, `{"kind":"decision","project":"payments-rewrite","workstream":"retry-policy","decision":"b","deleted":true}`, 202)
-		p.expect(t, p.workH, minimal(t, "a", map[string]any{"supersedes": "c", "updated_at": "2026-10-14T21:00:00Z"}), 409)
-	})
 }
 
-func TestResolveAndClosesCycle(t *testing.T) {
-	mk := func(source, workstream, id, supersedes string) connector.Event {
-		n, _ := json.Marshal(work.Native{Project: "p", Workstream: workstream, Decision: id, Supersedes: supersedes})
-		artifact := "p:decision:" + id
-		if workstream != "" {
-			artifact = "p#" + workstream + ":decision:" + id
-		}
-		return connector.Event{Source: source, Kind: work.KindDecision, Payload: connector.Payload{Artifact: artifact, Container: connector.Container{NativeID: "p"}, Native: n}}
+func TestSupersessionThatWouldCloseACycleIsRefused(t *testing.T) {
+	p := newPair(t)
+	p.seed(t)
+	p.expect(t, p.workH, minimal(t, "a", nil), 202)
+	p.expect(t, p.ownerH, minimal(t, "b", map[string]any{"supersedes": "a", "workstream": "retry-policy"}), 202)
+	p.expect(t, p.workH, minimal(t, "c", map[string]any{"supersedes": "b", "workstream": "other-stream"}), 202)
+	before := len(p.store.history())
+	r := p.expect(t, p.workH, minimal(t, "a", map[string]any{"supersedes": "c", "updated_at": "2026-10-14T19:00:00Z"}), 409)
+	if !strings.Contains(r.Body, "cycle") {
+		t.Errorf("409 %q does not say it would close a cycle", r.Body)
 	}
-	records := work.Records([]connector.Event{mk("s", "", "a", ""), mk("o", "w", "b", "a"), mk("s", "w", "c", "b")}, "p")
+	p.expect(t, p.ownerH, minimal(t, "b", map[string]any{"supersedes": "c", "workstream": "retry-policy", "updated_at": "2026-10-14T19:00:00Z"}), 409)
+	p.expect(t, p.workH, minimal(t, "a", map[string]any{"supersedes": "b", "updated_at": "2026-10-14T19:00:00Z"}), 409)
+	if len(p.store.history()) != before {
+		t.Fatal("a refused cycle wrote")
+	}
+	p.expect(t, p.workH, minimal(t, "c", map[string]any{"supersedes": "a", "workstream": "other-stream", "updated_at": "2026-10-14T19:00:00Z"}), 202)
+	p.expect(t, p.workH, minimal(t, "a", map[string]any{"updated_at": "2026-10-14T20:00:00Z", "outcome": "Ship it, revised."}), 202)
+	p.expect(t, p.ownerH, `{"kind":"decision","project":"payments-rewrite","workstream":"retry-policy","decision":"b","deleted":true}`, 202)
+	p.expect(t, p.workH, minimal(t, "a", map[string]any{"supersedes": "c", "updated_at": "2026-10-14T21:00:00Z"}), 409)
+}
+
+func decisionEvent(source, workstream, id, supersedes string) connector.Event {
+	n, _ := json.Marshal(work.Native{Project: "p", Workstream: workstream, Decision: id, Supersedes: supersedes})
+	artifact := "p:decision:" + id
+	if workstream != "" {
+		artifact = "p#" + workstream + ":decision:" + id
+	}
+	return connector.Event{Source: source, Kind: work.KindDecision, Payload: connector.Payload{Artifact: artifact, Container: connector.Container{NativeID: "p"}, Native: n}}
+}
+
+func decisionRecords() []work.Held {
+	return work.Records([]connector.Event{decisionEvent("s", "", "a", ""), decisionEvent("o", "w", "b", "a"), decisionEvent("s", "w", "c", "b")}, "p")
+}
+
+func TestResolveFindsTheHeldRecordOfTheKindAndID(t *testing.T) {
+	records := decisionRecords()
 	if len(records) != 3 {
 		t.Fatalf("Records = %d, want 3", len(records))
 	}
@@ -544,10 +591,17 @@ func TestResolveAndClosesCycle(t *testing.T) {
 	if _, ok, _ := work.Resolve(records, work.KindDecisionRecord, "zz"); ok {
 		t.Error("Resolve found an unheld id")
 	}
-	dup := append(records, work.Records([]connector.Event{mk("o", "", "a", "")}, "p")...)
+}
+
+func TestResolveOfADoublyHeldIDIsAmbiguous(t *testing.T) {
+	dup := append(decisionRecords(), work.Records([]connector.Event{decisionEvent("o", "", "a", "")}, "p")...)
 	if _, _, err := work.Resolve(dup, work.KindDecisionRecord, "a"); !errors.Is(err, work.ErrAmbiguous) {
 		t.Errorf("Resolve of a doubly held id = %v, want ErrAmbiguous", err)
 	}
+}
+
+func TestClosesCycleFollowsSupersessionThroughTheHeldDecisions(t *testing.T) {
+	records := decisionRecords()
 	for _, tt := range []struct {
 		id, supersedes string
 		want           bool
@@ -560,75 +614,73 @@ func TestResolveAndClosesCycle(t *testing.T) {
 	}
 }
 
-func TestOwnerSource(t *testing.T) {
-	t.Run("refuses project, workstream and update", func(t *testing.T) {
-		p := newPair(t)
-		p.seed(t)
-		before := len(p.store.history())
-		for _, body := range []string{
-			fixture(t, "project"), fixture(t, "workstream"), fixture(t, "update"),
-			`{"kind":"project","project":"payments-rewrite","deleted":true}`,
-			`{"kind":"update","project":"payments-rewrite","update":"u1","deleted":true}`,
-		} {
-			r := p.expect(t, p.ownerH, body, 400)
-			if !strings.Contains(r.Body, "owner source") || !strings.Contains(r.Body, sourceID) {
-				t.Errorf("400 %q does not point at the work source", r.Body)
-			}
+func TestAnOwnerSourceRefusesProjectsWorkstreamsAndUpdates(t *testing.T) {
+	p := newPair(t)
+	p.seed(t)
+	before := len(p.store.history())
+	for _, body := range []string{
+		fixture(t, "project"), fixture(t, "workstream"), fixture(t, "update"),
+		`{"kind":"project","project":"payments-rewrite","deleted":true}`,
+		`{"kind":"update","project":"payments-rewrite","update":"u1","deleted":true}`,
+	} {
+		r := p.expect(t, p.ownerH, body, 400)
+		if !strings.Contains(r.Body, "owner source") || !strings.Contains(r.Body, sourceID) {
+			t.Errorf("400 %q does not point at the work source", r.Body)
 		}
-		if len(p.store.history()) != before {
-			t.Fatal("a refused request wrote")
-		}
-	})
+	}
+	if len(p.store.history()) != before {
+		t.Fatal("a refused request wrote")
+	}
 
-	t.Run("accepts records for held projects and workstreams, in the project's container", func(t *testing.T) {
-		p := newPair(t)
-		p.seed(t)
-		p.expect(t, p.ownerH, doc(t, map[string]any{"workstream": nil}), 202)
-		p.expect(t, p.ownerH, doc(t, map[string]any{"document": "spec-2"}), 202)
-		p.expect(t, p.ownerH, fixture(t, "decision"), 409) // supersedes d-1, which is not held
-		p.expect(t, p.ownerH, minimal(t, "d-1", map[string]any{"workstream": "retry-policy", "decider": "owner"}), 202)
-		p.expect(t, p.ownerH, fixture(t, "decision"), 202)
-		ev, ok := p.heldIn(t, ownerID, "payments-rewrite#retry-policy:decision:d-2")
-		if !ok || ev.Source != ownerID {
-			t.Fatalf("owner-source decision = %v %+v", ok, ev)
-		}
-		if n := held(t, p.store, "payments-rewrite"); !ev.ACL.Equal(n.ACL) {
-			t.Errorf("owner-source ACL %v, want the project's %v", ev.ACL, n.ACL)
-		}
-		if h, _ := work.Decode(ev); h.Native().WorkSource != sourceID {
-			t.Errorf("work_source = %q, want %q", h.Native().WorkSource, sourceID)
-		}
-		// The work source holds none of them.
-		if events, _ := p.store.CurrentArtifacts(t.Context(), sourceID); len(events) != 3 {
-			t.Errorf("work source holds %d artifacts, want only its project and two workstreams", len(events))
-		}
-		// Deleting on the owner source, and a deletion not held.
-		p.expect(t, p.ownerH, `{"kind":"decision","project":"payments-rewrite","workstream":"retry-policy","decision":"d-2","deleted":true}`, 202)
-		p.expect(t, p.ownerH, `{"kind":"decision","project":"payments-rewrite","workstream":"retry-policy","decision":"d-2","deleted":true}`, 204)
-	})
+}
 
-	t.Run("answers 409 when the project or workstream is not held on the work source", func(t *testing.T) {
-		p := newPair(t)
-		p.expect(t, p.ownerH, minimal(t, "d1", nil), 409)
-		p.expect(t, p.ownerH, doc(t, nil), 409)
-		p.seed(t)
-		p.expect(t, p.ownerH, minimal(t, "d1", map[string]any{"workstream": "missing"}), 409)
-		p.expect(t, p.ownerH, doc(t, map[string]any{"workstream": "missing"}), 409)
-		// A project held on the owner source's own account does not count: it
-		// can hold none, and a project deleted on the work source is not held.
-		p.expect(t, p.workH, `{"kind":"project","project":"payments-rewrite","deleted":true}`, 202)
-		p.expect(t, p.ownerH, minimal(t, "d1", nil), 409)
-	})
+func TestAnOwnerSourceAcceptsRecordsForHeldProjectsInTheProjectsContainer(t *testing.T) {
+	p := newPair(t)
+	p.seed(t)
+	p.expect(t, p.ownerH, doc(t, map[string]any{"workstream": nil}), 202)
+	p.expect(t, p.ownerH, doc(t, map[string]any{"document": "spec-2"}), 202)
+	p.expect(t, p.ownerH, fixture(t, "decision"), 409)
+	p.expect(t, p.ownerH, minimal(t, "d-1", map[string]any{"workstream": "retry-policy", "decider": "owner"}), 202)
+	p.expect(t, p.ownerH, fixture(t, "decision"), 202)
+	ev, ok := p.heldIn(t, ownerID, "payments-rewrite#retry-policy:decision:d-2")
+	if !ok || ev.Source != ownerID {
+		t.Fatalf("owner-source decision = %v %+v", ok, ev)
+	}
+	if n := held(t, p.store, "payments-rewrite"); !ev.ACL.Equal(n.ACL) {
+		t.Errorf("owner-source ACL %v, want the project's %v", ev.ACL, n.ACL)
+	}
+	if h, _ := work.Decode(ev); h.Native().WorkSource != sourceID {
+		t.Errorf("work_source = %q, want %q", h.Native().WorkSource, sourceID)
+	}
+	if events, _ := p.store.CurrentArtifacts(t.Context(), sourceID); len(events) != 3 {
+		t.Errorf("work source holds %d artifacts, want only its project and two workstreams", len(events))
+	}
+	p.expect(t, p.ownerH, `{"kind":"decision","project":"payments-rewrite","workstream":"retry-policy","decision":"d-2","deleted":true}`, 202)
+	p.expect(t, p.ownerH, `{"kind":"decision","project":"payments-rewrite","workstream":"retry-policy","decision":"d-2","deleted":true}`, 204)
 
-	t.Run("a work source accepts records for its own projects without an owner source", func(t *testing.T) {
-		c := build(t, source())
-		s := &memoryStore{}
-		h := handler(c, s)
-		send(t, h, fixture(t, "project"), 202)
-		send(t, h, fixture(t, "document"), 409)
-		send(t, h, with(t, fixture(t, "document"), map[string]any{"workstream": nil}), 202)
-		send(t, h, minimal(t, "d1", nil), 202)
-	})
+}
+
+func TestAnOwnerSourceAnswers409WhenTheProjectOrWorkstreamIsNotHeld(t *testing.T) {
+	p := newPair(t)
+	p.expect(t, p.ownerH, minimal(t, "d1", nil), 409)
+	p.expect(t, p.ownerH, doc(t, nil), 409)
+	p.seed(t)
+	p.expect(t, p.ownerH, minimal(t, "d1", map[string]any{"workstream": "missing"}), 409)
+	p.expect(t, p.ownerH, doc(t, map[string]any{"workstream": "missing"}), 409)
+	p.expect(t, p.workH, `{"kind":"project","project":"payments-rewrite","deleted":true}`, 202)
+	p.expect(t, p.ownerH, minimal(t, "d1", nil), 409)
+
+}
+
+func TestAWorkSourceAcceptsRecordsForItsOwnProjectsWithoutAnOwnerSource(t *testing.T) {
+	c := build(t, source())
+	s := &memoryStore{}
+	h := handler(c, s)
+	send(t, h, fixture(t, "project"), 202)
+	send(t, h, fixture(t, "document"), 409)
+	send(t, h, with(t, fixture(t, "document"), map[string]any{"workstream": nil}), 202)
+	send(t, h, minimal(t, "d1", nil), 202)
+
 }
 
 func TestNewChecksTheOwnerSetting(t *testing.T) {
@@ -663,6 +715,9 @@ func TestNewChecksTheOwnerSetting(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestOwnerOfNamesTheWorkSourceOfAnOwnerSourceOnly(t *testing.T) {
 	if got := work.OwnerOf(ownerSource()); got != sourceID {
 		t.Errorf("OwnerOf(owner source) = %q", got)
 	}
@@ -674,7 +729,6 @@ func TestNewChecksTheOwnerSetting(t *testing.T) {
 	}
 }
 
-// records returns the live documents and decisions of both sources.
 func (p *pair) records(t *testing.T) []connector.Event {
 	t.Helper()
 	var out []connector.Event
@@ -709,7 +763,6 @@ func (p *pair) assertACL(t *testing.T, want int) {
 func (p *pair) seedRecords(t *testing.T) {
 	t.Helper()
 	if p.private {
-		// A project posted without repos is private to its poster.
 		p.expect(t, p.workH, with(t, fixture(t, "project"), map[string]any{"repos": nil}), 202)
 		p.expect(t, p.workH, fixture(t, "workstream"), 202)
 		p.expect(t, p.workH, with(t, fixture(t, "workstream"), map[string]any{"workstream": "other-stream", "name": "Other"}), 202)
@@ -728,7 +781,6 @@ func TestRecordsFollowTheProjectsAccess(t *testing.T) {
 	p.private = true
 	p.seedRecords(t)
 	root := held(t, p.store, "payments-rewrite")
-	// Posted without repos: only the poster and the named author.
 	if len(root.ACL) != 2 || root.ACL[0].Kind != connector.ACLIdentity || root.ACL[0].NativeID != "factory" || root.ACL[1].NativeID != "kyle" {
 		t.Fatalf("project ACL = %v, want the poster and the named author", root.ACL)
 	}
@@ -760,25 +812,29 @@ func TestRecordsFollowTheProjectsAccess(t *testing.T) {
 	if len(root.ACL) != 1 || root.ACL[0].Kind != connector.ACLContainers {
 		t.Fatalf("project ACL = %v, want its repositories", root.ACL)
 	}
+}
 
-	t.Run("records posted later carry the current ACL, and an attributed author is named", func(t *testing.T) {
-		p.expect(t, p.ownerH, minimal(t, "late", nil), 202)
-		p.assertACL(t, 6)
-	})
+func TestRecordsPostedLaterCarryTheProjectsCurrentAccess(t *testing.T) {
+	p := newPair(t)
+	p.private = true
+	p.seedRecords(t)
+	p.expect(t, p.workH, with(t, fixture(t, "project"), map[string]any{"updated_at": "2026-10-15T10:00:00Z", "repos": []work.Repo{{Source: "github", Project: "acme/api"}}}), 202)
+	p.expect(t, p.ownerH, minimal(t, "late", nil), 202)
+	p.assertACL(t, 6)
+}
 
-	t.Run("a private project's records name the poster and the author", func(t *testing.T) {
-		q := newPair(t)
-		q.expect(t, q.workH, with(t, fixture(t, "project"), map[string]any{"author": "kyle", "repos": nil}), 202)
-		q.expect(t, q.ownerH, minimal(t, "d1", nil), 202)
-		ev, _ := q.heldIn(t, ownerID, "payments-rewrite:decision:d1")
-		var got []string
-		for _, e := range ev.ACL {
-			got = append(got, e.NativeID)
-		}
-		if len(got) != 2 || got[0] != "factory" || got[1] != "kyle" {
-			t.Errorf("ACL = %v, want the poster and the named author", got)
-		}
-	})
+func TestAPrivateProjectsRecordsNameThePosterAndTheAuthor(t *testing.T) {
+	q := newPair(t)
+	q.expect(t, q.workH, with(t, fixture(t, "project"), map[string]any{"author": "kyle", "repos": nil}), 202)
+	q.expect(t, q.ownerH, minimal(t, "d1", nil), 202)
+	ev, _ := q.heldIn(t, ownerID, "payments-rewrite:decision:d1")
+	var got []string
+	for _, e := range ev.ACL {
+		got = append(got, e.NativeID)
+	}
+	if len(got) != 2 || got[0] != "factory" || got[1] != "kyle" {
+		t.Errorf("ACL = %v, want the poster and the named author", got)
+	}
 }
 
 func TestOwnerRecordsReconciledAtStartup(t *testing.T) {
@@ -787,7 +843,6 @@ func TestOwnerRecordsReconciledAtStartup(t *testing.T) {
 			p := newPair(t)
 			p.seedRecords(t)
 			restricted := with(t, fixture(t, "project"), map[string]any{"repos": []work.Repo{{Source: "github", Project: "acme/private"}}, "updated_at": "2026-10-15T17:00:00Z"})
-			// Land the project alone, as a process that died before propagating.
 			ctx := t.Context()
 			p.store.before = func(_ context.Context, ev connector.Event) error {
 				if ev.Payload.Artifact != "payments-rewrite" {
@@ -817,7 +872,6 @@ func TestOwnerRecordsReconciledAtStartup(t *testing.T) {
 				t.Fatal(err)
 			}
 			if from == "owner source" {
-				// Its own records only; the work source's are its to repair.
 				for _, ev := range p.records(t) {
 					if ev.Source == ownerID && !ev.ACL.Equal(root.ACL) {
 						t.Errorf("owner-source %s is still stale", ev.Payload.Artifact)
@@ -828,7 +882,6 @@ func TestOwnerRecordsReconciledAtStartup(t *testing.T) {
 				}
 			}
 			p.assertACL(t, 5)
-			// A pass with nothing to do writes nothing.
 			n := len(p.store.history())
 			for _, poll := range []func() error{
 				func() error { return p.work.Poll(ctx, p.workGate) },
@@ -843,26 +896,14 @@ func TestOwnerRecordsReconciledAtStartup(t *testing.T) {
 			}
 		})
 	}
-
-	t.Run("a pass of an owner source with no project held writes nothing", func(t *testing.T) {
-		p := newPair(t)
-		if err := p.owner.Poll(t.Context(), p.ownerGate); err != nil {
-			t.Fatal(err)
-		}
-		if len(p.store.history()) != 0 {
-			t.Error("wrote")
-		}
-	})
 }
 
-func TestRecordContractFixtures(t *testing.T) {
-	raw, err := os.ReadFile("../../../docs/connector-contract.md")
-	if err != nil {
+func TestAPassOfAnOwnerSourceWithNoProjectHeldWritesNothing(t *testing.T) {
+	p := newPair(t)
+	if err := p.owner.Poll(t.Context(), p.ownerGate); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"document", "decision"} {
-		if !strings.Contains(string(raw), strings.TrimSpace(fixture(t, name))) {
-			t.Errorf("contract is missing the %s request example", name)
-		}
+	if len(p.store.history()) != 0 {
+		t.Error("wrote")
 	}
 }

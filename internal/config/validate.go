@@ -15,29 +15,9 @@ import (
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
-// maxEntityIDLen bounds an entity id. Entity ids travel in bundles and in L2
-// rows the way event ids travel in L0, so they get a stated bound rather than
-// whatever someone pastes.
 const maxEntityIDLen = 512
 
-// build turns the decoded documents into a [Repo] and records a problem for
-// everything wrong with them. It never stops early: a configuration with four
-// mistakes should take one round trip to fix, not four.
-//
-// The order is the dependency order. Sources are validated first because
-// everything else references them, then principals, then the code entities that
-// name principals as owners, then the scopes that name both, and last the
-// authority policies, which reference all of it. An object that failed
-// validation is still put in the Repo, so that a reference to it by id still
-// resolves and one mistake is reported once. The exception is an object whose
-// id is what is wrong ([loader.claimID]): there is then genuinely nothing of
-// that name, and everything that named it says so.
 func (l *loader) build() Repo {
-	// Anything recorded before this point is a file that did not parse or a
-	// key that is not a field. What such a file was meant to say is unknown, so
-	// every reference into it would be reported as missing and the whole
-	// configuration would look empty. Report what could not be read, and check
-	// the rest once it can be.
 	if l.probs.any() {
 		return Repo{}
 	}
@@ -51,10 +31,6 @@ func (l *loader) build() Repo {
 	r.LLM = l.buildLLM()
 	r.Judgments = l.buildJudgments()
 
-	// These two count what was written rather than what survived validation. A
-	// source whose id is malformed is not in r.Sources, and telling its author
-	// that nothing is configured on top of telling them the id is wrong would
-	// be a second problem about the first one.
 	if len(l.sources) == 0 {
 		l.probs.add("", 0, "", "no sources are configured: Hearsay would ingest nothing")
 	}
@@ -64,7 +40,6 @@ func (l *loader) build() Repo {
 	return r
 }
 
-// at locates one object of the configuration, for error messages.
 type at struct {
 	file  string
 	line  int
@@ -72,8 +47,6 @@ type at struct {
 	label string
 }
 
-// locate names an object by its id, falling back to its position in the file
-// for an object whose id is the thing that is wrong.
 func locate[T any](d doc[T], noun, id string, i int) at {
 	label := fmt.Sprintf("%s %d", noun, i+1)
 	if id != "" {
@@ -82,18 +55,6 @@ func locate[T any](d doc[T], noun, id string, i int) at {
 	return at{file: d.file, line: d.line, noun: noun, label: label}
 }
 
-// claimID checks one object's id and reports whether the object may go into the
-// [Repo]. wrong is what is wrong with the id itself, and is empty when the id is
-// well formed; each caller phrases its own, because an id is described in the
-// vocabulary of the thing it names. The duplicate check is here because it is
-// the same one for all of them.
-//
-// An object whose id is missing or malformed is kept out of the Repo. There is
-// nothing of that name, so a reference that repeats the id is a problem in its
-// own right and has to be reported in this pass rather than in the one after the
-// id is fixed — a configuration with four mistakes takes one round trip. A
-// duplicate id is the other way round: there is something of that name, so the
-// object is kept and only the collision is reported.
 func (l *loader) claimID(a at, id, wrong string, defined map[string]string) bool {
 	switch {
 	case wrong != "":
@@ -107,8 +68,6 @@ func (l *loader) claimID(a at, id, wrong string, defined map[string]string) bool
 	return true
 }
 
-// bad records a problem with one field of one object. An empty field means the
-// object as a whole.
 func (l *loader) bad(a at, field, format string, args ...any) {
 	where := a.label
 	if field != "" {
@@ -117,10 +76,6 @@ func (l *loader) bad(a at, field, format string, args ...any) {
 	l.probs.add(a.file, a.line, where, format, args...)
 }
 
-// names checks a list of names: no blanks, no duplicates, and [AnyValue] only
-// where it is allowed and only on its own, because `[*, x]` reads as though x
-// were narrowing something it is not. check reports what is wrong with one
-// name, or empty if it is fine; it is not called for [AnyValue].
 func (l *loader) names(a at, field string, items []string, allowAny bool, check func(string) string) {
 	seen := make(map[string]bool, len(items))
 	for i, name := range items {
@@ -143,7 +98,6 @@ func (l *loader) names(a at, field string, items []string, allowAny bool, check 
 	}
 }
 
-// buildSources validates `sources/` and returns what a connector consumes.
 func (l *loader) buildSources() []connector.SourceConfig {
 	out := make([]connector.SourceConfig, 0, len(l.sources))
 	defined := make(map[string]string, len(l.sources))
@@ -227,14 +181,11 @@ func (l *loader) buildSources() []connector.SourceConfig {
 	return out
 }
 
-// checkOwnerSources holds a work source's owner_of setting to its meaning: the
-// owner source of one other work source, which is not itself an owner source.
-// The sources are all read first, so the order of the files does not matter.
 func (l *loader) checkOwnerSources() {
 	type entry struct {
 		a     at
 		src   sourceDoc
-		named string // "" when owner_of is absent or unusable
+		named string
 	}
 	byID := map[string]*entry{}
 	entries := make([]*entry, 0, len(l.sources))
@@ -270,15 +221,10 @@ func (l *loader) checkOwnerSources() {
 	}
 }
 
-// buildPrincipals validates `principals/`.
 func (l *loader) buildPrincipals(r Repo) []principal.Principal {
 	out := make([]principal.Principal, 0, len(l.principals))
 	defined := make(map[string]string, len(l.principals))
-	// identities maps a source-native identity to the principal that claimed
-	// it, so that two principals cannot both be the same person in one source.
 	identities := make(map[string]string)
-	// teams are checked once every principal is known, because a member is a
-	// reference to one and the ids are not all read yet.
 	type team struct {
 		a at
 		p principalDoc
@@ -298,18 +244,11 @@ func (l *loader) buildPrincipals(r Repo) []principal.Principal {
 		}
 		keep := l.claimID(a, p.ID, wrong, defined)
 
-		// Most principals are people, so kind defaults to human; an agent or a
-		// team says so, because what each may do differs.
 		kind := principal.Kind(p.Kind)
 		if p.Kind == "" {
 			kind = principal.KindHuman
 		}
 		class := principal.Class(p.Class)
-		// What a principal of no known kind was meant to be is unknown, so the
-		// rules that depend on the kind are not run at all. A class, an
-		// identity and a membership are each required or forbidden according
-		// to the kind, so every one of them would report the same mistake
-		// again in its own words.
 		if !kind.Valid() {
 			l.bad(a, "kind", "%q is not a principal kind: want one of %s", p.Kind, join(principal.Kinds()))
 		} else {
@@ -352,8 +291,6 @@ func (l *loader) buildPrincipals(r Repo) []principal.Principal {
 			}
 		}
 
-		// The identities are checked either way: an identity two principals
-		// both claim is a mistake in the other one too.
 		built := principal.Principal{
 			ID:         p.ID,
 			Name:       p.Name,
@@ -394,8 +331,6 @@ func (l *loader) buildPrincipals(r Repo) []principal.Principal {
 	return out
 }
 
-// validGrantScope checks an entity id's form without requiring that the
-// entity has arrived from L0 or appears in code configuration yet.
 func validGrantScope(id string) string {
 	valid := false
 	if code, ok := strings.CutPrefix(id, "code:"); ok {
@@ -416,7 +351,6 @@ func validGrantScope(id string) string {
 	return ""
 }
 
-// validWorkGrantID checks the work connector's artifact component grammar.
 func validWorkGrantID(id string) bool {
 	if len(id) == 0 || len(id) > 128 {
 		return false
@@ -433,8 +367,6 @@ func validWorkGrantID(id string) bool {
 	return true
 }
 
-// buildIdentities validates one principal's identities and records them so that
-// a second principal claiming the same one is caught.
 func (l *loader) buildIdentities(r Repo, a at, p principalDoc, identities map[string]string) []principal.Identity {
 	out := make([]principal.Identity, 0, len(p.Identities))
 	for j, id := range p.Identities {
@@ -447,9 +379,6 @@ func (l *loader) buildIdentities(r Repo, a at, p principalDoc, identities map[st
 		if id.NativeID == "" && principal.FoldHandle(id.Handle) == "" {
 			l.bad(a, field, "needs a native_id or a handle: a native id survives a rename, a handle is what a person can type")
 		}
-		// A handle is claimed folded, because that is how the resolver matches
-		// it: two principals writing one login in different cases is caught
-		// here rather than becoming an ambiguous author at ingest.
 		for _, c := range []struct{ key, written, matched, note string }{
 			{"native_id", id.NativeID, id.NativeID, ""},
 			{"handle", id.Handle, principal.FoldHandle(id.Handle), ", and handles are matched ignoring case"},
@@ -465,15 +394,11 @@ func (l *loader) buildIdentities(r Repo, a at, p principalDoc, identities map[st
 			}
 			identities[claim] = p.ID
 		}
-		// The schema type and the identity model carry the same three fields,
-		// so the compiler checks this conversion: adding a field to one without
-		// the other fails the build rather than dropping it silently.
 		out = append(out, principal.Identity(id))
 	}
 	return out
 }
 
-// buildCode validates `code/`.
 func (l *loader) buildCode(r Repo) []CodeEntity {
 	out := make([]CodeEntity, 0, len(l.code))
 	all := make([]CodeEntity, 0, len(l.code))
@@ -569,21 +494,12 @@ func (l *loader) buildCode(r Repo) []CodeEntity {
 	return out
 }
 
-// checkPartOf checks the entity hierarchy: every parent is configured, and the
-// edges do not form a cycle. A cycle would make "the stances an entity inherits
-// from its ancestors" a walk with no end (docs/design.md#l3-derived-views).
-//
-// kept is the entities that went into the Repo, and is what a parent may resolve
-// to. all is every entity that was written, because an entity held out for a
-// malformed id still has edges of its own, and they are still worth checking.
 func (l *loader) checkPartOf(all, kept []CodeEntity, located map[string]at) {
 	byID := make(map[string]CodeEntity, len(kept))
 	for _, e := range kept {
 		byID[e.ID] = e
 	}
 
-	// Depth-first, colouring: 1 is on the current path, 2 is finished and known
-	// to reach no cycle.
 	const (
 		open = 1
 		done = 2
@@ -595,9 +511,6 @@ func (l *loader) checkPartOf(all, kept []CodeEntity, located map[string]at) {
 		for i, parent := range e.PartOf {
 			field := fmt.Sprintf("part_of[%d]", i)
 			if parent == "" || parent == e.ID {
-				// Both are already reported where the list is checked, and an
-				// entity that is its own parent is a cycle of one, which would
-				// otherwise be said twice.
 				continue
 			}
 			up, ok := byID[parent]
@@ -621,9 +534,6 @@ func (l *loader) checkPartOf(all, kept []CodeEntity, located map[string]at) {
 			walk(e, nil)
 		}
 	}
-	// The held-out entities last, and unconditionally: nothing can reach one as
-	// a parent, so each is only ever a root, and two of them can share the id
-	// that is what was wrong with them.
 	for _, e := range all {
 		if _, ok := byID[e.ID]; !ok {
 			walk(e, nil)
@@ -631,7 +541,6 @@ func (l *loader) checkPartOf(all, kept []CodeEntity, located map[string]at) {
 	}
 }
 
-// buildScopes validates `scopes/`.
 func (l *loader) buildScopes(r Repo) []Scope {
 	out := make([]Scope, 0, len(l.scopes))
 	defined := make(map[string]string, len(l.scopes))
@@ -647,11 +556,6 @@ func (l *loader) buildScopes(r Repo) []Scope {
 		case !isName(s.ID):
 			wrong = fmt.Sprintf("%q is not a scope id: lowercase letters, digits, - and _, starting with a letter or a digit", s.ID)
 		}
-		// The only thing that names a scope by id is an authority policy, and a
-		// policy's scope is checked for shape before it is looked up, so no
-		// reference reaches this decision today. It is made the same way as the
-		// other three because the rule is the Repo's — it never holds an object
-		// whose id is not an id — and not this loop's.
 		keep := l.claimID(a, s.ID, wrong, defined)
 
 		scope := Scope{ID: s.ID, Name: s.Name, Entities: slices.Clone(s.Entities)}
@@ -673,8 +577,6 @@ func (l *loader) buildScopes(r Repo) []Scope {
 			listed[ss.Source] = true
 			containers := ss.Containers
 			if len(containers) == 0 {
-				// Naming no container takes whatever the source ingests, which
-				// is what writing the source id on its own means.
 				containers = []string{connector.AllowAll}
 			}
 			l.names(a, field+".containers", containers, true, func(c string) string {
@@ -708,8 +610,6 @@ func (l *loader) buildScopes(r Repo) []Scope {
 	return out
 }
 
-// checkSourceRef checks a pointer into a source: the source is configured, and
-// the project is one of the containers it ingests.
 func (l *loader) checkSourceRef(r Repo, a at, field string, ref SourceRef) {
 	src, known := r.Source(ref.Source)
 	switch {
@@ -726,23 +626,9 @@ func (l *loader) checkSourceRef(r Repo, a at, field string, ref SourceRef) {
 	}
 }
 
-// buildAuthority validates `authority/` and merges it onto [DefaultPolicy].
 func (l *loader) buildAuthority(r Repo) Authority {
 	policies := make([]Policy, 0, len(l.authority))
 	defined := make(map[string]string, len(l.authority))
-	// merged is the policies whose merged form is checked below, once every
-	// policy has been layered onto the one it inherits from. Two kinds of policy
-	// are left out of it:
-	//
-	// A policy whose scope is itself what is wrong, because a scope with two
-	// policies has two answers and only one of them survives the merge, so
-	// anything said about the survivor would be attributed to whichever file was
-	// read first.
-	//
-	// A policy that sets neither of the two fields the merged check is about,
-	// because everything it has, it inherited. A contradiction it can be in was
-	// written somewhere else and is reported there; blaming it here as well
-	// would print one sentence once per scope in the configuration.
 	type policyAt struct {
 		scope string
 		at    at
@@ -801,10 +687,6 @@ func (l *loader) buildAuthority(r Repo) Authority {
 			policy.ContestedWindow = l.contestedWindow(a, p.ContestedWindow)
 		}
 		policies = append(policies, policy)
-		// A nil list is one this file did not set. Either field being present is
-		// enough: the ranking and the ratifiers are the two halves of the same
-		// contradiction, and whichever half arrived last is the one that made it
-		// one.
 		if named && (policy.Ranking != nil || policy.RatifiedBy.Artifacts != nil) {
 			merged = append(merged, policyAt{scope: p.Scope, at: a})
 		}
@@ -824,11 +706,6 @@ func (l *loader) buildAuthority(r Repo) Authority {
 	return auth
 }
 
-// contestedWindow reads a policy's contested window. It is a Go duration —
-// 336h, not 14d — like every other duration in the configuration, and it has
-// to be positive: a window of nothing compares nothing, which would make a
-// topic uncontestable by accident. What it cannot read is reported and left
-// unset, so the policy inherits.
 func (l *loader) contestedWindow(a at, written string) time.Duration {
 	d, err := time.ParseDuration(written)
 	switch {
@@ -842,21 +719,6 @@ func (l *loader) contestedWindow(a at, written string) time.Duration {
 	return d
 }
 
-// checkRatifiersAreRanked reports an artifact class that ratifies on its own
-// while the ranking in force leaves it out. Such a class decides a topic with no
-// human in the loop and still loses every disagreement it is in, including to an
-// agent turn, which nobody writes on purpose — and it is easy to write by
-// accident, because narrowing a ranking is how a scope's policy usually starts.
-//
-// It is checked on the merged policy rather than on the file, because a scope
-// that sets one of the two fields inherits the other and neither file is wrong
-// on its own. Which file is told about it is decided by the caller, and is the
-// one that set a field: a policy that inherited both halves introduced nothing,
-// and every scope in the configuration inherits from the same `*`.
-//
-// A policy whose merged ranking is empty is left alone. That only happens where
-// a `ranking: []` was written, which is reported where it was written, and every
-// class would be missing from it.
 func (l *loader) checkRatifiersAreRanked(a at, p Policy) {
 	if len(p.Ranking) == 0 {
 		return
@@ -869,14 +731,6 @@ func (l *loader) checkRatifiersAreRanked(a at, p Policy) {
 	}
 }
 
-// artifactClasses converts a list of artifact class names, reporting the ones
-// that are not classes. A nil list stays nil, because that is what tells the
-// merge to inherit rather than to replace.
-//
-// A name that is not a class is reported and then dropped rather than carried
-// through as one. It is reported where it is written, and a policy that went on
-// to hold it would fail the checks made on the merged policy as well, which is
-// the same mistake said twice.
 func (l *loader) artifactClasses(a at, field string, names []string) []ArtifactClass {
 	if names == nil {
 		return nil
@@ -896,8 +750,6 @@ func (l *loader) artifactClasses(a at, field string, names []string) []ArtifactC
 	return out
 }
 
-// position renders where an object was written, for a message about a second
-// one that collides with it.
 func position(file string, line int) string {
 	if line > 0 {
 		return fmt.Sprintf("%s:%d", file, line)
@@ -905,7 +757,6 @@ func position(file string, line int) string {
 	return file
 }
 
-// join lists the values of a closed vocabulary for an error message.
 func join[T ~string](values []T) string {
 	out := make([]string, len(values))
 	for i, v := range values {
@@ -914,15 +765,8 @@ func join[T ~string](values []T) string {
 	return strings.Join(out, ", ")
 }
 
-// isName reports whether s is a scope id, a principal id or a connector type:
-// the same shape as a source id (docs/connector-contract.md), so that one rule
-// covers every name a person types into configuration and there is only one of
-// them to keep in step.
 func isName(s string) bool { return connector.ValidSourceID(s) }
 
-// isEnvVarName reports whether s names an environment variable, which is what a
-// secret in configuration holds. Rejecting anything else is what stops a token
-// from being pasted into a repository that is checked in.
 func isEnvVarName(s string) bool {
 	if s == "" {
 		return false
@@ -942,8 +786,6 @@ func isEnvVarName(s string) bool {
 	return true
 }
 
-// isRepoRelativePath reports whether s is a path inside a repository: relative,
-// and with nothing that climbs out of it.
 func isRepoRelativePath(s string) bool {
 	if s == "" || strings.HasPrefix(s, "/") || strings.ContainsFunc(s, unicode.IsSpace) {
 		return false
@@ -956,16 +798,6 @@ func isRepoRelativePath(s string) bool {
 	return true
 }
 
-// buildLLM merges the `llm/` section onto the shipped defaults and checks what
-// it says. A tier the configuration does not name keeps its default, which is
-// why this returns a working configuration for a repository with no `llm/` at
-// all: the shipped model is in the config defaults so that bumping
-// it is one line.
-//
-// The exception is the embed tier, which has no default. Neither shipped adapter
-// (anthropic, claude-sbx) has an embedding model, so an embed tier
-// is something an operator configures; until they do there is no embedder and
-// nothing writes a vector.
 func (l *loader) buildLLM() llm.Config {
 	cfg := llm.Default().Clone()
 	defined := map[string]string{}
@@ -982,11 +814,6 @@ func (l *loader) buildLLM() llm.Config {
 	return cfg
 }
 
-// buildTier merges one tier over its default and validates the result. The
-// checks are [llm.TierConfig.Validate]'s, so that `hearsay config validate` and
-// a service starting up cannot disagree about what a valid tier is; what is
-// added here is a file, a line and the provider catalogue, which the registry
-// checks against the adapters it was handed rather than against a list.
 func (l *loader) buildTier(d doc[llmDoc], name string, td llmTierDoc, cfg llm.Config, defined map[string]string) {
 	line := td.line
 	if line == 0 {
@@ -1044,17 +871,11 @@ func (l *loader) buildTier(d doc[llmDoc], name string, td llmTierDoc, cfg llm.Co
 			tc.Provider, strings.Join(providers.Names(), ", "))
 		return
 	}
-	// A provider that cannot do what the tier needs is a configuration
-	// problem, not a runtime one: it is the same check the registry makes when
-	// a process starts, made here where it has a file and a line and runs in
-	// CI on the configuration repository.
 	if err := llm.CanServe(provider.Name(), provider.Capabilities(), tier, tc); err != nil {
 		l.bad(a, "provider", "%s", err)
 	}
 }
 
-// duration reads one of a tier's durations, keeping the default where the file
-// says nothing and reporting anything else it cannot read.
 func (l *loader) duration(a at, field, written string, fallback time.Duration) time.Duration {
 	if written == "" {
 		return fallback

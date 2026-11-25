@@ -11,14 +11,15 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
 func TestMeetingSegmentsTrackEditsAndDeletion(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	transcript, err := os.ReadFile("testdata/meetings/planning.txt")
 	if err != nil {
 		t.Fatal(err)
@@ -166,7 +167,7 @@ func TestMeetingSegmentsTrackEditsAndDeletion(t *testing.T) {
 	if _, err := docs.Get(t.Context(), retryID); !errors.Is(err, l1.ErrNotFound) {
 		t.Errorf("nonmeeting segment remains: %v", err)
 	}
-	// A subsequent valid revision and a tombstone prove deletion of a live segment.
+
 	sixth := revised(privateBase, "r6", at(6))
 	ingest(t, pool, []connector.Event{sixth})
 	if result, err := d.Distill(t.Context(), rootID); err != nil || !result.Written {

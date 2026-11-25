@@ -7,18 +7,15 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 )
 
-// A backfill position survives the process: that is the whole point of keeping
-// it in the database, and it is what makes a restart resume rather than walk a
-// source's history again.
 func TestBackfillCursorsRoundTrip(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	cursors := l0.NewBackfillCursors(pool)
-	source := newSourceID(t)
+	source := dbtest.UniqueID()
 
-	// A source that has never backfilled is at the beginning of history.
 	state, err := cursors.Load(t.Context(), source)
 	if err != nil {
 		t.Fatalf("Load(unknown source) = %v, want no error", err)
@@ -27,9 +24,6 @@ func TestBackfillCursorsRoundTrip(t *testing.T) {
 		t.Errorf("Load(unknown source) = %+v, want the zero state", state)
 	}
 
-	// Every call's position is stored, and the last one wins — a backfill
-	// cursor is opaque, so unlike a feed cursor there is no direction to
-	// enforce.
 	for _, want := range []connector.BackfillState{
 		{Cursor: "page-2", Events: 50},
 		{Cursor: "page-3", Events: 100},
@@ -47,8 +41,7 @@ func TestBackfillCursorsRoundTrip(t *testing.T) {
 		}
 	}
 
-	// One row per source: another source's position is its own.
-	other := newSourceID(t)
+	other := dbtest.UniqueID()
 	if err := cursors.Save(t.Context(), other, connector.BackfillState{Cursor: "elsewhere"}); err != nil {
 		t.Fatalf("Save(other source) = %v, want no error", err)
 	}
@@ -61,13 +54,10 @@ func TestBackfillCursorsRoundTrip(t *testing.T) {
 	}
 }
 
-// A cursor is opaque, but the column that holds it is text. What a connector
-// may put in one is refused here rather than by a statement error
-// (docs/connector-contract.md).
 func TestBackfillCursorsRefuseWhatTheColumnCannotHold(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	cursors := l0.NewBackfillCursors(pool)
-	source := newSourceID(t)
+	source := dbtest.UniqueID()
 
 	tests := []struct {
 		name   string
@@ -114,12 +104,9 @@ func TestBackfillCursorsRefuseWhatTheColumnCannotHold(t *testing.T) {
 	}
 }
 
-// The Go validation and the table's own constraints say the same thing, so that
-// a row written by anything else is held to the same rule. Without this,
-// removing a CHECK would change nothing any test can see.
 func TestTheTableRefusesWhatTheStoreRefuses(t *testing.T) {
-	pool := newPool(t)
-	source := newSourceID(t)
+	pool := dbtest.Pool(t)
+	source := dbtest.UniqueID()
 
 	tests := []struct {
 		name   string

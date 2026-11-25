@@ -28,21 +28,17 @@ func (a searchAnswer) ids() []string {
 	return out
 }
 
-// The search call matches a distillation's own words with no embed tier, applies
-// the window, and says whether it was cut off, the same over HTTP and MCP.
 func TestSearchFindsDistillationsInAWindowAndReportsTruncation(t *testing.T) {
 	w := newWorld(t)
 	docs := l1.New(w.pool)
 
-	// issue is at day+1h and pr at day+2h; neither says "heliotrope" in what was
-	// said, and the first carries it in its outcome.
 	stored, err := docs.Get(t.Context(), w.issue)
 	if err != nil {
 		t.Fatal(err)
 	}
 	doc := stored.Document
 	doc.RawText = "an unrelated exchange"
-	word := "heliotrope" + w.src // the database is shared with every other test
+	word := "heliotrope" + w.src
 	doc.Body.Outcome = "Adopted the " + word + " plan."
 	if _, err := docs.Put(t.Context(), doc); err != nil {
 		t.Fatal(err)

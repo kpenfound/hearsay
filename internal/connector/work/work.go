@@ -160,8 +160,6 @@ func New(src connector.SourceConfig, principals []principal.Principal, sources [
 	if c.tokens.Len() == 0 {
 		return nil, errors.New("no poster has a token_env, so nobody could post")
 	}
-	// Known agents excluded by source policy authenticate only to receive 403.
-	// Their absent credentials do not make an otherwise usable source fail.
 	for _, p := range principals {
 		if c.posters[p.ID] || p.Kind != principal.KindAgent || p.TokenEnv == "" {
 			continue
@@ -178,10 +176,6 @@ func New(src connector.SourceConfig, principals []principal.Principal, sources [
 	return c, nil
 }
 
-// checkOwner refuses an owner_of that names the source itself, a source that is
-// not configured, one that is not a work source, or another owner source. The
-// type and pairing checks need every source's configuration, which only the
-// factory built with [WithSources] has.
 func checkOwner(self, named string, ids []string, configs []connector.SourceConfig) error {
 	if named == "" {
 		return nil
@@ -235,8 +229,6 @@ func (c *Connector) Health(context.Context) connector.Health {
 // Close has no connections or goroutines to release.
 func (c *Connector) Close(context.Context) error { return nil }
 
-// workSource is the source that holds the projects: this one, or the one an
-// owner source names. It keys the lock a pair shares.
 func (c *Connector) workSource() string {
 	if c.ownerOf != "" {
 		return c.ownerOf
@@ -244,6 +236,4 @@ func (c *Connector) workSource() string {
 	return c.source
 }
 
-// lock serializes every post and reconciliation about one project across both
-// sources of its pair, and returns the release.
 func (c *Connector) lock(project string) func() { return c.shared.lock(c.workSource(), project) }

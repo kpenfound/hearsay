@@ -106,7 +106,7 @@ func BuildWikiSections(root connector.Event, resolver *principal.Resolver, repo 
 		view := root
 		view.Payload.Text = section.Text
 		view.Payload.Title = section.Heading
-		view.Payload.Links = nil // source-wide links must not leak into another section
+		view.Payload.Links = nil
 		view.Payload.Mentions = nil
 		refs := References([]connector.Event{view}, resolver, repo.Code)
 		raw, _ := Scrub(section.Text)

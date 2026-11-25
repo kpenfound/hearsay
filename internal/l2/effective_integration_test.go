@@ -10,13 +10,11 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 )
 
-// read is what the store's reads say of one topic id: the topic it is, its
-// history and the topic each stance is on, where it stands, and how many
-// operations shaped it.
 type read struct {
 	topic, name, history, on, current string
 	operations                        int
@@ -66,10 +64,10 @@ func joined(ids ...string) string { return strings.Join(ids, " ") }
 func sortedIDs(ids ...string) []string { return slices.Sorted(slices.Values(ids)) }
 
 func TestAMergeIsReadThroughEitherTopicAndItsUndoReadsAsBefore(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	repo := loadRepo(t, "")
-	scope := unique()
+	scope := dbtest.UniqueID()
 	a := namedTopic(t, store, scope, "the lock")
 	b := namedTopic(t, store, scope, "who holds the lock")
 	a1 := addStance(t, store, a, "l1:s:a1", "the queue takes the lock", 1)
@@ -84,7 +82,6 @@ func TestAMergeIsReadThroughEitherTopicAndItsUndoReadsAsBefore(t *testing.T) {
 	want := read{
 		topic: a.ID, name: a.Name, operations: 1,
 		history: joined(a1.ID, b1.ID, b2.ID), on: joined(a.ID, a.ID, a.ID),
-		// The newest of every stance on both: b's, not a's own.
 		current: b2.ID,
 	}
 	for _, id := range []string{a.ID, b.ID} {
@@ -115,18 +112,17 @@ func TestAMergeIsReadThroughEitherTopicAndItsUndoReadsAsBefore(t *testing.T) {
 }
 
 func TestAStanceOnAMergedTopicGoesWhereTheTopicWent(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	repo := loadRepo(t, "")
 	ctx := t.Context()
-	scope := unique()
+	scope := dbtest.UniqueID()
 	a := namedTopic(t, store, scope, "the lock")
 	b := namedTopic(t, store, scope, "who holds the lock")
 	a1 := addStance(t, store, a, "l1:s:a1", "the queue takes the lock", 1)
 	b1 := addStance(t, store, b, "l1:s:b1", "the engine takes the lock", 2)
 	merged := operate(t, pool, repo, l2.OperationRequest{Kind: l2.OperationMerge, Principal: "kyle", Into: a.ID, From: b.ID})
 
-	// Nothing is written on a topic merged away.
 	onB := stance(b, "l1:s:b1", "the engine drops the lock", 4)
 	if _, _, err := store.AppendStance(ctx, onB, onB.StatedAt); !errors.Is(err, l2.ErrInvalid) {
 		t.Fatalf("AppendStance(on the topic merged away) = %v, want ErrInvalid", err)
@@ -135,8 +131,6 @@ func TestAStanceOnAMergedTopicGoesWhereTheTopicWent(t *testing.T) {
 	if err != nil || target.ID != a.ID {
 		t.Fatalf("Target(b) = %+v, %v, want %s", target, err, a.ID)
 	}
-	// b1's document read again: its earlier reading, on the other row, is what
-	// the new one replaces.
 	again := addStance(t, store, target, "l1:s:b1", "the engine drops the lock", 4)
 	if again.TopicID != a.ID || again.Supersedes != b1.ID || again.SupersedesTopic != "" {
 		t.Fatalf("the new reading = %+v, want it on %s superseding %s", again, a.ID, b1.ID)
@@ -145,9 +139,6 @@ func TestAStanceOnAMergedTopicGoesWhereTheTopicWent(t *testing.T) {
 		t.Errorf("read through b = %+v, want the new reading current", got)
 	}
 
-	// Undone, b stands again on its own row; the reading that replaced its
-	// stance stays where it was written, and the edge between them says it
-	// crosses, from both ends.
 	operate(t, pool, repo, l2.OperationRequest{Kind: l2.OperationUndo, Principal: "kyle", Undoes: merged.ID})
 	hb, err := store.StanceHistory(ctx, b.ID)
 	if err != nil || len(hb) != 1 || hb[0].ID != b1.ID || !hb[0].Retired ||
@@ -164,11 +155,11 @@ func TestAStanceOnAMergedTopicGoesWhereTheTopicWent(t *testing.T) {
 }
 
 func TestASplitReadsWithExactlyTheStancesItMoved(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	repo := loadRepo(t, "")
 	ctx := t.Context()
-	scope := unique()
+	scope := dbtest.UniqueID()
 	a := namedTopic(t, store, scope, "the lock")
 	c := namedTopic(t, store, scope, "the keys")
 	a1 := addStance(t, store, a, "l1:s:d1", "the queue takes the lock", 1)
@@ -189,8 +180,6 @@ func TestASplitReadsWithExactlyTheStancesItMoved(t *testing.T) {
 	}); got != want {
 		t.Errorf("read through the split's topic = %+v, want %+v", got, want)
 	}
-	// a1 was read again as a4, which moved: a1 is still retired, so a stands
-	// at a3 alone.
 	if got, want := readTopic(t, store, a.ID), (read{
 		topic: a.ID, name: a.Name, operations: 1, history: joined(a1.ID, a3.ID), on: joined(a.ID, a.ID), current: a3.ID,
 	}); got != want {
@@ -204,7 +193,6 @@ func TestASplitReadsWithExactlyTheStancesItMoved(t *testing.T) {
 		t.Errorf("Topics() = %v, want the split's topic too", got)
 	}
 
-	// Every edge the split cut is marked from both ends.
 	hs, err := store.StanceHistory(ctx, s)
 	if err != nil || len(hs) != 2 || hs[0].SupersedesTopic != a.ID || hs[1].SupersedesTopic != a.ID ||
 		!slices.Equal(hs[0].SupersededAcross, []l2.StanceRef{{Stance: a3.ID, Topic: a.ID}}) {
@@ -217,7 +205,6 @@ func TestASplitReadsWithExactlyTheStancesItMoved(t *testing.T) {
 		t.Errorf("StanceHistory(a) = %+v, %v, want a1 retired across the split and a3 superseding across it", ha, err)
 	}
 
-	// Undone, every read is as it was.
 	operate(t, pool, repo, l2.OperationRequest{Kind: l2.OperationUndo, Principal: "kyle", Undoes: split.ID})
 	if got := readTopic(t, store, a.ID); got != before {
 		t.Errorf("read through a after the undo = %+v, want %+v", got, before)
@@ -226,8 +213,6 @@ func TestASplitReadsWithExactlyTheStancesItMoved(t *testing.T) {
 		t.Errorf("read through the undone split's topic = %+v, want a as before: %+v", got, before)
 	}
 
-	// Made again, the split's topic is the same one, and a stance can be
-	// written on it: it gets a row, and supersedes what the topic holds.
 	redo := operate(t, pool, repo, req)
 	if redo.Topics[1] != s {
 		t.Fatalf("the split made again created %s, want %s", redo.Topics[1], s)
@@ -243,7 +228,6 @@ func TestASplitReadsWithExactlyTheStancesItMoved(t *testing.T) {
 	if got := readTopic(t, store, s); got.history != joined(a2.ID, a4.ID, d5.ID) || got.current != d5.ID {
 		t.Errorf("read through the split's topic = %+v, want the new stance on it", got)
 	}
-	// Undone again, what was written on the split's topic is on a.
 	operate(t, pool, repo, l2.OperationRequest{Kind: l2.OperationUndo, Principal: "kyle", Undoes: redo.ID})
 	if got := readTopic(t, store, s); got.topic != a.ID || got.history != joined(a1.ID, a2.ID, a3.ID, a4.ID, d5.ID) || got.current != d5.ID {
 		t.Errorf("read through the split's topic after its undo = %+v, want a with every stance", got)
@@ -255,11 +239,11 @@ func TestASplitReadsWithExactlyTheStancesItMoved(t *testing.T) {
 }
 
 func TestMatchingFindsTopicsAsTheLedgerMakesThem(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	repo := loadRepo(t, "")
 	ctx := t.Context()
-	scope := unique()
+	scope := dbtest.UniqueID()
 	private := connector.ACL{{Kind: connector.ACLIdentity, Source: "gh", NativeID: "kyle-node"}}
 	a := openTopicFrom(t, pool, scope, "a", public, "item:1")
 	b := openTopicFrom(t, pool, scope, "b", public, "item:2")
@@ -282,7 +266,6 @@ func TestMatchingFindsTopicsAsTheLedgerMakesThem(t *testing.T) {
 		want    []string
 	}{
 		{"a topic merged away is found as the topic it went into", []string{"item:2"}, public, []string{a.ID}},
-		// The split's topic is found by the row it took its stances from.
 		{"and only once", []string{"item:1", "item:2"}, public, []string{a.ID, open.Topics[1]}},
 		{"a topic merged into one its readers may not read is not offered", []string{"item:4"}, public, []string{}},
 		{"to those who may, it is", []string{"item:4"}, private, []string{p.ID}},
@@ -299,14 +282,12 @@ func TestMatchingFindsTopicsAsTheLedgerMakesThem(t *testing.T) {
 	}
 }
 
-// A deletion repair follows a split across a later merge, then returns with
-// the split on undo. The unaffected stance remains on its original topic.
 func TestDeletionRepairFollowsSplitAndUndo(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	repo := loadRepo(t, "")
 	ctx := t.Context()
-	scope := unique()
+	scope := dbtest.UniqueID()
 	a := namedTopic(t, store, scope, "the lock")
 	kept := addStance(t, store, a, putDoc(t, pool, scope, "d1", public, nil), "the queue takes the lock", 1)
 	gone := putDoc(t, pool, scope, "d2", public, nil)

@@ -5,8 +5,6 @@ package api_test
 import (
 	"bytes"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"slices"
 	"testing"
 	"time"
@@ -15,66 +13,18 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/agent"
 	"github.com/kpenfound/hearsay/internal/eval"
-	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/service/api"
 )
 
-// The evaluation metrics read what the API and the agent source actually
-// write: sessions driven through bundles, handle calls and next actions, then
-// `eval.Compute` over the world's scope.
-//
-// Session one is served a bundle with a flagged conflict, follows a stance's
-// evidence, searches for something the bundle did not serve, and proceeds,
-// judging the conflict real. Session two is served the same bundle, follows
-// nothing, and asks, judging no conflict. A third bundle is served with no
-// session.
 func TestEvalReadsSessionTrails(t *testing.T) {
 	w := newWorld(t)
 	since := time.Now().UTC().Add(-time.Second)
-	src := repo(w.src).Sources[0]
-	c, err := agent.New(src, repo(w.src).Principals, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := httptest.NewServer(c.Handler(connector.NewGate(l0.New(w.pool), src.ID, c.Describe(), connector.NewAllowlist(src))))
-	defer srv.Close()
-	started := time.Now().UTC().Add(-time.Minute)
-	post := func(session string, kind connector.Kind, fields map[string]any) {
-		t.Helper()
-		body := map[string]any{"on_behalf_of": "kyle", "session": session, "kind": kind, "started_at": started, "time": time.Now().UTC()}
-		if kind == connector.KindAgentSession {
-			body["time"] = started
-		}
-		for k, v := range fields {
-			body[k] = v
-		}
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, srv.URL, bytes.NewReader(mustJSON(t, body)))
-		if err != nil {
-			t.Fatal(err)
-		}
-		req.Header.Set("Authorization", "Bearer test-shed-api-credential")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusAccepted {
-			t.Fatalf("POST %s = %d", kind, resp.StatusCode)
-		}
-	}
-	directive := connector.Event{Source: w.src, NativeID: "eval-conflict", Kind: connector.KindMessage, Time: day,
-		Payload: connector.Payload{Artifact: "eval-conflict", Container: connector.Container{Kind: connector.ContainerChannel, NativeID: w.project},
-			Thread: w.project + "#12", Text: "where the lock lives",
-			Author:   &connector.Identity{Source: w.src, Kind: connector.IdentityUser, NativeID: kyleNode},
-			Mentions: []connector.Identity{{Source: w.src, Kind: connector.IdentityBot, NativeID: "shed-native", Handle: "shed[bot]"}}},
-		ACL: connector.ACL{{Kind: connector.ACLPublic}}}
-	if _, err := l0.New(w.pool).Append(t.Context(), directive); err != nil {
-		t.Fatal(err)
-	}
-	args := map[string]any{"scope": w.scope, "directive": connector.EventID(w.src, directive.NativeID)}
+	directive := w.appendDirective(t, "eval-conflict")
+	args := map[string]any{"scope": w.scope, "directive": directive}
 
 	one := api.Caller{Principal: "kyle", Agent: "shed", Session: "eval-one"}
-	post(one.Session, connector.KindAgentSession, map[string]any{"phase": "start"})
+	oneEndpoint := w.sessionEndpoint(t, one.Session)
+	oneEndpoint.post(t, connector.KindAgentSession, map[string]any{"phase": "start"}, oneEndpoint.started)
 	b := decodeBundle(t, w.http(t, one, "get_bundle", args))
 	if len(b.Conflicts) == 0 || len(b.Stances) == 0 {
 		t.Fatalf("the served bundle has %d conflicts and %d stances; the test needs both", len(b.Conflicts), len(b.Stances))
@@ -82,13 +32,14 @@ func TestEvalReadsSessionTrails(t *testing.T) {
 	evidence := b.Stances[0].Evidence[0]
 	w.http(t, one, "get_l1", map[string]any{"id": evidence})
 	w.http(t, one, "search", map[string]any{"query": "nothing in this world says zebra"})
-	post(one.Session, connector.KindNextAction, map[string]any{"next": "1", "scope": w.scope, "action": "proceeded",
-		"verdicts": []agent.Verdict{{TopicID: b.Conflicts[0].TopicID, Verdict: "real"}}})
+	oneEndpoint.post(t, connector.KindNextAction, map[string]any{"next": "1", "scope": w.scope, "action": "proceeded",
+		"verdicts": []agent.Verdict{{TopicID: b.Conflicts[0].TopicID, Verdict: "real"}}}, time.Now().UTC())
 
 	two := api.Caller{Principal: "kyle", Agent: "shed", Session: "eval-two"}
-	post(two.Session, connector.KindAgentSession, map[string]any{"phase": "start"})
+	twoEndpoint := w.sessionEndpoint(t, two.Session)
+	twoEndpoint.post(t, connector.KindAgentSession, map[string]any{"phase": "start"}, twoEndpoint.started)
 	w.http(t, two, "get_bundle", args)
-	post(two.Session, connector.KindNextAction, map[string]any{"next": "1", "scope": w.scope, "action": "asked"})
+	twoEndpoint.post(t, connector.KindNextAction, map[string]any{"next": "1", "scope": w.scope, "action": "asked"}, time.Now().UTC())
 
 	w.http(t, shedKyle, "get_bundle", args)
 
@@ -100,8 +51,7 @@ func TestEvalReadsSessionTrails(t *testing.T) {
 	if drill.Bundles != 2 || drill.WithoutSession != 1 {
 		t.Errorf("bundles = %d with a session and %d without, want 2 and 1", drill.Bundles, drill.WithoutSession)
 	}
-	// What each section of the bundle served, as the audit records it: the
-	// evidence followed may be served by other sections too.
+
 	served := map[string][]string{}
 	for _, e := range b.Scope.Entities {
 		served["scope.entities"] = append(served["scope.entities"], e.ID, e.L1)

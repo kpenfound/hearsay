@@ -11,7 +11,6 @@ import (
 // OperationKind is what a person did to a scope's topics.
 type OperationKind string
 
-// The operation kinds.
 const (
 	// OperationMerge folds one topic into another in the same scope.
 	OperationMerge OperationKind = "merge"
@@ -183,28 +182,14 @@ type ScopeState struct {
 	Operations []Operation
 }
 
-// arrangement is what the operations in force make of a scope's topics: which
-// topics stand, what a split named them, and which topic each stance is on.
 type arrangement struct {
-	live    map[string]bool
-	stances map[string]string
-	// mergedBy is the operation that merged a topic away, and into the topic
-	// it went into.
+	live     map[string]bool
+	stances  map[string]string
 	mergedBy map[string]int64
 	into     map[string]string
-	// source is the topic each split in the ledger, in force or not, took its
-	// stances from, keyed by the topic it created.
-	source map[string]string
+	source   map[string]string
 }
 
-// arrange replays the operations in force, oldest first, over the rows. An
-// undo is only allowed where nothing later in force touches what it reverses,
-// so leaving an undone operation out of the replay is reversing it.
-//
-// A split's topic has no row until a stance is written on it after the split
-// ([Store.Target]). Such a row is a topic only while a split that creates it is
-// in force: before that, and once it is undone, the stances written on it are
-// on the topic the split took its stances from, as that topic is now.
 func (s ScopeState) arrange() arrangement {
 	a := arrangement{
 		live: map[string]bool{}, stances: map[string]string{},
@@ -254,10 +239,6 @@ func (s ScopeState) arrange() arrangement {
 	return a
 }
 
-// effective is the topic a topic is now: itself while it stands, the topic a
-// merge put it into, and for a split's topic that does not stand, the topic
-// the split took its stances from, each as it is now in turn. A topic the
-// scope does not know is itself.
 func (a arrangement) effective(topic string) string {
 	for seen := map[string]bool{}; !seen[topic]; {
 		seen[topic] = true
@@ -277,7 +258,6 @@ func (a arrangement) effective(topic string) string {
 	return topic
 }
 
-// on is the stances the arrangement puts on a topic, sorted.
 func (a arrangement) on(topic string) []string {
 	var out []string
 	for st, t := range a.stances {
@@ -289,7 +269,6 @@ func (a arrangement) on(topic string) []string {
 	return out
 }
 
-// standing refuses a topic the arrangement does not have.
 func (a arrangement) standing(scope, topic string) error {
 	if a.live[topic] {
 		return nil

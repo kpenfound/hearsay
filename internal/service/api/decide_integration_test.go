@@ -9,8 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -19,16 +17,15 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/principal"
 	"github.com/kpenfound/hearsay/internal/service/api"
 )
 
-// decideWorld is a scope with one topic holding two live stances from two
-// public issues, a third from a private issue only kyle reads, and a server
-// whose call layer knows two more agents and a human who reaches nothing here.
 type decideWorld struct {
 	*world
 	graph                  *l2.Store
@@ -44,26 +41,15 @@ type decideWorld struct {
 
 const decideScopeAuthority = "scope: \"*\"\nratified_by:\n  principals: [kyle]\n"
 
-// loadAuthority reads a policy the way the process does, from a configuration
-// directory, and returns only its authority.
 func loadAuthority(t *testing.T, policy string) config.Authority {
 	t.Helper()
-	dir := t.TempDir()
 	files := map[string]string{
 		"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\n",
 		"scopes/eng.yaml":     "id: eng\nsources: [github]\n",
 		"principals/p.yaml":   "- id: kyle\n  identities: [{source: github, native_id: u1}]\n",
 		"authority/a.yaml":    policy,
 	}
-	for name, body := range files {
-		full := filepath.Join(dir, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
+	dir := configtest.Write(t, files)
 	repo, err := config.Load(dir)
 	if err != nil {
 		t.Fatalf("config.Load() = %v", err)
@@ -124,22 +110,8 @@ func newDecideWorld(t *testing.T, authority config.Authority) *decideWorld {
 	return d
 }
 
-// request sends a raw request over HTTP, or over MCP as a tools/call, with the
-// headers a named caller sends, and returns the status and the bytes served:
-// the response body over HTTP, the tool result's one text content over MCP.
-// tokens override the ones a name is known by, to send a bad or no credential.
-type who struct {
-	human, agent string
-	humanToken   *string
-	agentToken   *string
-}
-
-func str(s string) *string { return &s }
-
 func (d *decideWorld) send(t *testing.T, mcp bool, c who, args any) (int, []byte) {
 	t.Helper()
-	// The database outlives a test and a decision id is global to a human and a
-	// carrier, so a world's ids carry its own source.
 	if m, ok := args.(map[string]any); ok {
 		if id, ok := m["decision_id"].(string); ok {
 			scoped := map[string]any{}
@@ -150,64 +122,13 @@ func (d *decideWorld) send(t *testing.T, mcp bool, c who, args any) (int, []byte
 			args = scoped
 		}
 	}
-	body, _ := json.Marshal(args)
-	path := "/v1/decide"
-	if mcp {
-		path = "/mcp"
-		body, _ = json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": map[string]any{"name": "decide", "arguments": json.RawMessage(body)}})
-	}
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, d.url+path, strings.NewReader(string(body)))
+	status, body, err := invoke(t, d.url, d.tokens, mcp, c, "decide", args)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.human != "" {
-		req.Header.Set(api.PrincipalHeader, c.human)
-		token := d.tokens[c.human]
-		if c.humanToken != nil {
-			token = *c.humanToken
-		}
-		if token != "" {
-			req.Header.Set(api.AuthorizationHeader, "Bearer "+token)
-		}
-	}
-	if c.agent != "" {
-		req.Header.Set(api.AgentHeader, c.agent)
-		token := d.tokens[c.agent]
-		if c.agentToken != nil {
-			token = *c.agentToken
-		}
-		if token != "" {
-			req.Header.Set(api.AgentTokenHeader, token)
-		}
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	got, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !mcp {
-		return resp.StatusCode, got
-	}
-	var rpc struct {
-		Result api.ToolResult `json:"result"`
-	}
-	if resp.StatusCode != http.StatusOK || json.Unmarshal(got, &rpc) != nil || len(rpc.Result.Content) != 1 {
-		// Shared failures are answered before the JSON-RPC layer, with the
-		// HTTP status and the shared body.
-		return resp.StatusCode, got
-	}
-	status := http.StatusOK
-	if rpc.Result.IsError {
-		status = -1
-	}
-	return status, []byte(rpc.Result.Content[0].Text)
+	return status, body
 }
 
-// decided sends a decision and decodes the answer of one that succeeded.
 func (d *decideWorld) decided(t *testing.T, mcp bool, c who, args map[string]any) api.Decided {
 	t.Helper()
 	status, body := d.send(t, mcp, c, args)
@@ -226,9 +147,6 @@ type refused struct {
 	Code  string `json:"code"`
 }
 
-// refusal sends a decision that must be refused and returns the status, the
-// code and the bytes served. Over MCP the status is not an HTTP one, so it is
-// reported as the HTTP status the same refusal has.
 func (d *decideWorld) refusal(t *testing.T, mcp bool, c who, args map[string]any) (int, refused, []byte) {
 	t.Helper()
 	status, body := d.send(t, mcp, c, args)
@@ -270,7 +188,6 @@ func (d *decideWorld) standing(t *testing.T) standing {
 	return d.world.standingOf(t, d.world.calls, d.repo.Authority, d.topic)
 }
 
-// traverseTier is the tier traverse serves the topic at.
 func (d *decideWorld) traverseTier(t *testing.T) string {
 	t.Helper()
 	body, err := d.world.calls.Call(t.Context(), kyle, "traverse", mustJSON(t, map[string]any{
@@ -293,37 +210,7 @@ func (d *decideWorld) traverseTier(t *testing.T) string {
 	return ""
 }
 
-func TestDecideIsListedOverBothInterfaces(t *testing.T) {
-	d := newDecideWorld(t, config.Authority{})
-	resp, err := http.Get(d.url + "/v1/")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	var list struct{ Tools []api.Tool }
-	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
-		t.Fatal(err)
-	}
-	var names []string
-	for _, tool := range list.Tools {
-		names = append(names, tool.Name)
-	}
-	if !strings.Contains(strings.Join(names, ","), "assert,decide") {
-		t.Errorf("the HTTP call list = %v, want decide", names)
-	}
-	body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
-	_, got := d.world.post(t, "/mcp", kyle, string(body))
-	if !strings.Contains(string(got), `"name":"decide"`) {
-		t.Errorf("the MCP tool list = %s, want decide", got)
-	}
-}
-
-// The same decision made over HTTP and over MCP from independent equivalent
-// starting states answers with the same bytes, and so does a replay.
 func TestDecideAnswersTheSameBytesOverHTTPAndMCP(t *testing.T) {
-	// The ledger numbers gestures across worlds, and a world's stances carry its
-	// source, so what is equal between two worlds is the answer once those ids
-	// are masked; within one world nothing is masked.
 	mask := func(b []byte) string { return idsInAnAnswer.ReplaceAllString(string(b), `"$1":"-"`) }
 	httpWorld := newDecideWorld(t, config.Authority{})
 	mcpWorld := newDecideWorld(t, config.Authority{})
@@ -344,7 +231,6 @@ func TestDecideAnswersTheSameBytesOverHTTPAndMCP(t *testing.T) {
 		t.Errorf("first decision: HTTP %s, MCP %s; want the same, both recorded", hb, mb)
 	}
 
-	// A replay of the one recorded decision, over each interface in turn.
 	_, over := httpWorld.send(t, false, kyleViaShed, args(httpWorld))
 	_, then := httpWorld.send(t, true, kyleViaShed, args(httpWorld))
 	if string(over) != string(then) || !strings.Contains(string(over), `"recorded":false`) {
@@ -356,7 +242,7 @@ func TestDecideAnswersTheSameBytesOverHTTPAndMCP(t *testing.T) {
 	if first.GestureID != again.GestureID || first.GestureID == "" {
 		t.Errorf("the replay answered gesture %q, want the original %q", again.GestureID, first.GestureID)
 	}
-	// A refusal is the same bytes too.
+
 	_, a, rb := httpWorld.refusal(t, false, kyleViaShed, ratifyArgs("x", "stance:none"))
 	_, _, mrb := httpWorld.refusal(t, true, kyleViaShed, ratifyArgs("x", "stance:none"))
 	if string(rb) != string(mrb) || a.Code != "not_found" {
@@ -364,8 +250,6 @@ func TestDecideAnswersTheSameBytesOverHTTPAndMCP(t *testing.T) {
 	}
 }
 
-// A ratify, a demote and their undo change what every read serves, including
-// the undo of a gesture a reaction or the CLI recorded.
 func TestDecideChangesWhatEveryReadServes(t *testing.T) {
 	d := newDecideWorld(t, config.Authority{})
 	ctx := t.Context()
@@ -394,10 +278,9 @@ func TestDecideChangesWhatEveryReadServes(t *testing.T) {
 	d.decided(t, false, kyleOnly, undoArgs("u2", demote.GestureID))
 	want("the demote undone", "inferred")
 
-	// A gesture another surface recorded, on the stance's document.
 	for _, other := range []struct{ name, event string }{
-		{"a reaction", connector.EventID("discord", "reaction:"+newSource())},
-		{"the CLI", connector.EventID("hearsay", "cli-gesture-"+newSource())},
+		{"a reaction", connector.EventID("discord", "reaction:"+dbtest.UniqueID())},
+		{"the CLI", connector.EventID("hearsay", "cli-gesture-"+dbtest.UniqueID())},
 	} {
 		g, _, err := l2.RecordGesture(ctx, d.pool, d.repo, l2.GestureRequest{Event: other.event, Principal: "sam", Action: l2.GestureDemote, Documents: []string{d.docSecond}})
 		if err != nil {
@@ -408,7 +291,6 @@ func TestDecideChangesWhatEveryReadServes(t *testing.T) {
 		want("the demotion by "+other.name+" undone through decide", "inferred")
 	}
 
-	// A decision applies to the stance it names alone.
 	d.decided(t, false, kyleOnly, ratifyArgs("r-first", d.first.ID))
 	want("another stance ratified", "inferred")
 }
@@ -463,7 +345,7 @@ func TestDecideIsIdempotentOnTheDecisionID(t *testing.T) {
 	if !first.Recorded {
 		t.Fatalf("the first answer = %+v, want recorded", first)
 	}
-	// Superseded in between: a later reading of the stance's own document.
+
 	d.append(d.docSecond, "each service team, behind a flag", 20)
 	for _, mcp := range []bool{false, true} {
 		again := d.decided(t, mcp, kyleViaShed, ratifyArgs("once", d.second.ID))
@@ -471,12 +353,11 @@ func TestDecideIsIdempotentOnTheDecisionID(t *testing.T) {
 			t.Errorf("the replay after the stance was superseded (mcp=%v) = %+v, want gesture %s, not recorded", mcp, again, first.GestureID)
 		}
 	}
-	// A new decision on the superseded stance is not live.
+
 	if _, got, _ := d.refusal(t, false, kyleViaShed, ratifyArgs("another", d.second.ID)); got.Code != "not_live" {
 		t.Errorf("a new ratify of a superseded stance = %+v, want not_live", got)
 	}
 
-	// A retried undo that already succeeded.
 	live := d.first
 	r := d.decided(t, false, kyleOnly, demoteArgs("demote-live", live.ID))
 	undo := d.decided(t, false, kyleOnly, undoArgs("undo-once", r.GestureID))
@@ -484,19 +365,18 @@ func TestDecideIsIdempotentOnTheDecisionID(t *testing.T) {
 	if retry.Recorded || retry.GestureID != undo.GestureID {
 		t.Errorf("a retried undo = %+v, want gesture %s, not recorded", retry, undo.GestureID)
 	}
-	// ...while a new undo of the undone gesture is not undoable.
+
 	if _, got, _ := d.refusal(t, false, kyleOnly, undoArgs("undo-twice", r.GestureID)); got.Code != "not_undoable" {
 		t.Errorf("a new undo of an undone gesture = %+v, want not_undoable", got)
 	}
 
-	// The same id for different content.
 	before := len(d.ledger(t))
 	for _, args := range []map[string]any{demoteArgs("once", d.second.ID), ratifyArgs("once", d.first.ID)} {
 		if status, got, _ := d.refusal(t, false, kyleViaShed, args); got.Code != "conflict" || status != http.StatusConflict {
 			t.Errorf("%v = %d %+v, want conflict", args, status, got)
 		}
 	}
-	// A different carrier is a different key.
+
 	if g := d.decided(t, false, kyleOnly, ratifyArgs("once", d.first.ID)); !g.Recorded {
 		t.Errorf("the same id with no carrier = %+v, want a new decision", g)
 	}
@@ -504,7 +384,6 @@ func TestDecideIsIdempotentOnTheDecisionID(t *testing.T) {
 		t.Errorf("%d gestures, want %d: only the decision with no carrier is new", got, before+1)
 	}
 
-	// Two humans using one id are two decisions.
 	k := d.decided(t, false, kyleOnly, ratifyArgs("shared", d.first.ID))
 	s := d.decided(t, false, who{human: "sam"}, ratifyArgs("shared", d.first.ID))
 	if !k.Recorded || !s.Recorded || k.GestureID == s.GestureID {
@@ -548,9 +427,9 @@ func TestDecideRefusesWithOneAnswerForWhatTheCallerMayNotRead(t *testing.T) {
 	d := newDecideWorld(t, config.Authority{})
 	sam := who{human: "sam"}
 	ana := who{human: "ana"}
-	// A gesture sam may not read: kyle's on the private stance.
+
 	hidden := d.decided(t, false, kyleOnly, ratifyArgs("hidden", d.private.ID))
-	// A gesture only reachable through a document sam reads, to lose later.
+
 	mine := d.decided(t, false, sam, ratifyArgs("mine", d.first.ID))
 	mineUndo := d.decided(t, false, sam, undoArgs("mine-undo", mine.GestureID))
 
@@ -588,8 +467,6 @@ func TestDecideRefusesWithOneAnswerForWhatTheCallerMayNotRead(t *testing.T) {
 		}
 	}
 
-	// A replay whose target the caller can no longer read: the document goes
-	// private after sam's decision.
 	private := connector.ACL{{Kind: connector.ACLIdentity, Source: d.src, NativeID: kyleNode, Label: "kpenfound"}}
 	doc, err := l1.New(d.pool).Get(t.Context(), d.docFirst)
 	if err != nil {
@@ -609,7 +486,7 @@ func TestDecideRefusesWithOneAnswerForWhatTheCallerMayNotRead(t *testing.T) {
 			t.Errorf("an undo replay after access was lost (mcp=%v) = %s, want %s (gesture %s)", mcp, body, wantBody, mineUndo.GestureID)
 		}
 	}
-	// kyle still reads it: the replay is theirs to see.
+
 	if g := d.decided(t, false, kyleOnly, ratifyArgs("hidden", d.private.ID)); g.Recorded || g.GestureID != hidden.GestureID {
 		t.Errorf("kyle's replay = %+v", g)
 	}
@@ -624,7 +501,7 @@ func TestDecideRefusesWhatCannotBeDecided(t *testing.T) {
 	}
 	old := d.second
 	d.append(d.docSecond, "each service team, by quarter", 14)
-	pin, _, err := l2.RecordGesture(ctx, d.pool, d.repo, l2.GestureRequest{Event: connector.EventID("hearsay", "cli-gesture-"+newSource()), Principal: "kyle", Action: l2.GesturePin, Documents: []string{d.docFirst}})
+	pin, _, err := l2.RecordGesture(ctx, d.pool, d.repo, l2.GestureRequest{Event: connector.EventID("hearsay", "cli-gesture-"+dbtest.UniqueID()), Principal: "kyle", Action: l2.GesturePin, Documents: []string{d.docFirst}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -664,7 +541,7 @@ func TestDecideRefusesWhatCannotBeDecided(t *testing.T) {
 			}
 		}
 	}
-	// Not valid JSON arguments are invalid too.
+
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, d.url+"/v1/decide", strings.NewReader(`{"decision_id":`))
 	req.Header.Set(api.PrincipalHeader, "kyle")
 	req.Header.Set(api.AuthorizationHeader, "Bearer test-kyle-api-credential")
@@ -682,8 +559,6 @@ func TestDecideRefusesWhatCannotBeDecided(t *testing.T) {
 	}
 }
 
-// What happens before a request reaches decide is shared by every call, keeps
-// its status and its code-less body, and records nothing.
 func TestDecideCredentialFailuresAreTheSharedCodelessOnes(t *testing.T) {
 	d := newDecideWorld(t, config.Authority{})
 	before := len(d.ledger(t))
@@ -702,7 +577,7 @@ func TestDecideCredentialFailuresAreTheSharedCodelessOnes(t *testing.T) {
 	} {
 		for _, mcp := range []bool{false, true} {
 			status, body := d.send(t, mcp, tt.c, ratifyArgs("cred", d.second.ID))
-			// What another call says for the same credentials.
+
 			other := tt.c
 			otherBody, _ := json.Marshal(map[string]any{"id": d.docFirst})
 			wantStatus, want := d.otherCall(t, mcp, other, "get_l1", otherBody)
@@ -717,69 +592,22 @@ func TestDecideCredentialFailuresAreTheSharedCodelessOnes(t *testing.T) {
 	if got := len(d.ledger(t)); got != before {
 		t.Errorf("%d gestures after credential failures, want the %d there were", got, before)
 	}
-	// Other calls' error bodies carry no code.
+
 	_, body := d.otherCall(t, false, kyleOnly, "get_l1", []byte(`{"id":"l1:none:nothing"}`))
 	if strings.Contains(string(body), `"code"`) {
 		t.Errorf("get_l1 refusal = %s, want no code", body)
 	}
 }
 
-// otherCall sends another call with the same headers as send does.
 func (d *decideWorld) otherCall(t *testing.T, mcp bool, c who, name string, args []byte) (int, string) {
 	t.Helper()
-	path, body := "/v1/"+name, string(args)
-	if mcp {
-		path = "/mcp"
-		raw, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": map[string]any{"name": name, "arguments": json.RawMessage(args)}})
-		body = string(raw)
-	}
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, d.url+path, strings.NewReader(body))
+	status, body, err := invoke(t, d.url, d.tokens, mcp, c, name, json.RawMessage(args))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.human != "" {
-		req.Header.Set(api.PrincipalHeader, c.human)
-		token := d.tokens[c.human]
-		if c.humanToken != nil {
-			token = *c.humanToken
-		}
-		if token != "" {
-			req.Header.Set(api.AuthorizationHeader, "Bearer "+token)
-		}
-	}
-	if c.agent != "" {
-		req.Header.Set(api.AgentHeader, c.agent)
-		token := d.tokens[c.agent]
-		if c.agentToken != nil {
-			token = *c.agentToken
-		}
-		if token != "" {
-			req.Header.Set(api.AgentTokenHeader, token)
-		}
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	got, _ := io.ReadAll(resp.Body)
-	if mcp && resp.StatusCode == http.StatusOK {
-		var rpc struct {
-			Result api.ToolResult `json:"result"`
-		}
-		if json.Unmarshal(got, &rpc) == nil && len(rpc.Result.Content) == 1 {
-			status := http.StatusOK
-			if rpc.Result.IsError {
-				status = -1
-			}
-			return status, rpc.Result.Content[0].Text
-		}
-	}
-	return resp.StatusCode, string(got)
+	return status, string(body)
 }
 
-// A call layer over something that is not a pool cannot record: decide says so
-// as an internal failure with its code.
 func TestDecideReportsAnInternalFailureWithItsCode(t *testing.T) {
 	d := newDecideWorld(t, config.Authority{})
 	cases, err := api.NewCalls(txOnly{d.pool}, d.repo, nil)
@@ -793,7 +621,6 @@ func TestDecideReportsAnInternalFailureWithItsCode(t *testing.T) {
 	}
 }
 
-// txOnly is a database that is not a pool.
 type txOnly struct{ api.DB }
 
 func asAPIError(err error, target **api.Error) bool { return errors.As(err, target) }

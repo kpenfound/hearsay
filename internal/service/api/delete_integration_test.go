@@ -18,21 +18,19 @@ import (
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/conversation"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/principal"
 	"github.com/kpenfound/hearsay/internal/service/api"
 )
 
-// deleteWorld is two conversation sources, one owned by kyle and one by sam,
-// the agents they allow, and an agent neither's owner has asked for, behind a
-// call layer over a real database.
 type deleteWorld struct {
-	src, other string // kyle's conversation source, and sam's
+	src, other string
 	url        string
 	pool       *pgxpool.Pool
 	hooks      map[string]*httptest.Server
 	tokens     map[string]string
-	// withhold, when set, makes the server run a request and lose its answer.
+
 	mu       sync.Mutex
 	withhold func(r *http.Request) bool
 }
@@ -44,8 +42,8 @@ func newDeleteWorld(t *testing.T) *deleteWorld {
 	for name, token := range tokens {
 		t.Setenv("HEARSAY_TEST_"+strings.ToUpper(name)+"_TOKEN", token)
 	}
-	pool := newPool(t)
-	w := &deleteWorld{src: newSource() + "k", other: newSource() + "s", pool: pool, hooks: map[string]*httptest.Server{}, tokens: tokens}
+	pool := dbtest.Pool(t)
+	w := &deleteWorld{src: dbtest.UniqueID() + "k", other: dbtest.UniqueID() + "s", pool: pool, hooks: map[string]*httptest.Server{}, tokens: tokens}
 	ids := func(id string) []principal.Identity {
 		return []principal.Identity{{Source: w.src, NativeID: id}, {Source: w.other, NativeID: id}}
 	}
@@ -94,8 +92,6 @@ func newDeleteWorld(t *testing.T) *deleteWorld {
 	return w
 }
 
-// message posts one message to a source as the agent kern, and returns the
-// status and the stored event id.
 func (w *deleteWorld) message(t *testing.T, source, owner, exchange, role, text string) (int, string) {
 	t.Helper()
 	body, _ := json.Marshal(map[string]any{"owner": owner, "conversation": "c-1", "exchange": exchange, "role": role,
@@ -127,44 +123,13 @@ func (w *deleteWorld) stored(t *testing.T, source, owner, exchange, role, text s
 	return id
 }
 
-// send makes the delete call over HTTP, or over MCP as a tools/call.
 func (w *deleteWorld) send(t *testing.T, mcp bool, c who, args any) (int, []byte) {
 	t.Helper()
-	body, _ := json.Marshal(args)
-	path := "/v1/delete"
-	if mcp {
-		path = "/mcp"
-		body, _ = json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": map[string]any{"name": "delete", "arguments": json.RawMessage(body)}})
-	}
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, w.url+path, bytes.NewReader(body))
+	status, body, err := invoke(t, w.url, w.tokens, mcp, c, "delete", args)
 	if err != nil {
-		t.Fatal(err)
+		return -2, nil
 	}
-	req.Header.Set(api.PrincipalHeader, c.human)
-	req.Header.Set(api.AuthorizationHeader, "Bearer "+w.tokens[c.human])
-	if c.agent != "" {
-		req.Header.Set(api.AgentHeader, c.agent)
-		req.Header.Set(api.AgentTokenHeader, w.tokens[c.agent])
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return -2, nil // the connection was dropped
-	}
-	defer func() { _ = resp.Body.Close() }()
-	got, _ := io.ReadAll(resp.Body)
-	if !mcp {
-		return resp.StatusCode, got
-	}
-	var rpc struct {
-		Result api.ToolResult `json:"result"`
-	}
-	if resp.StatusCode != http.StatusOK || json.Unmarshal(got, &rpc) != nil || len(rpc.Result.Content) != 1 {
-		return resp.StatusCode, got
-	}
-	if rpc.Result.IsError {
-		return -1, []byte(rpc.Result.Content[0].Text)
-	}
-	return http.StatusOK, []byte(rpc.Result.Content[0].Text)
+	return status, body
 }
 
 func (w *deleteWorld) deleted(t *testing.T, mcp bool, c who, args map[string]any) api.Deleted {
@@ -180,7 +145,6 @@ func (w *deleteWorld) deleted(t *testing.T, mcp bool, c who, args map[string]any
 	return out
 }
 
-// refusal sends a request that must be refused, and returns its code and bytes.
 func (w *deleteWorld) refusal(t *testing.T, mcp bool, c who, args map[string]any) (code string, status int, body []byte) {
 	t.Helper()
 	status, body = w.send(t, mcp, c, args)
@@ -191,8 +155,6 @@ func (w *deleteWorld) refusal(t *testing.T, mcp bool, c who, args map[string]any
 	return out.Code, status, body
 }
 
-// counts is what the world's deletions have written: records, and `deletion`
-// events, both naming this world's events.
 func (w *deleteWorld) counts(t *testing.T) (records, events int) {
 	t.Helper()
 	if err := w.pool.QueryRow(t.Context(), `
@@ -205,7 +167,6 @@ SELECT (SELECT count(*) FROM l0_deletions d WHERE d.events && (SELECT coalesce(a
 	return records, events
 }
 
-// readable is how many revisions of an artifact still hold their words.
 func (w *deleteWorld) readable(t *testing.T, source, artifact string) int {
 	t.Helper()
 	var n int
@@ -239,39 +200,6 @@ var (
 	kyleWithKern = who{human: "kyle", agent: "kern"}
 )
 
-func TestDeleteIsListedOverBothInterfaces(t *testing.T) {
-	w := newDeleteWorld(t)
-	resp, err := http.Get(w.url + "/v1/")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	var list struct{ Tools []api.Tool }
-	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
-		t.Fatal(err)
-	}
-	if !slices.ContainsFunc(list.Tools, func(tool api.Tool) bool { return tool.Name == "delete" }) {
-		t.Errorf("the HTTP call list does not offer delete")
-	}
-	body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
-	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, w.url+"/mcp", bytes.NewReader(body))
-	req.Header.Set(api.PrincipalHeader, "kyle")
-	req.Header.Set(api.AuthorizationHeader, "Bearer "+w.tokens["kyle"])
-	mcp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = mcp.Body.Close() }()
-	got, _ := io.ReadAll(mcp.Body)
-	if !strings.Contains(string(got), `"name":"delete"`) {
-		t.Errorf("the MCP tool list = %s, want delete", got)
-	}
-}
-
-// The owner deletes, directly or through the agent that carries the request,
-// and over either interface: every revision of each named message is
-// redacted under one record and one event, the documents are queued, and the
-// answer names what was kept.
 func TestDeleteRedactsEveryRevisionOfEachNamedMessage(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
@@ -317,7 +245,7 @@ func TestDeleteRedactsEveryRevisionOfEachNamedMessage(t *testing.T) {
 			if carrier != tt.carrier {
 				t.Errorf("the deletion records carrier %q, want %q", carrier, tt.carrier)
 			}
-			// The message stays deleted, whatever the post says.
+
 			for _, text := range []string{"The passphrase is tangerine-otter-42.", "Something new."} {
 				if status, _ := w.message(t, w.src, "kyle", "x-1", "owner", text); status != http.StatusGone {
 					t.Errorf("a post of %q = %d, want 410", text, status)
@@ -327,15 +255,13 @@ func TestDeleteRedactsEveryRevisionOfEachNamedMessage(t *testing.T) {
 	}
 }
 
-// One request naming something the caller may not delete is refused whole,
-// with one answer for every reason, and leaves the messages they do own.
 func TestDeleteRefusesTheWholeRequestWithOneNotFound(t *testing.T) {
 	w := newDeleteWorld(t)
 	own := w.stored(t, w.src, "kyle", "x-1", "owner", "Mine.")
 	sams := w.stored(t, w.other, "sam", "x-1", "owner", "Sam's.")
 	doc := w.document(t, "talk", own)
 	nonexistent := connector.EventID(w.src, "c-9/x-9:owner@0000000000000000")
-	// A message in a source of another type, which delete never touches.
+
 	foreign := connector.Event{Source: w.src + "z", NativeID: "m1", Kind: connector.KindMessage, Time: day,
 		Payload: connector.Payload{Artifact: "m1", Text: "chat", Author: &connector.Identity{Source: w.src + "z", Kind: connector.IdentityUser, NativeID: "u1"}, Container: connector.Container{Kind: connector.ContainerChannel, NativeID: "c"}},
 		ACL:     connector.ACL{{Kind: connector.ACLPublic}}}
@@ -413,9 +339,6 @@ func TestDeleteRefusesAMalformedRequest(t *testing.T) {
 	}
 }
 
-// The same request, repeated one after the other, at the same time, over
-// either interface, and after its answer was lost, is answered with the
-// original and records one deletion.
 func TestDeleteIsIdempotentOnTheIdempotencyID(t *testing.T) {
 	w := newDeleteWorld(t)
 	a := w.stored(t, w.src, "kyle", "x-1", "owner", "Mine.")
@@ -423,7 +346,6 @@ func TestDeleteIsIdempotentOnTheIdempotencyID(t *testing.T) {
 	idem := w.src + "-forget"
 	args := map[string]any{"event_ids": []string{a, b}, "idempotency_id": idem}
 
-	// The answer is lost on its way back, and the caller asks again.
 	var lost sync.Once
 	w.withhold = func(r *http.Request) bool {
 		drop := false
@@ -467,15 +389,11 @@ func TestDeleteIsIdempotentOnTheIdempotencyID(t *testing.T) {
 		t.Errorf("%d deletion records and %d deletion events, want one of each", records, events)
 	}
 
-	// The same id for another set of events is not the same request, and the
-	// same id from another carrier is another request altogether.
 	if code, status, body := w.refusal(t, false, kyleWithKern, map[string]any{"event_ids": []string{a}, "idempotency_id": idem}); code != "conflict" || status != http.StatusConflict {
 		t.Errorf("the id reused for other events = %d %s, want 409 conflict", status, body)
 	}
 }
 
-// A concurrent request that races the first one, before any deletion exists,
-// writes exactly one.
 func TestConcurrentFirstRequestsRecordOneDeletion(t *testing.T) {
 	w := newDeleteWorld(t)
 	var ids []string
@@ -507,8 +425,6 @@ func TestConcurrentFirstRequestsRecordOneDeletion(t *testing.T) {
 	}
 }
 
-// Asking again for messages an earlier deletion already redacted deletes and
-// records nothing, and names that deletion.
 func TestDeleteOfWhatIsAlreadyDeletedRecordsNothingMore(t *testing.T) {
 	w := newDeleteWorld(t)
 	id := w.stored(t, w.src, "kyle", "x-1", "owner", "Mine.")

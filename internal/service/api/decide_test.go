@@ -11,20 +11,25 @@ import (
 	"github.com/kpenfound/hearsay/internal/l2"
 )
 
-// The event a decision is recorded under is a function of the human, the
-// carrier and the decision id alone, and each of the three matters.
-func TestDecideEventIsDerivedFromHumanCarrierAndDecision(t *testing.T) {
+func TestDecideEventIsStableForTheSameRequest(t *testing.T) {
 	base := decideEvent("kyle", "kern", "d1")
 	if again := decideEvent("kyle", "kern", "d1"); again != base {
 		t.Errorf("the same request derives %q then %q", base, again)
 	}
-	if source, _, err := connector.ParseEventID(base); err != nil || source != AuditSource {
-		t.Errorf("event %q is not an id under Hearsay's own source: %v", base, err)
+}
+
+func TestDecideEventIsAnIDUnderHearsaysOwnSource(t *testing.T) {
+	event := decideEvent("kyle", "kern", "d1")
+	if source, _, err := connector.ParseEventID(event); err != nil || source != AuditSource {
+		t.Errorf("event %q is not an id under Hearsay's own source: %v", event, err)
 	}
+}
+
+func TestDecideEventDiffersForEachInputAndNeverRunsFieldsTogether(t *testing.T) {
+	base := decideEvent("kyle", "kern", "d1")
 	seen := map[string]string{base: "kyle/kern/d1"}
 	for _, tt := range [][3]string{
 		{"sam", "kern", "d1"}, {"kyle", "", "d1"}, {"kyle", "shed", "d1"}, {"kyle", "kern", "d2"},
-		// Nothing runs one field into the next.
 		{"kyle", "kern", "d1 "}, {"kyl", "ekern", "d1"}, {"kyle", "kern\x00d", "1"},
 	} {
 		got := decideEvent(tt[0], tt[1], tt[2])
@@ -35,9 +40,7 @@ func TestDecideEventIsDerivedFromHumanCarrierAndDecision(t *testing.T) {
 	}
 }
 
-// Every error the ledger can refuse with maps to one documented code and a
-// fixed sentence that says nothing of what it was asked about.
-func TestDecideRefusalMapsLedgerErrorsToReasonCodes(t *testing.T) {
+func TestDecideRefusalMapsLedgerErrorsToFixedReasonCodes(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
 		err    error
@@ -60,19 +63,27 @@ func TestDecideRefusalMapsLedgerErrorsToReasonCodes(t *testing.T) {
 			t.Errorf("%s: the message %q repeats what the ledger said", tt.name, got.Message)
 		}
 	}
+}
+
+func TestDecideRefusalLeavesAnUnexpectedFailureUnmapped(t *testing.T) {
 	if err := errors.New("connection reset"); !errors.Is(decideRefusal(err), err) {
 		t.Error("an unexpected failure is not mapped here: it becomes internal in decide")
 	}
+}
+
+func TestDecideRefusalAnswersAMissingTargetWithTheOneNotFound(t *testing.T) {
 	if got := decideRefusal(fmt.Errorf("%w", l2.ErrNotFound)); !errors.Is(got, errDecideNotFound) {
 		t.Errorf("a missing target is not the one not-found answer: %v", got)
 	}
 }
 
-// The error body of a call that sets no code is what it always was.
 func TestErrorBodyOmitsAnUnsetCode(t *testing.T) {
 	if got := string(ErrorBody(fail(http.StatusNotFound, "no such call %q", "x"))); got != `{"error":"no such call \"x\""}` {
 		t.Errorf("ErrorBody = %s", got)
 	}
+}
+
+func TestErrorBodyCarriesASetCode(t *testing.T) {
 	if got := string(ErrorBody(errDecideNotFound)); got != `{"error":"no such stance or gesture that you may read","code":"not_found"}` {
 		t.Errorf("ErrorBody with a code = %s", got)
 	}

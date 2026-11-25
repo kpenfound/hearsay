@@ -6,11 +6,6 @@ import (
 	"strings"
 )
 
-// safeBytes are the bytes an event id carries unescaped. They are the
-// characters source ids and native ids are actually made of — GitHub's
-// `owner/repo#12`, Slack's `C123:1725812345.0001`, a Drive file id and the
-// `@` a revision hangs off — so an id stays readable in a log line and in a
-// bundle's provenance pointer.
 const safeBytes = "-._~:@/#+=,"
 
 // ValidSourceID reports whether s is a well-formed source id: 1 to
@@ -37,8 +32,6 @@ func ValidSourceID(s string) bool {
 	return true
 }
 
-// isLowerWord reports whether s is a lowercase word an extension kind is built
-// from: `figma`, `sprint`, `file_comment`.
 func isLowerWord(s string) bool {
 	if s == "" {
 		return false
@@ -66,8 +59,6 @@ func sortKinds(kinds []Kind) {
 	slices.SortFunc(kinds, func(a, b Kind) int { return strings.Compare(string(a), string(b)) })
 }
 
-// encodeSegment percent-encodes everything outside the safe set, including the
-// percent sign itself, so the encoding round-trips.
 func encodeSegment(s string) string {
 	var b strings.Builder
 	for i := range len(s) {
@@ -81,7 +72,6 @@ func encodeSegment(s string) string {
 	return b.String()
 }
 
-// decodeSegment reverses [encodeSegment].
 func decodeSegment(s string) (string, error) {
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {

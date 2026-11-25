@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,21 +16,15 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/llm/anthropic"
+	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
-// No test here calls Anthropic. What the adapter talks to is a server replaying
-// a recorded answer out of testdata, which is what makes the request it sent
-// and the answer it read both checkable (CLAUDE.md).
-
-// recorded is one recorded exchange: the status and the file to answer with.
 type recorded struct {
 	status  int
 	file    string
 	headers map[string]string
 }
 
-// replay starts a server answering each request with the next recording, and
-// keeps what it was sent.
 func replay(t *testing.T, answers ...recorded) (*httptest.Server, *[]request) {
 	t.Helper()
 	var seen []request
@@ -63,14 +58,12 @@ func replay(t *testing.T, answers ...recorded) (*httptest.Server, *[]request) {
 	return server, &seen
 }
 
-// request is what the adapter sent.
 type request struct {
 	path   string
 	header http.Header
 	body   map[string]any
 }
 
-// registry builds a registry whose tiers are answered by the test's server.
 func registry(t *testing.T, url string, tiers map[llm.Tier]llm.TierConfig) llm.Registry {
 	t.Helper()
 	config := llm.Config{Tiers: map[llm.Tier]llm.TierConfig{}}
@@ -102,15 +95,11 @@ const distillSchema = `{
   "additionalProperties": false
 }`
 
-// Both completion tiers work against recorded answers, which is what the rest
-// of Hearsay will be built on.
 func TestCompletionTiers(t *testing.T) {
 	server, seen := replay(t,
 		recorded{status: 200, file: "text_answer.json"},
 		recorded{status: 200, file: "assert_answer.json"})
 	r := registry(t, server.URL, map[llm.Tier]llm.TierConfig{
-		// The configured model is an alias, and the answer says which model
-		// the provider resolved it to.
 		llm.TierDistill: {Provider: "anthropic", Model: "claude-haiku-4-5", MaxTokens: 1024},
 		llm.TierAssert:  {Provider: "anthropic", Model: "claude-sonnet-5"},
 	})
@@ -154,8 +143,6 @@ func TestCompletionTiers(t *testing.T) {
 		t.Errorf("Text = %q, want the assert tier's recorded answer", resp.Text)
 	}
 
-	// What was sent is the Messages API, with the tier's model and budget and
-	// the credential in the header the API asks for.
 	if len(*seen) != 2 {
 		t.Fatalf("the adapter made %d requests, want 2", len(*seen))
 	}
@@ -178,19 +165,16 @@ func TestCompletionTiers(t *testing.T) {
 	if got := first.body["system"]; got != "You distil one artifact into one document." {
 		t.Errorf("system = %v, want the system prompt", got)
 	}
-	// The second tier's budget is its own, which is the default here.
+
 	if got := (*seen)[1].body["max_tokens"]; got != float64(llm.DefaultMaxTokens) {
 		t.Errorf("the assert tier's max_tokens = %v, want the default %d", got, llm.DefaultMaxTokens)
 	}
-	// A tier that sets no temperature leaves it to the provider.
+
 	if got, ok := first.body["temperature"]; ok {
 		t.Errorf("temperature = %v, want the field left out where the tier does not set one", got)
 	}
 }
 
-// A temperature of zero is a temperature, and the one an extraction prompt is
-// most likely to want. It has to reach the provider rather than being dropped
-// as a zero value.
 func TestTemperatureZeroIsSent(t *testing.T) {
 	zero := 0.0
 	server, seen := replay(t, recorded{status: 200, file: "assert_answer.json"})
@@ -208,9 +192,6 @@ func TestTemperatureZeroIsSent(t *testing.T) {
 	}
 }
 
-// The HTTP client the registry is built with is the one requests go through:
-// whatever a deployment needs of it — a proxy, a transport with its own
-// instrumentation — applies to model calls too.
 func TestTheRegistrysHTTPClientIsUsed(t *testing.T) {
 	used := false
 	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
@@ -244,13 +225,10 @@ func TestTheRegistrysHTTPClientIsUsed(t *testing.T) {
 	}
 }
 
-// roundTripperFunc is an [http.RoundTripper] written as a function.
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-// Structured output is a tool the model is told to use, and the caller sees
-// none of that: it supplies a schema and gets JSON satisfying it.
 func TestStructuredOutput(t *testing.T) {
 	server, seen := replay(t, recorded{status: 200, file: "tool_use_answer.json"})
 	r := registry(t, server.URL, map[llm.Tier]llm.TierConfig{
@@ -304,8 +282,6 @@ func TestStructuredOutput(t *testing.T) {
 	}
 }
 
-// The answer has to be the tool the schema named. A block that is not it is
-// not the shape the caller asked for, whatever it holds.
 func TestAnswerThatUsedAnotherTool(t *testing.T) {
 	server, _ := replay(t, recorded{status: 200, file: "tool_use_other_name.json"})
 	r := registry(t, server.URL, map[llm.Tier]llm.TierConfig{
@@ -324,8 +300,6 @@ func TestAnswerThatUsedAnotherTool(t *testing.T) {
 	}
 }
 
-// An answer cut off at the budget is not a broken model: with a schema it is
-// truncated JSON, and it is reported as the budget problem it is.
 func TestTruncatedStructuredAnswer(t *testing.T) {
 	server, _ := replay(t, recorded{status: 200, file: "truncated_answer.json"})
 	r := registry(t, server.URL, map[llm.Tier]llm.TierConfig{
@@ -344,9 +318,6 @@ func TestTruncatedStructuredAnswer(t *testing.T) {
 	}
 }
 
-// What the provider refuses with decides whether the call is made again. The
-// registry does the retrying; what is under test here is the adapter saying
-// which it is.
 func TestErrorsAreClassified(t *testing.T) {
 	for _, tt := range []struct {
 		name          string
@@ -423,8 +394,6 @@ func TestErrorsAreClassified(t *testing.T) {
 	}
 }
 
-// The retry loop and the adapter's classification together: an overloaded
-// answer is asked again, and the second answer is the one the caller gets.
 func TestOverloadedIsRetried(t *testing.T) {
 	server, seen := replay(t,
 		recorded{status: 529, file: "error_overloaded.json"},
@@ -443,9 +412,6 @@ func TestOverloadedIsRetried(t *testing.T) {
 	}
 }
 
-// A request that never got an answer at all — a connection refused, a
-// connection dropped — may get one next time. It is the most common transient
-// failure there is, so it has to be classified as one.
 func TestARequestThatNeverArrived(t *testing.T) {
 	server, _ := replay(t)
 	url := server.URL
@@ -469,9 +435,7 @@ func TestARequestThatNeverArrived(t *testing.T) {
 	}
 }
 
-// Anthropic has no embedding model, and that is a fact about the provider
-// rather than something to find out on the first call.
-func TestNoEmbeddingModel(t *testing.T) {
+func TestTheRegistryRefusesAnEmbedTierOnAnthropic(t *testing.T) {
 	config := llm.Config{Tiers: map[llm.Tier]llm.TierConfig{
 		llm.TierEmbed: {Provider: "anthropic", Model: "claude-haiku-4-5-20251001", Dimensions: 1024},
 	}}
@@ -483,13 +447,14 @@ func TestNoEmbeddingModel(t *testing.T) {
 	if !strings.Contains(err.Error(), "no embedding model") {
 		t.Errorf("NewRegistry() = %q, want it to say why", err)
 	}
+}
+
+func TestAnthropicHasNoEmbedder(t *testing.T) {
 	if _, err := anthropic.New().Embedder(llm.Build{Tier: llm.TierEmbed}); err == nil {
 		t.Error("Embedder() built one anyway")
 	}
 }
 
-// A credential that is not in the environment is a startup failure, not a 401
-// on the first artifact somebody ingests.
 func TestCredentialComesFromTheEnvironment(t *testing.T) {
 	config := llm.Config{Tiers: map[llm.Tier]llm.TierConfig{
 		llm.TierDistill: {Provider: "anthropic", Model: "claude-haiku-4-5-20251001"},
@@ -499,8 +464,6 @@ func TestCredentialComesFromTheEnvironment(t *testing.T) {
 		t.Fatalf("NewRegistry() = %v, want it to name %s", err, anthropic.APIKeyEnv)
 	}
 
-	// A tier may name another variable, which is what a second Anthropic
-	// account or a gateway with its own credential needs.
 	config.Tiers[llm.TierDistill] = llm.TierConfig{Provider: "anthropic", Model: "m", APIKeyEnv: "HEARSAY_DISTILL_KEY"}
 	if _, err := llm.NewRegistry(config, []llm.Provider{anthropic.New()}, llm.WithEnv(func(name string) string {
 		if name == "HEARSAY_DISTILL_KEY" {
@@ -512,7 +475,42 @@ func TestCredentialComesFromTheEnvironment(t *testing.T) {
 	}
 }
 
-// jsonEqual compares two decoded JSON values.
+func completeLogged(t *testing.T, level slog.Level, prompt string) (logs string, answer string) {
+	t.Helper()
+	server, _ := replay(t, recorded{status: 200, file: "text_answer.json"})
+	r := registry(t, server.URL, map[llm.Tier]llm.TierConfig{llm.TierDistill: {Provider: "anthropic", Model: "claude-haiku-4-5"}})
+	completer, err := r.Completer(llm.TierDistill)
+	if err != nil {
+		t.Fatalf("Completer(distill) = %v", err)
+	}
+	var out bytes.Buffer
+	ctx := telemetry.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&out, &slog.HandlerOptions{Level: level})))
+	resp, err := completer.Complete(ctx, llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Text: prompt}}})
+	if err != nil {
+		t.Fatalf("Complete() = %v", err)
+	}
+	return out.String(), resp.Text
+}
+
+func TestNoPromptOrCompletionIsLoggedAtInfoLevel(t *testing.T) {
+	const prompt = "the private question nobody may log"
+	logs, answer := completeLogged(t, slog.LevelInfo, prompt)
+	if strings.Contains(logs, prompt) || strings.Contains(logs, answer) {
+		t.Errorf("info-level output carries content:\n%s", logs)
+	}
+}
+
+func TestNoCredentialIsLoggedAtDebugLevel(t *testing.T) {
+	const prompt = "the private question nobody may log"
+	logs, _ := completeLogged(t, slog.LevelDebug, prompt)
+	if !strings.Contains(logs, "model call") {
+		t.Fatalf("the call was not logged at debug level:\n%s", logs)
+	}
+	if strings.Contains(logs, "sk-ant-test") {
+		t.Errorf("debug-level output carries the credential:\n%s", logs)
+	}
+}
+
 func jsonEqual(a, b any) bool {
 	x, err1 := json.Marshal(a)
 	y, err2 := json.Marshal(b)

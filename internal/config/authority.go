@@ -7,22 +7,15 @@ import (
 
 // AnyValue is the entry that widens a list of principals, sources or scopes to
 // all of them. It is spelled the way the ingest allowlist spells it
-// ([connector.AllowAll]), and like that one it is a choice a person makes
-// rather than a default.
+// ([connector.AllowAll]).
 const AnyValue = "*"
 
 // ArtifactClass is the kind of artifact a stance came out of, for the purpose
-// of authority. It is coarser than an L0 kind and than an L1 kind on purpose:
-// authority is a judgement about *where* something was said — a merged change,
-// a meeting, a chat thread, a DM — and a merged pull request and an open one
-// are the same L0 kind with very different weight.
-//
-// The mapping from L1 documents onto these classes is in docs/config.md and is
-// what L1 has to satisfy.
+// of authority: where something was said — a merged change, a meeting, a chat
+// thread, a DM. The mapping from L1 documents onto these classes is in
+// docs/config.md.
 type ArtifactClass string
 
-// The artifact classes. The set is closed: a class nothing can ever produce is
-// a silent typo in an authority policy, so the loader rejects an unknown one.
 const (
 	// ArtifactMergedPR is a change proposal that was merged. It is the
 	// artifact the design doc names as authoritative: the team did not merely
@@ -57,12 +50,6 @@ const (
 	ArtifactAgent ArtifactClass = "agent"
 )
 
-// defaultRanking is the source ranking every scope gets unless it overrides it,
-// highest authority first. The design doc fixes four of the positions — a
-// merged pull request outranks a meeting, which outranks a chat thread, which
-// outranks a DM (docs/design.md#topics-and-stances) — and the rest follow the
-// same principle: something written down deliberately outranks something said
-// in passing, and an agent's own words outrank nothing.
 var defaultRanking = []ArtifactClass{
 	ArtifactMergedPR,
 	ArtifactSpec,
@@ -164,15 +151,6 @@ func (p Policy) Rank(c ArtifactClass) (int, bool) {
 	return len(p.Ranking) - i, true
 }
 
-// Outranks reports whether an artifact of class a beats one of class b when
-// their stances disagree. Two classes of equal rank do not outrank each other,
-// which is what leaves the tie to be broken by time.
-func (p Policy) Outranks(a, b ArtifactClass) bool {
-	ra, _ := p.Rank(a)
-	rb, _ := p.Rank(b)
-	return ra > rb
-}
-
 // RatifiedByPrincipal reports whether this principal may ratify a stance in the
 // scope.
 func (p Policy) RatifiedByPrincipal(id string) bool {
@@ -197,11 +175,7 @@ func (p Policy) RatifiedByArtifact(c ArtifactClass, source string) bool {
 // that override it. Its zero value is the default policy for every scope, so a
 // configuration with no `authority/` still answers every question asked of it.
 type Authority struct {
-	// def is the policy for scopes with no policy of their own. It is
-	// [DefaultPolicy] with whatever the `*` policy set on top of it.
-	def Policy
-	// scopes holds the per-scope policies, each already merged onto def, so a
-	// lookup is one map read and nothing is merged twice.
+	def    Policy
 	scopes map[string]Policy
 }
 
@@ -235,10 +209,6 @@ func (a Authority) Scopes() []string {
 	return ids
 }
 
-// newAuthority merges the configured policies onto [DefaultPolicy]. A policy
-// sets a field or inherits it; nothing is appended to an inherited list,
-// because a ranking half-inherited from somewhere else is not readable from the
-// file in front of you.
 func newAuthority(policies []Policy) Authority {
 	a := Authority{def: DefaultPolicy()}
 	for _, p := range policies {
@@ -258,10 +228,6 @@ func newAuthority(policies []Policy) Authority {
 	return a
 }
 
-// mergePolicy layers over onto base. A nil list is unset and inherits; a list
-// that is present but empty is a decision and is kept, which is how a scope
-// says that nobody may ratify by hand. A zero contested window is unset: the
-// loader refuses a window that is not positive, so zero is never written.
 func mergePolicy(base, over Policy) Policy {
 	merged := base
 	merged.Scope = over.Scope

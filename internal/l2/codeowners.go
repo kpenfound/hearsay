@@ -66,8 +66,6 @@ func ownsDir(pattern, dir string) bool {
 	if !anchored && !strings.Contains(pattern, "/") {
 		pattern = "**/" + pattern
 	}
-	// A directory pattern owns the directory and everything under it, so a dir
-	// is owned when it is the pattern or inside what the pattern names.
 	return config.MatchPath(pattern, dir) || config.MatchPath(pattern+"/**", dir)
 }
 

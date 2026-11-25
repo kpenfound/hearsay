@@ -64,8 +64,6 @@ func (c *Commands) Apply(ctx context.Context, req connector.CommandRequest) conn
 	return c.merge(ctx, req, view, res)
 }
 
-// person is the configured human an invoker maps to, or the refusal that
-// says why there is none.
 func (c *Commands) person(invoker connector.Identity) (principal.Principal, connector.CommandResult) {
 	res := c.resolver.Resolve(invoker)
 	switch res.Status {
@@ -81,8 +79,6 @@ func (c *Commands) person(invoker connector.Identity) (principal.Principal, conn
 	return res.Principal, connector.CommandResult{}
 }
 
-// pin pins the L1 document of the command's target artifact, as an anchor in
-// its scope.
 func (c *Commands) pin(ctx context.Context, req connector.CommandRequest, view *View, res connector.CommandResult) connector.CommandResult {
 	if req.Target == "" {
 		res.Outcome = connector.CommandNoTarget
@@ -113,7 +109,6 @@ func (c *Commands) pin(ctx context.Context, req connector.CommandRequest, view *
 	return res
 }
 
-// merge merges one topic the person may read into another.
 func (c *Commands) merge(ctx context.Context, req connector.CommandRequest, view *View, res connector.CommandResult) connector.CommandResult {
 	if req.From == req.Into {
 		res.Outcome = connector.CommandSameTopic
@@ -142,8 +137,6 @@ func (c *Commands) merge(ctx context.Context, req connector.CommandRequest, view
 	return res
 }
 
-// ledgerRefusal is an error from a ledger write as a result: a refusal
-// carries the ledger's reason, and anything else is logged and is a failure.
 func ledgerRefusal(ctx context.Context, res connector.CommandResult, err error) connector.CommandResult {
 	switch {
 	case errors.Is(err, ErrNotAllowed):

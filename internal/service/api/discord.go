@@ -28,8 +28,6 @@ func DiscordPath(source string) string { return "/discord/" + source + "/interac
 // deferred. Discord drops an interaction not answered within three seconds.
 const DefaultAnswerWithin = 2 * time.Second
 
-// followUpWithin bounds a deferred command's work, well inside the fifteen
-// minutes an interaction token lasts.
 const followUpWithin = 5 * time.Minute
 
 // Interactions is the HTTP interaction adapter for Discord's `/hearsay pin`
@@ -143,8 +141,6 @@ func respond(w http.ResponseWriter, resp discord.Response) {
 	_, _ = w.Write(body)
 }
 
-// command runs a command and answers it: at once if the work is done within
-// the deadline, and otherwise with a deferral, then an edit when it is done.
 func (h *Interactions) command(w http.ResponseWriter, r *http.Request, app *discord.App, in discord.Interaction) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), followUpWithin)
 	unhook := context.AfterFunc(h.stopping, cancel)
@@ -197,8 +193,6 @@ func (h *Interactions) command(w http.ResponseWriter, r *http.Request, app *disc
 	close(sent)
 }
 
-// run does what a command asks and returns the answer: the result, or why
-// nothing was done.
 func (h *Interactions) run(ctx context.Context, app *discord.App, in discord.Interaction) string {
 	switch {
 	case in.Guild != app.Guild:
@@ -231,7 +225,6 @@ func (h *Interactions) run(ctx context.Context, app *discord.App, in discord.Int
 	return answerText(h.commands.Apply(ctx, req), in.Subcommand)
 }
 
-// answerText is the ephemeral answer to a command that came to this result.
 func answerText(res connector.CommandResult, verb string) string {
 	switch res.Outcome {
 	case connector.CommandPinned:
@@ -283,11 +276,6 @@ func answerText(res connector.CommandResult, verb string) string {
 	return fmt.Sprintf("Hearsay could not %s because of an internal error, and changed nothing. Try again.", what)
 }
 
-// choices are the topics a `/hearsay merge` argument may take: those the
-// person may read whose name or id holds what they have typed
-// ([l2.Commands.MergeChoices]). For `into`, once `from` names a topic they
-// may read, only the other topics in its scope. Anyone Hearsay cannot map to
-// a person is offered nothing, and so is a request out of time.
 func (h *Interactions) choices(ctx context.Context, app *discord.App, in discord.Interaction) []discord.Choice {
 	if in.Guild != app.Guild || in.Command != discord.CommandName || in.Subcommand != discord.CommandMerge ||
 		(in.Focused != discord.OptionFrom && in.Focused != discord.OptionInto) {

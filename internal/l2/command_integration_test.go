@@ -4,8 +4,6 @@ package l2_test
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -14,35 +12,32 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
+	"github.com/kpenfound/hearsay/internal/l1/l1test"
 	"github.com/kpenfound/hearsay/internal/l2"
+	"github.com/kpenfound/hearsay/internal/principal"
 )
 
-// commandWorld is a chat source over a scope of its own: a distilled thread
-// anyone may read, one only kyle may read, and topics to merge — one only
-// kyle may read, and one under another scope key.
-//
-// kyle, sam and viv are people; kyle and sam may ratify by hand and viv may
-// not. shed is an agent. User 15 is claimed by both amy and bea. User 99 maps
-// to nobody.
 type commandWorld struct {
 	src, scope                string
 	thread, private           string
 	lock, holder, vault, away string
 	pool                      *pgxpool.Pool
+	repo                      config.Repo
 	commands                  *l2.Commands
 }
 
 func newCommandWorld(t *testing.T) *commandWorld {
 	t.Helper()
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	ctx := t.Context()
-	w := &commandWorld{src: unique(), pool: pool}
+	w := &commandWorld{src: dbtest.UniqueID(), pool: pool}
 	w.scope = "d" + w.src
-	w.thread, w.private = "C1/"+unique(), "C1/"+unique()
+	w.thread, w.private = "C1/"+dbtest.UniqueID(), "C1/"+dbtest.UniqueID()
 
-	root := t.TempDir()
 	files := map[string]string{
 		"sources/chat.yaml": fmt.Sprintf("id: %s\ntype: chat\ncontainers: [C1]\n", w.src),
 		"scopes/s.yaml":     fmt.Sprintf("id: %s\nsources: [%s]\n", w.scope, w.src),
@@ -54,43 +49,33 @@ func newCommandWorld(t *testing.T) *commandWorld {
 			"- id: bea\n  identities: [{source: %[1]s, handle: bea}]\n", w.src),
 		"authority/a.yaml": ratifiers,
 	}
-	for name, body := range files {
-		full := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
+	root := configtest.Write(t, files)
 	repo, err := config.Load(root)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	public := connector.ACL{{Kind: connector.ACLPublic}}
 	kyleOnly := connector.ACL{{Kind: connector.ACLIdentity, Source: w.src, NativeID: "11"}}
 	when := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
-	docs, graph := l1.New(pool), l2.New(pool)
+	graph := l2.New(pool)
 	entity := "code:" + w.src
 	if err := graph.PutEntity(ctx, l2.Entity{ID: entity, Type: l2.TypeProject, Name: w.src, Origin: l2.OriginConfig}); err != nil {
 		t.Fatal(err)
 	}
 	put := func(native string, kind l1.Kind, class config.ArtifactClass, acl connector.ACL) string {
 		t.Helper()
-		doc := l1.Document{ID: l1.DocID(w.src, native), Kind: kind, ArtifactClass: class, Source: l1.Source{System: w.src, NativeID: native},
-			L0Refs: []string{connector.EventID(w.src, native)}, Time: l1.Times{Created: when, Updated: when, LastActivity: when}, Scope: []string{entity},
-			ACL: acl, Text: native, RawText: native, Body: l1.Body{Summary: native, OutcomeKind: l1.OutcomeDecided}}
-		if _, err := docs.Put(ctx, doc); err != nil {
-			t.Fatal(err)
-		}
-		return doc.ID
+		doc := issueDoc(w.src, native)
+		doc.Kind, doc.ArtifactClass, doc.ACL = kind, class, acl
+		doc.L0Refs, doc.Scope = []string{connector.EventID(w.src, native)}, []string{entity}
+		doc.Time = l1.Times{Created: when, Updated: when, LastActivity: when}
+		doc.Text, doc.RawText, doc.Body.Summary = native, native, native
+		return l1test.Put(t, pool, doc)
 	}
 	put(w.thread, l1.KindChatThread, config.ArtifactChatThread, public)
 	put(w.private, l1.KindChatThread, config.ArtifactChatThread, kyleOnly)
 	open := func(scope, name string, acl connector.ACL) string {
 		t.Helper()
-		doc := put(strings.ReplaceAll(name, " ", "-")+"-"+unique(), l1.KindIssue, config.ArtifactIssue, acl)
+		doc := put(strings.ReplaceAll(name, " ", "-")+"-"+dbtest.UniqueID(), l1.KindIssue, config.ArtifactIssue, acl)
 		topic := l2.Topic{ID: l2.TopicID(scope, doc, 0, name), Scope: scope, Name: name, ACL: acl, OpenedBy: doc}
 		if _, err := graph.OpenTopic(ctx, topic); err != nil {
 			t.Fatal(err)
@@ -107,24 +92,21 @@ func newCommandWorld(t *testing.T) *commandWorld {
 	w.vault = open(w.scope, "the vault key", kyleOnly)
 	w.away = open("source:"+w.src, "the lock elsewhere", public)
 
+	w.repo = repo
 	if w.commands, err = l2.NewCommands(pool, repo); err != nil {
 		t.Fatal(err)
 	}
 	return w
 }
 
-// user is a chat user as a source identity.
 func (w *commandWorld) user(id string) connector.Identity {
 	return connector.Identity{Source: w.src, Kind: connector.IdentityUser, NativeID: id}
 }
 
 func (w *commandWorld) request(user, verb string) connector.CommandRequest {
-	return connector.CommandRequest{Source: w.src, Event: connector.EventID(w.src, "interaction:"+unique()), Invoker: w.user(user), Verb: verb}
+	return connector.CommandRequest{Source: w.src, Event: connector.EventID(w.src, "interaction:"+dbtest.UniqueID()), Invoker: w.user(user), Verb: verb}
 }
 
-// A command is applied as the person its invoker maps to, reading only what
-// that person may read; every refusal is a distinguishable outcome and
-// writes nothing.
 func TestCommandsRefuseWithAReason(t *testing.T) {
 	w := newCommandWorld(t)
 	graph := l2.New(w.pool)
@@ -150,7 +132,7 @@ func TestCommandsRefuseWithAReason(t *testing.T) {
 		{"an invoker two principals claim", ambiguous, connector.CommandResult{Outcome: connector.CommandAmbiguous, Candidates: []string{"amy", "bea"}}},
 		{"an agent's account", pin("14", w.thread), connector.CommandResult{Outcome: connector.CommandNotHuman, Principal: "shed", Kind: "agent"}},
 		{"a pin outside a thread", pin("11", ""), connector.CommandResult{Outcome: connector.CommandNoTarget, Principal: "kyle", Kind: "human"}},
-		{"a pin of a thread not distilled", pin("11", "C1/"+unique()), connector.CommandResult{Outcome: connector.CommandUndistilled, Principal: "kyle", Kind: "human"}},
+		{"a pin of a thread not distilled", pin("11", "C1/"+dbtest.UniqueID()), connector.CommandResult{Outcome: connector.CommandUndistilled, Principal: "kyle", Kind: "human"}},
 		{"a pin of a thread the person may not read", pin("12", w.private), connector.CommandResult{Outcome: connector.CommandUndistilled, Principal: "sam", Kind: "human"}},
 		{"a merge of a topic into itself", merge("12", w.lock, w.lock), connector.CommandResult{Outcome: connector.CommandSameTopic, Principal: "sam", Kind: "human"}},
 		{"a merge of a topic the person may not read", merge("12", w.vault, w.lock), connector.CommandResult{Outcome: connector.CommandNoSuchTopic, Principal: "sam", Kind: "human", Topic: w.vault}},
@@ -191,15 +173,11 @@ func TestCommandsRefuseWithAReason(t *testing.T) {
 	}
 }
 
-// resultIs compares the fields a refusal sets.
 func resultIs(got, want connector.CommandResult) bool {
 	return got.Outcome == want.Outcome && got.Principal == want.Principal && got.Kind == want.Kind &&
 		got.Topic == want.Topic && slices.Equal(got.Candidates, want.Candidates) && got.Gesture == 0 && got.Operation == 0
 }
 
-// A pin records a gesture keyed by the command event, so the same command
-// applied again records nothing; a merge records an operation and names both
-// topics.
 func TestCommandsPinAndMerge(t *testing.T) {
 	w := newCommandWorld(t)
 	graph := l2.New(w.pool)
@@ -243,8 +221,6 @@ func TestCommandsPinAndMerge(t *testing.T) {
 	}
 }
 
-// Merge choices are the topics the invoker's person may read, through the
-// same view a command reads through.
 func TestMergeChoicesAreWhatThePersonMayRead(t *testing.T) {
 	w := newCommandWorld(t)
 	ids := func(choices []l2.TopicChoice) []string {
@@ -278,6 +254,45 @@ func TestMergeChoicesAreWhatThePersonMayRead(t *testing.T) {
 	for _, c := range w.commands.MergeChoices(t.Context(), l2.ChoiceRequest{Invoker: w.user("12"), Typed: "holds"}) {
 		if c.Name != "who holds the lock" || c.Scope != w.scope {
 			t.Errorf("choice %+v, want the holder's name and scope", c)
+		}
+	}
+}
+
+func (w *commandWorld) view(t *testing.T, id string) *l2.View {
+	t.Helper()
+	i := slices.IndexFunc(w.repo.Principals, func(p principal.Principal) bool { return p.ID == id })
+	if i < 0 {
+		t.Fatalf("no principal %s", id)
+	}
+	view, err := l2.NewView(t.Context(), l2.New(w.pool), w.repo, w.repo.Principals[i])
+	if err != nil {
+		t.Fatalf("NewView(%s) = %v", id, err)
+	}
+	return view
+}
+
+func TestViewReadsATopicThePersonMayNotReadAsMissing(t *testing.T) {
+	w := newCommandWorld(t)
+	ctx := t.Context()
+	sam := w.view(t, "sam")
+	for _, id := range []string{w.vault, "topic:nobody"} {
+		if got, err := sam.Topic(ctx, id); err != nil || got != nil {
+			t.Errorf("Topic(%s) for sam = %+v, %v, want nothing, as for a topic that does not exist", id, got, err)
+		}
+	}
+	if got, err := sam.Topic(ctx, w.lock); err != nil || got == nil {
+		t.Errorf("Topic(lock) for sam = %+v, %v, want the topic", got, err)
+	}
+	if got, err := w.view(t, "kyle").Topic(ctx, w.vault); err != nil || got == nil {
+		t.Errorf("Topic(vault) for kyle = %+v, %v, want the topic", got, err)
+	}
+	topics, err := sam.Topics(ctx, w.scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range topics {
+		if a.Topic.ID == w.vault {
+			t.Errorf("Topics() for sam lists the topic only kyle may read")
 		}
 	}
 }

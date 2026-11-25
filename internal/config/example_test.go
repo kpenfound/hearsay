@@ -9,27 +9,18 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
-// docsPath is the schema documentation, which carries the example this package
-// is tested against.
 const docsPath = "../../docs/config.md"
 
-// TestDocsExampleLoadsBothWays loads the complete example in docs/config.md —
-// both the single file and the directory — and checks that they are the same
-// configuration.
-//
-// The example is read out of the documentation rather than copied into testdata
-// on purpose. An example that has drifted from the loader is worse than no
-// example, and the only way to be sure it has not is to run the one people
-// read.
 func TestDocsExampleLoadsBothWays(t *testing.T) {
 	examples := docExamples(t)
-	single := writeFiles(t, filesUnder(t, examples, "single"))
-	dir := writeFiles(t, filesUnder(t, examples, "dir"))
+	single := configtest.Write(t, filesUnder(t, examples, "single"))
+	dir := configtest.Write(t, filesUnder(t, examples, "dir"))
 
 	fromFile, err := config.Load(filepath.Join(single, "hearsay.yaml"))
 	if err != nil {
@@ -40,8 +31,6 @@ func TestDocsExampleLoadsBothWays(t *testing.T) {
 		t.Fatalf("Load(the directory example) = %v, want no error", err)
 	}
 
-	// Pointing at the directory holding the single file finds it, which is what
-	// `--config ./config` does for a team that has not split it up.
 	fromDirWithFile, err := config.Load(single)
 	if err != nil {
 		t.Fatalf("Load(the directory holding the single file) = %v, want no error", err)
@@ -51,8 +40,6 @@ func TestDocsExampleLoadsBothWays(t *testing.T) {
 			fromDirWithFile.Digest, fromFile.Digest)
 	}
 
-	// Path and digest identify the bytes, not the meaning, and the two forms
-	// are different bytes. Everything else has to match.
 	fileRepo, dirRepo := normalize(fromFile), normalize(fromDir)
 	if !reflect.DeepEqual(fileRepo, dirRepo) {
 		t.Errorf("the two forms of the example load differently\n single file: %+v\n  directory: %+v", fileRepo, dirRepo)
@@ -66,12 +53,8 @@ func TestDocsExampleLoadsBothWays(t *testing.T) {
 	}
 }
 
-// TestDocsClaudeSbxExampleLoads loads the claude-sbx example in docs/config.md,
-// the way a service does, and checks it comes out as it says: both completion
-// tiers on claude-sbx, with the model and budget written, and a timeout the
-// tier sets itself.
 func TestDocsClaudeSbxExampleLoads(t *testing.T) {
-	root := writeFiles(t, filesUnder(t, docExamples(t), "claude-sbx"))
+	root := configtest.Write(t, filesUnder(t, docExamples(t), "claude-sbx"))
 	repo, err := config.Load(filepath.Join(root, "hearsay.yaml"))
 	if err != nil {
 		t.Fatalf("Load(the claude-sbx example) = %v, want no error", err)
@@ -94,8 +77,6 @@ func TestDocsClaudeSbxExampleLoads(t *testing.T) {
 	}
 }
 
-// docExamples extracts the example files from the schema documentation. Each is
-// a fenced YAML block preceded by `<!-- example: <path> -->`.
 func docExamples(t *testing.T) map[string]string {
 	t.Helper()
 	body, err := os.ReadFile(docsPath)
@@ -134,7 +115,6 @@ func docExamples(t *testing.T) map[string]string {
 	return files
 }
 
-// filesUnder returns the examples under one prefix, with the prefix removed.
 func filesUnder(t *testing.T, files map[string]string, prefix string) map[string]string {
 	t.Helper()
 	out := map[string]string{}
@@ -149,25 +129,6 @@ func filesUnder(t *testing.T, files map[string]string, prefix string) map[string
 	return out
 }
 
-// writeFiles writes the files into a temporary directory and returns it.
-func writeFiles(t *testing.T, files map[string]string) string {
-	t.Helper()
-	root := t.TempDir()
-	for name, body := range files {
-		full := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatalf("creating %s: %v", filepath.Dir(full), err)
-		}
-		if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
-			t.Fatalf("writing %s: %v", full, err)
-		}
-	}
-	return root
-}
-
-// normalize drops what identifies the bytes rather than the configuration, and
-// sorts the objects, because which file an object was written in decides the
-// order it is read in and nothing else.
 func normalize(r config.Repo) config.Repo {
 	r.Path = ""
 	r.Digest = ""

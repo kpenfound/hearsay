@@ -1,6 +1,4 @@
 #!/bin/sh
-# Run with: dagger api call hearsay qa --script "$(cat docs/qa/distill-debounce.sh)"
-# Disposable qa database only. No live model or source is contacted.
 set -eu
 pid=
 cleanup() {
@@ -14,7 +12,6 @@ trap 'exit 1' HUP INT TERM
 hearsay version
 hearsay migrate up
 
-# Both entry points reject the environment settings before starting services.
 for command in distiller all; do
   if timeout 5 env HEARSAY_DISTILL_QUIET=2s HEARSAY_DISTILL_MAX_DELAY=1s \
       hearsay "$command" > /tmp/refusal.log 2>&1; then
@@ -24,8 +21,6 @@ for command in distiller all; do
   echo "PASS: $command refused maximum below quiet"
 done
 
-# Build real model tiers with a dummy key and an unreachable local endpoint.
-# Stop while the job is pending, before any model invocation is possible.
 cat > /tmp/debounce.yaml <<'YAML'
 sources:
   - id: debounce-qa
@@ -55,8 +50,6 @@ until grep -q 'distiller started' /tmp/distiller.log; do
 done
 echo 'PASS: distiller started with valid settings'
 
-# Seed ten contract-shaped revisions of one issue in one committed burst.
-# The shipped pump consumes this feed and writes the real queue transaction.
 psql -v ON_ERROR_STOP=1 <<'SQL'
 INSERT INTO l0_events
   (id, source, native_id, kind, artifact, revision_token, revision_edited_at,
@@ -82,7 +75,6 @@ while [ "$(psql -At -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM queue_job WHERE 
   i=$((i + 1)); [ "$i" -le 4 ] || { cat /tmp/distiller.log; exit 1; }
   sleep 1
 done
-# Freeze the observation before quiet expires; graceful shutdown runs no job.
 kill -TERM "$pid"
 wait "$pid"
 pid=

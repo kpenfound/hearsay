@@ -25,10 +25,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
-// fixtures serves one source's recorded API answers from testdata/init/<name>:
-// a request for /a/b is the file a/b.json, page N of a paged list is
-// a/b.pageN.json, and a path with no file is a 404, as GitHub and Discord
-// answer one. Every request must carry the credential init was given.
 type fixtures struct {
 	*httptest.Server
 	auth string
@@ -46,7 +42,6 @@ func serveFixtures(t *testing.T, name, auth string) *fixtures {
 		f.seen = append(f.seen, r.Method+" "+r.URL.Path)
 		f.mu.Unlock()
 		if r.Method == http.MethodPost && r.URL.Path == "/token" {
-			// Drive's service account exchange: any signed assertion will do.
 			_ = r.ParseForm()
 			if r.PostForm.Get("assertion") == "" {
 				http.Error(w, "no assertion", http.StatusBadRequest)
@@ -95,8 +90,6 @@ func (f *fixtures) requests() []string {
 	return slices.Clone(f.seen)
 }
 
-// driveCredentials is a service account key for the Drive fixture: a real RSA
-// key, made for the test, whose token endpoint is the fixture's.
 func driveCredentials(t *testing.T, tokenURL string) string {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -119,8 +112,6 @@ func driveCredentials(t *testing.T, tokenURL string) string {
 	return string(cred)
 }
 
-// sources is one set of fixtures for the three sources, and the environment
-// that holds the credentials for all of them.
 type sources struct {
 	github, discord, drive *fixtures
 	env                    map[string]string
@@ -140,12 +131,10 @@ func newSources(t *testing.T) sources {
 	return s
 }
 
-// apis are the flags that point init at the fixtures instead of the sources.
 func (s sources) apis() []string {
 	return []string{"--github-api-url", s.github.URL, "--discord-api-url", s.discord.URL, "--drive-api-url", s.drive.URL}
 }
 
-// teamFlags answer every question for a GitHub + Discord + Drive team.
 var teamFlags = []string{
 	"--operator", "kyle",
 	"--github-repo", "acme/api,acme/infra",
@@ -155,12 +144,8 @@ var teamFlags = []string{
 	"--drive-folder", "1EngFolder,1MeetingsFolder",
 }
 
-// teamAnswers are the same answers typed at the prompts, one line each, in
-// the order init asks. The name is left empty, as it is by the flags.
 const teamAnswers = "kyle\n\nacme/api, acme/infra\nkpenfound\n824100000000000000\n824100000000000001,824100000000000002\n\n\n1EngFolder,1MeetingsFolder\n\n"
 
-// sequence is a reproducible stand-in for crypto/rand: every byte is the
-// next one, so tokens differ from each other and are the same on every run.
 type sequence struct{ next byte }
 
 func (s *sequence) Read(p []byte) (int, error) {
@@ -179,7 +164,6 @@ type initCall struct {
 	random   io.Reader
 }
 
-// runInitIn runs `hearsay init` writing into dir, and returns what it printed.
 func runInitIn(t *testing.T, dir string, c initCall) (string, error) {
 	t.Helper()
 	args := append([]string{"init", "--out", filepath.Join(dir, "hearsay.yaml"), "--env-file", filepath.Join(dir, "hearsay.env")}, c.args...)
@@ -198,7 +182,6 @@ func runInitIn(t *testing.T, dir string, c initCall) (string, error) {
 	return stdout.String() + stderr.String(), err
 }
 
-// readEnv parses the env file into its variables, in order.
 func readEnv(t *testing.T, path string) ([]string, map[string]string) {
 	t.Helper()
 	body, err := os.ReadFile(path)
@@ -222,8 +205,6 @@ func readEnv(t *testing.T, path string) ([]string, map[string]string) {
 	return keys, vars
 }
 
-// identities is a principal as the test compares it: each identity as
-// source/native_id/handle.
 func identities(p principal.Principal) []string {
 	var out []string
 	for _, id := range p.Identities {
@@ -234,180 +215,187 @@ func identities(p principal.Principal) []string {
 
 var hexToken = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// hearsay init writes a configuration that loads, and an env file holding a
-// generated token for every principal it wrote and nothing else but empty
-// entries — across the ways a team can answer it and the credentials it can
-// have.
-func TestInitWritesAValidConfiguration(t *testing.T) {
-	type person struct {
-		name       string
-		identities []string
-	}
-	full := map[string]person{
-		"kyle": {"Kyle Penfound", []string{
-			"github/MDQ6VXNlcjE=/kpenfound",
-			"discord/302100000000000003/kyle",
-			"drive/01234567890123456789/kyle@acme.example",
-		}},
-		// alex and jordan both link Discord account ...6 from GitHub, and
-		// both publish shared@acme.example: neither is written on either.
-		"alex":   {"Alex Doe", []string{"github/MDQ6VXNlcjQ=/alex"}},
-		"jordan": {"Jordan Roe", []string{"github/MDQ6VXNlcjU=/jordan"}},
-		// Listed by both repositories, as RobinOK by one: one principal. The
-		// Drive address matches whatever its case.
-		"robinok": {"Robin Okonkwo", []string{
-			"github/MDQ6VXNlcjI=/robinok",
-			"discord/302100000000000004/robin",
-			"drive/11234567890123456789/robin@acme.example",
-		}},
-		// Links a Discord account that is not in the guild.
-		"sam-r": {"", []string{"github/MDQ6VXNlcjM=/sam-r"}},
-	}
-	operatorOnly := func(ids ...string) map[string]person { return map[string]person{"kyle": {"", ids}} }
+type person struct {
+	name       string
+	identities []string
+}
 
-	tests := []struct {
-		name string
-		args []string
-		// noCredentials runs with an empty environment.
-		noCredentials bool
-		// only keeps these credentials.
-		only []string
+var fullTeam = map[string]person{
+	"kyle": {"Kyle Penfound", []string{
+		"github/MDQ6VXNlcjE=/kpenfound",
+		"discord/302100000000000003/kyle",
+		"drive/01234567890123456789/kyle@acme.example",
+	}},
+	"alex":   {"Alex Doe", []string{"github/MDQ6VXNlcjQ=/alex"}},
+	"jordan": {"Jordan Roe", []string{"github/MDQ6VXNlcjU=/jordan"}},
+	"robinok": {"Robin Okonkwo", []string{
+		"github/MDQ6VXNlcjI=/robinok",
+		"discord/302100000000000004/robin",
+		"drive/11234567890123456789/robin@acme.example",
+	}},
+	"sam-r": {"", []string{"github/MDQ6VXNlcjM=/sam-r"}},
+}
 
-		wantSources []string
-		wantScopes  []string
-		want        map[string]person
-		// wantEmpty are the variables left for the person to fill in.
-		wantEmpty []string
-		// wantOutput are lines init prints.
-		wantOutput []string
-	}{
-		{
-			name:        "every source, every credential",
-			args:        teamFlags,
-			wantSources: []string{"github", "discord", "drive"},
-			wantScopes:  []string{"api", "infra"},
-			want:        full,
-			wantEmpty:   []string{"HEARSAY_GITHUB_TOKEN", "HEARSAY_GITHUB_WEBHOOK_SECRET", "HEARSAY_DISCORD_TOKEN", "HEARSAY_DRIVE_CREDENTIALS", "ANTHROPIC_API_KEY", "HEARSAY_JEV_API_KEY"},
-			wantOutput: []string{
-				"github: dependabot[bot] is a bot, and is not seeded as a person",
-				"discord: account 302100000000000006 is linked from GitHub by alex and jordan, so it is written on nobody",
-				"discord: sam-r links account 302100000000000005 on GitHub, which is not a member of the guild",
-				"drive: shared@acme.example is the address of alex and jordan, so it is written on nobody",
-			},
+func operatorOnly(ids ...string) map[string]person { return map[string]person{"kyle": {"", ids}} }
+
+var initScenarios = []struct {
+	name          string
+	args          []string
+	noCredentials bool
+	only          []string
+
+	wantSources []string
+	wantScopes  []string
+	want        map[string]person
+	wantEmpty   []string
+	wantOutput  []string
+}{
+	{
+		name:        "every source, every credential",
+		args:        teamFlags,
+		wantSources: []string{"github", "discord", "drive"},
+		wantScopes:  []string{"api", "infra"},
+		want:        fullTeam,
+		wantEmpty:   []string{"HEARSAY_GITHUB_TOKEN", "HEARSAY_GITHUB_WEBHOOK_SECRET", "HEARSAY_DISCORD_TOKEN", "HEARSAY_DRIVE_CREDENTIALS", "ANTHROPIC_API_KEY", "HEARSAY_JEV_API_KEY"},
+		wantOutput: []string{
+			"github: dependabot[bot] is a bot, and is not seeded as a person",
+			"discord: account 302100000000000006 is linked from GitHub by alex and jordan, so it is written on nobody",
+			"discord: sam-r links account 302100000000000005 on GitHub, which is not a member of the guild",
+			"drive: shared@acme.example is the address of alex and jordan, so it is written on nobody",
 		},
-		{
-			name:          "no credentials: the operator alone, as they described themselves",
-			args:          append(slices.Clone(teamFlags), "--operator-discord", "302100000000000003", "--operator-email", "kyle@acme.example"),
-			noCredentials: true,
-			wantSources:   []string{"github", "discord", "drive"},
-			wantScopes:    []string{"api", "infra"},
-			want: operatorOnly(
-				"github//kpenfound",
-				"discord/302100000000000003/",
-				"drive//kyle@acme.example",
-			),
-			wantEmpty:  []string{"HEARSAY_GITHUB_TOKEN", "HEARSAY_GITHUB_WEBHOOK_SECRET", "HEARSAY_DISCORD_TOKEN", "HEARSAY_DRIVE_CREDENTIALS", "ANTHROPIC_API_KEY", "HEARSAY_JEV_API_KEY"},
-			wantOutput: []string{"github: HEARSAY_GITHUB_TOKEN is not set, so the collaborators were not read and you are the only principal"},
+	},
+	{
+		name:          "no credentials: the operator alone, as they described themselves",
+		args:          append(slices.Clone(teamFlags), "--operator-discord", "302100000000000003", "--operator-email", "kyle@acme.example"),
+		noCredentials: true,
+		wantSources:   []string{"github", "discord", "drive"},
+		wantScopes:    []string{"api", "infra"},
+		want: operatorOnly(
+			"github//kpenfound",
+			"discord/302100000000000003/",
+			"drive//kyle@acme.example",
+		),
+		wantEmpty:  []string{"HEARSAY_GITHUB_TOKEN", "HEARSAY_GITHUB_WEBHOOK_SECRET", "HEARSAY_DISCORD_TOKEN", "HEARSAY_DRIVE_CREDENTIALS", "ANTHROPIC_API_KEY", "HEARSAY_JEV_API_KEY"},
+		wantOutput: []string{"github: HEARSAY_GITHUB_TOKEN is not set, so the collaborators were not read and you are the only principal"},
+	},
+	{
+		name:        "no GitHub credential",
+		args:        teamFlags,
+		only:        []string{"HEARSAY_DISCORD_TOKEN", "HEARSAY_DRIVE_CREDENTIALS"},
+		wantSources: []string{"github", "discord", "drive"},
+		wantScopes:  []string{"api", "infra"},
+		want:        operatorOnly("github//kpenfound"),
+		wantEmpty:   []string{"HEARSAY_GITHUB_TOKEN", "HEARSAY_GITHUB_WEBHOOK_SECRET", "HEARSAY_DISCORD_TOKEN", "HEARSAY_DRIVE_CREDENTIALS", "ANTHROPIC_API_KEY", "HEARSAY_JEV_API_KEY"},
+	},
+	{
+		name:        "GitHub alone: no Discord or Drive account is confirmed",
+		args:        teamFlags,
+		only:        []string{"HEARSAY_GITHUB_TOKEN"},
+		wantSources: []string{"github", "discord", "drive"},
+		wantScopes:  []string{"api", "infra"},
+		want: map[string]person{
+			"kyle":    {"Kyle Penfound", []string{"github/MDQ6VXNlcjE=/kpenfound"}},
+			"alex":    fullTeam["alex"],
+			"jordan":  fullTeam["jordan"],
+			"robinok": {"Robin Okonkwo", []string{"github/MDQ6VXNlcjI=/robinok"}},
+			"sam-r":   fullTeam["sam-r"],
 		},
-		{
-			// Discord and Drive can confirm an account, but only for someone
-			// GitHub named: without it there is nobody to match.
-			name:        "no GitHub credential",
-			args:        teamFlags,
-			only:        []string{"HEARSAY_DISCORD_TOKEN", "HEARSAY_DRIVE_CREDENTIALS"},
-			wantSources: []string{"github", "discord", "drive"},
-			wantScopes:  []string{"api", "infra"},
-			want:        operatorOnly("github//kpenfound"),
-			wantEmpty:   []string{"HEARSAY_GITHUB_TOKEN", "HEARSAY_GITHUB_WEBHOOK_SECRET", "HEARSAY_DISCORD_TOKEN", "HEARSAY_DRIVE_CREDENTIALS", "ANTHROPIC_API_KEY", "HEARSAY_JEV_API_KEY"},
+		wantEmpty: []string{"HEARSAY_GITHUB_TOKEN", "HEARSAY_GITHUB_WEBHOOK_SECRET", "HEARSAY_DISCORD_TOKEN", "HEARSAY_DRIVE_CREDENTIALS", "ANTHROPIC_API_KEY", "HEARSAY_JEV_API_KEY"},
+		wantOutput: []string{
+			"discord: HEARSAY_DISCORD_TOKEN is not set, so no collaborator's Discord account was confirmed",
+			"drive: HEARSAY_DRIVE_CREDENTIALS is not set, so no collaborator's Drive account was confirmed",
 		},
-		{
-			name:        "GitHub alone: no Discord or Drive account is confirmed",
-			args:        teamFlags,
-			only:        []string{"HEARSAY_GITHUB_TOKEN"},
-			wantSources: []string{"github", "discord", "drive"},
-			wantScopes:  []string{"api", "infra"},
-			want: map[string]person{
-				"kyle":    {"Kyle Penfound", []string{"github/MDQ6VXNlcjE=/kpenfound"}},
-				"alex":    full["alex"],
-				"jordan":  full["jordan"],
-				"robinok": {"Robin Okonkwo", []string{"github/MDQ6VXNlcjI=/robinok"}},
-				"sam-r":   full["sam-r"],
-			},
-			wantEmpty: []string{"HEARSAY_GITHUB_TOKEN", "HEARSAY_GITHUB_WEBHOOK_SECRET", "HEARSAY_DISCORD_TOKEN", "HEARSAY_DRIVE_CREDENTIALS", "ANTHROPIC_API_KEY", "HEARSAY_JEV_API_KEY"},
-			wantOutput: []string{
-				"discord: HEARSAY_DISCORD_TOKEN is not set, so no collaborator's Discord account was confirmed",
-				"drive: HEARSAY_DRIVE_CREDENTIALS is not set, so no collaborator's Drive account was confirmed",
-			},
+	},
+	{
+		name:        "Discord and Drive skipped",
+		args:        []string{"--operator", "kyle", "--operator-name", "Kyle P", "--github-repo", "acme/api", "--operator-github", "KPenfound"},
+		wantSources: []string{"github"},
+		wantScopes:  []string{"api"},
+		want: map[string]person{
+			"kyle":    {"Kyle P", []string{"github/MDQ6VXNlcjE=/kpenfound"}},
+			"alex":    fullTeam["alex"],
+			"robinok": {"Robin Okonkwo", []string{"github/MDQ6VXNlcjI=/robinok"}},
+			"sam-r":   fullTeam["sam-r"],
 		},
-		{
-			name:        "Discord and Drive skipped",
-			args:        []string{"--operator", "kyle", "--operator-name", "Kyle P", "--github-repo", "acme/api", "--operator-github", "KPenfound"},
-			wantSources: []string{"github"},
-			wantScopes:  []string{"api"},
-			want: map[string]person{
-				// The name given wins over the profile's; the login is
-				// written as GitHub spells it.
-				"kyle":    {"Kyle P", []string{"github/MDQ6VXNlcjE=/kpenfound"}},
-				"alex":    full["alex"],
-				"robinok": {"Robin Okonkwo", []string{"github/MDQ6VXNlcjI=/robinok"}},
-				"sam-r":   full["sam-r"],
-			},
-			wantEmpty: []string{"HEARSAY_GITHUB_TOKEN", "HEARSAY_GITHUB_WEBHOOK_SECRET", "ANTHROPIC_API_KEY", "HEARSAY_JEV_API_KEY"},
-		},
-		{
-			name: "GitHub skipped: one scope over what is left",
-			args: []string{"--operator", "kyle", "--discord-guild", "824100000000000000", "--discord-channel", "824100000000000001",
-				"--operator-discord", "302100000000000003", "--drive-folder", "1EngFolder"},
-			wantSources: []string{"discord", "drive"},
-			wantScopes:  []string{"team"},
-			want:        operatorOnly("discord/302100000000000003/"),
-			wantEmpty:   []string{"HEARSAY_DISCORD_TOKEN", "HEARSAY_DRIVE_CREDENTIALS", "ANTHROPIC_API_KEY", "HEARSAY_JEV_API_KEY"},
-		},
-		{
-			name:        "Drive alone",
-			args:        []string{"--operator", "kyle", "--drive-folder", "1EngFolder", "--operator-email", "kyle@acme.example"},
-			wantSources: []string{"drive"},
-			wantScopes:  []string{"team"},
-			want:        operatorOnly("drive//kyle@acme.example"),
-			wantEmpty:   []string{"HEARSAY_DRIVE_CREDENTIALS", "ANTHROPIC_API_KEY", "HEARSAY_JEV_API_KEY"},
-		},
+		wantEmpty: []string{"HEARSAY_GITHUB_TOKEN", "HEARSAY_GITHUB_WEBHOOK_SECRET", "ANTHROPIC_API_KEY", "HEARSAY_JEV_API_KEY"},
+	},
+	{
+		name: "GitHub skipped: one scope over what is left",
+		args: []string{"--operator", "kyle", "--discord-guild", "824100000000000000", "--discord-channel", "824100000000000001",
+			"--operator-discord", "302100000000000003", "--drive-folder", "1EngFolder"},
+		wantSources: []string{"discord", "drive"},
+		wantScopes:  []string{"team"},
+		want:        operatorOnly("discord/302100000000000003/"),
+		wantEmpty:   []string{"HEARSAY_DISCORD_TOKEN", "HEARSAY_DRIVE_CREDENTIALS", "ANTHROPIC_API_KEY", "HEARSAY_JEV_API_KEY"},
+	},
+	{
+		name:        "Drive alone",
+		args:        []string{"--operator", "kyle", "--drive-folder", "1EngFolder", "--operator-email", "kyle@acme.example"},
+		wantSources: []string{"drive"},
+		wantScopes:  []string{"team"},
+		want:        operatorOnly("drive//kyle@acme.example"),
+		wantEmpty:   []string{"HEARSAY_DRIVE_CREDENTIALS", "ANTHROPIC_API_KEY", "HEARSAY_JEV_API_KEY"},
+	},
+}
+
+type initRun struct {
+	dir  string
+	out  string
+	repo config.Repo
+	src  sources
+}
+
+func runInitScenario(t *testing.T, i int) initRun {
+	t.Helper()
+	tt := initScenarios[i]
+	src := newSources(t)
+	env := src.env
+	switch {
+	case tt.noCredentials:
+		env = nil
+	case tt.only != nil:
+		env = map[string]string{}
+		for _, k := range tt.only {
+			env[k] = src.env[k]
+		}
 	}
-	for _, tt := range tests {
+	dir := t.TempDir()
+	out, err := runInitIn(t, dir, initCall{args: append(src.apis(), tt.args...), env: env})
+	if err != nil {
+		t.Fatalf("init = %v\n%s", err, out)
+	}
+	repo, err := config.Load(filepath.Join(dir, "hearsay.yaml"))
+	if err != nil {
+		t.Fatalf("config.Load(hearsay.yaml) = %v", err)
+	}
+	return initRun{dir: dir, out: out, repo: repo, src: src}
+}
+
+func TestInitWritesTheSourcesAndScopesItWasAskedFor(t *testing.T) {
+	for i, tt := range initScenarios {
 		t.Run(tt.name, func(t *testing.T) {
-			src := newSources(t)
-			env := src.env
-			switch {
-			case tt.noCredentials:
-				env = nil
-			case tt.only != nil:
-				env = map[string]string{}
-				for _, k := range tt.only {
-					env[k] = src.env[k]
-				}
-			}
-			dir := t.TempDir()
-			out, err := runInitIn(t, dir, initCall{args: append(src.apis(), tt.args...), env: env})
-			if err != nil {
-				t.Fatalf("init = %v\n%s", err, out)
-			}
-			for _, line := range tt.wantOutput {
-				if !strings.Contains(out, line) {
-					t.Errorf("output does not say %q:\n%s", line, out)
-				}
-			}
-
-			repo, err := config.Load(filepath.Join(dir, "hearsay.yaml"))
-			if err != nil {
-				t.Fatalf("config.Load(hearsay.yaml) = %v", err)
-			}
-			if got := sourceIDs(repo); !slices.Equal(got, tt.wantSources) {
+			run := runInitScenario(t, i)
+			if got := sourceIDs(run.repo); !slices.Equal(got, tt.wantSources) {
 				t.Errorf("sources = %q, want %q", got, tt.wantSources)
 			}
-			if got := scopeIDs(repo); !slices.Equal(got, tt.wantScopes) {
+			if got := scopeIDs(run.repo); !slices.Equal(got, tt.wantScopes) {
 				t.Errorf("scopes = %q, want %q", got, tt.wantScopes)
 			}
+		})
+	}
+}
+
+func TestInitSeedsPrincipalsOnlyFromWhatTheSourcesConfirm(t *testing.T) {
+	for i, tt := range initScenarios {
+		t.Run(tt.name, func(t *testing.T) {
+			run := runInitScenario(t, i)
+			for _, line := range tt.wantOutput {
+				if !strings.Contains(run.out, line) {
+					t.Errorf("output does not say %q:\n%s", line, run.out)
+				}
+			}
 			got := map[string]person{}
-			for _, p := range repo.Principals {
+			for _, p := range run.repo.Principals {
 				if p.Kind != principal.KindHuman {
 					t.Errorf("principal %q is a %s, want a human", p.ID, p.Kind)
 				}
@@ -425,16 +413,20 @@ func TestInitWritesAValidConfiguration(t *testing.T) {
 					t.Errorf("principal %q was written, and is not wanted", id)
 				}
 			}
-			if first := repo.Principals[0].ID; first != "kyle" {
+			if first := run.repo.Principals[0].ID; first != "kyle" {
 				t.Errorf("the first principal is %q, want the operator", first)
 			}
+		})
+	}
+}
 
-			// The env file: a distinct generated token under every
-			// principal's token_env, the rest named in the configuration
-			// and empty, and nothing else.
-			keys, vars := readEnv(t, filepath.Join(dir, "hearsay.env"))
+func TestInitEnvFileHoldsAGeneratedTokenPerPrincipalAndEmptyEntries(t *testing.T) {
+	for i, tt := range initScenarios {
+		t.Run(tt.name, func(t *testing.T) {
+			run := runInitScenario(t, i)
+			keys, vars := readEnv(t, filepath.Join(run.dir, "hearsay.env"))
 			var tokens []string
-			for _, p := range repo.Principals {
+			for _, p := range run.repo.Principals {
 				tok, ok := vars[p.TokenEnv]
 				if !ok || !hexToken.MatchString(tok) {
 					t.Errorf("principal %q: %s = %q in the env file, want 64 hex characters", p.ID, p.TokenEnv, tok)
@@ -453,30 +445,44 @@ func TestInitWritesAValidConfiguration(t *testing.T) {
 			if !slices.Equal(empty, tt.wantEmpty) {
 				t.Errorf("empty entries = %q, want %q", empty, tt.wantEmpty)
 			}
-			if len(keys) != len(repo.Principals)+len(tt.wantEmpty) {
+			if len(keys) != len(run.repo.Principals)+len(tt.wantEmpty) {
 				t.Errorf("env file holds %q: want a token per principal and the empty entries, and nothing else", keys)
 			}
-			for _, s := range repo.Sources {
+			for _, s := range run.repo.Sources {
 				for _, v := range s.Secrets {
 					if _, ok := vars[v]; !ok {
 						t.Errorf("source %q names %s, which the env file does not hold", s.ID, v)
 					}
 				}
 			}
-			for _, secret := range src.env {
-				if bytes.Contains(mustRead(t, filepath.Join(dir, "hearsay.env")), []byte(secret)) ||
-					bytes.Contains(mustRead(t, filepath.Join(dir, "hearsay.yaml")), []byte(secret)) {
-					t.Errorf("a credential init read with was written to a file")
+		})
+	}
+}
+
+func TestInitNeverWritesACredentialItReadWith(t *testing.T) {
+	for i, tt := range initScenarios {
+		t.Run(tt.name, func(t *testing.T) {
+			run := runInitScenario(t, i)
+			for _, name := range []string{"hearsay.env", "hearsay.yaml"} {
+				written := mustRead(t, filepath.Join(run.dir, name))
+				for _, secret := range run.src.env {
+					if bytes.Contains(written, []byte(secret)) {
+						t.Errorf("%s holds a credential init read with", name)
+					}
 				}
 			}
-			info, err := os.Stat(filepath.Join(dir, "hearsay.env"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if mode := info.Mode().Perm(); mode != 0o600 {
-				t.Errorf("env file mode = %o, want 600", mode)
-			}
 		})
+	}
+}
+
+func TestInitWritesTheEnvFileOwnerReadableOnly(t *testing.T) {
+	run := runInitScenario(t, 0)
+	info, err := os.Stat(filepath.Join(run.dir, "hearsay.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Errorf("env file mode = %o, want 600", mode)
 	}
 }
 
@@ -489,9 +495,6 @@ func mustRead(t *testing.T, path string) []byte {
 	return b
 }
 
-// The generated file writes the documented defaults out, and they are the
-// loader's: reading the file gives the authority and the model tiers a
-// configuration that leaves both out gets.
 func TestInitWritesTheLoaderDefaults(t *testing.T) {
 	dir := t.TempDir()
 	out, err := runInitIn(t, dir, initCall{args: []string{"--operator", "kyle", "--github-repo", "acme/api", "--operator-github", "kpenfound"}})
@@ -534,8 +537,6 @@ func TestInitWritesTheLoaderDefaults(t *testing.T) {
 	}
 }
 
-// Every prompt has a flag, and answering the prompts writes exactly what
-// passing the flags does. A flag given on a terminal is not asked again.
 func TestInitPromptsAndFlagsAgree(t *testing.T) {
 	src := newSources(t)
 	byFlags := t.TempDir()
@@ -544,10 +545,9 @@ func TestInitPromptsAndFlagsAgree(t *testing.T) {
 	}
 
 	tests := []struct {
-		name  string
-		args  []string
-		stdin string
-		// wantAsked are the flags whose prompts were shown.
+		name      string
+		args      []string
+		stdin     string
 		wantAsked []string
 	}{
 		{
@@ -591,8 +591,6 @@ func TestInitPromptsAndFlagsAgree(t *testing.T) {
 	}
 }
 
-// With nobody at a terminal, or with --no-input, nothing is asked: a question
-// no flag answers is skipped, and a required one is an error.
 func TestInitWithoutATerminal(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -619,7 +617,6 @@ func TestInitWithoutATerminal(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
-			// The prompts would have an answer for everything, if they were shown.
 			out, err := runInitIn(t, dir, initCall{args: tt.args, stdin: teamAnswers, terminal: tt.terminal})
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("init = %v, want an error containing %q\n%s", err, tt.wantErr, out)
@@ -634,8 +631,6 @@ func TestInitWithoutATerminal(t *testing.T) {
 	}
 }
 
-// A collaborator whose login is the id the operator chose is refused rather
-// than guessed to be them.
 func TestInitRefusesAnOperatorIDThatIsSomeoneElsesLogin(t *testing.T) {
 	src := newSources(t)
 	dir := t.TempDir()
@@ -651,8 +646,6 @@ func TestInitRefusesAnOperatorIDThatIsSomeoneElsesLogin(t *testing.T) {
 	}
 }
 
-// A credential the source refuses stops init, rather than writing a
-// configuration that quietly seeded nobody.
 func TestInitStopsOnARefusedCredential(t *testing.T) {
 	src := newSources(t)
 	src.env["HEARSAY_GITHUB_TOKEN"] = "wrong"
@@ -666,8 +659,6 @@ func TestInitStopsOnARefusedCredential(t *testing.T) {
 	}
 }
 
-// What init reads, and nothing more: the collaborators, one profile each, and
-// the Discord and Drive lookups that confirm an account.
 func TestInitReadsOnlyWhatItNeeds(t *testing.T) {
 	src := newSources(t)
 	if out, err := runInitIn(t, t.TempDir(), initCall{args: append(src.apis(), teamFlags...), env: src.env}); err != nil {
@@ -683,8 +674,6 @@ func TestInitReadsOnlyWhatItNeeds(t *testing.T) {
 	if got := src.github.requests(); !slices.Equal(got, wantGitHub) {
 		t.Errorf("GitHub requests = %q, want %q", got, wantGitHub)
 	}
-	// The member lookups: the accounts kpenfound, robinok and sam-r link, in
-	// id order. The one alex and jordan both link is not looked up.
 	wantDiscord := []string{
 		"GET /guilds/824100000000000000/members/302100000000000003",
 		"GET /guilds/824100000000000000/members/302100000000000004",
@@ -699,14 +688,11 @@ func TestInitReadsOnlyWhatItNeeds(t *testing.T) {
 	}
 }
 
-// init refuses to overwrite the configuration or the env file, and then writes
-// neither; with --force it replaces both, and the env file comes out 0600
-// whatever it was.
 func TestInitOverwrite(t *testing.T) {
 	args := []string{"--operator", "kyle", "--github-repo", "acme/api", "--operator-github", "kpenfound"}
 	tests := []struct {
 		name     string
-		existing []string // files that exist before init runs
+		existing []string
 		force    bool
 		wantErr  string
 	}{
@@ -769,8 +755,6 @@ func TestInitOverwrite(t *testing.T) {
 	}
 }
 
-// The configuration and the env file must be two files, and the
-// configuration one the loader reads.
 func TestInitRefusesTargetsThatCannotWork(t *testing.T) {
 	args := []string{"--operator", "kyle", "--github-repo", "acme/api", "--operator-github", "kpenfound"}
 	tests := []struct {
@@ -797,12 +781,11 @@ func TestInitRefusesTargetsThatCannotWork(t *testing.T) {
 	}
 }
 
-// The tokens come from crypto/rand in the command, and a source of
-// randomness that fails stops init before anything is written.
-func TestInitTokens(t *testing.T) {
+var minimalInitArgs = []string{"--operator", "kyle", "--github-repo", "acme/api", "--operator-github", "kpenfound"}
+
+func TestInitTokensAre32RandomBytesInHex(t *testing.T) {
 	dir := t.TempDir()
-	args := []string{"--operator", "kyle", "--github-repo", "acme/api", "--operator-github", "kpenfound"}
-	if out, err := runInitIn(t, dir, initCall{args: args, random: rand.Reader}); err != nil {
+	if out, err := runInitIn(t, dir, initCall{args: minimalInitArgs, random: rand.Reader}); err != nil {
 		t.Fatalf("init = %v\n%s", err, out)
 	}
 	_, vars := readEnv(t, filepath.Join(dir, "hearsay.env"))
@@ -810,9 +793,11 @@ func TestInitTokens(t *testing.T) {
 	if err != nil || len(tok) != 32 {
 		t.Errorf("HEARSAY_KYLE_TOKEN = %q, want 32 random bytes in hex", vars["HEARSAY_KYLE_TOKEN"])
 	}
+}
 
+func TestInitWritesNothingWhenATokenCannotBeGenerated(t *testing.T) {
 	failing := t.TempDir()
-	_, err = runInitIn(t, failing, initCall{args: args, random: failingReader{}})
+	_, err := runInitIn(t, failing, initCall{args: minimalInitArgs, random: failingReader{}})
 	if err == nil || !strings.Contains(err.Error(), "generating an API token") {
 		t.Fatalf("init = %v, want the failure", err)
 	}
@@ -821,20 +806,38 @@ func TestInitTokens(t *testing.T) {
 	}
 }
 
-func TestInitSlackPromptsFlagsAndEmailMatches(t *testing.T) {
-	github := serveFixtures(t, "github", "Bearer gh-token")
-	slack := serveFixtures(t, "slack", "Bearer xoxb-fixture")
-	base := []string{"--github-api-url", github.URL, "--slack-api-url", slack.URL,
+var slackEnv = map[string]string{"HEARSAY_GITHUB_TOKEN": "gh-token", "HEARSAY_SLACK_BOT_TOKEN": "xoxb-fixture"}
+
+func slackFlagArgs(github, slack *fixtures) []string {
+	return []string{"--github-api-url", github.URL, "--slack-api-url", slack.URL,
 		"--operator", "kyle", "--github-repo", "acme/api", "--operator-github", "kpenfound"}
-	flags := append(slices.Clone(base), "--slack-workspace", "TWORK123", "--slack-channel", "CGOOD123")
-	env := map[string]string{"HEARSAY_GITHUB_TOKEN": "gh-token", "HEARSAY_SLACK_BOT_TOKEN": "xoxb-fixture"}
-	byFlags := t.TempDir()
-	if out, err := runInitIn(t, byFlags, initCall{args: flags, env: env}); err != nil {
+}
+
+func slackFixtures(t *testing.T) (github, slack *fixtures) {
+	t.Helper()
+	return serveFixtures(t, "github", "Bearer gh-token"), serveFixtures(t, "slack", "Bearer xoxb-fixture")
+}
+
+func initSlackByFlags(t *testing.T, github, slack *fixtures) (string, config.Repo) {
+	t.Helper()
+	dir := t.TempDir()
+	flags := append(slackFlagArgs(github, slack), "--slack-workspace", "TWORK123", "--slack-channel", "CGOOD123")
+	if out, err := runInitIn(t, dir, initCall{args: flags, env: slackEnv}); err != nil {
 		t.Fatalf("flags: %v\n%s", err, out)
 	}
+	repo, err := config.Load(filepath.Join(dir, "hearsay.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir, repo
+}
+
+func TestInitSlackPromptsAgreeWithFlags(t *testing.T) {
+	github, slack := slackFixtures(t)
+	byFlags, _ := initSlackByFlags(t, github, slack)
 	byPrompts := t.TempDir()
 	answers := "\n\nTWORK123\nCGOOD123\n\n\n"
-	out, err := runInitIn(t, byPrompts, initCall{args: base, env: env, terminal: true, stdin: answers})
+	out, err := runInitIn(t, byPrompts, initCall{args: slackFlagArgs(github, slack), env: slackEnv, terminal: true, stdin: answers})
 	if err != nil {
 		t.Fatalf("prompts: %v\n%s", err, out)
 	}
@@ -846,10 +849,11 @@ func TestInitSlackPromptsFlagsAndEmailMatches(t *testing.T) {
 	if !strings.Contains(out, "[--slack-workspace]") || !strings.Contains(out, "[--slack-channel]") {
 		t.Errorf("Slack prompts absent: %s", out)
 	}
-	repo, err := config.Load(filepath.Join(byFlags, "hearsay.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
+}
+
+func TestInitSlackSourceNamesItsSecretVariablesAndJoinsEveryScope(t *testing.T) {
+	github, slack := slackFixtures(t)
+	_, repo := initSlackByFlags(t, github, slack)
 	if got := sourceIDs(repo); !slices.Equal(got, []string{"github", "slack"}) {
 		t.Errorf("sources = %q", got)
 	}
@@ -861,6 +865,11 @@ func TestInitSlackPromptsFlagsAndEmailMatches(t *testing.T) {
 			t.Errorf("scope %s lacks Slack", scope.ID)
 		}
 	}
+}
+
+func TestInitSlackIdentitiesComeFromAUniqueEmailOnBothSides(t *testing.T) {
+	github, slack := slackFixtures(t)
+	_, repo := initSlackByFlags(t, github, slack)
 	want := map[string]string{"kyle": "UKYLE123", "robinok": "UROBIN12"}
 	for _, person := range repo.Principals {
 		var id string
@@ -873,40 +882,58 @@ func TestInitSlackPromptsFlagsAndEmailMatches(t *testing.T) {
 			t.Errorf("%s Slack identity = %q, want %q", person.ID, id, want[person.ID])
 		}
 	}
-	_, vars := readEnv(t, filepath.Join(byFlags, "hearsay.env"))
+}
+
+func TestInitSlackNeverWritesTheTokenItReadWith(t *testing.T) {
+	github, slack := slackFixtures(t)
+	dir, _ := initSlackByFlags(t, github, slack)
+	_, vars := readEnv(t, filepath.Join(dir, "hearsay.env"))
 	if vars["HEARSAY_SLACK_APP_TOKEN"] != "" || vars["HEARSAY_SLACK_BOT_TOKEN"] != "" {
 		t.Errorf("Slack credentials were written: %v", vars)
 	}
-	if bytes.Contains(mustRead(t, filepath.Join(byFlags, "hearsay.env")), []byte("xoxb-fixture")) {
+	if bytes.Contains(mustRead(t, filepath.Join(dir, "hearsay.env")), []byte("xoxb-fixture")) {
 		t.Error("fetched credential was written")
 	}
-	if st, err := os.Stat(filepath.Join(byFlags, "hearsay.env")); err != nil || st.Mode().Perm() != 0o600 {
+	if st, err := os.Stat(filepath.Join(dir, "hearsay.env")); err != nil || st.Mode().Perm() != 0o600 {
 		t.Errorf("env mode: %v, %v", st, err)
 	}
 }
 
-func TestInitSlackSkippedNoInputAndPrivateChannel(t *testing.T) {
-	base := []string{"--operator", "kyle", "--github-repo", "acme/api", "--operator-github", "kpenfound"}
-	if out, err := runInitIn(t, t.TempDir(), initCall{args: append([]string{"--no-input"}, base...), terminal: true}); err != nil || strings.Contains(out, "[--slack-") {
+func TestInitSlackSkippedAsksNothingAboutSlack(t *testing.T) {
+	out, err := runInitIn(t, t.TempDir(), initCall{args: append([]string{"--no-input"}, minimalInitArgs...), terminal: true})
+	if err != nil || strings.Contains(out, "[--slack-") {
 		t.Errorf("skipped Slack: %v\n%s", err, out)
 	}
-	bad := append(slices.Clone(base), "--slack-workspace", "TWORK123")
-	if _, err := runInitIn(t, t.TempDir(), initCall{args: bad}); err == nil || !strings.Contains(err.Error(), "slack-channel") {
-		t.Errorf("missing channels = %v", err)
-	}
-	bad = append(slices.Clone(base), "--slack-channel", "CGOOD123")
-	if _, err := runInitIn(t, t.TempDir(), initCall{args: bad}); err == nil || !strings.Contains(err.Error(), "Slack is skipped") {
-		t.Errorf("orphaned channel = %v", err)
-	}
+}
+
+func TestInitSlackRefusals(t *testing.T) {
 	slack := serveFixtures(t, "slack", "Bearer xoxb-fixture")
-	bad = append(slices.Clone(base), "--slack-api-url", slack.URL, "--slack-workspace", "TWORK123", "--slack-channel", "CPRIVATE1")
-	dir := t.TempDir()
-	_, err := runInitIn(t, dir, initCall{args: bad, env: map[string]string{"HEARSAY_SLACK_BOT_TOKEN": "xoxb-fixture"}})
-	if err == nil || !strings.Contains(err.Error(), "private channel") {
-		t.Errorf("private channel = %v", err)
+	tests := []struct {
+		name    string
+		args    []string
+		env     map[string]string
+		wantErr string
+	}{
+		{name: "a workspace without channels", args: []string{"--slack-workspace", "TWORK123"}, wantErr: "slack-channel"},
+		{name: "a channel without a workspace", args: []string{"--slack-channel", "CGOOD123"}, wantErr: "Slack is skipped"},
+		{
+			name:    "a private channel",
+			args:    []string{"--slack-api-url", slack.URL, "--slack-workspace", "TWORK123", "--slack-channel", "CPRIVATE1"},
+			env:     map[string]string{"HEARSAY_SLACK_BOT_TOKEN": "xoxb-fixture"},
+			wantErr: "private channel",
+		},
 	}
-	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
-		t.Errorf("wrote files for private channel: %v", entries)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			_, err := runInitIn(t, dir, initCall{args: append(slices.Clone(minimalInitArgs), tt.args...), env: tt.env})
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("init = %v, want an error containing %q", err, tt.wantErr)
+			}
+			if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+				t.Errorf("init wrote %v, want nothing", entries)
+			}
+		})
 	}
 }
 
@@ -931,22 +958,20 @@ func TestInitSlackWithoutCredentialsOrGitHub(t *testing.T) {
 		t.Errorf("missing credential note absent: %s", out)
 	}
 	_, vars := readEnv(t, filepath.Join(dir, "hearsay.env"))
-	if _, ok := vars["HEARSAY_SLACK_APP_TOKEN"]; !ok {
-		t.Error("app variable absent")
-	}
-	if _, ok := vars["HEARSAY_SLACK_BOT_TOKEN"]; !ok {
-		t.Error("bot variable absent")
+	for _, name := range []string{"HEARSAY_SLACK_APP_TOKEN", "HEARSAY_SLACK_BOT_TOKEN"} {
+		if _, ok := vars[name]; !ok {
+			t.Errorf("%s absent from the env file", name)
+		}
 	}
 }
 
 func TestInitSlackAmbiguousEmailOnBothSides(t *testing.T) {
-	github := serveFixtures(t, "github", "Bearer gh-token")
-	slack := serveFixtures(t, "slack", "Bearer xoxb-fixture")
+	github, slack := slackFixtures(t)
 	args := []string{"--github-api-url", github.URL, "--slack-api-url", slack.URL,
 		"--operator", "kyle", "--github-repo", "acme/api,acme/infra", "--operator-github", "kpenfound",
 		"--slack-workspace", "TWORK123", "--slack-channel", "CGOOD123"}
 	dir := t.TempDir()
-	out, err := runInitIn(t, dir, initCall{args: args, env: map[string]string{"HEARSAY_GITHUB_TOKEN": "gh-token", "HEARSAY_SLACK_BOT_TOKEN": "xoxb-fixture"}})
+	out, err := runInitIn(t, dir, initCall{args: args, env: slackEnv})
 	if err != nil {
 		t.Fatalf("init: %v\n%s", err, out)
 	}

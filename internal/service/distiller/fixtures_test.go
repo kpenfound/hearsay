@@ -16,28 +16,9 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
-// The fixture repository: a small GitHub-shaped source, in the shapes
-// docs/connector-contract.md's GitHub table specifies, and the model answers
-// recorded for it.
-//
-// No test here calls a provider (CLAUDE.md). The answers live in
-// testdata/fixtures, keyed by the request, and the fake registry replays them;
-// a request nothing was recorded for fails loudly rather than reaching the
-// network. Change a prompt and the keys change, which is what `-record` is for:
-//
-//	go test ./internal/service/distiller -record
-//
-// It rewrites the file from the answers written out below, which are the part a
-// person maintains.
-
 var record = flag.Bool("record", false, "rewrite the recorded model answers in testdata/fixtures")
 
 const (
-	// source is the configured source instance the recording was made from.
-	// The request a document produces does not depend on it — a document
-	// attributes its lines to principals, not to sources — which is what lets
-	// an integration test take a source id of its own and still hit the
-	// recording. There is a test that says so.
 	source = "github-acme"
 	repo   = "acme/api"
 	commit = repo + "@1f0e3dad99908345f7439f8ffabdffc4"
@@ -86,16 +67,12 @@ func reply(ev connector.Event, root string) connector.Event {
 	return ev
 }
 
-// The three artifacts the fixture repository holds, and the document each one
-// makes.
 const (
 	issueID  = "l1:" + source + ":" + repo + "#12"
 	prID     = "l1:" + source + ":" + repo + "#31"
 	commitID = "l1:" + source + ":" + commit
 )
 
-// fixtureEvents is the repository as it first arrives: an issue with two
-// comments, a change proposal with a review and a comment, and a commit.
 func fixtureEvents(src string) []connector.Event {
 	issue := revised(event(src, connector.KindIssue, repo+"#12", at(0), who(src, "u1", "kpenfound"),
 		"engine: writes race with the job queue",
@@ -120,19 +97,13 @@ func fixtureEvents(src string) []connector.Event {
 	return []connector.Event{issue, issueComment, issueAnswer, pr, review, reviewComment, commitEvent}
 }
 
-// laterComment is what arrives after the repository has been distilled once: a
-// new event on an artifact that already has a document, which is what makes the
-// distiller re-distil.
 func laterComment(src string) connector.Event {
 	return reply(event(src, connector.KindMessage, repo+"#31:comment:99", at(8), who(src, "u1", "kpenfound"),
 		"", "Merged. The job queue is #40."), repo+"#31")
 }
 
-// retractedComment is the issue comment a test deletes at the source.
 const retractedComment = repo + "#12:comment:1"
 
-// pastedSecret is what samr pastes into the issue, and secretComment the
-// comment that carries it: the one an operator deletes from Hearsay.
 const (
 	pastedSecret    = "tangerine-otter-42"
 	secretCommentID = repo + "#12:comment:3"
@@ -143,8 +114,6 @@ func secretComment(src string) connector.Event {
 		"", "For staging, the vault passphrase is "+pastedSecret+"."), repo+"#12")
 }
 
-// without is a state of the repository with every event of one artifact gone,
-// which is what L0 reads as once a tombstone covers it.
 func without(events []connector.Event, artifact string) []connector.Event {
 	var kept []connector.Event
 	for _, ev := range events {
@@ -155,7 +124,6 @@ func without(events []connector.Event, artifact string) []connector.Event {
 	return kept
 }
 
-// testRepo is the configuration the fixture repository is distilled against.
 func testRepo(src string) config.Repo {
 	return config.Repo{
 		Path:   "testdata",
@@ -191,11 +159,6 @@ func testRepo(src string) config.Repo {
 	}
 }
 
-// answers are the model's replies, one per document, written by hand. They are
-// what a person maintains: `-record` turns them into the fixture file, keyed by
-// the request the distiller would send. Each keeps the outcome kind its document
-// is meant to have beside them; that is Jev's to answer, not the model's, and
-// the recording leaves it out (modelAnswer).
 var answers = map[string]map[string]any{
 	issueID: {
 		"summary":        "The engine writes before taking the lock, which races with the job queue. Two people confirmed it, and the author said they would send a change.",
@@ -219,8 +182,6 @@ var answers = map[string]map[string]any{
 	},
 }
 
-// answersAfterRetraction are the replies once samr's comment on the issue has
-// been deleted at the source: the model sees one person, and says so.
 var answersAfterRetraction = map[string]map[string]any{
 	issueID: {
 		"summary":        "The engine writes before taking the lock, which races with the job queue. The author said they would send a change.",
@@ -231,8 +192,6 @@ var answersAfterRetraction = map[string]map[string]any{
 	},
 }
 
-// The issue was revised to ask an open question; its prior decision no longer
-// has an asserting document behind it.
 var answersWithoutDecision = map[string]map[string]any{
 	issueID: {
 		"summary":        "The engine's write order is being investigated again.",
@@ -249,9 +208,6 @@ func issueWithoutDecision(src string) connector.Event {
 	return issue
 }
 
-// answersWithSecret are the replies while the pasted secret is on the issue.
-// The model repeats it, so the document's text holds it as well as its raw
-// text, and an operator deletion has to take it out of both.
 var answersWithSecret = map[string]map[string]any{
 	issueID: {
 		"summary":        "The engine writes before taking the lock, which races with the job queue. Two people confirmed it, the author said they would send a change, and samr shared the staging vault passphrase " + pastedSecret + ".",
@@ -262,12 +218,8 @@ var answersWithSecret = map[string]map[string]any{
 	},
 }
 
-// fixturePath is the recorded file, checked in.
 func fixturePath() string { return filepath.Join("testdata", "fixtures", "github.json") }
 
-// loadFixtures reads the recorded answers. A file that is not there, or that
-// does not cover what a test asks for, is a prompt that changed without being
-// re-recorded.
 func loadFixtures(t *testing.T) *llm.Fixtures {
 	t.Helper()
 	fx, err := llm.LoadFixtures(os.DirFS(filepath.Dir(fixturePath())))
@@ -280,8 +232,6 @@ func loadFixtures(t *testing.T) *llm.Fixtures {
 	return fx
 }
 
-// newFakeRegistry is the registry every test here runs on: the real registry,
-// with the network replaced by the recorded answers.
 func newFakeRegistry(t *testing.T) llm.Registry {
 	t.Helper()
 	registry, err := llm.NewFake(testRepo(source).LLM, loadFixtures(t))
@@ -291,15 +241,9 @@ func newFakeRegistry(t *testing.T) llm.Registry {
 	return registry
 }
 
-// TestRecordFixtures rewrites the recorded answers from the events and the
-// replies above. It is a test so that it runs with the package's own imports
-// and helpers; without `-record` it checks that what is on disk is what this
-// would write, which is what catches a prompt edited without re-recording.
 func TestRecordFixtures(t *testing.T) {
 	file := llm.FixtureFile{}
-	// One recording per distinct request. Two states of the repository ask the
-	// same question about an artifact nothing happened to, and a fixture set
-	// with the same request in it twice is one the fake refuses to load.
+
 	seen := map[string]bool{}
 	for _, state := range fixtureStates() {
 		for _, doc := range documentsIn(t, state.events) {
@@ -341,10 +285,6 @@ func TestRecordFixtures(t *testing.T) {
 		return
 	}
 
-	// Without -record this is the check that the file on disk is the one this
-	// package would write. A prompt or a fixture event edited without
-	// re-recording fails here, where it says what to do, rather than as a
-	// fixture miss in every test that distils.
 	onDisk, err := os.ReadFile(fixturePath())
 	if err != nil {
 		t.Fatalf("reading %s: %v\nrun `go test ./internal/service/distiller -record`", fixturePath(), err)
@@ -353,9 +293,6 @@ func TestRecordFixtures(t *testing.T) {
 		t.Fatalf("%s is not what this package would record: run `go test ./internal/service/distiller -record`", fixturePath())
 	}
 
-	// And that the fake can answer every one of them. The registry validates a
-	// recorded answer against the schema its request asked for, so this also
-	// says the answers written down above are answers this build would accept.
 	completer, err := newFakeRegistry(t).Completer(llm.TierDistill)
 	if err != nil {
 		t.Fatalf("resolving the distill tier: %v", err)
@@ -367,25 +304,16 @@ func TestRecordFixtures(t *testing.T) {
 	}
 }
 
-// distillBudget is the answer budget the distill tier is configured with, which
-// the registry fills in before the adapter sees a request — so it is part of
-// what a recording is keyed on.
 func distillBudget() int {
 	tier, _ := testRepo(source).LLM.Tier(llm.TierDistill)
 	return tier.MaxTokens
 }
 
-// fixtureState is one state of the fixture repository, and the answers that
-// differ from [answers] in it.
 type fixtureState struct {
 	events  []connector.Event
 	answers map[string]map[string]any
 }
 
-// fixtureStates are the states of the fixture repository a test distils: as it
-// first arrives, after a later comment lands on the change proposal, after a
-// comment on the issue is deleted at the source, and with a secret pasted on
-// the issue — which, once an operator deletes it, is the first state again.
 func fixtureStates() []fixtureState {
 	base := fixtureEvents(source)
 	return []fixtureState{
@@ -397,9 +325,6 @@ func fixtureStates() []fixtureState {
 	}
 }
 
-// documentsIn builds the documents one state of the repository makes, the same
-// way the distiller does: the current revision of each artifact, with the
-// events that hang off it.
 func documentsIn(t *testing.T, events []connector.Event) []l1.Document {
 	t.Helper()
 	if len(events) == 0 {

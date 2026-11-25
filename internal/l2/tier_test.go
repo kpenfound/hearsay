@@ -16,7 +16,6 @@ func TestStand(t *testing.T) {
 	st := func(id, doc string, at time.Time, supersedes string, j l2.Judgement) l2.Stance {
 		return l2.Stance{ID: id, Evidence: []string{doc}, StatedAt: at, Supersedes: supersedes, Judgement: j}
 	}
-	// asserted is a stance an agent wrote through the API, citing a document.
 	asserted := func(id, doc string, at time.Time, supersedes string) l2.Stance {
 		s := st(id, doc, at, supersedes, "")
 		s.Assertion = "evt:hearsay:assertion:" + id
@@ -54,10 +53,9 @@ func TestStand(t *testing.T) {
 		policy   config.Policy
 		ratified []string
 		demoted  []string
-		// hidden is the stances the reader may not read.
-		hidden []string
-		want   string
-		tier   l2.Tier
+		hidden   []string
+		want     string
+		tier     l2.Tier
 	}{
 		{name: "no stance", policy: def},
 		{

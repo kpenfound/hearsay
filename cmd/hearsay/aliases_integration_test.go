@@ -4,34 +4,26 @@ package main
 
 import (
 	"bytes"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
-	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 )
 
 func TestAliasOperatorCommands(t *testing.T) {
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	cfg := writeConfig(t, map[string]string{
+	cfg := configtest.Write(t, map[string]string{
 		"sources/github.yaml":      "id: github\ntype: github\ncontainers: [acme/api]\n",
 		"scopes/api.yaml":          "id: api\nsources: [github]\n",
 		"principals/kyle.yaml":     "id: kyle\nidentities: [{source: github, native_id: u1}]\n",
 		"principals/outsider.yaml": "id: outsider\nidentities: [{source: github, native_id: u2}]\n",
 	})
-	pool, err := db.Connect(t.Context(), url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
+	pool := dbtest.Pool(t)
 	graph := l2.New(pool)
 	src := "aliascli" + time.Now().Format("20060102150405000000000")
 	entity := "code:" + src + ":engine"

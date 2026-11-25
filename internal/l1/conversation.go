@@ -78,8 +78,6 @@ type ConversationLine struct {
 	Interrupted bool
 }
 
-// conversationNative is the part of payload.native a line is read from
-// (docs/connector-contract.md, "Conversation (Kern)").
 type conversationNative struct {
 	Role        string `json:"role"`
 	Interrupted bool   `json:"interrupted"`
@@ -97,8 +95,6 @@ func ConversationLines(messages []connector.Event) []ConversationLine {
 	for _, ev := range ordered {
 		var native conversationNative
 		if len(ev.Payload.Native) != 0 {
-			// A native object that does not read leaves the line the agent's:
-			// words whose author cannot be established are never the owner's.
 			_ = json.Unmarshal(ev.Payload.Native, &native)
 		}
 		owner := native.Role == "owner" && ev.Payload.Author != nil && ev.Payload.Author.Kind == connector.IdentityUser
@@ -165,8 +161,6 @@ func BuildConversationSegments(source, thread string, lines []ConversationLine, 
 				return nil, fmt.Errorf("%w: message %s is not in conversation %s of source %s", ErrInvalidDocument, line.Event.NativeID, thread, source)
 			}
 		}
-		// The fold keeps the first line's list narrowed by each later one, and
-		// leaves out a line that would narrow it to nothing.
 		first := quoted[0].Event
 		events := make([]connector.Event, len(quoted))
 		for i, line := range quoted {
@@ -205,8 +199,6 @@ func BuildConversationSegments(source, thread string, lines []ConversationLine, 
 	return docs, nil
 }
 
-// conversationTimes is when the topic began and when it last moved: the first
-// and last of the messages it quotes.
 func conversationTimes(events []connector.Event) Times {
 	first, last := events[0].Time.UTC(), events[0].Time.UTC()
 	for _, ev := range events[1:] {
@@ -219,8 +211,6 @@ func conversationTimes(events []connector.Event) Times {
 	return Times{Created: first, Updated: last, LastActivity: last}
 }
 
-// conversationParticipants are the principals who spoke: the owner as author
-// and the agent as agent, whichever spoke first.
 func conversationParticipants(quoted []ConversationLine, resolver *principal.Resolver) []Participant {
 	roles := map[string]connector.ParticipantRole{}
 	for _, line := range quoted {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/deletion"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
@@ -24,7 +25,7 @@ func TestOperatorDeletionRemovesJudgmentsAndObservations(t *testing.T) {
 	}
 }
 func testJournalDeletion(t *testing.T, topology string) {
-	pool := scratch(t)
+	pool := dbtest.Scratch(t, "deletion")
 	ctx := t.Context()
 	event := connector.Event{Source: "chat", NativeID: "secret", Kind: connector.KindMessage, Time: time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC), Payload: connector.Payload{Artifact: "secret", Author: &connector.Identity{Source: "chat", Kind: connector.IdentityUser, NativeID: "alice"}, Container: connector.Container{Kind: connector.ContainerChannel, NativeID: "channel"}, Text: "private-source-evidence"}, ACL: connector.ACL{{Kind: connector.ACLPublic}}}
 	if _, err := l0.New(pool).Append(ctx, event); err != nil {
@@ -75,7 +76,13 @@ func testJournalDeletion(t *testing.T, topology string) {
 	record := l1.JudgmentRecord{ID: "committed", Task: "stance.same_answer", QuestionVersion: "v1", QuestionHash: "question-hash", Inputs: inputs, ModelVersion: "version", Mode: "accepted", Policy: "policy", Outcome: "answer", Label: "yes"}
 	attempt := record
 	attempt.ID = "interrupted"
-	if _, err = store.BeginJudgment(ctx, attempt); err != nil {
+	key := l1.JudgmentKey{Task: record.Task, Version: record.QuestionVersion, QuestionHash: record.QuestionHash}
+	lookup := func(reader l1.Reader) (bool, error) {
+		found, err := store.LookupJudgments(ctx, reader, []l1.JudgmentKey{key}, inputs)
+		_, ok := found[key]
+		return ok, err
+	}
+	if _, err = store.BeginJudgments(ctx, []l1.JudgmentRecord{attempt}); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := pool.Begin(ctx)
@@ -99,8 +106,6 @@ func testJournalDeletion(t *testing.T, topology string) {
 			_, e := deletion.Apply(deletionContext, pool, repo, deletion.Selector{Event: "evt:chat:secret"}, "remove evidence", "operator")
 			finished <- e
 		}()
-		// Observe the actual waiter, rather than sleeping and assuming that
-		// deletion has reached its lock or established its first snapshot.
 		deadline := time.NewTimer(3 * time.Second)
 		defer deadline.Stop()
 		ticker := time.NewTicker(time.Millisecond)
@@ -153,9 +158,9 @@ func testJournalDeletion(t *testing.T, topology string) {
 			if err != nil || len(obs) != reader.want/2 {
 				t.Fatalf("observations = %d, %v", len(obs), err)
 			}
-			got, err := store.LookupJudgment(ctx, reader.r, record.Task, record.QuestionVersion, record.QuestionHash, inputs)
-			if err != nil || (got != nil) != (reader.want > 0) {
-				t.Fatalf("lookup = %+v, %v", got, err)
+			found, err := lookup(reader.r)
+			if err != nil || found != (reader.want > 0) {
+				t.Fatalf("lookup found = %v, %v", found, err)
 			}
 		})
 	}
@@ -178,10 +183,10 @@ func testJournalDeletion(t *testing.T, topology string) {
 			t.Fatalf("%s retained %d rows: %v", table, n, err)
 		}
 	}
-	if got, err := store.LookupJudgment(ctx, inside, record.Task, record.QuestionVersion, record.QuestionHash, inputs); err != nil || got != nil {
-		t.Fatalf("deleted lookup = %+v, %v", got, err)
+	if found, err := lookup(inside); err != nil || found {
+		t.Fatalf("deleted lookup found = %v, %v", found, err)
 	}
-	if _, err = store.BeginJudgment(ctx, attempt); !errors.Is(err, l1.JournalInputsChanged) {
+	if _, err = store.BeginJudgments(ctx, []l1.JudgmentRecord{attempt}); !errors.Is(err, l1.JournalInputsChanged) {
 		t.Fatalf("deleted attempt recreated = %v", err)
 	}
 }

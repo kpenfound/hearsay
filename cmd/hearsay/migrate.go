@@ -17,15 +17,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
-// databaseFlag registers --database-url on a subcommand that needs Postgres and
-// returns the function that resolves it once the flags are parsed: the flag
-// where it was given, HEARSAY_DATABASE_URL otherwise. Prefer the variable — a
-// URL on the command line carries its password into the process list, which is
-// why the Dagger module passes it as a secret.
-//
-// The variable is deliberately not the flag's *default*: flag.PrintDefaults
-// prints defaults, so `hearsay l0 --help` on a machine that has the variable set
-// would print the password in it.
 func databaseFlag(fs *flag.FlagSet, cfg *config.Config) func() {
 	flagged := fs.String("database-url", "", "Postgres connection URL; also HEARSAY_DATABASE_URL")
 	return func() {
@@ -36,23 +27,15 @@ func databaseFlag(fs *flag.FlagSet, cfg *config.Config) func() {
 	}
 }
 
-// runMigrate applies the embedded goose migrations. It is a job that
-// runs and exits, never something a service does on startup: four containers
-// start against one database in no particular order, so migrating is a
-// deployment step of its own.
 func runMigrate(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, cfg, _ := newFlagSet("migrate", stderr)
 	resolveDatabase := databaseFlag(fs, cfg)
-	// `down` destroys what the migration held, so it takes a second word from
-	// whoever runs it. Recovery in production is a restore.
 	iKnow := fs.Bool("i-know", false, "for down: yes, roll back the last migration and lose what it held")
 	action, actionArgs, err := parseAction(fs, args, "up")
 	if err != nil {
 		return err
 	}
 	resolveDatabase()
-	// Work out what to do before opening anything, so that a typo in the action
-	// is a typo rather than a connection failure.
 	do, err := migrateAction(fs, action, actionArgs, iKnow)
 	if err != nil {
 		return err
@@ -70,8 +53,6 @@ func runMigrate(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	return do(ctx, migrator, stdout)
 }
 
-// migrateAction turns the action word and what follows it into the work to do.
-// It is the one place the vocabulary lives.
 func migrateAction(fs *flag.FlagSet, action string, args []string, iKnow *bool) (func(context.Context, *db.Migrator, io.Writer) error, error) {
 	switch action {
 	case "up":
@@ -122,17 +103,6 @@ func migrateAction(fs *flag.FlagSet, action string, args []string, iKnow *bool) 
 	}
 }
 
-// parseAction handles the flags-anywhere parsing every subcommand with an action
-// word needs. `hearsay migrate --database-url x status`,
-// `hearsay migrate status --database-url x` and
-// `hearsay l0 get <id> --database-url x` are all things people type; flag stops
-// at the first word that is not a flag, so the only way to see every flag is to
-// go round again after each word. It returns the action — the first word, or
-// fallback when there is none — and the words after it.
-//
-// A flag left unparsed would land in NArg and be reported as a stray argument,
-// which is the wrong problem: the two actions that take an argument would say
-// "takes one argument" about a command line that gave one.
 func parseAction(fs *flag.FlagSet, argv []string, fallback string) (action string, args []string, err error) {
 	words, err := parseWords(fs, argv)
 	if err != nil {
@@ -144,11 +114,6 @@ func parseAction(fs *flag.FlagSet, argv []string, fallback string) (action strin
 	return words[0], words[1:], nil
 }
 
-// parseWords parses argv into the flag set and returns the positional words in
-// order. `--` ends the flags for good, so everything behind it is a word even
-// if it looks like one; splitting on it up front, before the loop that lets a
-// flag follow a word, means a flag earlier in the same round cannot make the
-// loop consume it and re-parse what comes after as flags.
 func parseWords(fs *flag.FlagSet, argv []string) ([]string, error) {
 	head, tail := argv, []string(nil)
 	if i := slices.Index(argv, "--"); i >= 0 {
@@ -167,8 +132,6 @@ func parseWords(fs *flag.FlagSet, argv []string) ([]string, error) {
 	}
 }
 
-// checkArgs rejects a word after an action that takes none, and any flag the
-// action does not read.
 func checkArgs(fs *flag.FlagSet, action string, args []string, reads ...string) error {
 	if len(args) > 0 {
 		return fmt.Errorf("unexpected argument %q: %s takes none", args[0], action)
@@ -176,11 +139,6 @@ func checkArgs(fs *flag.FlagSet, action string, args []string, reads ...string) 
 	return checkFlags(fs, action, reads...)
 }
 
-// commonFlags are the flags every subcommand has and every action of one uses:
-// the logger's, and the database for the subcommands that open one. Everything
-// else belongs to an action, and a flag set on an action that does not read it
-// is an error rather than a no-op — a filter silently dropped is a wrong answer
-// nobody has a reason to doubt.
 var commonFlags = []string{"log-level", "log-format", "database-url"}
 
 func checkFlags(fs *flag.FlagSet, action string, reads ...string) error {
@@ -188,8 +146,6 @@ func checkFlags(fs *flag.FlagSet, action string, reads ...string) error {
 	for _, name := range append(commonFlags, reads...) {
 		read[name] = true
 	}
-	// Visit walks the flags that were *set*, so a default nobody asked for —
-	// --config's HEARSAY_CONFIG, for one — is not an error.
 	var ignored []string
 	fs.Visit(func(f *flag.Flag) {
 		if !read[f.Name] {
@@ -202,10 +158,6 @@ func checkFlags(fs *flag.FlagSet, action string, reads ...string) error {
 	return nil
 }
 
-// report prints what a run applied and where the schema ended up. A run that
-// applied nothing still says the version, so that `up` on a current database
-// answers the question it was asked. Reading the version back never replaces
-// the error that got us here.
 func report(ctx context.Context, w io.Writer, migrator *db.Migrator, applied []db.Applied, err error) error {
 	if len(applied) > 0 {
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
@@ -247,14 +199,6 @@ func printStatus(ctx context.Context, migrator *db.Migrator, w io.Writer) error 
 	return nil
 }
 
-// migrateForDev is the one place a service command migrates rather than
-// verifying: `hearsay all` is local development only, so it
-// runs `migrate up` for itself because a local database is nobody's
-// production. Every other command that reads the database verifies the schema
-// and refuses one that is behind.
-//
-// It is called with a database: `all` runs the distiller, which reads L0 and
-// writes L1, so the command refuses without one before it gets here.
 func migrateForDev(ctx context.Context, cfg *config.Config) error {
 	log := telemetry.Logger(ctx)
 	migrator, err := db.NewMigrator(ctx, cfg.Database.URL, log)

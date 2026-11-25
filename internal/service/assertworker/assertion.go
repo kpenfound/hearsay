@@ -17,7 +17,7 @@ import (
 
 // IsAssertion reports whether an assert job's target is an L0 `assertion`
 // event, which the API enqueues, rather than an L1 document, which the
-// distiller does. An L1 id is never an event id.
+// distiller does.
 func IsAssertion(target string) bool {
 	_, _, err := connector.ParseEventID(target)
 	return err == nil
@@ -48,20 +48,16 @@ func AppendAssertion(ctx context.Context, pool *pgxpool.Pool, authority config.A
 	written := false
 	err = pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		w := l2.New(tx)
-		// Its stance's id is derived from the topic it is written on, which
-		// an operation can change between two runs of one job.
+
 		if done, err := w.AssertionAppended(ctx, ev.ID); err != nil || done {
 			return err
 		}
-		// The topic the agent named as it is now: one merged away since is
-		// the topic it went into.
+
 		topic, err := w.Topic(ctx, as.Topic)
 		if err != nil {
 			return err
 		}
 		if topic.Scope != scope {
-			// The queue serializes on the job's key, and a topic is only
-			// written under its own (l2.ScopeKey).
 			return fmt.Errorf("assertion %s is on topic %s in scope %q, but was enqueued under %q", eventID, topic.ID, topic.Scope, scope)
 		}
 		if topic, err = w.Target(ctx, topic.ID, ev.ACL, as.Evidence[0]); err != nil {
@@ -76,8 +72,7 @@ func AppendAssertion(ctx context.Context, pool *pgxpool.Pool, authority config.A
 			Evidence:  as.Evidence,
 			Assertion: ev.ID,
 			Tier:      l2.AssertedTier(authority.ForScope(scope), ev.ID),
-			// A record of what the event allowed. It is not who may read the
-			// stance: every read decides that from its evidence now.
+
 			ACL: ev.ACL,
 		}, ev.Time)
 		return err

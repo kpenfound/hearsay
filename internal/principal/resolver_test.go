@@ -2,19 +2,14 @@ package principal_test
 
 import (
 	"errors"
-	"fmt"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
-// mapping is the `principals/` a resolver is built from in these tests: two
-// people who are the same person in several sources, an agent, and a team that
-// claims a GitHub team as its identity.
 func mapping() []principal.Principal {
 	return []principal.Principal{
 		{
@@ -52,9 +47,6 @@ func mapping() []principal.Principal {
 			},
 		},
 		{
-			// A team written down the way onboarding actually writes one: the
-			// slug a person can type, and no node id. It is the only form
-			// CODEOWNERS gives.
 			ID:         "eng",
 			Kind:       principal.KindTeam,
 			Identities: []principal.Identity{{Source: "github", Handle: "acme/eng"}},
@@ -84,8 +76,6 @@ func TestResolve(t *testing.T) {
 		want:   principal.Resolved,
 		wantID: "kyle",
 	}, {
-		// The native id is what survives a rename: the source says this user
-		// now calls themselves something else, and it is still Kyle.
 		name:   "native id wins over a handle nobody claims",
 		hint:   connector.Identity{Source: "github", NativeID: "MDQ6VXNlcjE=", Handle: "kyle-p"},
 		want:   principal.Resolved,
@@ -106,8 +96,6 @@ func TestResolve(t *testing.T) {
 		want:   principal.Resolved,
 		wantID: "robin",
 	}, {
-		// A calendar attendee or a Drive file's owner arrives as an email and
-		// nothing else. It matches the handle an email was written as.
 		name:   "email matches a handle",
 		hint:   connector.Identity{Source: "drive", Handle: "", Email: "kyle@ACME.example"},
 		want:   principal.Resolved,
@@ -118,15 +106,11 @@ func TestResolve(t *testing.T) {
 		want:   principal.Resolved,
 		wantID: "shed",
 	}, {
-		// Two keys, one principal, is one match and not an ambiguity.
 		name:   "every key agrees",
 		hint:   connector.Identity{Source: "discord", NativeID: "302100000000000003", Handle: "kyle"},
 		want:   principal.Resolved,
 		wantID: "kyle",
 	}, {
-		// The mapping has fallen behind the source: robin took over a handle
-		// that is still written down as kyle's. Preferring the native id would
-		// hide it for good.
 		name:       "keys name different principals",
 		hint:       connector.Identity{Source: "discord", NativeID: "302100000000000003", Handle: "robin"},
 		want:       principal.Ambiguous,
@@ -141,8 +125,6 @@ func TestResolve(t *testing.T) {
 		hint: connector.Identity{Source: "github", Kind: connector.IdentityUser, NativeID: "MDQ6VXNlcjk5", Handle: "stranger"},
 		want: principal.Unknown,
 	}, {
-		// Matching is source-scoped: a handle in one source says nothing about
-		// a handle in another, and the mapping lists a principal per source.
 		name: "right handle, wrong source",
 		hint: connector.Identity{Source: "discord", Handle: "robinok"},
 		want: principal.Unknown,
@@ -167,8 +149,6 @@ func TestResolve(t *testing.T) {
 				if got.Principal.ID != tt.wantID {
 					t.Errorf("resolved to %q, want %q", got.Principal.ID, tt.wantID)
 				}
-				// The whole principal comes back, not just the id: a caller
-				// deciding what an agent may do needs its kind and class.
 				if got.Principal.Kind == "" || len(got.Principal.Identities) == 0 {
 					t.Errorf("resolved principal = %+v, want the configured entry", got.Principal)
 				}
@@ -191,187 +171,6 @@ func TestResolve(t *testing.T) {
 	}
 }
 
-// An identity that does not resolve is put in front of a person rather than
-// dropped, and one identity seen many times is one entry to map.
-func TestUnresolvedIsRecorded(t *testing.T) {
-	r := newResolver(t, mapping())
-
-	stranger := connector.Identity{Source: "github", Kind: connector.IdentityUser, NativeID: "MDQ6VXNlcjk5", Handle: "stranger"}
-	for range 3 {
-		r.Resolve(stranger)
-	}
-	r.Resolve(connector.Identity{Source: "discord", NativeID: "302100000000000003", Handle: "robin"})
-	// A hint that resolves leaves no trace.
-	r.Resolve(connector.Identity{Source: "github", Handle: "robinok"})
-	// A hint with no keys names nobody, so there is nothing to map.
-	r.Resolve(connector.Identity{Source: "github", Kind: connector.IdentityUser})
-
-	got := r.Unresolved()
-	if len(got) != 2 {
-		t.Fatalf("Unresolved() = %+v, want two entries", got)
-	}
-	if got[0].Identity.Source != "discord" || got[0].Status != principal.Ambiguous {
-		t.Errorf("first entry = %+v, want the ambiguous discord identity", got[0])
-	}
-	if !slices.Equal(got[0].Candidates, []string{"kyle", "robin"}) {
-		t.Errorf("candidates = %v, want kyle and robin", got[0].Candidates)
-	}
-	if got[0].Count != 1 {
-		t.Errorf("count = %d, want 1", got[0].Count)
-	}
-	if got[1].Identity != stranger || got[1].Status != principal.Unknown {
-		t.Errorf("second entry = %+v, want the unknown github identity", got[1])
-	}
-	if got[1].Count != 3 {
-		t.Errorf("count = %d, want the three sightings counted as one entry", got[1].Count)
-	}
-	if len(got[1].Candidates) != 0 {
-		t.Errorf("candidates = %v, want none on an unknown identity", got[1].Candidates)
-	}
-	if n := r.Overflow(); n != 0 {
-		t.Errorf("Overflow() = %d, want 0", n)
-	}
-
-	// The result is a copy, all the way down, so a caller may hold it and pick
-	// it apart while ingest carries on.
-	got[1].Count = 99
-	got[0].Candidates[0] = "nobody"
-	again := r.Unresolved()
-	if again[1].Count != 3 {
-		t.Errorf("count after mutating the result = %d, want 3", again[1].Count)
-	}
-	if !slices.Equal(again[0].Candidates, []string{"kyle", "robin"}) {
-		t.Errorf("candidates after mutating the result = %v, want kyle and robin", again[0].Candidates)
-	}
-
-	// An entry shows the identity as it was last seen. The source renamed the
-	// stranger, and the entry is filed under the native id either way: a
-	// person mapping it needs the name the source shows now.
-	renamed := stranger
-	renamed.Handle = "stranger-2"
-	renamed.DisplayName = "A Stranger"
-	r.Resolve(renamed)
-	if got := r.Unresolved(); got[1].Identity != renamed || got[1].Count != 4 {
-		t.Errorf("entry after a rename = %+v, want %+v seen 4 times", got[1], renamed)
-	}
-}
-
-// Two sightings of one identity can fail differently — the second carries a
-// handle the first did not — and the entry says how the last one failed. An
-// entry that still said "unknown" would send a person looking for a mapping
-// that is there and wrong rather than missing.
-func TestUnresolvedTracksTheLatestOutcome(t *testing.T) {
-	r := newResolver(t, mapping())
-	base := connector.Identity{Source: "discord", Kind: connector.IdentityUser, NativeID: "302199999999999999"}
-
-	r.Resolve(base)
-	entry := func(t *testing.T) principal.Unresolved {
-		t.Helper()
-		got := r.Unresolved()
-		if len(got) != 1 {
-			t.Fatalf("Unresolved() = %+v, want one entry: every sighting is the same native id", got)
-		}
-		return got[0]
-	}
-	if got := entry(t); got.Status != principal.Unknown || len(got.Candidates) != 0 {
-		t.Errorf("first sighting = %+v, want unknown with no candidates", got)
-	}
-
-	// The source now gives a handle and an email, and they are two people.
-	ambiguous := base
-	ambiguous.Handle = "kyle"
-	ambiguous.Email = "robin"
-	r.Resolve(ambiguous)
-	if got := entry(t); got.Status != principal.Ambiguous ||
-		!slices.Equal(got.Candidates, []string{"kyle", "robin"}) || got.Count != 2 {
-		t.Errorf("second sighting = %+v, want ambiguous between kyle and robin, seen twice", got)
-	}
-
-	// And back: a sighting that matches nobody clears the candidates rather
-	// than leaving two names against an identity that no longer names them.
-	unknown := base
-	unknown.Handle = "nobody"
-	r.Resolve(unknown)
-	if got := entry(t); got.Status != principal.Unknown || len(got.Candidates) != 0 || got.Count != 3 {
-		t.Errorf("third sighting = %+v, want unknown with no candidates, seen three times", got)
-	}
-}
-
-// The record is a queue of work, not a log: it is bounded, and says how much it
-// dropped rather than pretending the list is complete.
-func TestUnresolvedIsBounded(t *testing.T) {
-	r := newResolver(t, mapping())
-	const extra = 5
-	for i := range principal.MaxUnresolved + extra {
-		r.Resolve(connector.Identity{Source: "github", NativeID: fmt.Sprintf("bot-%d", i)})
-	}
-	if n := len(r.Unresolved()); n != principal.MaxUnresolved {
-		t.Errorf("Unresolved() holds %d, want %d", n, principal.MaxUnresolved)
-	}
-	if n := r.Overflow(); n != extra {
-		t.Errorf("Overflow() = %d, want %d", n, extra)
-	}
-	// An identity already recorded is still counted once the record is full.
-	r.Resolve(connector.Identity{Source: "github", NativeID: "bot-0"})
-	for _, u := range r.Unresolved() {
-		if u.Identity.NativeID == "bot-0" && u.Count != 2 {
-			t.Errorf("bot-0 count = %d, want 2", u.Count)
-		}
-	}
-	if n := r.Overflow(); n != extra {
-		t.Errorf("Overflow() = %d after a repeat sighting, want %d", n, extra)
-	}
-
-	// Overflow counts sightings, not the identities they belong to: one new
-	// bot posting three times counts three. Counting identities would mean
-	// remembering the ones the bound refused to keep.
-	for range 3 {
-		r.Resolve(connector.Identity{Source: "github", NativeID: "one-new-bot"})
-	}
-	if n := r.Overflow(); n != extra+3 {
-		t.Errorf("Overflow() = %d after three sightings of one new identity, want %d", n, extra+3)
-	}
-	if n := len(r.Unresolved()); n != principal.MaxUnresolved {
-		t.Errorf("Unresolved() holds %d, want the bound to still be %d", n, principal.MaxUnresolved)
-	}
-}
-
-// Every connector resolves at once, so the mapping is read and the record
-// written from many goroutines. Run with -race.
-func TestResolveIsConcurrencySafe(t *testing.T) {
-	r := newResolver(t, mapping())
-	var wg sync.WaitGroup
-	for i := range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := range 50 {
-				r.Resolve(connector.Identity{Source: "github", Handle: "robinok"})
-				r.Resolve(connector.Identity{Source: "github", NativeID: fmt.Sprintf("bot-%d", (i*50+j)%13)})
-				r.Unresolved()
-				r.Overflow()
-			}
-		}()
-	}
-	wg.Wait()
-	if n := len(r.Unresolved()); n != 13 {
-		t.Errorf("Unresolved() holds %d distinct identities, want 13", n)
-	}
-	var total int
-	for _, u := range r.Unresolved() {
-		total += u.Count
-	}
-	if total != 8*50 {
-		t.Errorf("sightings counted = %d, want %d", total, 8*50)
-	}
-}
-
-// A source-native group — an ACL entry, a team in CODEOWNERS — resolves to the
-// team that claims it.
-// A source names a group two ways — a node id in an ACL, a slug in CODEOWNERS —
-// and configuration accepts either, so both are looked up. A team written down
-// with a slug and no node id, which is what onboarding produces and the only
-// form CODEOWNERS has, must be reachable.
 func TestResolveGroup(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -384,9 +183,6 @@ func TestResolveGroup(t *testing.T) {
 		{"a slug is all a CODEOWNERS team has", "acme/eng", principal.Resolved, "eng"},
 		{"a slug in another case", "ACME/Eng", principal.Resolved, "eng"},
 		{"a group nobody claims", "MDQ6VGVhbTk5", principal.Unknown, ""},
-		// A group that resolves to a person is a configuration mistake, and it
-		// is reported as resolved all the same: what an ACL means is not
-		// decided here.
 		{"a group that is really a person", "kpenfound", principal.Resolved, "kyle"},
 	}
 	for _, tt := range tests {
@@ -398,43 +194,14 @@ func TestResolveGroup(t *testing.T) {
 		})
 	}
 
-	// An unmapped group is a mapping a person has to write, like any other; a
-	// group that resolved leaves no trace, and a group of nothing names nobody
-	// to map.
 	r := newResolver(t, mapping())
-	r.ResolveGroup("github", "MDQ6VGVhbTk5")
-	r.ResolveGroup("github", "acme/api-team")
-	// A group with nothing but blank space for a name, or with no source,
-	// names nobody: it matches nothing and there is nothing to map.
 	for _, blank := range [][2]string{{"github", ""}, {"github", "   "}, {"", "acme/eng"}} {
 		if got := r.ResolveGroup(blank[0], blank[1]); got.Status != principal.Unknown {
 			t.Errorf("ResolveGroup(%q, %q) = %+v, want unknown", blank[0], blank[1], got)
 		}
 	}
-	if n := len(r.Unresolved()); n != 1 {
-		t.Errorf("Unresolved() = %+v, want just the unmapped group", r.Unresolved())
-	}
-
-	// An unresolved group is filed under the id as the source spelled it, which
-	// never folds: two node ids differing only in case are two groups, and a
-	// node id is base64. Two spellings of one slug therefore leave two entries,
-	// which is noise rather than a wrong answer.
-	r2 := newResolver(t, mapping())
-	r2.ResolveGroup("github", "acme/ghost")
-	r2.ResolveGroup("github", "ACME/Ghost")
-	got := r2.Unresolved()
-	if len(got) != 2 {
-		t.Fatalf("Unresolved() = %+v, want the two spellings filed apart", got)
-	}
-	for _, u := range got {
-		if u.Count != 1 {
-			t.Errorf("entry %+v was counted %d times, want 1", u.Identity, u.Count)
-		}
-	}
 }
 
-// A resolver refuses a mapping that would make it decide authorship by map
-// iteration order.
 func TestNewResolverRejects(t *testing.T) {
 	claimed := func(a, b principal.Identity) []principal.Principal {
 		return []principal.Principal{
@@ -480,9 +247,6 @@ func TestNewResolverRejects(t *testing.T) {
 		})
 	}
 
-	// The same principal claiming a native id and a handle that happen to be
-	// equal is not a conflict: they are different namespaces, and it is one
-	// principal either way.
 	ok := []principal.Principal{{ID: "kyle", Identities: []principal.Identity{
 		{Source: "github", NativeID: "kp", Handle: "kp"},
 		{Source: "discord", NativeID: "kp"},
@@ -492,10 +256,6 @@ func TestNewResolverRejects(t *testing.T) {
 	}
 }
 
-// The identities configuration reports as errors are skipped rather than
-// indexed. Two of them would otherwise collide as one key, so a mapping with
-// one real mistake in it would also be told that two identities naming nobody
-// are the same person — and no resolver would be built at all.
 func TestNewResolverSkipsEmptyKeys(t *testing.T) {
 	blank := []principal.Identity{{Source: "", Handle: "kpenfound"}, {Source: "discord", Handle: " "}}
 	if _, err := principal.NewResolver([]principal.Principal{
@@ -526,9 +286,6 @@ func TestNewResolverSkipsEmptyKeys(t *testing.T) {
 	}
 }
 
-// Claims answers the question a caller holding one string from a source has:
-// who does this name belong to? The two namespaces are taken together, because
-// an access list entry does not say which of them the source meant.
 func TestClaims(t *testing.T) {
 	r := newResolver(t, []principal.Principal{{
 		ID:   "kyle",
@@ -538,9 +295,6 @@ func TestClaims(t *testing.T) {
 			{Source: "discord", NativeID: "kpenfound"},
 		},
 	}, {
-		// `U1` is a handle, and handles fold: it is the same string as kyle's
-		// native id, in the other namespace. The mapping accepts that, and
-		// this is how a caller that cannot tell them apart finds out.
 		ID:         "robin",
 		Kind:       principal.KindHuman,
 		Identities: []principal.Identity{{Source: "github", NativeID: "u2", Handle: "U1"}},
@@ -555,7 +309,7 @@ func TestClaims(t *testing.T) {
 		name     string
 		source   string
 		spelling string
-		want     string // "" for a spelling that names nobody, or more than one
+		want     string
 	}{
 		{"a native id", "github", "u2", "robin"},
 		{"a handle", "github", "kpenfound", "kyle"},
@@ -586,17 +340,11 @@ func TestClaims(t *testing.T) {
 	}
 }
 
-// Teams is the reverse of Members, and it is what a read asks: a document's
-// access list names groups, and whether the caller is in one of them is a
-// question about the teams they belong to.
 func TestTeams(t *testing.T) {
 	r := newResolver(t, append(mapping(),
 		principal.Principal{ID: "infra-team", Kind: principal.KindTeam, Members: []string{"kyle"}},
 		principal.Principal{ID: "zz-team", Kind: principal.KindTeam, Members: []string{"kyle"}},
 		principal.Principal{ID: "empty-team", Kind: principal.KindTeam},
-		// Only a team is a container. Configuration refuses a person who lists
-		// members, and a mapping built by hand that has one is not a group
-		// anybody is in.
 		principal.Principal{ID: "not-a-team", Kind: principal.KindHuman, Members: []string{"kyle"}},
 	))
 	tests := []struct {
@@ -619,9 +367,6 @@ func TestTeams(t *testing.T) {
 		})
 	}
 
-	// The order is an order and not whatever the map felt like: what this feeds
-	// is compared and cached, and Go randomizes map iteration on every range,
-	// so asking repeatedly is what tells the two apart.
 	first := ids(r.Teams("kyle"))
 	for range 5 {
 		if got := ids(r.Teams("kyle")); !slices.Equal(got, first) {
@@ -630,7 +375,7 @@ func TestTeams(t *testing.T) {
 	}
 }
 
-func TestMembersAndExpand(t *testing.T) {
+func TestMembers(t *testing.T) {
 	r := newResolver(t, append(mapping(), principal.Principal{
 		ID: "empty-team", Kind: principal.KindTeam, Members: []string{"gone"},
 	}))
@@ -638,37 +383,14 @@ func TestMembersAndExpand(t *testing.T) {
 	if got := ids(r.Members("api-team")); !slices.Equal(got, []string{"kyle", "robin", "shed"}) {
 		t.Errorf("Members(api-team) = %v", got)
 	}
-	// A member nobody configured is skipped: configuration reported it, and
-	// the resolver does not invent a principal to stand in for it.
 	if got := r.Members("empty-team"); len(got) != 0 {
 		t.Errorf("Members(empty-team) = %+v, want none", got)
 	}
-	// Only a team has members.
 	if got := r.Members("kyle"); got != nil {
 		t.Errorf("Members(kyle) = %+v, want nil", got)
 	}
 	if got := r.Members("nobody"); got != nil {
 		t.Errorf("Members(nobody) = %+v, want nil", got)
-	}
-
-	tests := []struct {
-		name string
-		ids  []string
-		want []string
-	}{
-		{"a team expands to its members", []string{"api-team"}, []string{"kyle", "robin", "shed"}},
-		{"people are left alone", []string{"robin", "kyle"}, []string{"robin", "kyle"}},
-		{"order is the order they were written in", []string{"shed", "api-team"}, []string{"shed", "kyle", "robin"}},
-		{"a member listed twice appears once", []string{"kyle", "api-team", "kyle"}, []string{"kyle", "robin", "shed"}},
-		{"an unconfigured id is skipped", []string{"nobody", "kyle"}, []string{"kyle"}},
-		{"nothing expands to nothing", nil, nil},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := ids(r.Expand(tt.ids)); !slices.Equal(got, tt.want) {
-				t.Errorf("Expand(%v) = %v, want %v", tt.ids, got, tt.want)
-			}
-		})
 	}
 }
 

@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
@@ -100,28 +100,13 @@ func (e *DeletedError) Is(target error) bool { return target == ErrDeleted }
 // holds a transaction open — which matters, because the change feed waits
 // behind long-running write transactions rather than reading past them.
 type Store struct {
-	db Querier
+	db db.Querier
 }
-
-// Querier is what a Store runs its statements on: a pgx pool, or a transaction
-// taken from one. It is an interface so that an event can be appended in the
-// same transaction as whatever else a caller is doing — enqueuing the
-// distillation job for it, in particular.
-type Querier interface {
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-}
-
-// Both of pgx's are one.
-var (
-	_ Querier = (*pgxpool.Pool)(nil)
-	_ Querier = (pgx.Tx)(nil)
-)
 
 // New returns a store over an open pool or a transaction on one. The caller
 // owns it and closes it; the schema is the caller's to have checked
 // (internal/db.Connect).
-func New(q Querier) *Store { return &Store{db: q} }
+func New(q db.Querier) *Store { return &Store{db: q} }
 
 // IdentityHints visits the identity metadata in visible events in ingest order.
 // The query projects only identity objects; payload text never leaves Postgres.
@@ -223,12 +208,6 @@ func (s *Store) Append(ctx context.Context, ev connector.Event) (Appended, error
 		return Appended{}, err
 	}
 
-	// Two attempts, because of one race. When a concurrent transaction inserts
-	// the same id first, ON CONFLICT DO NOTHING waits for it, then returns
-	// nothing — and the read half of this statement runs on a snapshot taken
-	// before that commit, so it does not see the row either and the statement
-	// returns no rows at all. The second attempt gets a fresh snapshot and
-	// finds it.
 	for attempt := range 2 {
 		var (
 			xact     string
@@ -266,15 +245,6 @@ func (s *Store) Append(ctx context.Context, ev connector.Event) (Appended, error
 	return Appended{}, fmt.Errorf("appending event %s: gave up after a concurrent write of the same id", row.id)
 }
 
-// appendSQL inserts the event, or reads back the row that is already there and
-// says whether it holds the same content. The comparison is Postgres's own
-// jsonb equality rather than a hash of the bytes a connector marshalled,
-// because jsonb ignores key order and whitespace: two spellings of one payload
-// are a replay, not a rewrite.
-//
-// A row an operator deleted is not compared — its payload is a redaction
-// marker, so every replay would read as a rewrite — and the replay is counted
-// on the deletion record in the same statement instead.
 const appendSQL = `
 WITH inserted AS (
     INSERT INTO l0_events (
@@ -302,24 +272,13 @@ UNION ALL
 SELECT existing.xact_id::text, existing.seq, false, existing.same, existing.deletion
   FROM existing`
 
-// retractedSQL hides revisions that precede a tombstone in ingest order. A
-// later revision of the same stable artifact is visible again; replaying an
-// earlier tombstone retains its original sequence and cannot hide it. The row
-// stays append-only, and every read carries the negation of this predicate, except
-// [Store.Retracted], which reads what a tombstone hides so that a consumer can
-// re-derive what the retracted artifact was part of.
 const retractedSQL = `EXISTS (
     SELECT 1 FROM l0_events tomb
      WHERE tomb.source = e.source AND tomb.target = e.artifact AND tomb.seq > e.seq
 )`
 
-// visibleSQL is what a read admits: neither retracted by a source tombstone
-// nor deleted by an operator. A deleted row is hidden by its own
-// column rather than by a tombstone, so it is hidden whatever the source says
-// later, and a later revision of the artifact — a new row — is not.
 const visibleSQL = `e.deletion IS NULL AND NOT ` + retractedSQL
 
-// eventColumns is everything an event is reconstructed from.
 const eventColumns = `e.id, e.source, e.native_id, e.kind, e.occurred_at, e.payload, e.acl`
 
 // Get returns one event by id. It returns a [*DeletedError] (matching
@@ -516,7 +475,6 @@ func (f Filter) Validate() error {
 	return nil
 }
 
-// where adds the filter's predicates to a query.
 func (f Filter) where(q *query) {
 	if f.Source != "" {
 		q.and("e.source", f.Source)
@@ -531,9 +489,6 @@ func (f Filter) where(q *query) {
 		q.and("e.artifact", f.Artifact)
 	}
 	if f.Thread != "" {
-		// The expression is what migration 6 indexes, so it has to be spelled
-		// the same way here: an index on coalesce(a, b) serves a predicate on
-		// coalesce(a, b) and not one on a or b.
 		q.and(conversationSQL, f.Thread)
 	}
 	if f.Container != "" {
@@ -547,8 +502,6 @@ func (f Filter) where(q *query) {
 	}
 }
 
-// conversationSQL is the artifact an event hangs off: its thread, or the thing
-// it is a reply to on a source that has no threads.
 const conversationSQL = `coalesce(e.payload->>'thread', e.payload->>'parent')`
 
 // ListOptions narrows and orders a listing. The zero value is the whole store,
@@ -633,9 +586,6 @@ func (s *Store) Current(ctx context.Context, opts ListOptions) ([]connector.Even
 	if err := opts.Validate(); err != nil {
 		return nil, err
 	}
-	// DISTINCT ON takes the first row per artifact in its own ORDER BY, which
-	// is docs/connector-contract.md's revision order: the newest edit first,
-	// then arrival, with the first appearance — which has no edit time — last.
 	q := &query{sql: `
 SELECT ` + eventColumns + `
   FROM (SELECT DISTINCT ON (e.artifact) ` + eventColumns + `, e.artifact, e.seq
@@ -922,7 +872,6 @@ SELECT (SELECT xact_id::text FROM head), (SELECT seq FROM head),
 	return m, nil
 }
 
-// row is one event as columns.
 type row struct {
 	id               string
 	source           string
@@ -937,9 +886,6 @@ type row struct {
 	acl              []byte
 }
 
-// rowOf spreads an event across the columns reads index on. Every one of them
-// is a copy of something in the payload, which is why the table constrains them
-// against each other.
 func rowOf(ev connector.Event) (row, error) {
 	payload, err := json.Marshal(ev.Payload)
 	if err != nil {
@@ -973,14 +919,6 @@ func rowOf(ev connector.Event) (row, error) {
 	return r, nil
 }
 
-// decodeInto fills in the parts of an event that are stored as JSON, and puts
-// the event's time in UTC.
-//
-// Postgres hands a timestamptz back in the session's time zone, which is the
-// server's and has nothing to do with the event; the instant is the same either
-// way, and reading it back in one zone is what keeps two events from looking
-// different when they are not. The resolution is Postgres's microsecond, so an
-// event written with nanoseconds comes back truncated.
 func decodeInto(ev *connector.Event, kind string, payload, acl []byte) error {
 	ev.Kind = connector.Kind(kind)
 	ev.Time = ev.Time.UTC()
@@ -993,8 +931,6 @@ func decodeInto(ev *connector.Event, kind string, payload, acl []byte) error {
 	return nil
 }
 
-// isNoRows reports the empty result both of pgx's row readers signal, kept in
-// one place because two files here turn it into something other than an error.
 func isNoRows(err error) bool { return errors.Is(err, pgx.ErrNoRows) }
 
 func cursorOf(xact string, seq int64) (Cursor, error) {
@@ -1020,21 +956,16 @@ func Limit(limit int) int {
 	}
 }
 
-// query builds a statement with numbered placeholders, so that a filter nobody
-// set contributes no predicate and the planner sees the real one rather than
-// `$1 = ” OR ...`.
 type query struct {
 	sql  string
 	args []any
 }
 
-// placeholder records an argument and returns the $n that refers to it.
 func (q *query) placeholder(arg any) string {
 	q.args = append(q.args, arg)
 	return "$" + strconv.Itoa(len(q.args))
 }
 
-// and adds an equality predicate on a column.
 func (q *query) and(column string, arg any) {
 	q.sql += " AND " + column + " = " + q.placeholder(arg)
 }

@@ -10,12 +10,13 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/queue"
 )
 
 func listenForRelease(t *testing.T, kind queue.Kind) *pgx.Conn {
 	t.Helper()
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	conn, err := pgx.ConnectConfig(t.Context(), pool.Config().ConnConfig.Copy())
 	if err != nil {
 		t.Fatal(err)
@@ -28,7 +29,7 @@ func listenForRelease(t *testing.T, kind queue.Kind) *pgx.Conn {
 }
 
 func TestHoldCompletionNotifiesOnlyOnCommitAndWakesWorker(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	kind := newKind(t, true)
 	cfg := queue.Config{Kind: kind, Lease: 30 * time.Second, PollInterval: 20 * time.Second}
 	client, err := queue.New(pool, cfg)
@@ -42,7 +43,7 @@ func TestHoldCompletionNotifiesOnlyOnCommitAndWakesWorker(t *testing.T) {
 	enqueue(t, pool, queue.Request{Kind: kind, TargetID: "waiting", SerialKey: "scope"})
 	observer := listenForRelease(t, kind)
 	claimed := make(chan time.Time, 1)
-	_, _ = run(t, cfg, func(_ context.Context, j queue.Job) error {
+	run(t, cfg, func(_ context.Context, j queue.Job) error {
 		if j.TargetID == "waiting" {
 			claimed <- time.Now()
 		}
@@ -55,7 +56,6 @@ func TestHoldCompletionNotifiesOnlyOnCommitAndWakesWorker(t *testing.T) {
 	if changed, err := client.CompleteIn(t.Context(), tx, held); err != nil || !changed {
 		t.Fatalf("CompleteIn=%v %v", changed, err)
 	}
-	// Transactional NOTIFY must be invisible while the completion is uncommitted.
 	wait, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	_, err = observer.WaitForNotification(wait)
 	cancel()
@@ -108,7 +108,7 @@ func TestHoldCompletionNotifiesOnlyOnCommitAndWakesWorker(t *testing.T) {
 func TestFailureAndReclaimAnnounceReleasedKeys(t *testing.T) {
 	for _, mode := range []string{"failure", "reclaim"} {
 		t.Run(mode, func(t *testing.T) {
-			pool := newPool(t)
+			pool := dbtest.Pool(t)
 			kind := newKind(t, true)
 			lease := 30 * time.Second
 			if mode == "reclaim" {
@@ -127,7 +127,7 @@ func TestFailureAndReclaimAnnounceReleasedKeys(t *testing.T) {
 			if mode == "failure" {
 				_, _, err = client.Fail(t.Context(), jobs[0], errors.New("fixture"))
 			} else {
-				expireLeases(lease)
+				expireLeases(t, jobs...)
 				_, err = client.Reclaim(t.Context())
 			}
 			if err != nil {

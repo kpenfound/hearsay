@@ -14,8 +14,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/l2"
 )
 
-// sessionSource resolves a session only when its start event belongs to this
-// caller. Its ACL and identities come from the connector, not the header.
 func (c *Calls) sessionSource(ctx context.Context, caller Caller, reader l1.Reader, session, specified string) (string, error) {
 	var found string
 	for _, source := range c.sessionSources {
@@ -153,9 +151,7 @@ ORDER BY coalesce(revision_edited_at, occurred_at), seq`, source, as.Session, Au
 			if auditNamesHiddenEntity(audit, hidden) {
 				continue
 			}
-			// A historical audit may concern a scope the caller can no longer
-			// reach. Fail closed on grants even though the session still allows
-			// the caller.
+
 			if audit.Principal == caller.Principal && audit.Agent == as.Agent && (audit.Scope == "" || reader.Effective.Grant.Scopes.Has(audit.Scope)) {
 				trace.Events = append(trace.Events, item)
 				if audit.Call == "get_bundle" {
@@ -163,7 +159,6 @@ ORDER BY coalesce(revision_edited_at, occurred_at), seq`, source, as.Session, Au
 				}
 			}
 		} else if reader.Allows(item.ACL) {
-			// Session revisions may carry their own tightened ACLs.
 			if item.Kind == connector.KindNextAction {
 				var next struct {
 					Scope string `json:"scope"`
@@ -187,8 +182,6 @@ ORDER BY coalesce(revision_edited_at, occurred_at), seq`, source, as.Session, Au
 	return trace, nil
 }
 
-// A session remains readable when an unrelated work entity becomes private.
-// Its historical discovery and bundle audits must not re-disclose that entity.
 func auditNamesHiddenEntity(audit AuditRecord, hidden l2.WorkEntityVisibility) bool {
 	if hidden.Hidden(audit.Scope) || slices.ContainsFunc(audit.TargetIDs, func(id string) bool { return hidden.Hidden(id) }) ||
 		slices.ContainsFunc(audit.ReturnedIDs, func(id string) bool { return hidden.Hidden(id) }) {

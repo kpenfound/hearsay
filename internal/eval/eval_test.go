@@ -31,7 +31,6 @@ func show(f *float64) any {
 }
 
 func TestSummarizeRatifications(t *testing.T) {
-	// A clock started at hour s and stopped at hour r; r < 0 never stopped.
 	clock := func(topic string, s, r int) l2.Ratification {
 		rat := l2.Ratification{Topic: topic, Scope: "api", Stood: at(s), Unratified: at(s)}
 		if r >= 0 {
@@ -196,11 +195,9 @@ func TestSummarizeOperations(t *testing.T) {
 	}
 }
 
-// The text and the JSON are the two outputs scripts and people read; both are
-// pinned whole, so a renamed field or a changed line is a failing test.
-func TestReportOutputs(t *testing.T) {
+func sampleReport() eval.Report {
 	since, ratified := at(0), at(36)
-	report := eval.Report{
+	return eval.Report{
 		Since: &since, Until: at(100), Scope: "api",
 		Ratification: eval.Ratification{
 			Topics: 2, Ratified: 1, Unratified: 1, UnratifiedShare: share(0.5),
@@ -233,11 +230,15 @@ func TestReportOutputs(t *testing.T) {
 			Asserted: eval.Action{Count: 1, Share: share(0.25)}, Unattributed: 1,
 		},
 	}
-	var text bytes.Buffer
-	if err := report.WriteText(&text); err != nil {
-		t.Fatal(err)
-	}
-	wantText := `window  2026-09-01T00:00:00Z to 2026-09-05T04:00:00Z
+}
+
+func emptyReport() eval.Report {
+	report := eval.Report{Until: at(100), Ratification: eval.Ratification{Clocks: []eval.Clock{}}}
+	report.DrillDown, report.Conflicts, report.NextActions = eval.SummarizeSessions(nil, "")
+	return report
+}
+
+const wantReportText = `window  2026-09-01T00:00:00Z to 2026-09-05T04:00:00Z
 scope   api
 
 time to ratification
@@ -281,23 +282,8 @@ next actions
   asserted                    1  25.0%
   with no bundle before them  1
 `
-	pipelineText := `
-pipeline observations
-  distill  0 runs  cost USD -  mean handler seconds -  mean queue seconds -
-  assert   0 runs  cost USD -  mean handler seconds -  mean queue seconds -
-`
-	wantText += pipelineText
-	if text.String() != wantText {
-		t.Errorf("text =\n%s\nwant\n%s", text.String(), wantText)
-	}
 
-	empty := eval.Report{Until: at(100), Ratification: eval.Ratification{Clocks: []eval.Clock{}}}
-	empty.DrillDown, empty.Conflicts, empty.NextActions = eval.SummarizeSessions(nil, "")
-	text.Reset()
-	if err := empty.WriteText(&text); err != nil {
-		t.Fatal(err)
-	}
-	wantEmpty := `window  the beginning to 2026-09-05T04:00:00Z
+const wantEmptyReportText = `window  the beginning to 2026-09-05T04:00:00Z
 scope   every scope
 
 time to ratification
@@ -341,20 +327,14 @@ next actions
   asserted                    0  -
   with no bundle before them  0
 `
-	wantEmpty += pipelineText
-	if text.String() != wantEmpty {
-		t.Errorf("text of an empty report =\n%s\nwant\n%s", text.String(), wantEmpty)
-	}
 
-	var out bytes.Buffer
-	if err := report.WriteJSON(&out); err != nil {
-		t.Fatal(err)
-	}
-	var got, want any
-	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
-		t.Fatalf("the JSON does not parse: %v\n%s", err, out.String())
-	}
-	wantJSON := `{
+const wantPipelineText = `
+pipeline observations
+  distill  0 runs  cost USD -  mean handler seconds -  mean queue seconds -
+  assert   0 runs  cost USD -  mean handler seconds -  mean queue seconds -
+`
+
+const wantReportJSON = `{
   "since": "2026-09-01T00:00:00Z",
   "until": "2026-09-05T04:00:00Z",
   "scope": "api",
@@ -398,27 +378,8 @@ next actions
     "unattributed": 1
   }
 }`
-	if err := json.Unmarshal([]byte(wantJSON), &want); err != nil {
-		t.Fatal(err)
-	}
-	// All pre-existing JSON fields must remain byte-for-byte equivalent once
-	// the additive section is removed. Its contents have dedicated tests.
-	if _, ok := got.(map[string]any)["pipelines"]; !ok {
-		t.Fatal("missing additive pipelines section")
-	}
-	delete(got.(map[string]any), "pipelines")
-	if a, b := canonical(t, got), canonical(t, want); a != b {
-		t.Errorf("JSON =\n%s\nwant\n%s", a, b)
-	}
 
-	out.Reset()
-	if err := empty.WriteJSON(&out); err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
-		t.Fatal(err)
-	}
-	wantEmptyJSON := `{"since": null, "until": "2026-09-05T04:00:00Z", "scope": "",
+const wantEmptyReportJSON = `{"since": null, "until": "2026-09-05T04:00:00Z", "scope": "",
   "time_to_ratification": {"topics": 0, "ratified": 0, "unratified": 0, "unratified_share": null,
     "median_seconds": null, "p90_seconds": null, "ratified_on_arrival": 0, "clocks": []},
   "topic_operations": {"topics_opened": 0,
@@ -436,17 +397,63 @@ next actions
   "conflict_flags": {"flagged": 0, "verdicts": 0, "real": 0, "spurious": 0, "precision": null, "coverage": null, "unflagged_verdicts": 0},
   "next_actions": {"actions": 0, "asked": {"count": 0, "share": null}, "proceeded": {"count": 0, "share": null},
     "asserted": {"count": 0, "share": null}, "unattributed": 0}}`
-	if err := json.Unmarshal([]byte(wantEmptyJSON), &want); err != nil {
+
+func writtenText(t *testing.T, report eval.Report) string {
+	t.Helper()
+	var text bytes.Buffer
+	if err := report.WriteText(&text); err != nil {
 		t.Fatal(err)
 	}
-	// All pre-existing JSON fields must remain byte-for-byte equivalent once
-	// the additive section is removed. Its contents have dedicated tests.
-	if _, ok := got.(map[string]any)["pipelines"]; !ok {
-		t.Fatal("missing additive pipelines section")
+	return text.String()
+}
+
+func writtenJSON(t *testing.T, report eval.Report) string {
+	t.Helper()
+	var out bytes.Buffer
+	if err := report.WriteJSON(&out); err != nil {
+		t.Fatal(err)
 	}
-	delete(got.(map[string]any), "pipelines")
-	if a, b := canonical(t, got), canonical(t, want); a != b {
-		t.Errorf("JSON of an empty report =\n%s\nwant\n%s", a, b)
+	var got map[string]any
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("the JSON does not parse: %v\n%s", err, out.String())
+	}
+	if _, ok := got["pipelines"]; !ok {
+		t.Fatal("the JSON has no pipelines section")
+	}
+	delete(got, "pipelines")
+	return canonical(t, got)
+}
+
+func canonicalJSON(t *testing.T, text string) string {
+	t.Helper()
+	var v any
+	if err := json.Unmarshal([]byte(text), &v); err != nil {
+		t.Fatal(err)
+	}
+	return canonical(t, v)
+}
+
+func TestReportText(t *testing.T) {
+	if got, want := writtenText(t, sampleReport()), wantReportText+wantPipelineText; got != want {
+		t.Errorf("text =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestEmptyReportText(t *testing.T) {
+	if got, want := writtenText(t, emptyReport()), wantEmptyReportText+wantPipelineText; got != want {
+		t.Errorf("text of an empty report =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestReportJSON(t *testing.T) {
+	if got, want := writtenJSON(t, sampleReport()), canonicalJSON(t, wantReportJSON); got != want {
+		t.Errorf("JSON =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestEmptyReportJSON(t *testing.T) {
+	if got, want := writtenJSON(t, emptyReport()), canonicalJSON(t, wantEmptyReportJSON); got != want {
+		t.Errorf("JSON of an empty report =\n%s\nwant\n%s", got, want)
 	}
 }
 

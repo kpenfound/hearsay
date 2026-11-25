@@ -133,9 +133,6 @@ FROM l2_topics WHERE $1 = '' OR scope = $1`, scope).Scan(&scopes); err != nil {
 	return out, nil
 }
 
-// moments are the times a topic's standing can change at, before until,
-// oldest first: a stance on it written, a gesture on one of its stances
-// recorded or undone, one of its documents read in its current version.
 func moments(history []Stance, gestures timedGestures, read map[string]time.Time, until time.Time) []time.Time {
 	var out []time.Time
 	add := func(at time.Time) {
@@ -157,9 +154,6 @@ func moments(history []Stance, gestures timedGestures, read map[string]time.Time
 	return slices.CompactFunc(out, time.Time.Equal)
 }
 
-// historyAt is a history as it stood at a moment: the stances written by
-// then, in the order the history holds them, each retired only if a later
-// reading of its own origin had been written by then.
 func historyAt(history []Stance, retired map[string]time.Time, at time.Time) []Stance {
 	var out []Stance
 	for _, st := range history {
@@ -173,8 +167,6 @@ func historyAt(history []Stance, retired map[string]time.Time, at time.Time) []S
 	return out
 }
 
-// evidenceAt is the evidence known at a moment: a document read in its current
-// version after it is left out.
 func evidenceAt(evidence map[string]Evidence, read map[string]time.Time, at time.Time) map[string]Evidence {
 	out := make(map[string]Evidence, len(evidence))
 	for id, ev := range evidence {
@@ -186,9 +178,6 @@ func evidenceAt(evidence map[string]Evidence, read map[string]time.Time, at time
 	return out
 }
 
-// assertedAt is when the assertion worker read each of these documents in the
-// version it last read, which is the version L1 holds once it has caught up.
-// A document it never read has no entry, and its class counts throughout.
 func (s *Store) assertedAt(ctx context.Context, docs []string) (map[string]time.Time, error) {
 	out := map[string]time.Time{}
 	if len(docs) == 0 {
@@ -213,8 +202,6 @@ func (s *Store) assertedAt(ctx context.Context, docs []string) (map[string]time.
 	return out, nil
 }
 
-// retiredAt is when each of these stances that is retired now was retired:
-// when the first later reading of its own origin was written ([RetiredSQL]).
 func (s *Store) retiredAt(ctx context.Context, stances []string) (map[string]time.Time, error) {
 	out := map[string]time.Time{}
 	if len(stances) == 0 {
@@ -243,8 +230,6 @@ WHERE s.id = ANY($1) GROUP BY s.id`, stances)
 	return out, nil
 }
 
-// timedGesture is a ratify or a demote on a stance, with when it was recorded
-// and, where an undo reversed it, when that was.
 type timedGesture struct {
 	id       int64
 	action   GestureAction
@@ -252,11 +237,8 @@ type timedGesture struct {
 	undoneAt time.Time
 }
 
-// timedGestures are the ratifies and demotes on each stance, oldest first.
 type timedGestures map[string][]timedGesture
 
-// corrections reads every ratify and demote on these stances whose event no
-// operator deletion deleted, with when each was undone.
 func (s *Store) corrections(ctx context.Context, stances []string) (timedGestures, error) {
 	out := timedGestures{}
 	if len(stances) == 0 {
@@ -294,8 +276,6 @@ ORDER BY g.id`, stances)
 	return out, nil
 }
 
-// at is the stances whose latest gesture in force at a moment is action: what
-// [Store.Corrections] would have read then.
 func (gs timedGestures) at(at time.Time, action GestureAction) []string {
 	var out []string
 	for st, on := range gs {

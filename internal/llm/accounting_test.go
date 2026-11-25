@@ -11,52 +11,62 @@ import (
 	"github.com/kpenfound/hearsay/internal/llm"
 )
 
-func TestCompletionAccountingRetriesAndPresence(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		reported bool
-	}{{"reported zero", true}, {"absent", false}} {
-		t.Run(tc.name, func(t *testing.T) {
-			p := newStub("accounting")
-			var attempts atomic.Int64
-			p.complete = func(context.Context, llm.Request) (llm.Response, error) {
-				r := llm.Response{Text: "fixture", StopReason: llm.StopEnd}
-				if tc.reported {
-					n, cost := int64(0), float64(0)
-					r.ReportedUsage = &llm.JudgmentUsage{InputTokens: &n, OutputTokens: &n, CostUSD: &cost}
-				}
-				if attempts.Add(1) == 1 {
-					return r, &llm.Error{Retryable: true}
-				}
-				return r, nil
-			}
-			registry, err := llm.NewRegistry(llm.Config{Tiers: map[llm.Tier]llm.TierConfig{llm.TierDistill: {Provider: p.Name(), Model: "fixture", MaxRetries: 1, Backoff: time.Nanosecond}}}, []llm.Provider{p})
-			if err != nil {
-				t.Fatal(err)
-			}
-			c, err := registry.Completer(llm.TierDistill)
-			if err != nil {
-				t.Fatal(err)
-			}
-			ctx, a := llm.ObserveCompletions(t.Context())
-			if _, err := llm.AccountCompletions(c).Complete(ctx, ask("retry")); err != nil {
-				t.Fatal(err)
-			}
-			calls, tries, u := a.Snapshot()
-			if calls == nil || *calls != 1 || tries == nil || *tries != 2 {
-				t.Fatalf("calls=%v attempts=%v", calls, tries)
-			}
-			if tc.reported {
-				if u.InputTokens == nil || *u.InputTokens != 0 || u.OutputTokens == nil || *u.OutputTokens != 0 || u.CostUSD == nil || *u.CostUSD != 0 {
-					t.Fatalf("zero lost: %+v", u)
-				}
-			} else if u.InputTokens != nil || u.OutputTokens != nil || u.CostUSD != nil {
-				t.Fatalf("manufactured usage: %+v", u)
-			}
-			if got := registry.Usage(); len(got) != 1 {
-				t.Fatalf("process accounting lost: %+v", got)
-			}
-		})
+func retriedCall(t *testing.T, reported bool) (calls, attempts *int64, usage llm.JudgmentUsage, registry llm.Registry) {
+	t.Helper()
+	p := newStub("accounting")
+	var tries atomic.Int64
+	p.complete = func(context.Context, llm.Request) (llm.Response, error) {
+		r := llm.Response{Text: "fixture", StopReason: llm.StopEnd}
+		if reported {
+			n, cost := int64(0), float64(0)
+			r.ReportedUsage = &llm.JudgmentUsage{InputTokens: &n, OutputTokens: &n, CostUSD: &cost}
+		}
+		if tries.Add(1) == 1 {
+			return r, &llm.Error{Retryable: true}
+		}
+		return r, nil
+	}
+	registry, err := llm.NewRegistry(llm.Config{Tiers: map[llm.Tier]llm.TierConfig{llm.TierDistill: {Provider: p.Name(), Model: "fixture", MaxRetries: 1, Backoff: time.Nanosecond}}}, []llm.Provider{p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := registry.Completer(llm.TierDistill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, a := llm.ObserveCompletions(t.Context())
+	if _, err := llm.AccountCompletions(c).Complete(ctx, ask("retry")); err != nil {
+		t.Fatal(err)
+	}
+	calls, attempts, usage = a.Snapshot()
+	return calls, attempts, usage, registry
+}
+
+func TestACompletionAcrossARetryIsOneCallAndTwoAttempts(t *testing.T) {
+	calls, attempts, _, _ := retriedCall(t, true)
+	if calls == nil || *calls != 1 || attempts == nil || *attempts != 2 {
+		t.Fatalf("calls=%v attempts=%v", calls, attempts)
+	}
+}
+
+func TestAReportedZeroUsageStaysZero(t *testing.T) {
+	_, _, u, _ := retriedCall(t, true)
+	if u.InputTokens == nil || *u.InputTokens != 0 || u.OutputTokens == nil || *u.OutputTokens != 0 || u.CostUSD == nil || *u.CostUSD != 0 {
+		t.Fatalf("zero lost: %+v", u)
+	}
+}
+
+func TestAbsentUsageStaysAbsent(t *testing.T) {
+	_, _, u, _ := retriedCall(t, false)
+	if u.InputTokens != nil || u.OutputTokens != nil || u.CostUSD != nil {
+		t.Fatalf("manufactured usage: %+v", u)
+	}
+}
+
+func TestStageAccountingLeavesProcessAccountingIntact(t *testing.T) {
+	_, _, _, registry := retriedCall(t, true)
+	if got := registry.Usage(); len(got) != 1 {
+		t.Fatalf("process accounting lost: %+v", got)
 	}
 }
 

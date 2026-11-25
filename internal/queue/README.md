@@ -42,7 +42,7 @@ has elapsed. The conflict update compares `run_after` against PostgreSQL's
 `clock_timestamp()`: `now()` is the transaction start and could precede a
 concurrent expedite; even the statement start could precede an expedite whose
 row lock the enqueue waited for. Scheduling still uses `now()` in the formula
-above. Non-debounced duplicates retain `ON CONFLICT DO NOTHING` unchanged.
+above. Non-debounced duplicates do nothing (`ON CONFLICT DO NOTHING`).
 
 `Enqueued.Stored` is true for inserts and debounced updates, with the inserted
 or existing job ID. It is true even when the formula leaves the timestamp

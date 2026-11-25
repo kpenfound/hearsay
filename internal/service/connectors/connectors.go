@@ -6,12 +6,12 @@
 // connector can answer it.
 //
 // One process can host several connectors; which ones it hosts is the
-// `--source` selection. What it hosts them with is
-// [connector.Runtime]: this package is the wiring — the configured sources, the
-// registry of factories, the L0 store to write to, the cursor store to keep
-// backfill positions in, the store ACL re-syncs are kept in and the L0 read that
-// finds a container still served as public — and the HTTP surface the runtime needs, which is the
-// push connectors' handlers and the service's health.
+// `--source` selection. What it hosts them with is [connector.Runtime]: this
+// package is the wiring — the configured sources, the registry of factories,
+// the L0 store to write to, the cursor store to keep backfill positions in, the
+// store ACL re-syncs are kept in and the L0 read that finds a container still
+// served as public — and the HTTP surface the runtime needs, which is the push
+// connectors' handlers and the service's health.
 package connectors
 
 import (
@@ -40,31 +40,22 @@ import (
 const Name = "connectors"
 
 // DefaultListen is where the service serves the push connectors' handlers and
-// its own health when nothing says otherwise. The API's port is 8080; this is
-// the next one.
+// its own health when nothing says otherwise.
 const DefaultListen = ":8081"
 
-// shutdownGrace is how long the HTTP server gets to finish the requests it is
-// serving once the process has been asked to stop. A webhook delivery is a
-// small POST, so this is about a request in flight rather than about a
-// long-running one.
 const shutdownGrace = 5 * time.Second
 
 // Deps are the dependencies the process builds and hands to [Run].
 type Deps struct {
 	// Sources selects which configured connectors to host. Empty means all of
-	// them, which is the default. A name that is not a configured source is a
-	// startup failure rather than a process that hosts nothing.
+	// them. A name that is not a configured source is a startup failure.
 	Sources []string
 	// Pool is the database. The caller owns it and closes it. It is
 	// what [Sink] and [Deps.Cursors] are built from when they are not supplied.
 	Pool *pgxpool.Pool
-	// Registry is the connector types this binary can ingest. There is no
-	// global registry and no init-time registration, so this is where what a
-	// process can ingest is decided (docs/connector-contract.md).
+	// Registry is the connector types this binary can ingest.
 	Registry *connector.Registry
-	// Sink is where events land. Nil is the L0 store over [Deps.Pool], which is
-	// what a process uses; a test supplies its own.
+	// Sink is where events land. Nil is the L0 store over [Deps.Pool].
 	Sink connector.Sink
 	// Cursors is where backfill positions are kept. Nil is the backfill cursor
 	// store over [Deps.Pool].
@@ -78,29 +69,20 @@ type Deps struct {
 	// with no pool either, commands are refused unrecorded.
 	Commands connector.CommandApplier
 	// Listener is what the HTTP surface is served on. Nil is a listener on
-	// [Deps.Listen]; a test passes one bound to port 0 so that it knows the
-	// address.
+	// [Deps.Listen].
 	Listener net.Listener
 	// Listen is the address to serve on when [Deps.Listener] is nil. Empty is
 	// [DefaultListen].
 	Listen string
-	// Cadence is what the runtime's own timings are turned down to for a
-	// deployment that wants it quieter and for a test that wants it immediate.
-	// The zero value is the defaults.
+	// Cadence tunes the runtime's own timings. The zero value is the defaults.
 	Cadence connector.Cadence
 }
 
 // Run hosts the configured connectors until ctx is cancelled, and returns nil
 // when it stops that way.
 //
-// The runtime and the HTTP surface stop together and in that order: a process
-// serving webhooks with no runtime behind them would accept deliveries it
-// cannot ingest, and a runtime with no listener cannot be delivered to or asked
-// how it is.
+// The runtime and the HTTP surface stop together and in that order.
 func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
-	// `hosting`, not `source`: the standard `source` field is the source an
-	// event or a line is about, which is what the runtime puts on its own
-	// lines. This is the different fact that one process may host several of them.
 	ctx = telemetry.With(ctx, "hosting", Selection(deps.Sources))
 	log := telemetry.Logger(ctx)
 
@@ -152,15 +134,10 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 	server := &http.Server{
 		Handler:           handler(runtime, deps.Pool),
 		ReadHeaderTimeout: 10 * time.Second,
-		// Not the cancellable context: cancelling it would cancel every request
-		// in flight the instant the process is asked to stop, which is the
-		// opposite of what the shutdown grace period is for. What a request
-		// wants from it is the logger.
+
 		BaseContext: func(net.Listener) context.Context { return context.WithoutCancel(ctx) },
 	}
-	// The runtime's context is not a child of the one that stops the listener:
-	// it is cancelled by the HTTP goroutine once the server has drained, which
-	// is what puts the two shutdowns in order.
+
 	runtimeCtx, stopRuntime := context.WithCancel(context.WithoutCancel(ctx))
 	defer stopRuntime()
 	errs := make([]error, 0, 2)
@@ -178,17 +155,13 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		// The listener stops first and the connectors when it has drained: a
-		// delivery still being served is inside a connector's Handler, and
-		// Close is a connector's chance to let go of what its handlers use.
+
 		defer stopRuntime()
 		fail("http", serve(ctx, server, listener))
 	}()
 	go func() {
 		defer wg.Done()
-		// A runtime that returns on its own takes the listener with it: a
-		// process accepting webhooks it is no longer ingesting is a delivery
-		// the source believes it has made.
+
 		defer stop()
 		fail("runtime", runtime.Run(runtimeCtx))
 	}()
@@ -197,9 +170,6 @@ func Run(ctx context.Context, cfg *config.Config, deps Deps) error {
 	return errors.Join(errs...)
 }
 
-// stores is what events are written to and where backfill positions are kept:
-// the L0 store over the process's pool, or whatever the caller supplied
-// instead.
 func stores(deps Deps) (connector.Sink, connector.CursorStore, error) {
 	sink, cursors := deps.Sink, deps.Cursors
 	if (sink == nil || cursors == nil) && deps.Pool == nil {
@@ -214,10 +184,6 @@ func stores(deps Deps) (connector.Sink, connector.CursorStore, error) {
 	return sink, cursors, nil
 }
 
-// resyncStores is where re-syncs are kept and what says which containers L0
-// serves as public: the stores over the process's pool, or whatever the caller
-// supplied. A caller with no pool and nothing supplied gets neither, and the
-// runtime says so rather than running a re-sync a restart would lose.
 func resyncStores(deps Deps) (connector.ResyncStore, connector.ExposureReader) {
 	resyncs, exposure := deps.Resyncs, deps.Exposure
 	if deps.Pool != nil {
@@ -231,7 +197,6 @@ func resyncStores(deps Deps) (connector.ResyncStore, connector.ExposureReader) {
 	return resyncs, exposure
 }
 
-// listen opens the service's listener.
 func listen(ctx context.Context, deps Deps) (net.Listener, error) {
 	if deps.Listener != nil {
 		return deps.Listener, nil
@@ -248,8 +213,6 @@ func listen(ctx context.Context, deps Deps) (net.Listener, error) {
 	return listener, nil
 }
 
-// serve runs the HTTP surface until ctx is cancelled, then shuts it down. A
-// server that was asked to close is not a server that failed.
 func serve(ctx context.Context, server *http.Server, listener net.Listener) error {
 	done := make(chan error, 1)
 	go func() {
@@ -264,8 +227,7 @@ func serve(ctx context.Context, server *http.Server, listener net.Listener) erro
 		return err
 	case <-ctx.Done():
 	}
-	// The requests in flight get a moment to finish, on a context of their own:
-	// the one that stopped the process is already done.
+
 	grace, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownGrace)
 	defer cancel()
 	if err := server.Shutdown(grace); err != nil {
@@ -277,9 +239,7 @@ func serve(ctx context.Context, server *http.Server, listener net.Listener) erro
 // Select narrows the configured sources to the ones this process was asked to
 // host. An empty selection is all of them.
 //
-// A name that is not a configured source is an error: a process started with
-// `--source githbu` would otherwise host nothing at all and say so only in a
-// count nobody reads.
+// A name that is not a configured source is an error.
 func Select(configured []connector.SourceConfig, selected []string) ([]connector.SourceConfig, error) {
 	if len(selected) == 0 {
 		return configured, nil
@@ -296,8 +256,7 @@ func Select(configured []connector.SourceConfig, selected []string) ([]connector
 		case !ok:
 			unknown = append(unknown, name)
 		case slices.ContainsFunc(out, func(s connector.SourceConfig) bool { return s.ID == name }):
-			// Naming a source twice is not an error, but hosting it twice would
-			// be: two connectors for one source share a cursor and a hook path.
+
 		default:
 			out = append(out, src)
 		}
@@ -318,12 +277,8 @@ func ids(sources []connector.SourceConfig) []string {
 
 // Selection renders which connectors a process is hosting for the `hosting` log
 // field: the names it was given, or "all" when it was given none. Every line
-// this service logs carries it, because "which connectors is this container
-// running" is the first question asked of a process hosting a subset.
-//
-// It is not the `source` field. That one is a standard field, is the source a
-// line is about, and is what the runtime puts on the lines of each connector it drives;
-// one process hosts several of them, so the two facts are two fields.
+// this service logs carries it. It is not the `source` field, which is the
+// source a line is about.
 func Selection(sources []string) string {
 	if len(sources) == 0 {
 		return "all"
@@ -331,12 +286,9 @@ func Selection(sources []string) string {
 	return strings.Join(sources, ",")
 }
 
-// handler is the service's HTTP surface: the runtime's own paths, and the two
-// endpoints every service has.
 func handler(runtime *connector.Runtime, pool *pgxpool.Pool) http.Handler {
 	mux := http.NewServeMux()
-	// Everything under the prefix is the runtime's, including the 404 for a
-	// source that does not push.
+
 	mux.Handle(connector.HookPrefix, runtime.Handler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -368,17 +320,7 @@ func readiness(ctx context.Context, runtime *connector.Runtime, pool *pgxpool.Po
 	if pool == nil {
 		return out
 	}
-	// Readiness is the database being reachable and its schema acceptable to
-	// this binary, and the credentials being present. The schema half is what
-	// turns the schema version check into a deployment that stops
-	// rather than one that half-works, so it is one query and not a ping. The
-	// credentials half has nothing to check here: a source's secrets are
-	// resolved from the environment at startup and a missing one refuses to
-	// start the process (docs/connector-contract.md).
-	//
-	// Either failure is the operator's to read in the log, where the error can
-	// name a host, a user and a version. The body says which of the two it is
-	// and nothing else.
+
 	log := telemetry.Logger(ctx)
 	switch err := db.CheckSchema(ctx, pool); {
 	case err == nil:
@@ -403,14 +345,10 @@ func writeJSON(w http.ResponseWriter, body Readiness) {
 	w.WriteHeader(status)
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	// The response has already begun, so a failure here is a client that went
-	// away rather than something this process can report.
+
 	_ = enc.Encode(body)
 }
 
-// stoppingEarly turns a startup failure that happened because the process was
-// asked to stop into a clean stop, the way the subcommands do: a service
-// interrupted while it is still binding a port has not failed.
 func stoppingEarly(ctx context.Context, err error) error {
 	if ctx.Err() != nil {
 		return nil

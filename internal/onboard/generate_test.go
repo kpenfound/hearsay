@@ -11,7 +11,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/onboard"
 )
 
-// zeros stands in for crypto/rand.
 type zeros struct{}
 
 func (zeros) Read(p []byte) (int, error) { clear(p); return len(p), nil }
@@ -29,8 +28,6 @@ func load(t *testing.T, body []byte) config.Repo {
 	return repo
 }
 
-// Names the generated file derives — a scope per repository, a token
-// variable per principal — never collide, and always load.
 func TestGeneratedNames(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -57,7 +54,6 @@ func TestGeneratedNames(t *testing.T) {
 			wantTokens: []string{"HEARSAY_KYLE_TOKEN"},
 		},
 		{
-			// The operator's token variable would be the GitHub source's.
 			name:       "a token variable a source already names",
 			in:         onboard.Input{Operator: onboard.Operator{ID: "github", GitHub: "kpenfound"}, GitHub: onboard.GitHub{Repos: []string{"acme/api"}}},
 			wantScopes: []string{"api"},

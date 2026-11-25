@@ -30,13 +30,6 @@ const (
 	MaxSearchLimit = SearchCandidates
 	// RRFK is the constant of the reciprocal rank fusion the two halves are
 	// combined with: a document at rank r in a half contributes 1/(RRFK+r).
-	//
-	// Rank fusion rather than a weighted sum of the two scores, because the
-	// scores are not comparable — ts_rank_cd is a lexical density and a cosine
-	// distance is an angle, and neither is calibrated against the other or
-	// stable across queries. Ranks are. 60 is the constant the method was
-	// published with: large enough that the top few ranks do not swamp
-	// everything below them, small enough that rank 1 still beats rank 20.
 	RRFK = 60
 )
 
@@ -109,34 +102,10 @@ type Hit struct {
 	VectorRank int
 }
 
-// searchSQL is the hybrid read: the two halves, each ranked over the documents
-// the caller may see, fused by reciprocal rank.
-//
-// The filter is inside both halves rather than around the result. A document
-// the caller may not read never enters a ranking, so it can neither be returned
-// nor push a document they may read out of the candidates
-// (docs/design.md#access-control) — filtering afterwards would do the second
-// even when it stops the first. The two halves repeat the predicate for the
-// same reason a view would not do: each has to rank what is left after it, and
-// the planner is free to use whichever index the predicate offers.
-//
-// searchDocument is the text the full-text half matches: the team's own words,
-// then the distilled summary and outcome. It is the expression
-// l1_docs_search_fts_idx is built over (migration 41), spelled the same way so
-// the planner can use the index, and it names the `english` configuration, never
-// the session's default. A document is one text here, so a word in more than
-// one part of it is still one match.
 const searchDocument = `(to_tsvector('english', raw_text)
         || to_tsvector('english', coalesce(body ->> 'summary', ''))
         || to_tsvector('english', coalesce(body ->> 'outcome', '')))`
 
-// The substitutions, in order: the query's placeholder, the filter (used
-// twice), the query vector's placeholder (twice), the fusion constant
-// (twice), the candidate cutoff (four times) and the limit.
-//
-// The fused count is taken before the limit applies, and `beyond` asks each half
-// whether a document ranked past the cutoff exists, so the statement reports
-// truncation without returning an extra row.
 const searchSQL = `
 WITH matched AS (
     SELECT id, row_number() OVER (
@@ -206,10 +175,6 @@ func (s *Store) Search(ctx context.Context, reader Reader, opts SearchOptions) (
 		filter += " AND created_at < " + q.placeholder(*until) + "::timestamptz"
 	}
 
-	// The query is embedded before the statement is built, so that a tier that
-	// fails takes the search with it rather than quietly halving it: a caller
-	// that asked for both halves and silently got one would not be able to
-	// tell.
 	vector, err := embedQuery(ctx, opts.Embedder, opts.Query)
 	if err != nil {
 		return SearchResult{}, err
@@ -252,9 +217,6 @@ func (s *Store) Search(ctx context.Context, reader Reader, opts SearchOptions) (
 	return result, nil
 }
 
-// searchWindow parses the window's two ends, each nil when it was not asked
-// for. It refuses a timestamp that is not RFC 3339 and a window that ends
-// before it begins; an empty window (the two equal) is a window.
 func searchWindow(since, until string) (*time.Time, *time.Time, error) {
 	parse := func(name, value string) (*time.Time, error) {
 		if value == "" {
@@ -294,8 +256,6 @@ func SearchLimit(limit int) int {
 	}
 }
 
-// embedQuery is the query as a vector, and a nil vector where there is no embed
-// tier to make one — which is what turns the similarity half off.
 func embedQuery(ctx context.Context, e Embedder, q string) (*string, error) {
 	if e == nil {
 		return nil, nil
@@ -306,8 +266,6 @@ func embedQuery(ctx context.Context, e Embedder, q string) (*string, error) {
 	}
 	vectors, err := e.Embed(ctx, []string{EmbedText(q)})
 	if err != nil {
-		// The query is a person's words: it is named as a length and never
-		// quoted, the same rule the write path holds to.
 		return nil, fmt.Errorf("embedding a %d byte query: %w", len(q), err)
 	}
 	if len(vectors) != 1 {
@@ -321,19 +279,11 @@ func embedQuery(ctx context.Context, e Embedder, q string) (*string, error) {
 	return &literal, nil
 }
 
-// predicate is what this reader may see, as SQL: the scope filter and the
-// access-list filter, both of which have to hold. The second return is false
-// when the reader can see nothing at all, which is a query not worth running.
-//
-// Both filters fail closed. A reader with no scopes reads nothing rather than
-// everything, and a document is readable only when its access list says so —
-// there is no branch here that skips the access-list check.
 func (r Reader) predicate(q *query, scope string) (string, bool) {
 	scopes := r.Effective.Grant.Scopes
 	var scoped string
 	switch {
 	case r.Effective.Human == "":
-		// Nothing is accountable for this read (docs/design.md#access-control).
 		return "", false
 	case scope != "" && !scopes.Has(scope):
 		return "", false
@@ -347,9 +297,6 @@ func (r Reader) predicate(q *query, scope string) (string, bool) {
 		scoped = "scope && " + q.placeholder(scopes.IDs) + "::text[]"
 	}
 
-	// Containment rather than equality, so an entry the source labelled
-	// matches the same grant written without a label: two grants are one when
-	// the kind, the source and the native id agree (internal/l1).
 	allowed := []string{"acl @> " + q.placeholder(entryJSON(connector.ACLEntry{Kind: connector.ACLPublic})) + "::jsonb"}
 	for _, entry := range r.Audience {
 		allowed = append(allowed, "acl @> "+q.placeholder(entryJSON(entry))+"::jsonb")
@@ -357,17 +304,10 @@ func (r Reader) predicate(q *query, scope string) (string, bool) {
 	return scoped + " AND (" + strings.Join(allowed, " OR ") + ")", true
 }
 
-// entryJSON is one access-list entry as the one-element array the containment
-// operator takes. The entry is written without its label: the label is what a
-// source calls the grant, and a document is not less readable for having been
-// labelled differently.
 func entryJSON(entry connector.ACLEntry) string {
 	entry.Label = ""
 	body, err := json.Marshal([]connector.ACLEntry{entry})
 	if err != nil {
-		// connector.ACLEntry is four strings; there is nothing here that can
-		// fail to encode, and returning an array that matches nothing is the
-		// fail-closed answer if that ever stops being true.
 		return "[]"
 	}
 	return string(body)

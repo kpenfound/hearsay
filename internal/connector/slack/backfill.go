@@ -21,9 +21,8 @@ type walkPosition struct {
 	Pending     []string `json:"pending,omitempty"`
 	Thread      string   `json:"thread,omitempty"`
 	ReplyCursor string   `json:"reply_cursor,omitempty"`
-	// Next is the history cursor to use once this page's threads are walked.
-	Next string `json:"next,omitempty"`
-	End  bool   `json:"end,omitempty"`
+	Next        string   `json:"next,omitempty"`
+	End         bool     `json:"end,omitempty"`
 }
 
 func (c *Connector) configured(id string) bool { return slices.Contains(c.containers, id) }
@@ -210,7 +209,6 @@ func (c *Connector) Public(ctx context.Context, container string) (bool, error) 
 	return r.Channel.IsChannel && !r.Channel.IsPrivate && !r.Channel.IsArchived && !r.Channel.IsExtShared && !r.Channel.IsPendingExtShared, nil
 }
 
-// observeVisibility records an obligation before a Socket Mode envelope is acked.
 func (c *Connector) observeVisibility(ctx context.Context, sink connector.Sink, channel string, restricted bool) error {
 	c.mu.Lock()
 	old, seen := c.restricted[channel]

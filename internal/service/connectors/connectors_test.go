@@ -1,7 +1,6 @@
 package connectors_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,28 +10,26 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/poll"
 	"github.com/kpenfound/hearsay/internal/service/connectors"
 	"github.com/kpenfound/hearsay/internal/telemetry"
+	"github.com/kpenfound/hearsay/internal/telemetry/logtest"
 )
 
 func source(id string) connector.SourceConfig {
 	return connector.SourceConfig{ID: id, Type: connector.FakeType, Containers: []string{"C123"}, Refresh: time.Millisecond}
 }
 
-// quick is the cadence the service's tests run on: the runtime's own floor is a
-// deployment's thirty seconds.
 func quick() connector.Cadence {
 	return connector.Cadence{MinRefresh: time.Millisecond, Refresh: time.Millisecond, MaxBackoff: 5 * time.Millisecond, Shutdown: time.Second}
 }
 
-// fakeRegistry hands out the connectors a test built, by source id.
 func fakeRegistry(t *testing.T, conns map[string]connector.Connector) *connector.Registry {
 	t.Helper()
 	reg := connector.NewRegistry()
@@ -49,8 +46,6 @@ func fakeRegistry(t *testing.T, conns map[string]connector.Connector) *connector
 	return reg
 }
 
-// run starts the service on a listener of its own and returns its address and a
-// function that stops it.
 func run(t *testing.T, cfg *config.Config, deps connectors.Deps) (string, func() error) {
 	t.Helper()
 	var lc net.ListenConfig
@@ -77,17 +72,6 @@ func run(t *testing.T, cfg *config.Config, deps connectors.Deps) (string, func()
 	}
 }
 
-func waitFor(t *testing.T, what string, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out after 10s waiting for %s", what)
-		}
-		time.Sleep(time.Millisecond)
-	}
-}
-
 func get(t *testing.T, addr, path string) (int, string) {
 	t.Helper()
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+addr+path, nil)
@@ -106,96 +90,125 @@ func get(t *testing.T, addr, path string) (int, string) {
 	return resp.StatusCode, string(body)
 }
 
-// The service hosts what configuration names, polls it, and serves the two
-// endpoints every service has plus the push connectors' handlers.
-func TestTheServiceHostsPollsAndServes(t *testing.T) {
+type hosted struct {
+	src     connector.SourceConfig
+	fake    *connector.Fake
+	rec     *connector.Recorder
+	cursors *connector.MemoryCursors
+	addr    string
+	stop    func() error
+}
+
+func hostFake(t *testing.T) *hosted {
+	t.Helper()
 	src := source("fake-eng")
 	fake := connector.NewFake(src)
 	fake.Queue = []connector.Event{fake.NewEvent(connector.KindMessage, "m1", "polled")}
 	fake.Pages = [][]connector.Event{{fake.NewEvent(connector.KindMessage, "h1", "history")}}
-	rec := &connector.Recorder{}
-	cursors := connector.NewMemoryCursors()
-
+	h := &hosted{src: src, fake: fake, rec: &connector.Recorder{}, cursors: connector.NewMemoryCursors()}
 	cfg := &config.Config{Repo: config.Repo{Sources: []connector.SourceConfig{src}}}
-	addr, stop := run(t, cfg, connectors.Deps{
+	h.addr, h.stop = run(t, cfg, connectors.Deps{
 		Registry: fakeRegistry(t, map[string]connector.Connector{src.ID: fake}),
-		Sink:     rec,
-		Cursors:  cursors,
+		Sink:     h.rec,
+		Cursors:  h.cursors,
 	})
+	return h
+}
 
-	waitFor(t, "the polled and backfilled events", func() bool { return len(rec.Events()) >= 2 })
+func (h *hosted) post(t *testing.T, ev connector.Event) int {
+	t.Helper()
+	body, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("marshalling the event: %v", err)
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+		"http://"+h.addr+connector.HookPath(h.src.ID), strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatalf("building the request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST the hook: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return resp.StatusCode
+}
 
-	t.Run("healthz", func(t *testing.T) {
-		code, body := get(t, addr, "/healthz")
-		if code != http.StatusOK || !strings.Contains(body, "ok") {
-			t.Errorf("GET /healthz = %d %q, want 200 and ok", code, body)
-		}
-	})
-
-	t.Run("readyz reports the source", func(t *testing.T) {
-		waitFor(t, "the backfill to finish", func() bool {
-			_, body := get(t, addr, "/readyz")
-			return strings.Contains(body, `"backfill_done": true`)
-		})
-		code, body := get(t, addr, "/readyz")
-		if code != http.StatusOK {
-			t.Errorf("GET /readyz = %d, want 200: %s", code, body)
-		}
-		var ready connectors.Readiness
-		if err := json.Unmarshal([]byte(body), &ready); err != nil {
-			t.Fatalf("readiness is not JSON: %v (%s)", err, body)
-		}
-		if ready.Status != connector.HealthOK {
-			t.Errorf("readiness status = %q, want ok: %s", ready.Status, body)
-		}
-		if len(ready.Sources) != 1 || ready.Sources[0].Source != src.ID {
-			t.Fatalf("readiness lists %+v, want the one configured source", ready.Sources)
-		}
-		if !ready.Sources[0].BackfillDone || ready.Sources[0].Backfilled != 1 {
-			t.Errorf("readiness says backfill done=%v after %d events, want done after one",
-				ready.Sources[0].BackfillDone, ready.Sources[0].Backfilled)
-		}
-	})
-
-	t.Run("a webhook delivery", func(t *testing.T) {
-		body, err := json.Marshal(fake.NewEvent(connector.KindMessage, "p1", "pushed"))
-		if err != nil {
-			t.Fatalf("marshalling the event: %v", err)
-		}
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
-			"http://"+addr+connector.HookPath(src.ID), strings.NewReader(string(body)))
-		if err != nil {
-			t.Fatalf("building the request: %v", err)
-		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatalf("POST the hook: %v", err)
-		}
-		defer func() { _ = resp.Body.Close() }()
-		if resp.StatusCode != http.StatusAccepted {
-			t.Errorf("POST %s = %d, want 202", connector.HookPath(src.ID), resp.StatusCode)
-		}
-	})
-
-	if err := stop(); err != nil {
+func TestTheServiceAnswersHealthz(t *testing.T) {
+	h := hostFake(t)
+	code, body := get(t, h.addr, "/healthz")
+	if code != http.StatusOK || !strings.Contains(body, "ok") {
+		t.Errorf("GET /healthz = %d %q, want 200 and ok", code, body)
+	}
+	if err := h.stop(); err != nil {
 		t.Fatalf("Run() = %v, want nil", err)
 	}
+}
 
+func TestReadyzReportsTheHostedSource(t *testing.T) {
+	h := hostFake(t)
+	poll.Until(t, "the backfill to finish", func() bool {
+		_, body := get(t, h.addr, "/readyz")
+		return strings.Contains(body, `"backfill_done": true`)
+	})
+	code, body := get(t, h.addr, "/readyz")
+	if code != http.StatusOK {
+		t.Errorf("GET /readyz = %d, want 200: %s", code, body)
+	}
+	var ready connectors.Readiness
+	if err := json.Unmarshal([]byte(body), &ready); err != nil {
+		t.Fatalf("readiness is not JSON: %v (%s)", err, body)
+	}
+	if ready.Status != connector.HealthOK {
+		t.Errorf("readiness status = %q, want ok: %s", ready.Status, body)
+	}
+	if len(ready.Sources) != 1 || ready.Sources[0].Source != h.src.ID {
+		t.Fatalf("readiness lists %+v, want the one configured source", ready.Sources)
+	}
+	if !ready.Sources[0].BackfillDone || ready.Sources[0].Backfilled != 1 {
+		t.Errorf("readiness says backfill done=%v after %d events, want done after one",
+			ready.Sources[0].BackfillDone, ready.Sources[0].Backfilled)
+	}
+	if err := h.stop(); err != nil {
+		t.Fatalf("Run() = %v, want nil", err)
+	}
+}
+
+func TestTheServiceAcceptsAWebhookDelivery(t *testing.T) {
+	h := hostFake(t)
+	if code := h.post(t, h.fake.NewEvent(connector.KindMessage, "p1", "pushed")); code != http.StatusAccepted {
+		t.Errorf("POST %s = %d, want 202", connector.HookPath(h.src.ID), code)
+	}
+	if err := h.stop(); err != nil {
+		t.Fatalf("Run() = %v, want nil", err)
+	}
+}
+
+func TestThePolledBackfilledAndPushedEventsReachTheSink(t *testing.T) {
+	h := hostFake(t)
+	poll.Until(t, "the polled and backfilled events", func() bool { return len(h.rec.Events()) >= 2 })
+	h.post(t, h.fake.NewEvent(connector.KindMessage, "p1", "pushed"))
+	if err := h.stop(); err != nil {
+		t.Fatalf("Run() = %v, want nil", err)
+	}
 	got := []string{}
-	for _, ev := range rec.Events() {
+	for _, ev := range h.rec.Events() {
 		got = append(got, ev.Payload.Artifact)
 	}
 	slices.Sort(got)
 	if want := []string{"h1", "m1", "p1"}; !slices.Equal(slices.Compact(got), want) {
 		t.Errorf("the sink received %v, want the polled, backfilled and pushed events %v", got, want)
 	}
-	if len(cursors.Saves(src.ID)) == 0 {
-		t.Error("the backfill saved no position")
+}
+
+func TestTheBackfillSavesItsPosition(t *testing.T) {
+	h := hostFake(t)
+	poll.Until(t, "the backfill to save a position", func() bool { return len(h.cursors.Saves(h.src.ID)) > 0 })
+	if err := h.stop(); err != nil {
+		t.Fatalf("Run() = %v, want nil", err)
 	}
 }
 
-// A source that has failed is a process that is not ready: a load balancer, or
-// an operator, must be able to tell.
 func TestReadyzFailsWhenASourceHasFailed(t *testing.T) {
 	src := source("fake-eng")
 	fake := connector.NewFake(src)
@@ -211,7 +224,7 @@ func TestReadyzFailsWhenASourceHasFailed(t *testing.T) {
 	if code != http.StatusServiceUnavailable {
 		t.Errorf("GET /readyz with a failed source = %d, want 503: %s", code, body)
 	}
-	// Up is not ready: the process is running, and that is all /healthz says.
+
 	if code, _ := get(t, addr, "/healthz"); code != http.StatusOK {
 		t.Errorf("GET /healthz = %d, want 200", code)
 	}
@@ -220,8 +233,6 @@ func TestReadyzFailsWhenASourceHasFailed(t *testing.T) {
 	}
 }
 
-// A process with no configuration hosts nothing, and says so by serving rather
-// than by exiting: that is what every other service does without one.
 func TestNoConfigurationHostsNothing(t *testing.T) {
 	addr, stop := run(t, &config.Config{}, connectors.Deps{
 		Sink:    &connector.Recorder{},
@@ -239,9 +250,6 @@ func TestNoConfigurationHostsNothing(t *testing.T) {
 	}
 }
 
-// Writing L0 is what a connector does, and a backfill that cannot store its
-// position walks a source's history again on every restart. A process with
-// neither a database nor something in its place cannot do the job.
 func TestTheServiceNeedsSomewhereToWriteAndSomewhereToResumeFrom(t *testing.T) {
 	tests := []struct {
 		name string
@@ -261,18 +269,13 @@ func TestTheServiceNeedsSomewhereToWriteAndSomewhereToResumeFrom(t *testing.T) {
 	}
 }
 
-// Every line this service writes says which connectors the process is hosting
-// and, where it is about one, which source — and each of those is one field
-// with one value. The failure this pins is CONTRIBUTING.md's:
-// `telemetry.With` appends, so two writers reaching for the same key produce a
-// line with the key twice, and `encoding/json` keeps the last.
 func TestALineNamesTheProcessAndItsSourceOnce(t *testing.T) {
 	src := source("fake-eng")
 	fake := connector.NewFake(src)
 	fake.Queue = []connector.Event{fake.NewEvent(connector.KindMessage, "m1", "polled")}
 	rec := &connector.Recorder{}
 
-	var out syncBuffer
+	var out logtest.Buffer
 	ctx := telemetry.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&out, nil)))
 	ctx, cancel := context.WithCancel(ctx)
 
@@ -292,7 +295,7 @@ func TestALineNamesTheProcessAndItsSourceOnce(t *testing.T) {
 			Cadence:  quick(),
 		})
 	}()
-	waitFor(t, "the connector to be polled", func() bool { return len(rec.Events()) >= 1 })
+	poll.Until(t, "the connector to be polled", func() bool { return len(rec.Events()) >= 1 })
 	cancel()
 	select {
 	case err := <-done:
@@ -311,8 +314,7 @@ func TestALineNamesTheProcessAndItsSourceOnce(t *testing.T) {
 			continue
 		}
 		lines++
-		// Count the occurrences rather than trusting the decoded value:
-		// json.Unmarshal keeps the last of a repeated key, which is the bug.
+
 		for _, field := range []string{"hosting", "source"} {
 			if n := strings.Count(line, `"`+field+`":`); n > 1 {
 				t.Errorf("a log line carries the %s field %d times, want at most once: %s", field, n, line)
@@ -336,15 +338,12 @@ func TestALineNamesTheProcessAndItsSourceOnce(t *testing.T) {
 	}
 }
 
-// blockingPusher is a push connector whose handler a test can hold open, so
-// that shutdown can be observed while a delivery is in flight.
 type blockingPusher struct {
 	fake     *connector.Fake
 	started  chan struct{}
 	release  chan struct{}
 	inFlight atomic.Bool
-	// closedInFlight records what Close saw: true means a connector was closed
-	// while one of its own deliveries was still being served.
+
 	closedInFlight atomic.Bool
 }
 
@@ -367,9 +366,6 @@ func (b *blockingPusher) Handler(sink connector.Sink) http.Handler {
 	})
 }
 
-// A connector is closed after the deliveries it is serving have finished. The
-// two shutdowns are ordered, so a `Close` that lets go of what a handler is
-// using cannot pull it out from under one.
 func TestAConnectorIsClosedAfterItsDeliveriesFinish(t *testing.T) {
 	src := source("fake-eng")
 	pusher := &blockingPusher{
@@ -407,13 +403,10 @@ func TestAConnectorIsClosedAfterItsDeliveriesFinish(t *testing.T) {
 	}()
 	<-pusher.started
 
-	// Stop the service while the delivery is inside the handler, then let it
-	// finish: the shutdown has to wait for it.
 	stopped := make(chan error, 1)
 	go func() { stopped <- stop() }()
-	// Shutdown closes the listener before it waits for the handlers: once a new
-	// connection is refused, the stop is under way.
-	waitFor(t, "the listener to close", func() bool {
+
+	poll.Until(t, "the listener to close", func() bool {
 		dialer := net.Dialer{Timeout: time.Second}
 		conn, err := dialer.DialContext(t.Context(), "tcp", addr)
 		if err != nil {
@@ -438,26 +431,6 @@ func TestAConnectorIsClosedAfterItsDeliveriesFinish(t *testing.T) {
 	}
 }
 
-// syncBuffer is a bytes.Buffer a test can read while a goroutine writes to it.
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
-// A `--source` selection is which of the configured connectors this process
-// hosts.
 func TestSelect(t *testing.T) {
 	configured := []connector.SourceConfig{source("github"), source("discord"), source("drive")}
 	tests := []struct {
@@ -496,8 +469,6 @@ func TestSelect(t *testing.T) {
 	}
 }
 
-// resyncing is a fake whose re-sync of a container is one call, and whose
-// source says every container is private.
 type resyncing struct {
 	*connector.Fake
 	calls atomic.Int64
@@ -510,17 +481,12 @@ func (r *resyncing) Resync(context.Context, connector.Sink, string, connector.Cu
 	return connector.BackfillResult{Done: true}, nil
 }
 
-// exposed is an exposure reader that serves every configured container as
-// public.
 type exposed struct{}
 
 func (exposed) Exposed(context.Context, string) ([]connector.Exposure, error) {
 	return []connector.Exposure{{Container: "C123", LastPublic: time.Now()}}, nil
 }
 
-// The re-sync store and exposure reader a caller supplies are the ones the
-// runtime uses: the startup check reads the one, records in the other, and the
-// re-sync it owes is walked. With neither and no pool the service still runs.
 func TestTheServiceGivesTheRuntimeItsResyncStores(t *testing.T) {
 	src := source("fake-resync")
 	conn := &resyncing{Fake: connector.NewFake(src)}
@@ -533,21 +499,27 @@ func TestTheServiceGivesTheRuntimeItsResyncStores(t *testing.T) {
 		Resyncs:  resyncs,
 		Exposure: exposed{},
 	})
-	waitFor(t, "the re-sync the check owed", func() bool {
+	poll.Until(t, "the re-sync the check owed", func() bool {
 		r := resyncs.Get(src.ID, "C123")
 		return r.Generation > 0 && !r.Owed
 	})
 	if err := stop(); err != nil {
 		t.Fatalf("Run() = %v", err)
 	}
+}
 
+func TestTheRuntimeNeverResyncsWithoutAResyncStore(t *testing.T) {
+	src := source("fake-resync")
 	bare := &resyncing{Fake: connector.NewFake(src)}
-	_, stop = run(t, cfg, connectors.Deps{
+	bare.Queue = []connector.Event{bare.NewEvent(connector.KindMessage, "m1", "polled")}
+	rec := &connector.Recorder{}
+	cfg := &config.Config{Repo: config.Repo{Sources: []connector.SourceConfig{src}}}
+	_, stop := run(t, cfg, connectors.Deps{
 		Registry: fakeRegistry(t, map[string]connector.Connector{src.ID: bare}),
-		Sink:     &connector.Recorder{},
+		Sink:     rec,
 		Cursors:  connector.NewMemoryCursors(),
 	})
-	time.Sleep(20 * time.Millisecond)
+	poll.Until(t, "the connector to be polled", func() bool { return len(rec.Events()) > 0 })
 	if err := stop(); err != nil {
 		t.Fatalf("Run() with no re-sync store = %v", err)
 	}

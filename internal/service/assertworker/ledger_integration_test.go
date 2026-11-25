@@ -9,24 +9,20 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
 )
 
-// A document whose join keys find a topic that was merged away is
-// offered the topic it went into, with that topic's current position, and its
-// stance is written there: no duplicate topic, and nothing on the merged-away
-// row.
 func TestMatchingReusesTheTopicAMergeKept(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	f := store(t, pool, src)
 	scope := l2.ScopeKey(testRepo(src), src, repo, nil)
 	issue, pr := issueDoc(t, src), prDoc(t, src)
 	const keptName, keptPosition = "How the engine serializes its writes", "The engine serializes writes behind one lock."
-	// The pull request names the question the kept topic asks, so Jev finds
-	// it there; the merged-away topic is never shown.
+
 	fx := llm.NewFixtures()
 	for _, fixture := range []llm.CompletionFixture{
 		{
@@ -52,8 +48,7 @@ func TestMatchingReusesTheTopicAMergeKept(t *testing.T) {
 	if err != nil || len(opened) != 1 {
 		t.Fatalf("Topics() = %+v, %v, want the issue's", opened, err)
 	}
-	// Another topic, which the issue's is merged into. It shares no join key
-	// with the pull request: only the merge leads there.
+
 	kept := l2.Topic{ID: l2.TopicID(scope, f.issueID, 9, keptName), Scope: scope, Name: keptName,
 		ACL: connector.ACL{{Kind: connector.ACLPublic}}, OpenedBy: f.issueID}
 	if _, err := graph.OpenTopic(t.Context(), kept); err != nil {
@@ -105,19 +100,14 @@ func TestMatchingReusesTheTopicAMergeKept(t *testing.T) {
 	}
 }
 
-// A document read again whose answer opens the topic it opened the first time
-// — an id derived from the document and the answer — writes where that topic
-// was merged, superseding its own earlier reading there, rather than on the
-// merged-away row.
 func TestAReadingThatReopensAMergedTopicWritesWhereItWent(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	f := store(t, pool, src)
 	scope := l2.ScopeKey(testRepo(src), src, repo, nil)
 	issue := issueDoc(t, src)
 	const keptName = "How the engine serializes its writes"
-	// Read again, the issue's position is not the kept topic's question, so it
-	// opens the topic it opened the first time.
+
 	opens := llm.Response{JSON: []byte(`{"assertions":[{"topic_name":"` + topicName + `","position":"` + issuePosition + `"}]}`), StopReason: llm.StopEnd, Model: "recorded"}
 	fx := llm.NewFixtures()
 	if err := fx.Add(llm.CompletionFixture{Tier: llm.TierAssert, Request: assertworker.RequestFor(issue, assertBudget()), Response: opens}); err != nil {

@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
@@ -27,9 +28,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
-// These are running services: ingestion is pumped into distill jobs, L1 writes
-// enqueue assert jobs, and the real queue workers consume them, with Jev built
-// the way the CLI builds it. Only the providers are fake.
 type jevWorld struct {
 	pool   *pgxpool.Pool
 	cfg    *config.Config
@@ -40,10 +38,6 @@ type jevWorld struct {
 	calls  *api.Calls
 }
 
-// ruleJev answers the pipeline's questions by rule. The second issue reports
-// finished work, the first an unagreed proposal; every candidate topic is the
-// same question; and no position restates another. With fail set, every call
-// is an outage.
 type ruleJev struct {
 	fail  atomic.Bool
 	mu    sync.Mutex
@@ -82,7 +76,7 @@ func (j *ruleJev) calls() int { j.mu.Lock(); defer j.mu.Unlock(); return len(j.a
 func newJevWorld(t *testing.T) *jevWorld {
 	t.Helper()
 	_, pool := deleteDatabase(t, "jev_")
-	path := writeConfig(t, map[string]string{
+	path := configtest.Write(t, map[string]string{
 		"sources/s.yaml":    "id: github\ntype: github\ncontainers: [acme/api]\nread_only: false\n",
 		"scopes/s.yaml":     "id: team\nsources: [github]\n",
 		"principals/p.yaml": "- id: pat\n  token_env: JEV_PAT_TOKEN\n  scopes: ['*']\n  identities: [{source: github, native_id: u1}]\n",
@@ -117,7 +111,6 @@ func newJevWorld(t *testing.T) *jevWorld {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// The model writes the prose; Jev decides the kind.
 		answer, _ := json.Marshal(map[string]string{"summary": bodies[i].Summary, "question": bodies[i].Question, "outcome": bodies[i].Outcome})
 		if err = fx.Add(llm.CompletionFixture{Tier: llm.TierDistill, Request: distiller.RequestFor(doc, distill.MaxTokens), Response: llm.Response{JSON: answer, StopReason: llm.StopEnd}}); err != nil {
 			t.Fatal(err)
@@ -172,12 +165,16 @@ func newJevWorld(t *testing.T) *jevWorld {
 
 func await(t *testing.T, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.NewTimer(15 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
 	for !condition() {
-		if time.Now().After(deadline) {
+		select {
+		case <-deadline.C:
 			t.Fatal("the running pipeline did not reach the expected state")
+		case <-tick.C:
 		}
-		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -197,7 +194,6 @@ func (w *jevWorld) awaitAsserted(t *testing.T, i int) {
 	})
 }
 
-// readiness is what the workers' /readyz report about Jev.
 func (w *jevWorld) readiness(t *testing.T) []llm.JudgmentStatus {
 	t.Helper()
 	client := http.Client{Timeout: time.Second}
@@ -262,7 +258,6 @@ func TestJevDecidesTheRunningPipeline(t *testing.T) {
 		}
 	}
 
-	// Reads never call Jev, and serve the same bytes however often they run.
 	before := w.jev.calls()
 	var first []byte
 	for range 2 {
@@ -297,7 +292,6 @@ func TestAJevOutageFailsTheJobUntilItRecovers(t *testing.T) {
 	w := newJevWorld(t)
 	w.jev.fail.Store(true)
 	w.ingest(t, 0)
-	// The distiller reports the outage once its job has failed on it.
 	await(t, func() bool {
 		for _, st := range w.readiness(t) {
 			if !st.Healthy && st.LastFailure == llm.JudgmentUnavailable && st.Failures > 0 {

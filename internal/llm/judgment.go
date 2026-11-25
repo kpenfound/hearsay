@@ -210,8 +210,6 @@ func (j *judgments) YesNo(ctx context.Context, state string, q JudgmentQuestion)
 }
 
 func (j *judgments) Judge(parent context.Context, req JudgmentRequest) (out JudgmentResult) {
-	// No provider attempt means known zero consumption. The first attempted
-	// response replaces these values, including unknown fields.
 	zeroTokens, zeroCost := int64(0), float64(0)
 	out.Usage = JudgmentUsage{InputTokens: &zeroTokens, OutputTokens: &zeroTokens, CostUSD: &zeroCost}
 	start := time.Now()
@@ -243,8 +241,7 @@ func (j *judgments) Judge(parent context.Context, req JudgmentRequest) (out Judg
 			out.Usage = AddJudgmentUsage(out.Usage, response.Usage)
 		}
 		out.ModelVersion = response.ModelVersion
-		// Terminal marker precedence is essential: an outer retryable error must
-		// not turn malformed answers into retries or outage observations.
+
 		if !usageOK || errors.Is(err, ErrJudgmentResponse) {
 			out.Failure = JudgmentInvalidResponse
 			return
@@ -380,7 +377,7 @@ func ValidJudgmentRequest(req JudgmentRequest) bool {
 func probability(p float64) bool { return !math.IsNaN(p) && !math.IsInf(p, 0) && p >= 0 && p <= 1 }
 
 // ValidJudgmentResponse also validates injected providers; adapter validation
-// alone would let a fake or a future provider answer with something malformed.
+// alone would let an injected provider answer with something malformed.
 func ValidJudgmentResponse(req JudgmentRequest, r JudgmentResponse) bool {
 	if r.ModelVersion == "" || len(r.ModelVersion) > 256 || len(req.Questions) != len(r.Answers) {
 		return false

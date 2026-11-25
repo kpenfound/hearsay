@@ -22,7 +22,6 @@ func resolveFixture() []l2.Entity {
 	}
 }
 
-// resolved is a match reduced to what a case compares.
 type resolved struct {
 	id      string
 	aliases []string
@@ -56,8 +55,6 @@ func TestResolve(t *testing.T) {
 			want: []resolved{},
 		},
 		{
-			// `engine` is configured on engine/server and seeded as the name of
-			// the top-level directory: the configured one is what a person meant.
 			name: "a configured alias wins over a seeded name",
 			text: "engine",
 			want: []resolved{{id: "code:acme/api:engine/server", aliases: []string{"engine"}}},

@@ -11,13 +11,11 @@ import (
 
 func TestNewLogger(t *testing.T) {
 	tests := []struct {
-		name    string
-		level   string
-		format  string
-		wantErr bool
-		// wantJSON asserts the output parses as a JSON object.
-		wantJSON bool
-		// wantEmitted asserts an info line reaches the writer.
+		name        string
+		level       string
+		format      string
+		wantErr     bool
+		wantJSON    bool
 		wantEmitted bool
 	}{
 		{name: "json format", level: "info", format: "json", wantJSON: true, wantEmitted: true},
@@ -61,6 +59,37 @@ func TestNewLogger(t *testing.T) {
 			}
 			if !strings.Contains(buf.String(), "service=api") {
 				t.Errorf("output %q does not carry the service attribute", buf.String())
+			}
+		})
+	}
+}
+
+func TestNewLoggerLevelBoundary(t *testing.T) {
+	tests := []struct {
+		level       string
+		wantDebug   bool
+		wantInfo    bool
+		wantWarning bool
+	}{
+		{level: "debug", wantDebug: true, wantInfo: true, wantWarning: true},
+		{level: "info", wantInfo: true, wantWarning: true},
+		{level: "warn", wantWarning: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.level, func(t *testing.T) {
+			var buf bytes.Buffer
+			l, err := NewLogger(tt.level, "text", &buf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			l.Debug("at debug")
+			l.Info("at info")
+			l.Warn("at warn")
+			out := buf.String()
+			for msg, want := range map[string]bool{"at debug": tt.wantDebug, "at info": tt.wantInfo, "at warn": tt.wantWarning} {
+				if got := strings.Contains(out, msg); got != want {
+					t.Errorf("level %s: %q emitted = %v, want %v", tt.level, msg, got, want)
+				}
 			}
 		})
 	}

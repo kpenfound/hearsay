@@ -129,10 +129,6 @@ func build(in Input, kind Kind, artifact string, window bool) (Document, error) 
 	doc.RawText, _ = Scrub(renderRaw(root, kept, in.Resolver))
 	doc.RawText = trimLines(doc.RawText)
 	if doc.RawText == "" {
-		// Every kind that makes a document requires a title or text
-		// (docs/connector-contract.md), so this is an artifact whose whole
-		// content was redacted. There is nothing to distil and nothing to
-		// search: L0 keeps it, L1 does not.
 		return Document{}, fmt.Errorf("%w: %s has no text left after the scrub", ErrNotDistilled, doc.ID)
 	}
 	return doc, nil
@@ -168,27 +164,14 @@ func (d Document) WithBody(b Body) (Document, []string, error) {
 	return d, redacted, nil
 }
 
-// conversationOf is the artifact a child event belongs to: its thread where the
-// source has threads, and the thing it hangs off otherwise. That is
-// docs/connector-contract.md's own rule — `thread` is "the root of the
-// conversation, which is what the distiller assembles a thread from", and on a
-// two-level source it equals `parent`.
 func conversationOf(ev connector.Event) string {
 	return cmp.Or(ev.Payload.Thread, ev.Payload.Parent)
 }
 
-// control reports an event that is control traffic rather than team content:
-// a command a person gave Hearsay, such as a `/hearsay` comment on an issue,
-// or Hearsay's reply to one, which is an extension kind based on `command`.
-// It hangs off the conversation it was written in and is never
-// part of that conversation's document.
 func control(ev connector.Event) bool {
 	return ev.Kind == connector.KindCommand || ev.Payload.BaseKind == connector.KindCommand
 }
 
-// byConversationOrder is the order a document reads in: when things were said,
-// then by artifact id so that two things said in the same second do not swap
-// places between two runs.
 func byConversationOrder(a, b connector.Event) int {
 	if c := a.Time.Compare(b.Time); c != 0 {
 		return c
@@ -199,22 +182,6 @@ func byConversationOrder(a, b connector.Event) int {
 	return cmp.Compare(a.NativeID, b.NativeID)
 }
 
-// aclOf is the access list a document inherits, and which children it may be
-// built from.
-//
-// A document is readable by whoever may read every event in it: it quotes them
-// all, so granting the artifact's own list to a comment somebody restricted
-// would publish that comment. The fold therefore keeps only the entries every
-// contributing event carries, and a child that shares no entry with what has
-// been folded so far is left out of the document altogether rather than
-// narrowing it to nothing — a document with an empty access list is unreadable
-// forever, which is not the same thing as a private one.
-//
-// Entries are compared by kind, source and native id. A label is what a person
-// reads, so two spellings of one grant are one grant.
-//
-// In practice, for every source this build ingests, all the events of one
-// artifact carry the same list and the fold is the artifact's own.
 func aclOf(root connector.Event, children []connector.Event) (connector.ACL, []connector.Event) {
 	acl := slices.Clone(root.ACL)
 	kept := make([]connector.Event, 0, len(children))
@@ -229,7 +196,6 @@ func aclOf(root connector.Event, children []connector.Event) (connector.ACL, []c
 	return acl, kept
 }
 
-// intersectACL is the entries of a that b also carries, in a's order.
 func intersectACL(a, b connector.ACL) connector.ACL {
 	out := make(connector.ACL, 0, len(a))
 	for _, entry := range a {
@@ -244,8 +210,6 @@ func sameGrant(a, b connector.ACLEntry) bool {
 	return a.Kind == b.Kind && a.Source == b.Source && a.NativeID == b.NativeID
 }
 
-// timesOf is when the artifact happened, when it was last edited, and when
-// anything in the document last moved.
 func timesOf(root connector.Event, children []connector.Event) Times {
 	t := Times{Created: root.Time.UTC(), Updated: root.Time.UTC(), LastActivity: root.Time.UTC()}
 	if rev := root.Payload.Revision; rev != nil && !rev.EditedAt.IsZero() {
@@ -268,16 +232,10 @@ func latest(a, b time.Time) time.Time {
 	return a
 }
 
-// rolePrecedence orders the parts one principal can have played, strongest
-// first: whoever opened the artifact is its author whatever else they did on
-// it, and an agent that only commented is an agent rather than an author.
 var rolePrecedence = []connector.ParticipantRole{
 	connector.RoleAuthor, connector.RoleReviewer, connector.RoleAgent, connector.RoleAttendee,
 }
 
-// participantsOf is who took part, as principals. An identity that does not
-// resolve is not a participant — no placeholder id is minted — and the
-// resolver keeps the sighting for a person to map (internal/principal).
 func participantsOf(root connector.Event, children []connector.Event, resolver *principal.Resolver) []Participant {
 	roles := map[string]connector.ParticipantRole{}
 	take := func(hint *connector.Identity, role connector.ParticipantRole) {
@@ -317,13 +275,6 @@ func participantsOf(root connector.Event, children []connector.Event, resolver *
 	return out
 }
 
-// roleFor is the part the author of a reply played. Whoever wrote a verdict on
-// a change proposal is a reviewer, whatever they are; an agent that said
-// something else is an agent, because "an agent said so" is what decides how
-// much a later reader should weigh it; everybody else authored what they wrote.
-//
-// Whoever opened the artifact is its author whatever else they did on it, which
-// is why this is only asked about a reply.
 func roleFor(ev connector.Event) connector.ParticipantRole {
 	kind := ev.Kind
 	if !kind.IsCore() && ev.Payload.BaseKind != "" {
@@ -339,13 +290,6 @@ func roleFor(ev connector.Event) connector.ParticipantRole {
 	}
 }
 
-// scopeOf is the entity ids a document is about: the code entities of every
-// configured scope that covers the artifact's container, the code entities its
-// own text names, and the tracker item the artifact is where a covering scope
-// maps one. Work documents also belong to their project and workstream.
-//
-// Scopes filter for relevance and never grant permission — that is the ACL, and
-// they are never the same mechanism (docs/design.md#access-control).
 func scopeOf(root connector.Event, repo config.Repo, refs []Reference) []string {
 	entities := map[string]bool{}
 	for _, id := range workScope(root, repo) {
@@ -375,13 +319,6 @@ func scopeOf(root connector.Event, repo config.Repo, refs []Reference) []string 
 	return out
 }
 
-// trackerItemOf is the entity id of the artifact itself, when it is a tracker
-// item of the scope's own tracker: an issue or a change proposal, in the
-// container the tracker names.
-//
-// The item is the part of the artifact id after the last `#` — `acme/api#31` is
-// item `31` — and the artifact id itself where there is none, which is what a
-// tracker whose keys are words rather than numbers looks like.
 func trackerItemOf(root connector.Event, scope config.Scope) (string, bool) {
 	kind, ok := KindFor(root)
 	if !ok || (kind != KindIssue && kind != KindPR) {
@@ -397,8 +334,6 @@ func trackerItemOf(root connector.Event, scope config.Scope) (string, bool) {
 	return scope.TrackerItemID(item)
 }
 
-// stateOf copies root metadata for ordinary and derived documents. Keeping a
-// separate value prevents later source mutations from changing an envelope.
 func stateOf(root connector.Event) *State {
 	if root.Payload.State == nil {
 		return nil

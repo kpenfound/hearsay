@@ -18,21 +18,10 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
 )
 
-// jevModel is the model version the test Jev answers as.
 const jevModel = "jev-fixture-v1"
 
-// shownCandidate is one candidate as a topic.same_question request shows it.
 type shownCandidate struct{ Label, Name, Current string }
 
-// ruleJev is the Jev the worker's tests run against: no recording, but a rule
-// per judgment, giving the probability of yes. Its default rules answer a
-// topic.same_question yes when the position's question has the candidate's
-// name, and a stance.same_answer yes when the position is the previous one word
-// for word: what a model that names topics consistently would have Jev decide.
-// The distiller's outcome questions, which a test distilling a document asks
-// it too, are answered from outcome by question id: by default, a proposal
-// nobody has agreed to yet. It keeps every request, and fails every one with
-// fail when that is set.
 type ruleJev struct {
 	sameQuestion func(name, position string, c shownCandidate) float64
 	sameAnswer   func(previous, position string) float64
@@ -51,7 +40,6 @@ func newRuleJev() *ruleJev {
 	}
 }
 
-// likely is a confident yes or a confident no.
 func likely(yes bool) float64 {
 	if yes {
 		return 0.96
@@ -99,7 +87,6 @@ func (j *ruleJev) Judge(_ context.Context, req llm.JudgmentRequest) (llm.Judgmen
 	return out, nil
 }
 
-// asked is the requests of one kind, in order.
 func (j *ruleJev) asked(kind string) []llm.JudgmentRequest {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -118,7 +105,6 @@ func (j *ruleJev) calls() int {
 	return len(j.requests)
 }
 
-// judgments is j behind the real llm.Judgments, with retries off.
 func (j *ruleJev) judgments(t *testing.T) llm.Judgments {
 	t.Helper()
 	capability, err := llm.NewJudgments(llm.JudgmentConfig{Model: jevModel, MaxRetries: -1},
@@ -129,7 +115,6 @@ func (j *ruleJev) judgments(t *testing.T) llm.Judgments {
 	return capability
 }
 
-// judgmentKind names which judgment a provider request asks.
 func judgmentKind(req llm.JudgmentRequest) string {
 	switch q := req.Questions[0]; {
 	case q.ID == "same_answer":
@@ -140,7 +125,6 @@ func judgmentKind(req llm.JudgmentRequest) string {
 	return "unknown"
 }
 
-// shown is the candidates a topic.same_question request showed.
 func shown(t *testing.T, req llm.JudgmentRequest) []shownCandidate {
 	t.Helper()
 	var state struct{ Candidates []shownCandidate }
@@ -154,7 +138,6 @@ func judgmentReader() l1.Reader {
 	return l1.Reader{Effective: principal.Effective{Human: "kyle", Grant: principal.Grant{Scopes: principal.AllScopes()}}}
 }
 
-// newJevAsserter is an asserter whose Jev is j.
 func newJevAsserter(t *testing.T, pool *pgxpool.Pool, src string, fx *llm.Fixtures, j *ruleJev) *assertworker.Asserter {
 	t.Helper()
 	registry, err := llm.NewFake(llm.Default(), fx)
@@ -168,7 +151,6 @@ func newJevAsserter(t *testing.T, pool *pgxpool.Pool, src string, fx *llm.Fixtur
 	return a.WithJudgments(j.judgments(t))
 }
 
-// writtenJudgment fails unless doc wrote exactly one stance, judged want.
 func writtenJudgment(t *testing.T, pool *pgxpool.Pool, doc string, want l2.Judgement) {
 	t.Helper()
 	stances, err := l2.New(pool).StancesFrom(t.Context(), doc)

@@ -12,23 +12,26 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector"
 )
 
-func TestCanonicalContainers(t *testing.T) {
-	a := connector.ContainerRef{Source: "github-a", NativeID: "acme/api"}
-	b := connector.ContainerRef{Source: "github-a", NativeID: "acme/web"}
-	c := connector.ContainerRef{Source: "github-b", NativeID: "acme/api"}
-	want := []connector.ContainerRef{a, b, c}
+var canonicalContainersInput = struct{ a, b, c connector.ContainerRef }{
+	a: connector.ContainerRef{Source: "github-a", NativeID: "acme/api"},
+	b: connector.ContainerRef{Source: "github-a", NativeID: "acme/web"},
+	c: connector.ContainerRef{Source: "github-b", NativeID: "acme/api"},
+}
+
+func TestCanonicalContainersAreSortedUniqueAndKeyed(t *testing.T) {
+	in := canonicalContainersInput
+	want := []connector.ContainerRef{in.a, in.b, in.c}
 	const wantJSON = `[{"source":"github-a","native_id":"acme/api"},{"source":"github-a","native_id":"acme/web"},{"source":"github-b","native_id":"acme/api"}]`
 	const wantKey = "538b0d065ce23ef471fb6486d61e24e858d8e7ed8b9e251ce4db01ec7deb6b6e"
 	for _, tt := range []struct {
 		name  string
 		input []connector.ContainerRef
 	}{
-		{"sorted", []connector.ContainerRef{a, b, c}},
-		{"reversed", []connector.ContainerRef{c, b, a}},
-		{"duplicates", []connector.ContainerRef{b, a, c, b, a}},
+		{"sorted", []connector.ContainerRef{in.a, in.b, in.c}},
+		{"reversed", []connector.ContainerRef{in.c, in.b, in.a}},
+		{"duplicates", []connector.ContainerRef{in.b, in.a, in.c, in.b, in.a}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			before := slices.Clone(tt.input)
 			got, key, err := connector.CanonicalContainers(tt.input)
 			if err != nil {
 				t.Fatal(err)
@@ -40,10 +43,19 @@ func TestCanonicalContainers(t *testing.T) {
 			if err != nil || string(encoded) != wantJSON {
 				t.Errorf("canonical JSON = %s, %v; want %s", encoded, err, wantJSON)
 			}
-			if !slices.Equal(tt.input, before) {
-				t.Errorf("input changed: got %v, want %v", tt.input, before)
-			}
 		})
+	}
+}
+
+func TestCanonicalContainersLeavesItsInputAlone(t *testing.T) {
+	in := canonicalContainersInput
+	input := []connector.ContainerRef{in.c, in.b, in.a, in.b}
+	before := slices.Clone(input)
+	if _, _, err := connector.CanonicalContainers(input); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(input, before) {
+		t.Errorf("input changed: got %v, want %v", input, before)
 	}
 }
 
@@ -104,25 +116,20 @@ func TestEventContainersACL(t *testing.T) {
 	}
 }
 
-func TestContainersAndTouchesJSON(t *testing.T) {
+func TestContainersACLJSONRoundTrips(t *testing.T) {
 	list, key, err := connector.CanonicalContainers([]connector.ContainerRef{{Source: "github-acme", NativeID: "acme/api"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	event := validEvent()
 	event.ACL = connector.ACL{{Kind: connector.ACLContainers, NativeID: key, Containers: list}}
-	event.Payload.Touches = []connector.Touch{{Source: "github-acme", Project: "acme/api", Paths: []string{"internal/api.go"}}}
 	encoded, err := json.Marshal(event)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{
-		`"acl":[{"kind":"containers","native_id":"` + key + `","containers":[{"source":"github-acme","native_id":"acme/api"}]}]`,
-		`"touches":[{"source":"github-acme","project":"acme/api","paths":["internal/api.go"]}]`,
-	} {
-		if !strings.Contains(string(encoded), want) {
-			t.Errorf("JSON = %s, want %s", encoded, want)
-		}
+	want := `"acl":[{"kind":"containers","native_id":"` + key + `","containers":[{"source":"github-acme","native_id":"acme/api"}]}]`
+	if !strings.Contains(string(encoded), want) {
+		t.Errorf("JSON = %s, want %s", encoded, want)
 	}
 	var back connector.Event
 	if err := json.Unmarshal(encoded, &back); err != nil {
@@ -136,7 +143,7 @@ func TestContainersAndTouchesJSON(t *testing.T) {
 	}
 }
 
-func TestExistingACLEntryJSON(t *testing.T) {
+func TestACLEntryJSON(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
 		entry connector.ACLEntry

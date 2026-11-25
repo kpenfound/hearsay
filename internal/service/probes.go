@@ -54,14 +54,8 @@ func RegisterProbes(mux *http.ServeMux, pool *pgxpool.Pool, judgments ...llm.Jud
 	})
 }
 
-// Probes is the common HTTP surface of the distiller and assertion worker.
-func Probes(pool *pgxpool.Pool, judgments ...llm.Judgments) http.Handler {
-	mux := http.NewServeMux()
-	RegisterProbes(mux, pool, judgments...)
-	return mux
-}
-
-// RunProbes serves until cancellation, with a short graceful shutdown.
+// RunProbes serves the common HTTP surface of the distiller and assertion worker
+// until cancellation, with a short graceful shutdown.
 func RunProbes(ctx context.Context, name, addr string, listener net.Listener, pool *pgxpool.Pool, judgments ...llm.Judgments) error {
 	if listener == nil {
 		var lc net.ListenConfig
@@ -74,8 +68,10 @@ func RunProbes(ctx context.Context, name, addr string, listener net.Listener, po
 			return fmt.Errorf("listening on %s: %w", addr, err)
 		}
 	}
+	mux := http.NewServeMux()
+	RegisterProbes(mux, pool, judgments...)
 	server := &http.Server{
-		Handler:           Probes(pool, judgments...),
+		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 		BaseContext:       func(net.Listener) context.Context { return context.WithoutCancel(ctx) },
 	}

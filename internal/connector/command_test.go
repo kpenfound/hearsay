@@ -14,8 +14,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector"
 )
 
-// applier is a CommandApplier that records what it was handed and answers
-// with a scripted result.
 type applier struct {
 	mu   sync.Mutex
 	reqs []connector.CommandRequest
@@ -29,23 +27,16 @@ func (a *applier) Apply(_ context.Context, req connector.CommandRequest) connect
 	return a.res
 }
 
-// failingSink refuses every event.
 type failingSink struct{}
 
 func (failingSink) Emit(context.Context, connector.Event) error {
 	return errors.New("the database is down")
 }
 
-// deletedSink records every command as one an operator deleted.
 type deletedSink struct{ connector.Recorder }
 
 func (*deletedSink) RecordCommand(context.Context, connector.Event) (bool, error) { return true, nil }
 
-// A connector hands a command it parsed to its sink; the runtime records it
-// as an L0 `command` event, applies it through the process's applier, and
-// hands back the applier's result for the connector to answer with. Every
-// case in which it is not applied says why, and records nothing it should
-// not.
 func TestTheRuntimeRecordsAndAppliesACommand(t *testing.T) {
 	answered := connector.CommandResult{Outcome: connector.CommandPinned, Principal: "kyle", Kind: "human", Scope: "code:api", Gesture: 7}
 	tests := []struct {
@@ -55,7 +46,6 @@ func TestTheRuntimeRecordsAndAppliesACommand(t *testing.T) {
 		sink     func() connector.Sink
 		noApply  bool
 		edit     func(*connector.Command)
-		// status is the fake's HTTP answer; want is the result it carries.
 		status   int
 		want     connector.CommandResult
 		recorded bool
@@ -154,5 +144,50 @@ func TestTheRuntimeRecordsAndAppliesACommand(t *testing.T) {
 				t.Errorf("applied %+v, want %+v", apply.reqs, want)
 			}
 		})
+	}
+}
+
+type sinkCapture struct {
+	pushOnly
+	sink connector.Sink
+}
+
+func (c *sinkCapture) Handler(sink connector.Sink) http.Handler {
+	c.sink = sink
+	return c.pushOnly.Handler(sink)
+}
+
+func TestAReadOnlySourceGetsErrReadOnlyAndRecordsNothing(t *testing.T) {
+	src := runtimeSource("fake-chat")
+	src.ReadOnly = true
+	fake := connector.NewFake(src)
+	captured := &sinkCapture{pushOnly: pushOnly{fake: fake}}
+	rec := &connector.Recorder{}
+	apply := &applier{}
+	runtime, err := connector.NewRuntime(t.Context(), connector.RuntimeOptions{
+		Sources:  []connector.SourceConfig{src},
+		Registry: registryOf(t, map[string]connector.Connector{src.ID: captured}),
+		Sink:     rec,
+		Commands: apply,
+		Cadence:  quick(),
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime() = %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close(context.WithoutCancel(t.Context())) })
+
+	commands, ok := captured.sink.(connector.CommandSink)
+	if !ok {
+		t.Fatalf("the sink handed to the connector is %T, want a CommandSink", captured.sink)
+	}
+	cmd := connector.Command{Event: fake.NewEvent(connector.KindCommand, "interaction:1", "/hearsay pin"), Verb: connector.CommandPin, Target: "thread:C123/1"}
+	if _, err := commands.Command(t.Context(), cmd); !errors.Is(err, connector.ErrReadOnly) {
+		t.Errorf("Command() = %v, want ErrReadOnly", err)
+	}
+	if got := rec.Events(); len(got) != 0 {
+		t.Errorf("recorded %d events from a read-only source, want none", len(got))
+	}
+	if len(apply.reqs) != 0 {
+		t.Errorf("applied %+v from a read-only source, want nothing", apply.reqs)
 	}
 }

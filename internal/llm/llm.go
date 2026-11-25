@@ -7,14 +7,11 @@ import (
 	"strings"
 )
 
-// Registry resolves a tier to a client, per configuration. Callers
-// see tiers, not providers: which provider and which model answers a tier is
-// [Config], and swapping one is a configuration edit rather than a code change.
+// Registry resolves a tier to a client, per configuration. Callers see tiers,
+// not providers: which provider and which model answers a tier is [Config].
 //
-// Everything a caller of the returned clients would otherwise have to
-// implement — retries with backoff, rate-limit handling, timeouts and token
-// accounting — is applied by the registry around the provider's own client, so
-// there is exactly one place that knows how a model call behaves.
+// The registry applies retries with backoff, rate-limit handling, timeouts and
+// token accounting around the provider's own client.
 type Registry interface {
 	// Completer returns the client for a completion tier. It is an error to
 	// ask for [TierEmbed], which no completer serves, and an error to ask for
@@ -23,10 +20,7 @@ type Registry interface {
 	// Embedder returns the client for [TierEmbed].
 	Embedder() (Embedder, error)
 	// Usage is what has been spent through this registry since it was built,
-	// one row per tier, provider and model. It is the read that makes cost
-	// observable per tier by construction; until the metric provider
-	// in internal/telemetry lands, it is also where those metrics
-	// come from.
+	// one row per tier, provider and model.
 	Usage() []Usage
 	// Close releases what the tiers' providers hold between calls, such as the
 	// sandboxes claude-sbx keeps warm, and must be called when the process is
@@ -51,28 +45,22 @@ type Embedder interface {
 	// values.
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
 	// Dimensions is the width of the vectors this tier produces. It has to
-	// match the vector(N) column L1 stores them in, which is what
-	// [CheckDimensions] compares it against. What comes back from [Embed] is
-	// held to it whether anything checks the column or not.
+	// match the vector(N) column L1 stores them in ([CheckDimensions]). What
+	// comes back from [Embed] is held to it.
 	Dimensions() int
 }
 
-// UsageEmbedder is an [Embedder] whose provider says what a call cost. An
-// adapter implements it where it can, and the registry accounts for embedding
-// tokens through it; an adapter whose provider reports nothing implements plain
-// [Embedder], and its calls are counted with no tokens against them.
-//
-// It is a second method rather than a change to [Embedder] because the
-// fixed interface is the one callers use, and no caller wants the
-// token count: the registry does, on their behalf.
+// UsageEmbedder is an [Embedder] whose provider says what a call cost. The
+// registry accounts for embedding tokens through it; an adapter whose provider
+// reports nothing implements plain [Embedder], and its calls are counted with no
+// tokens against them.
 type UsageEmbedder interface {
 	Embedder
 	EmbedTokens(ctx context.Context, texts []string) ([][]float32, Tokens, error)
 }
 
-// Role is who a message is from. There are two: the abstraction carries the
-// system prompt separately, in [Request.System], because that is what every
-// provider does with it.
+// Role is who a message is from. The system prompt is carried separately, in
+// [Request.System].
 type Role string
 
 const (
@@ -90,33 +78,26 @@ type Message struct {
 
 // Request is one completion, in terms no provider owns: a system prompt, an
 // ordered list of messages, a token budget, and optionally a schema the answer
-// has to satisfy. Nothing provider-shaped belongs in it — a caller that needed
-// an Anthropic tool block here would be a caller that has to be edited to add a
-// second provider, which is the leak the tier abstraction exists to stop.
+// has to satisfy. Nothing provider-shaped belongs in it.
 type Request struct {
-	// System is the system prompt. It may be empty; a provider that cannot
-	// take one at all is refused when the registry is built, not here.
+	// System is the system prompt. It may be empty.
 	System string `json:"system,omitempty"`
 	// Messages is the conversation, oldest first. It starts with a
-	// [RoleUser] message and alternates: that is the shape every provider
-	// accepts, and refusing the others here means one clear error instead of a
-	// provider's.
+	// [RoleUser] message and alternates.
 	Messages []Message `json:"messages"`
 	// MaxTokens is the budget for the answer. Zero takes the tier's configured
-	// budget, which is the usual case; a call site whose prompt needs a bigger
-	// one sets it.
+	// budget.
 	MaxTokens int `json:"max_tokens,omitempty"`
-	// Schema, when set, asks for JSON satisfying it rather than text. How the
-	// provider is made to produce it — a tool definition, a response format, a
-	// retry on a parse failure — is the adapter's business, and the answer is
-	// validated against the schema before it is returned.
+	// Schema, when set, asks for JSON satisfying it rather than text. The
+	// answer is validated against the schema before it is returned.
 	Schema *Schema `json:"schema,omitempty"`
 }
 
 // Response is one answer.
 type Response struct {
-	// ReportedUsage preserves presence, including reported zero, per attempt.
-	// Nil retains conservative accounting for legacy providers and fixtures.
+	// ReportedUsage preserves presence, including a reported zero, per
+	// attempt. Nil means the provider reports no presence: positive Tokens
+	// counts are used and zero is unknown.
 	ReportedUsage *JudgmentUsage `json:"reported_usage,omitempty"`
 	// Text is the answer, empty on a request that carried a schema.
 	Text string `json:"text,omitempty"`
@@ -139,14 +120,12 @@ const (
 	// StopEnd is a complete answer.
 	StopEnd StopReason = "end"
 	// StopMaxTokens is an answer cut off at the token budget. A structured
-	// answer cut off is truncated JSON, which is why the abstraction turns it
-	// into [ErrTruncated] rather than a parse failure.
+	// answer cut off is [ErrTruncated].
 	StopMaxTokens StopReason = "max_tokens"
 	// StopRefusal is a model declining to answer.
 	StopRefusal StopReason = "refusal"
 	// StopOther is a reason this abstraction does not model. It is not an
-	// error: a provider adding a stop reason must not stop the answer being
-	// returned.
+	// error.
 	StopOther StopReason = "other"
 )
 
@@ -158,10 +137,7 @@ type Tokens struct {
 
 // Validate reports what is wrong with a request, before a provider is asked.
 //
-// The message rules are the common denominator of the providers this
-// abstraction targets rather than one provider's: a conversation starts with
-// the caller and alternates. Checking them here means a caller sees the same
-// error whichever provider a tier points at.
+// A conversation starts with the caller and alternates.
 func (r Request) Validate() error {
 	if r.MaxTokens < 0 {
 		return fmt.Errorf("max tokens is %d: it cannot be negative", r.MaxTokens)
@@ -198,13 +174,9 @@ func (r Request) Validate() error {
 }
 
 // CheckDimensions reports whether an embed tier fits the column its vectors are
-// written to: the vector(N) on L1, whose N is fixed by a migration.
-// Changing the embed model to one of a different width is that migration plus a
-// re-embed of every row, not a configuration edit, which is why the two are
-// compared before anything is written rather than after.
-//
-// The process that writes vectors calls this at startup and refuses to run on a
-// mismatch: the distiller, against l1.EmbeddingDimensions.
+// written to: the vector(N) on L1, whose N is fixed by a migration. The
+// distiller calls this at startup against l1.EmbeddingDimensions and refuses to
+// run on a mismatch.
 func CheckDimensions(e Embedder, column int) error {
 	if got := e.Dimensions(); got != column {
 		return fmt.Errorf("%w: the embed tier produces %d values and the column holds %d", ErrDimensions, got, column)

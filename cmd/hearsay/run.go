@@ -40,17 +40,13 @@ import (
 	"github.com/kpenfound/hearsay/internal/version"
 )
 
-// command is one hearsay subcommand.
 type command struct {
 	name    string
-	args    string // argument summary for the usage line
+	args    string
 	summary string
 	run     func(ctx context.Context, args []string, stdout, stderr io.Writer) error
 }
 
-// commands is the whole command surface, in the order `hearsay help` prints it.
-// The four service names are fixed and are a contract with the
-// Dagger module and the deployment manifests; do not rename them casually.
 func commands() []command {
 	return []command{
 		{connectors.Name, "[--source name]...", "Run the source connectors. Writes L0, and applies the chat commands they receive.", runConnectors},
@@ -114,11 +110,6 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, "\nRun `hearsay <subcommand> --help` for the flags a subcommand takes.\nSee docs/design.md for what any of this means.\n")
 }
 
-// newFlagSet builds a flag set for a subcommand, with the flags every
-// subcommand shares already registered on it. The returned config carries the
-// defaults, overridden by the environment; parsing args overrides both. The
-// third result is where `--config` put the path of the configuration
-// repository, which is empty when the process was given none.
 func newFlagSet(name string, w io.Writer) (*flag.FlagSet, *config.Config, *string) {
 	fs := flag.NewFlagSet("hearsay "+name, flag.ContinueOnError)
 	fs.SetOutput(w)
@@ -132,14 +123,6 @@ func newFlagSet(name string, w io.Writer) (*flag.FlagSet, *config.Config, *strin
 	return fs, &cfg, configPath
 }
 
-// loadConfig loads the configuration repository into cfg and logs what it
-// found, or says that there is none.
-//
-// A process started without a configuration runs empty — it ingests nothing and
-// serves no bundles — which is what evaluating the binary looks like and is why
-// this warns rather than refuses. An invalid configuration is a startup
-// failure: configuration is read once, so a mistake in it must stop the
-// process rather than surface on the first request.
 func loadConfig(ctx context.Context, cfg *config.Config, path string) error {
 	log := telemetry.Logger(ctx)
 	if path == "" {
@@ -163,8 +146,6 @@ func loadConfig(ctx context.Context, cfg *config.Config, path string) error {
 	return nil
 }
 
-// envBool is whether key is set to a true value (1, t, true, and the rest
-// strconv.ParseBool accepts); unset or unparseable is false.
 func envBool(key string) bool {
 	v, err := strconv.ParseBool(os.Getenv(key))
 	return err == nil && v
@@ -177,13 +158,6 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-// withLogger builds the process logger from cfg and attaches it to ctx, along
-// with the fields that hold for the whole process.
-//
-// An empty service name leaves the `service` field off, which is what
-// `hearsay all` needs: it runs four of them, and each gets its own name from
-// [service.RunAll]. Setting it here as well would put the field on every line
-// twice.
 func withLogger(ctx context.Context, serviceName string, cfg *config.Config, stderr io.Writer) (context.Context, error) {
 	log, err := telemetry.NewLogger(cfg.Log.Level, cfg.Log.Format, stderr)
 	if err != nil {
@@ -196,10 +170,6 @@ func withLogger(ctx context.Context, serviceName string, cfg *config.Config, std
 	return telemetry.WithLogger(ctx, log), nil
 }
 
-// instanceName is what this process reports as `instance`: which replica of a
-// service a line came from, so two containers running `hearsay distiller` can be
-// told apart. The hostname is that identity in every container runtime worth
-// naming; HEARSAY_INSTANCE overrides it for anything that knows better.
 func instanceName() string {
 	if v := envOr("HEARSAY_INSTANCE", ""); v != "" {
 		return v
@@ -210,11 +180,6 @@ func instanceName() string {
 	return "unknown"
 }
 
-// runDistiller runs the distiller, which unlike the other three services has
-// dependencies: Postgres, and a model tier registry built from the
-// configuration. Both are the process's to build and to own, and
-// both are refused up front rather than at the first job — configuration is
-// read once, so a process that cannot make a model call should not start.
 func runDistiller(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, cfg, configPath := newFlagSet(distiller.Name, stderr)
 	pumpOptions := distillFlags(fs)
@@ -261,14 +226,6 @@ func runDistiller(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	return distiller.Run(ctx, cfg, distiller.Deps{Pool: pool, LLM: registry, Judgments: judgments, Listen: *listen, Pump: pump, Concurrency: distillConcurrency(cfg)})
 }
 
-// runAssertWorker runs the assertion worker. It has the distiller's
-// dependencies — Postgres, and the model tiers the configuration names — and
-// refuses without them for the same reasons.
-//
-// It is also given a repository reader for every GitHub source `code/` names
-// ([repoReaders]), which is how CODEOWNERS files and repository layout reach
-// the entity map, and a replier for every GitHub source that is not read-only
-// ([commandRepliers]), which is how a `/hearsay` comment command is answered.
 func runAssertWorker(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, cfg, configPath := newFlagSet(assertworker.Name, stderr)
 	listen := fs.String("listen", envOr("HEARSAY_ASSERT_WORKER_LISTEN", assertworker.DefaultListen), "address the assertion worker serves /healthz and /readyz on")
@@ -318,15 +275,6 @@ func runAssertWorker(ctx context.Context, args []string, stdout, stderr io.Write
 	return assertworker.Run(ctx, cfg, assertworker.Deps{Pool: pool, LLM: registry, Judgments: judgments, Connectors: connectorRegistry(cfg.Repo.Principals, cfg.Repo.Sources), Repos: repos, Replies: replies, Listen: *listen})
 }
 
-// repoReaders builds the reader entity seeding reads repositories through: one
-// per GitHub source a `code/` entry's `repo:` names, with the credentials that
-// source is configured with. Only the token is resolved — the webhook secret is
-// the connectors service's — and a token that is not in the environment is a
-// startup failure, as it is for the connector.
-//
-// With no such source it returns nil, and the worker seeds from `code/` alone.
-// A repository in a source of another type is seeded from configuration too,
-// and logged ([l2.Seed]).
 func repoReaders(repo config.Repo, lookup func(string) (string, bool)) (l2.RepoReader, error) {
 	readers := assertworker.Repos{}
 	for _, c := range repo.Code {
@@ -354,13 +302,6 @@ func repoReaders(repo config.Repo, lookup func(string) (string, bool)) (l2.RepoR
 	return readers, nil
 }
 
-// commandRepliers builds what the assertion worker answers GitHub `/hearsay`
-// commands through: a replier for every GitHub source that is not read-only,
-// with its token, which has to be allowed to write issue and pull request
-// comments. A token that is not in the environment is a startup failure, as it
-// is for the connector: a worker that could not answer would run commands and
-// leave the person who gave them no word of it. A read-only source takes no
-// commands, so the worker needs nothing of it.
 func commandRepliers(repo config.Repo, lookup func(string) (string, bool)) (assertworker.Replies, error) {
 	replies := assertworker.Replies{}
 	for _, src := range repo.Sources {
@@ -380,9 +321,6 @@ func commandRepliers(repo config.Repo, lookup func(string) (string, bool)) (asse
 	return replies, nil
 }
 
-// githubToken is a GitHub source with its token resolved from the
-// environment, and nothing else: the webhook secret is the connectors
-// service's.
 func githubToken(src connector.SourceConfig, lookup func(string) (string, bool)) (connector.SourceConfig, error) {
 	if env, ok := src.Secrets[github.SecretToken]; ok {
 		src.Secrets = map[string]string{github.SecretToken: env}
@@ -392,12 +330,6 @@ func githubToken(src connector.SourceConfig, lookup func(string) (string, bool))
 	return connector.ResolveSecrets(src, lookup)
 }
 
-// runAPI runs the read and assert API. It reads L0, L1 and L2, writes an audit
-// event per bundle and an assertion event and its assert job per `assert`, and
-// applies the Discord slash commands of a source that configures its
-// application, so it needs Postgres and refuses without it; the model tiers are
-// built only for search's `embed` tier, and search runs on full text without
-// one.
 func runAPI(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, cfg, configPath := newFlagSet(api.Name, stderr)
 	listen := fs.String("listen", envOr("HEARSAY_API_LISTEN", api.DefaultListen),
@@ -450,7 +382,6 @@ func runAPI(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	return api.Run(ctx, cfg, api.Deps{Pool: pool, LLM: registry, Listen: *listen, Discord: apps, Tailnet: node})
 }
 
-// apiTailnet is the API's tailnet node, or nil when no hostname names one.
 func apiTailnet(ctx context.Context, hostname, dir string, http bool) (*tailnet.Node, error) {
 	if hostname == "" {
 		return nil, nil
@@ -464,9 +395,6 @@ func apiTailnet(ctx context.Context, hostname, dir string, http bool) (*tailnet.
 	return tailnet.New(tailnet.Config{Hostname: hostname, Dir: dir, HTTP: http, Join: tailnet.JoinTailscale(telemetry.Logger(ctx))}), nil
 }
 
-// discordApps are the Discord applications of the sources that configure
-// one and are not read-only: the API answers their slash commands.
-// Only the bot token is read from the environment, to register the commands.
 func discordApps(repo config.Repo, lookup func(string) (string, bool)) ([]*discord.App, error) {
 	var apps []*discord.App
 	for _, src := range repo.Sources {
@@ -493,10 +421,6 @@ func discordApps(repo config.Repo, lookup func(string) (string, bool)) ([]*disco
 	return apps, nil
 }
 
-// stoppingEarly turns a startup failure that happened because the process was
-// asked to stop into a clean stop. A service is a thing somebody runs in a
-// terminal and ends with Ctrl-C, and one interrupted while it is still opening
-// a connection has not failed.
 func stoppingEarly(ctx context.Context, err error) error {
 	if ctx.Err() != nil {
 		return nil
@@ -504,21 +428,6 @@ func stoppingEarly(ctx context.Context, err error) error {
 	return err
 }
 
-// modelRegistry builds the model tiers the configuration names.
-//
-// A process with no configuration repository gets no registry at all, and the
-// service it is handed to starts and does nothing — the same as every other
-// service without one. It is not an error here because it is not a
-// mistake: a configuration is what says there is anything to do.
-//
-// A configuration that names a tier the process cannot build — an unknown
-// provider, a credential that is not in the environment — is a startup failure,
-// because configuration is read once, so a process
-// that cannot make a model call should not be serving.
-//
-// The release it returns closes the registry, which removes the sandboxes a
-// claude-sbx tier keeps warm; the caller defers it. It runs after the caller's
-// context is done, so it has a bound of its own.
 func modelRegistry(ctx context.Context, cfg *config.Config) (llm.Registry, func(), error) {
 	if cfg.Repo.Path == "" {
 		telemetry.Logger(ctx).WarnContext(ctx, "no configuration: no model tiers are built, pass --config")
@@ -538,9 +447,6 @@ func modelRegistry(ctx context.Context, cfg *config.Config) (llm.Registry, func(
 	return registry, release, nil
 }
 
-// distillConcurrency is how many documents the distiller works on at once: as
-// many as a claude-sbx distill tier keeps sandboxes, so no job spends its
-// attempt timeout waiting for one, and the distiller's own default otherwise.
 func distillConcurrency(cfg *config.Config) int {
 	if cfg.Repo.LLM.Tiers[llm.TierDistill].Provider == llm.ProviderClaudeSbx {
 		return claudesbx.Sandboxes
@@ -548,14 +454,8 @@ func distillConcurrency(cfg *config.Config) int {
 	return 0
 }
 
-// registryCloseTimeout bounds closing the model tiers at shutdown: removing a
-// handful of sandboxes, each an `sbx rm`.
 const registryCloseTimeout = 30 * time.Second
 
-// runConnectors runs the source connectors. Like the distiller it has
-// dependencies the process owns: Postgres, because a connector writes L0 and
-// keeps its backfill position there, and the registry of connector types, which
-// is where what this binary can ingest is decided.
 func runConnectors(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, cfg, configPath := newFlagSet(connectors.Name, stderr)
 	var sources sourceList
@@ -595,16 +495,11 @@ func runConnectors(ctx context.Context, args []string, stdout, stderr io.Writer)
 	})
 }
 
-// listenFlag registers the address the connectors service serves on. It is on
-// `connectors` and on `all`, which runs it: a port that something else already
-// holds must be movable, or the dev stack is unusable on that machine.
 func listenFlag(fs *flag.FlagSet) *string {
 	return fs.String("listen", envOr("HEARSAY_LISTEN", connectors.DefaultListen),
 		"address the connectors service serves push connectors' webhooks and its health on")
 }
 
-// checkListen refuses an empty address rather than quietly using the default: a
-// flag a command accepts and ignores is worse than one it does not have.
 func checkListen(addr string) error {
 	if addr == "" {
 		return errors.New("--listen is empty: it is the address webhooks and health are served on")
@@ -612,22 +507,8 @@ func checkListen(addr string) error {
 	return nil
 }
 
-// connectorRegistry is what this binary can ingest. Connector factories are
-// registered here and nowhere else: there is no global registry and no
-// init-time registration, so what a process can ingest is readable from its
-// wiring rather than from whatever happened to be linked in
-// (docs/connector-contract.md).
-//
-// It holds the GitHub, Discord, Slack, Drive, Obsidian, generic tracker, conversation,
-// agent session and work updates connectors. Any other type, or a source whose
-// connector rejects its config, is a startup failure. Agent and work factories
-// receive principals for token authentication; work also receives every
-// configured source, to validate repository references and to pair an owner
-// source with the work source it names.
 func connectorRegistry(principals []principal.Principal, sources []connector.SourceConfig) *connector.Registry {
 	registry := connector.NewRegistry()
-	// Register fails only for an empty type, a nil factory or a type claimed
-	// twice, which a fixed list cannot be; TestConnectorRegistry pins the list.
 	_ = registry.Register(github.Type, github.Factory)
 	_ = registry.Register(discord.Type, discord.Factory)
 	_ = registry.Register(slack.Type, slack.Factory)
@@ -646,8 +527,6 @@ func connectorRegistry(principals []principal.Principal, sources []connector.Sou
 	return registry
 }
 
-// runAll runs the four services in one process. It exists so that evaluating
-// Hearsay does not need four terminals; it is never a deployment target.
 func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, cfg, configPath := newFlagSet("all", stderr)
 	pumpOptions := distillFlags(fs)
@@ -677,22 +556,15 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	if *distillerListen == "" || *assertWorkerListen == "" {
 		return errors.New("worker health probe listen address is empty")
 	}
-	// No service name on the process logger: RunAll names each of the four.
 	ctx, err = withLogger(ctx, "", cfg, stderr)
 	if err != nil {
 		return err
 	}
-	// The process logger has no service field here, because RunAll gives each of
-	// the four its own. Loading the configuration and bringing the schema up are
-	// the command's own work and happen before any of them start, so those lines
-	// say `all` rather than going out without the field every other line carries.
 	setup := telemetry.With(ctx, "service", "all")
 	if err := loadConfig(setup, cfg, *configPath); err != nil {
 		return err
 	}
 	if cfg.Database.URL == "" {
-		// `all` runs the distiller, which reads L0 and writes L1, and a
-		// process that cannot store what it distils is not worth starting.
 		return db.ErrNoDatabaseURL
 	}
 	if err := migrateForDev(setup, cfg); err != nil {
@@ -741,10 +613,6 @@ func runAll(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	})
 }
 
-// runConfig is the configuration subcommand. `validate` is the whole of it: it
-// loads a configuration repository the way a service would and reports
-// everything wrong with it, so that a bad change is caught by CI on the
-// configuration repository rather than by a deployment.
 func runConfig(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, _, configPath := newFlagSet("config", stderr)
 	action, actionArgs, err := parseAction(fs, args, "")
@@ -761,9 +629,6 @@ func runConfig(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		return fmt.Errorf("unexpected argument %q", actionArgs[1])
 	}
 
-	// The path is the argument, the --config flag, or the working directory,
-	// which is what running this in a checkout of the configuration repository
-	// should mean.
 	path := *configPath
 	if len(actionArgs) == 1 {
 		path = actionArgs[0]
@@ -780,9 +645,6 @@ func runConfig(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	return nil
 }
 
-// printSummary is what `hearsay config validate` prints when there is nothing
-// wrong: enough for a person to see that the configuration is the one they
-// meant, and the digest a running process reports so the two can be compared.
 func printSummary(w io.Writer, repo config.Repo) {
 	fmt.Fprintf(w, "%s is valid\n", repo.Path)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
@@ -796,8 +658,6 @@ func printSummary(w io.Writer, repo config.Repo) {
 	_ = tw.Flush()
 }
 
-// modelTiers is what each model tier resolves to, which is worth printing
-// because most of it is usually a default that is nowhere in the files.
 func modelTiers(repo config.Repo) []string {
 	tiers := repo.LLM.Configured()
 	out := make([]string, 0, len(tiers))
@@ -824,7 +684,6 @@ func scopeIDs(repo config.Repo) []string {
 	return ids
 }
 
-// summarize lists ids for the summary, keeping a long list to one line.
 func summarize(ids []string) string {
 	const max = 6
 	if len(ids) == 0 {
@@ -852,10 +711,6 @@ func runHelp(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	return nil
 }
 
-// parseNoFlags is the flag handling for a subcommand that takes neither flags
-// nor arguments. It exists so that `hearsay version --log-level bogus extra`
-// fails the way `hearsay api --log-level bogus extra` does, rather than printing
-// the version and exiting 0 as though the extra words meant something.
 func parseNoFlags(name string, args []string, w io.Writer) error {
 	fs := flag.NewFlagSet("hearsay "+name, flag.ContinueOnError)
 	fs.SetOutput(w)
@@ -868,7 +723,6 @@ func parseNoFlags(name string, args []string, w io.Writer) error {
 	return nil
 }
 
-// sourceList collects a repeated --source flag.
 type sourceList []string
 
 func (s *sourceList) String() string { return strings.Join(*s, ",") }
@@ -881,8 +735,6 @@ func (s *sourceList) Set(v string) error {
 	return nil
 }
 
-// distillFlags shares the distiller settings with all. Parse durations after
-// flags so invalid environment values are returned as startup errors too.
 func distillFlags(fs *flag.FlagSet) func() (distiller.PumpOptions, error) {
 	quiet := fs.String("distill-quiet", envOr("HEARSAY_DISTILL_QUIET", "30s"), "quiet period before distilling a document (Go duration, 0 disables)")
 	maxDelay := fs.String("distill-max-delay", envOr("HEARSAY_DISTILL_MAX_DELAY", "5m"), "maximum debounce delay from a document's first enqueue (Go duration)")
@@ -905,12 +757,6 @@ func distillFlags(fs *flag.FlagSet) func() (distiller.PumpOptions, error) {
 	}
 }
 
-// judgmentCapability builds Jev, once per process. The distiller and the
-// assertion worker require it, so a configuration with no model or an
-// environment with no key is a startup failure. A process started without a
-// configuration has nothing to judge and gets llm.Unconfigured, so `hearsay
-// all` with no --config still starts. The factory is injectable for
-// service-wiring tests.
 func judgmentCapability(cfg *config.Config, factory llm.JudgmentFactory) (llm.Judgments, error) {
 	if cfg.Repo.Path == "" {
 		return llm.Unconfigured(), nil

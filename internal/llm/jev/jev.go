@@ -64,8 +64,7 @@ func (c *Client) Judge(ctx context.Context, r llm.JudgmentRequest) (llm.Judgment
 		return llm.JudgmentResponse{}, transportError(ctx, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	// Classify before reading: an unreadable rate-limit body must not hide
-	// Retry-After, and error bodies are never needed or retained.
+
 	if resp.StatusCode != http.StatusOK {
 		switch status := resp.StatusCode; {
 		case status == 429 || status == 529:

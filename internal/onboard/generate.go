@@ -87,8 +87,6 @@ func Generate(ctx context.Context, in Input, dir Directory, random io.Reader) (R
 	return res, nil
 }
 
-// tokenEnv names the variable a principal's API token is in, and claims it:
-// HEARSAY_<ID>_TOKEN, numbered when that is already a name the file uses.
 func tokenEnv(id string, taken map[string]bool) string {
 	base := "HEARSAY_" + strings.ToUpper(strings.ReplaceAll(id, "-", "_"))
 	name := base + "_TOKEN"
@@ -101,8 +99,6 @@ func tokenEnv(id string, taken map[string]bool) string {
 
 var notScopeID = regexp.MustCompile(`[^a-z0-9_-]+`)
 
-// scopeIDs names a scope for each repository: its name, or owner-name where
-// two repositories share a name, in the shape a scope id takes.
 func scopeIDs(repos []string) []string {
 	clean := func(s string) string {
 		s = strings.Trim(notScopeID.ReplaceAllString(strings.ToLower(s), "-"), "-_")
@@ -289,8 +285,6 @@ func renderConfig(in Input, sources []source, all []*person, envs map[string]str
 		mapping(key("tiers"), mapping(tiers...),
 			key("judgments"), mapping(key("model"), str(JevModel))))
 
-	// Each section is encoded on its own and the sections joined with a blank
-	// line, which the encoder does not put between mapping keys.
 	var buf bytes.Buffer
 	buf.WriteString("# Hearsay configuration, written by `hearsay init`. The format is docs/config.md.\n" +
 		"# Check a change with `hearsay config validate <this file>`. No secret is in here: every\n" +
@@ -309,7 +303,6 @@ func renderConfig(in Input, sources []source, all []*person, envs map[string]str
 	return buf.Bytes(), nil
 }
 
-// hours writes a duration the way docs/config.md does, in whole hours.
 func hours(d time.Duration) string {
 	if d%time.Hour == 0 {
 		return strconv.FormatInt(int64(d/time.Hour), 10) + "h"
@@ -319,8 +312,6 @@ func hours(d time.Duration) string {
 
 func key(k string) *yaml.Node { return &yaml.Node{Kind: yaml.ScalarNode, Value: k} }
 
-// str is a string scalar, which the encoder quotes where YAML would read it as
-// anything else: a Discord id stays a string, and `*` is not an alias.
 func str(v string) *yaml.Node { return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: v} }
 
 func mapping(kv ...*yaml.Node) *yaml.Node { return &yaml.Node{Kind: yaml.MappingNode, Content: kv} }

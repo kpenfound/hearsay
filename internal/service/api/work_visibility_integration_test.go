@@ -23,7 +23,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/github"
-	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
@@ -43,12 +43,9 @@ type workVisibilityWorld struct {
 
 func newWorkVisibilityWorld(t *testing.T, repos ...string) *workVisibilityWorld {
 	t.Helper()
-	pool, err := db.Connect(t.Context(), api.ScratchDB(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	w := &workVisibilityWorld{reachWorld: &reachWorld{src: "github", repo: "code:acme/api", events: l0.New(pool)}, pool: pool, docs: l1.New(pool), graph: l2.New(pool), projectEntity: "work:projects:retry", streamEntity: "work:projects:retry#policy"}
+	pool := dbtest.Scratch(t, "work_visibility")
+	var err error
+	w := &workVisibilityWorld{reachWorld: &reachWorld{src: "github", repo: "code:acme/api", events: l0.New(pool), client: client{credential: reachCredential}}, pool: pool, docs: l1.New(pool), graph: l2.New(pool), projectEntity: "work:projects:retry", streamEntity: "work:projects:retry#policy"}
 	for _, e := range []l2.Entity{
 		{ID: w.repo, Type: l2.TypeProject, Name: "API repository", Origin: l2.OriginConfig},
 		{ID: w.projectEntity, Type: l2.TypeProject, Name: "Resilient delivery", Origin: l2.OriginSource, PartOf: []string{w.repo}},
@@ -93,8 +90,7 @@ func newWorkVisibilityWorld(t *testing.T, repos ...string) *workVisibilityWorld 
 	acl := connector.ACL{{Kind: connector.ACLContainers, NativeID: key, Containers: containers}}
 	w.put(t, "projects", "retry", acl, []string{w.repo, w.projectEntity}, "Resilient delivery")
 	w.put(t, "projects", "retry#policy", acl, []string{w.repo, w.projectEntity, w.streamEntity}, "Retry policy")
-	// Readable evidence about the hidden entities must not make a scoped call
-	// reveal them. Its scope also exercises related bundle entity listings.
+
 	w.put(t, "github", "public-note", openACL, []string{w.repo, w.projectEntity, w.streamEntity}, "visibilityproof")
 	return w
 }
@@ -148,9 +144,7 @@ func (w *workVisibilityWorld) resolves(t *testing.T, caller api.Caller, name, id
 
 func (w *workVisibilityWorld) hiddenScope(t *testing.T, caller api.Caller, entity string) {
 	t.Helper()
-	// Use the same starting cursor for every request. The feed's snapshot xmin
-	// spans the Postgres cluster, so transactions in other test databases can
-	// still hold back setup events and release them between these calls.
+
 	start, _ := w.both(t, caller, "watch", map[string]any{"scope": "work:projects:absent"})
 	var watched api.Watched
 	if err := json.Unmarshal([]byte(start.body), &watched); err != nil {
@@ -177,14 +171,12 @@ func (w *workVisibilityWorld) hiddenScope(t *testing.T, caller api.Caller, entit
 				h, m := w.both(t, caller, call, args(entity))
 				afterH, afterM := w.both(t, caller, call, args("work:projects:absent"))
 				if beforeH == afterH && beforeM == afterM {
-					// Once the missing replies are stable, every field (including
-					// the opaque cursor) must also match the hidden reply.
 					if h != respell(beforeH) || m != respell(beforeM) {
 						t.Fatalf("%s hidden HTTP %+v MCP %+v; missing HTTP %+v MCP %+v", call, h, m, beforeH, beforeM)
 					}
 					return
 				}
-				time.Sleep(10 * time.Millisecond)
+				awaitFeed(t, w.pool)
 			}
 			t.Fatal("feed did not settle after 50 missing/hidden/missing comparisons")
 		})
@@ -244,8 +236,7 @@ func TestWorkEntityVisibilityTraverseScopesAndBudget(t *testing.T) {
 	w := newWorkVisibilityWorld(t, "acme/api")
 	private := connector.ACL{{Kind: connector.ACLGroup, Source: "github", NativeID: "acme/api"}}
 	w.repositoryRevision(t, "acme/api", "api-issue", "private", 1, private)
-	// A public topic may name a private work entity as its scope. Keep the
-	// readable topic, but filter that handle just as get_l1/search do.
+
 	tp := l2.Topic{ID: "topic:public", Name: "Public decision", Scope: w.projectEntity, About: []string{w.repo, w.projectEntity, w.streamEntity}, OpenedBy: l1.DocID("github", "public-note"), ACL: openACL}
 	if _, err := w.graph.OpenTopic(t.Context(), tp); err != nil {
 		t.Fatal(err)
@@ -262,7 +253,6 @@ func TestWorkEntityVisibilityTraverseScopesAndBudget(t *testing.T) {
 			for _, who := range []string{"ann", "kyle"} {
 				g, body := w.traverse(t, api.Caller{Principal: who}, tt.args)
 				for _, id := range []string{w.projectEntity, w.streamEntity} {
-					// The entity->topic query returns only the topic's project scope.
 					want := who == "kyle" && (tt.name != "topic from entity" || id != w.streamEntity)
 					if strings.Contains(body, id) != want {
 						t.Fatalf("%s for %s: %s", tt.name, who, body)
@@ -276,8 +266,7 @@ func TestWorkEntityVisibilityTraverseScopesAndBudget(t *testing.T) {
 			}
 		})
 	}
-	// Missing work documents fail closed before cutting the raw-row budget.
-	// Other node types retain upstream's raw CandidateLimit behavior.
+
 	args := traverseArgs("entity", w.repo, map[string]any{"edge": "has_part", "depth": "1..2"})
 	_, absent := w.traverse(t, annAlone, args)
 	if _, err := w.pool.Exec(t.Context(), `INSERT INTO l2_entities (id,type,name,origin,part_of)
@@ -289,7 +278,7 @@ FROM generate_series(1,$2) i`, w.repo, l3.CandidateLimit); err != nil {
 	if hidden != absent {
 		t.Fatalf("hidden candidates changed budget/truncation: %s; absent: %s", hidden, absent)
 	}
-	// Filtering also precedes the returned-node limit.
+
 	args["limit"] = 3
 	_, hidden = w.traverse(t, annAlone, args)
 	if hidden != absent {
@@ -360,7 +349,7 @@ func TestWorkEntityVisibilityUsesCurrentDocuments(t *testing.T) {
 					}
 				}
 			}
-			if !tt.kyleReads { // Even an unrestricted reader must establish document access.
+			if !tt.kyleReads {
 				w.resolves(t, api.Caller{Principal: "all"}, "Retry policy", w.streamEntity, false)
 				w.hiddenScope(t, api.Caller{Principal: "all"}, w.streamEntity)
 			}
@@ -371,8 +360,6 @@ func TestWorkEntityVisibilityUsesCurrentDocuments(t *testing.T) {
 	}
 }
 
-// A readable document about a different entity cannot disclose a hidden work
-// entity through its scope, references, or the bundle's related entities.
 func TestWorkEntityVisibilityFiltersRelatedListings(t *testing.T) {
 	w := newWorkVisibilityWorld(t, "acme/api")
 	private := connector.ACL{{Kind: connector.ACLGroup, Source: "github", NativeID: "acme/api"}}
@@ -414,8 +401,6 @@ func TestWorkEntityVisibilityFiltersRelatedListings(t *testing.T) {
 	}
 }
 
-// githubVisibilitySink records the real repository.privatized request and
-// sends the connector's real re-sync emissions to L0, one page at a time.
 type githubVisibilitySink struct {
 	events  *l0.Store
 	resyncs *l0.Resyncs
@@ -432,7 +417,7 @@ func (s githubVisibilitySink) RequestResync(ctx context.Context, container strin
 func TestWorkEntityVisibilityFollowsGitHubPrivatizationWithoutRepost(t *testing.T) {
 	w := newWorkVisibilityWorld(t, "acme/api")
 	var private atomic.Bool
-	// A two-page issue walk deliberately leaves mixed ACLs between pages.
+
 	rest := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		rw.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -547,8 +532,6 @@ func TestWorkEntityVisibilityFollowsGitHubPrivatizationWithoutRepost(t *testing.
 					if !c.reads {
 						w.hiddenScope(t, api.Caller{Principal: c.who}, e.id)
 					} else {
-						// Prime the public bundles before privatization, then read
-						// through the same cache after repository access changes.
 						for _, call := range []string{"get_bundle", "search"} {
 							args := map[string]string{"scope": e.id}
 							if call == "search" {
@@ -640,7 +623,7 @@ func TestWorkEntityVisibilityGuardsWatchWithReadableEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.put(t, "github", "watch-note", openACL, []string{w.repo, w.projectEntity, w.streamEntity}, "watch visibility proof")
-	// Reuse the feed-settling setup used by the API's watch integration tests.
+
 	(&watchWorld{pool: w.pool}).pumped(t)
 	for _, entity := range []string{w.projectEntity, w.streamEntity} {
 		args := func(scope string) map[string]string { return map[string]string{"scope": scope, "after": start.Cursor} }

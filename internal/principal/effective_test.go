@@ -26,7 +26,6 @@ func TestScopesIntersect(t *testing.T) {
 		b:    principal.AllScopes(),
 		want: principal.AllScopes(),
 	}, {
-		// `All` is every scope there is, so it cannot narrow a list.
 		name: "every scope and a list",
 		a:    principal.AllScopes(),
 		b:    principal.SomeScopes("api", "infra"),
@@ -42,8 +41,6 @@ func TestScopesIntersect(t *testing.T) {
 		b:    principal.SomeScopes("web"),
 		want: principal.Scopes{},
 	}, {
-		// The zero value grants nothing, so it takes everything away: reads
-		// fail closed.
 		name: "the zero value and every scope",
 		a:    principal.Scopes{},
 		b:    principal.AllScopes(),
@@ -90,7 +87,6 @@ func TestScopesHasAndEmpty(t *testing.T) {
 	if some.Has("web") {
 		t.Error("a list of api has web")
 	}
-	// SomeScopes copies, so the caller's slice is not the grant.
 	ids := []string{"api"}
 	s := principal.SomeScopes(ids...)
 	ids[0] = "everything"
@@ -111,8 +107,6 @@ func TestHumanRead(t *testing.T) {
 	if got.Human != "kyle" || got.Agent != "" {
 		t.Errorf("Effective = %+v, want kyle reading directly", got)
 	}
-	// A person's own grant is not capped by an agent class, so ratifying
-	// survives a direct read. That is the door the steward class stands at.
 	if !got.Grant.Rights.Write.Has(principal.WriteRatify) {
 		t.Error("a person may not ratify their own read")
 	}
@@ -121,7 +115,6 @@ func TestHumanRead(t *testing.T) {
 		shed,
 		team,
 		{ID: "nobody"},
-		// Nothing would be accountable for these reads.
 		{Kind: principal.KindHuman},
 		{ID: "Kyle Penfound", Kind: principal.KindHuman},
 	} {
@@ -141,8 +134,6 @@ func TestAgentRead(t *testing.T) {
 		wantRead   principal.Read
 		wantWrite  principal.Write
 	}{{
-		// The agent is granted more than the person it acts for, and gets the
-		// person's scopes.
 		name:       "the intersection of the two grants",
 		agent:      shed,
 		agentGrant: principal.Grant{Scopes: principal.SomeScopes("api", "infra"), Rights: principal.Rights{Read: principal.ReadAll, Write: principal.WriteAssert}},
@@ -151,8 +142,6 @@ func TestAgentRead(t *testing.T) {
 		wantRead:   principal.ReadScopedCode,
 		wantWrite:  principal.WriteAssert,
 	}, {
-		// The class caps the agent even where both grants are unlimited: an
-		// observer writes nothing.
 		name:       "the class caps the grant",
 		agent:      principal.Principal{ID: "eyes", Kind: principal.KindAgent, Class: principal.ClassObserver},
 		agentGrant: principal.Grant{Scopes: principal.AllScopes(), Rights: principal.Rights{Read: principal.ReadAll, Write: principal.WriteAssert | principal.WriteSubscribe}},
@@ -161,8 +150,6 @@ func TestAgentRead(t *testing.T) {
 		wantRead:   principal.ReadScoped,
 		wantWrite:  0,
 	}, {
-		// The person may not do what the agent is granted, and the agent does
-		// not get it by acting for them.
 		name:       "the person caps the agent",
 		agent:      principal.Principal{ID: "orch", Kind: principal.KindAgent, Class: principal.ClassOrchestrator},
 		agentGrant: principal.Grant{Scopes: principal.AllScopes(), Rights: principal.Rights{Read: principal.ReadAll, Write: principal.WriteAssert | principal.WriteSubscribe}},
@@ -171,8 +158,6 @@ func TestAgentRead(t *testing.T) {
 		wantRead:   principal.ReadScoped,
 		wantWrite:  principal.WriteAssert,
 	}, {
-		// The door is there, closed: a steward agent acting for a person who
-		// may ratify still may not.
 		name:       "a steward agent may not ratify or merge",
 		agent:      principal.Principal{ID: "keeper", Kind: principal.KindAgent, Class: principal.ClassSteward},
 		agentGrant: principal.Grant{Scopes: principal.AllScopes(), Rights: principal.ClassSteward.Rights()},
@@ -221,8 +206,6 @@ func TestAgentReadRefuses(t *testing.T) {
 		{"a team cannot delegate a read", shed, team, "a team cannot delegate a read"},
 		{"an agent with no class", principal.Principal{ID: "x", Kind: principal.KindAgent}, kyle, `class ""`},
 		{"an agent with a class that does not exist", principal.Principal{ID: "x", Kind: principal.KindAgent, Class: "admin"}, kyle, `class "admin"`},
-		// Every bundle served records who asked and on whose behalf, so both
-		// halves need an id worth recording.
 		{"an agent with no id", principal.Principal{Kind: principal.KindAgent, Class: principal.ClassWorker}, kyle, `"" is not a principal id`},
 		{"a person with no id", shed, principal.Principal{Kind: principal.KindHuman}, `"" is not a principal id`},
 		{"a person whose id is not an id", shed, principal.Principal{ID: "Kyle", Kind: principal.KindHuman}, `"Kyle" is not a principal id`},

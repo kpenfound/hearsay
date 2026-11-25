@@ -47,8 +47,6 @@ func (c *Calls) WithWatch(wait, poll time.Duration) {
 	c.watchWait, c.watchPoll = wait, poll
 }
 
-// stopWatches ends every watch that is waiting, each with what it has, so a
-// server shutting down is not held for a wait's length. It is idempotent.
 func (c *Calls) stopWatches() { c.stopOnce.Do(func() { close(c.stopping) }) }
 
 // Notification is one event `watch` delivers: the handles to it and to the
@@ -85,13 +83,8 @@ func (f WatchFilter) matches(ev connector.Event) bool {
 	return len(f.Sources) == 0 || slices.Contains(f.Sources, ev.Source)
 }
 
-// watchCursorVersion prefixes the position a watch cursor carries, so that the
-// form can change without a consumer's stored cursor being misread.
 const watchCursorVersion = "w1:"
 
-// encodeWatchCursor is a feed position as the opaque cursor `watch` serves. It
-// is never empty, the beginning of the feed included: an empty cursor is a
-// consumer starting from now.
 func encodeWatchCursor(m l0.Mark) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(watchCursorVersion + m.String()))
 }
@@ -108,30 +101,6 @@ func decodeWatchCursor(s string) (l0.Mark, error) {
 	return l0.ParseMark(position)
 }
 
-// watch is `watch(scope, filter, after?)` (docs/design.md#read-and-assert-api):
-// the L0 events after a cursor that are on a scope, in change-feed order, as
-// notifications. It is a long poll with no state kept between calls: when
-// there is nothing after the cursor it waits, reading the feed every
-// [DefaultWatchPoll], and returns an empty list once [DefaultWatchWait] has
-// passed, the request is cancelled or the server is stopping.
-//
-// An event is on the scope when a document built from it is about the scope
-// or an entity `part_of` it, in the caller's reach, and the caller may read the
-// document and the event. That is known once the event is distilled, so a
-// watch delivers an event then, and holds its cursor at the first event whose
-// distillation has not landed — one the distiller has not read off the feed
-// yet, or whose document's job is still to run — so that it cannot pass one it
-// would have delivered. An event that is never distilled (agent session
-// events, Hearsay's own audit and assertion events) or that a finished
-// distillation left out of every document — a tombstone, a revision a later
-// one replaced — is passed without a notification.
-//
-// Without `after` a watch starts from now: what had committed before the call
-// is not new, even where the feed has not reached it yet (l0.Store.Now).
-//
-// What the caller may not see is passed the same way as what is not on the
-// scope: the cursor moves over it, and the response carries no position of any
-// event, so there is no gap to see. The cursor is opaque.
 func watch(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, raw json.RawMessage) (any, error) {
 	if err := c.mayWatch(caller); err != nil {
 		return nil, err
@@ -147,8 +116,7 @@ func watch(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, raw j
 	if err := required("scope", args.Scope); err != nil {
 		return nil, err
 	}
-	// Without a cursor, from now: what had committed before the call is not
-	// new, even where the feed has not reached it yet (l0.Store.Now).
+
 	var from l0.Mark
 	var err error
 	if args.After == "" {
@@ -163,13 +131,12 @@ func watch(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, raw j
 	if err != nil {
 		return nil, err
 	}
-	// What the scope covers is read once: a watch is tens of seconds.
-	covered, err := c.reach.Descendants(ctx, []string{args.Scope})
+
+	covered, err := c.graph.Descendants(ctx, []string{args.Scope})
 	if err != nil {
 		return nil, fmt.Errorf("reading what %s covers: %w", args.Scope, err)
 	}
-	// Only what is in reach: a scope out of it is watched as one that does not
-	// exist, as its bundle is.
+
 	on := map[string]bool{}
 	for _, id := range covered {
 		if !hidden.Hidden(args.Scope) && !hidden.Hidden(id) && reader.InReach([]string{id}) {
@@ -206,16 +173,8 @@ func watch(ctx context.Context, c *Calls, caller Caller, reader l1.Reader, raw j
 	}
 }
 
-// errCancelled is a watch whose request went away while it waited. Nobody is
-// left to read it.
 var errCancelled = &Error{Status: http.StatusServiceUnavailable, Message: "the watch was cancelled"}
 
-// scan reads the feed after a mark and returns the notifications it holds for
-// this reader, and how far it got: to the end of the feed, to the first event
-// still waiting on its distillation, or to the last of [MaxNotifications] — or,
-// on a feed long enough that reading it outlasts the wait, as far as it read by
-// the deadline. Every read is a statement on the pool; nothing holds a
-// connection between them.
 func (c *Calls) scan(ctx context.Context, reader l1.Reader, on map[string]bool, filter WatchFilter, from l0.Mark, deadline time.Time) ([]Notification, l0.Mark, error) {
 	notes := []Notification{}
 	for {
@@ -226,8 +185,7 @@ func (c *Calls) scan(ctx context.Context, reader l1.Reader, on map[string]bool, 
 		if len(changes) == 0 {
 			return notes, from, nil
 		}
-		// The events that could be delivered, and the document each belongs
-		// to. The rest are passed as they are read.
+
 		candidates := map[string]string{}
 		ids, targets := []string{}, []string{}
 		for _, change := range changes {
@@ -244,13 +202,7 @@ func (c *Calls) scan(ctx context.Context, reader l1.Reader, on map[string]bool, 
 				ids, targets = append(ids, ev.ID), append(targets, target)
 			}
 		}
-		// Read in this order, each in its own snapshot: where the distiller
-		// has read the feed to, then which documents' jobs are unfinished,
-		// then which documents hold each event. The pump enqueues a job in the
-		// transaction that moves its cursor, and a job is finished only after
-		// the documents it wrote are committed, so an event the distiller has
-		// passed is either in a document by the third read or has a job the
-		// second one saw.
+
 		distilled, err := l0.NewCursors(c.db).Load(ctx, distiller.Consumer)
 		if err != nil {
 			return nil, from, err
@@ -268,7 +220,6 @@ func (c *Calls) scan(ctx context.Context, reader l1.Reader, on map[string]bool, 
 			target, candidate := candidates[ev.ID]
 			held := holders[ev.ID]
 			if candidate && len(held) == 0 && (distilled.Compare(change.Cursor) < 0 || unfinished[target]) {
-				// Not distilled yet: wait here rather than pass it.
 				return notes, from, nil
 			}
 			from = from.Past(change.Cursor)
@@ -288,11 +239,6 @@ func (c *Calls) scan(ctx context.Context, reader l1.Reader, on map[string]bool, 
 	}
 }
 
-// mayNotify reports whether an event could be a notification for this reader
-// whatever it is distilled into: it is not Hearsay's own, the filter takes it,
-// and its access list lets the reader read it. An audit or assertion event
-// belongs to no document, so the distiller never passes one on either; the
-// source is refused here so that no document naming one can change that.
 func (c *Calls) mayNotify(reader l1.Reader, filter WatchFilter, ev connector.Event) bool {
 	switch {
 	case ev.Source == AuditSource:
@@ -303,8 +249,6 @@ func (c *Calls) mayNotify(reader l1.Reader, filter WatchFilter, ev connector.Eve
 	return reader.Allows(ev.ACL)
 }
 
-// onScope is the first document, by id, of those holding an event that is
-// about an entity the watch covers and that the reader may read.
 func onScope(reader l1.Reader, on map[string]bool, held []l1.Holder) (string, bool) {
 	for _, h := range held {
 		if reader.Allows(h.ACL) && slices.ContainsFunc(h.Scope, func(id string) bool { return on[id] }) {
@@ -314,8 +258,6 @@ func onScope(reader l1.Reader, on map[string]bool, held []l1.Holder) (string, bo
 	return "", false
 }
 
-// mayWatch refuses an agent whose class may not subscribe
-// (docs/design.md#access-control). A person calling directly may watch.
 func (c *Calls) mayWatch(caller Caller) error {
 	if caller.Agent == "" {
 		return nil

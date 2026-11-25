@@ -165,7 +165,6 @@ func New(src connector.SourceConfig) (*Connector, error) {
 	return c, nil
 }
 
-// qualify checks an access list and gives an entry with no source this one.
 func (c *Connector) qualify(acl connector.ACL) (connector.ACL, error) {
 	if len(acl) == 0 {
 		return nil, errors.New("the access list is empty, and a ticket nobody may read cannot be read back")

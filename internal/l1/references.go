@@ -69,29 +69,11 @@ func (r Reference) validate() error {
 	return nil
 }
 
-// The shapes reference extraction reads out of a source's own text. They are
-// deliberately conservative: a pattern that fires on ordinary prose costs every
-// document a wrong join key, and a reference that is missed costs one.
 var (
-	// linkRe is a bare or markdown link. The scheme is matched without case,
-	// because a person typing `HTTPS://` has still written a link; the trailing
-	// punctuation a sentence puts after a URL is trimmed off the match rather
-	// than matched.
-	linkRe = regexp.MustCompile(`(?i:https?)://[^\s<>()\[\]{}"'` + "`" + `]+`)
-	// mentionRe is an @-mention: a handle, or `@org/team` for a source that
-	// names groups that way. The handle rule is the widest the sources this
-	// build reads use — letters, digits and `-`, up to 39 of them.
+	linkRe    = regexp.MustCompile(`(?i:https?)://[^\s<>()\[\]{}"'` + "`" + `]+`)
 	mentionRe = regexp.MustCompile(`@([A-Za-z0-9][A-Za-z0-9-]{0,38})(/[A-Za-z0-9][A-Za-z0-9._-]{0,38})?`)
-	// itemRe is a short cross-reference: `#31`, or `owner/repo#31`. The number
-	// is required to be a number, so `#1 priority` is a reference and
-	// `#hashtag` is not.
-	itemRe = regexp.MustCompile(`(?:([A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*))?#([0-9]{1,12})`)
-	// pathRe is the shape of a hosted issue, pull request or commit URL, on any
-	// host: `/owner/repo/(issues|pull|commit)/<id>`. Matching the shape rather
-	// than the host is what makes an enterprise install of the same forge
-	// produce the same ids as the public one — reference ids are spelled the
-	// way that source's artifact ids are, and two forges are two sources.
-	pathRe = regexp.MustCompile(`^/([A-Za-z0-9][A-Za-z0-9._-]*)/([A-Za-z0-9][A-Za-z0-9._-]*)/(issues|pull|commit|commits)/([A-Za-z0-9._-]+)`)
+	itemRe    = regexp.MustCompile(`(?:([A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*))?#([0-9]{1,12})`)
+	pathRe    = regexp.MustCompile(`^/([A-Za-z0-9][A-Za-z0-9._-]*)/([A-Za-z0-9][A-Za-z0-9._-]*)/(issues|pull|commit|commits)/([A-Za-z0-9._-]+)`)
 )
 
 // References extracts everything a document points at, from the events it is
@@ -155,12 +137,6 @@ func References(events []connector.Event, resolver *principal.Resolver, code []c
 			if text == "" {
 				continue
 			}
-			// Links are read from the text as written; everything else is read
-			// from the text with the links blanked out. A URL is a string that
-			// contains every other shape this function looks for — `#31` in a
-			// path, `@host` in a userinfo, an entity name in a directory — and
-			// a reference read out of the inside of a link is a join key the
-			// conversation never meant (see maskSpans).
 			spans := linkRe.FindAllStringIndex(text, -1)
 			for _, span := range spans {
 				t, id := classifyLink(trimLink(text[span[0]:span[1]]))
@@ -168,9 +144,6 @@ func References(events []connector.Event, resolver *principal.Resolver, code []c
 			}
 			prose := maskSpans(text, spans)
 			for _, m := range mentionRe.FindAllStringSubmatchIndex(prose, -1) {
-				// An @-mention starts a word. Without that, the pattern fires
-				// on the domain of an email address, and a document keeps a
-				// participant the scrub took the address of out of.
 				if !isEdge(prose, m[0], -1) {
 					continue
 				}
@@ -191,20 +164,10 @@ func References(events []connector.Event, resolver *principal.Resolver, code []c
 	return collapse(seen, touched)
 }
 
-// touchedSystems is every code entity whose path patterns match a path the
-// event says it touches, with how specific the match is: the number of
-// directories in the matched pattern's fixed prefix, so `engine/server/**` is
-// 2, `engine/**` is 1 and `**/*.go` is 0, and an entity matched more than once
-// counts its most specific match. Only entities located in the repository the
-// event is in are matched, because a pattern means nothing in another.
-//
-// Patterns are matched, never expanded into files (docs/config.md#code).
 func touchedSystems(ev connector.Event, code []config.CodeEntity) map[string]int {
 	return pathSystems(ev.Source, ev.Payload.Container.NativeID, ev.Payload.Paths, code)
 }
 
-// pathSystems applies the same repository-relative matching to an event's own
-// paths and to paths whose repository is named explicitly in payload.touches.
 func pathSystems(source, project string, paths []string, code []config.CodeEntity) map[string]int {
 	if len(paths) == 0 {
 		return nil
@@ -230,17 +193,6 @@ func pathSystems(source, project string, paths []string, code []config.CodeEntit
 	return out
 }
 
-// collapse turns the set into the sorted list a document carries, dropping a
-// `tracker_item` whose id the same document also spells out as an issue or a
-// pull request: `#31` and a link to `/pull/31` in one conversation are one
-// reference, and keeping both would make the vaguer one look like a second
-// thing.
-//
-// The list is sorted by type and then id, with one exception: the code
-// entities a change touched lead the `system` references, deepest match first
-// and then by id, so the first is the most specific entity the change is in —
-// `engine/server` before `engine` — which is what a reader asking "what did
-// this change" wants, and which the sort by id alone would not give.
 func collapse(seen map[Reference]bool, touched map[string]int) []Reference {
 	spelled := map[string]bool{}
 	for ref := range seen {
@@ -272,8 +224,6 @@ func collapse(seen map[Reference]bool, touched map[string]int) []Reference {
 	return refs
 }
 
-// specificity is how specific a change's match of an entity was, and -1 for an
-// entity no change touched, which sorts it after every one that one did.
 func specificity(touched map[string]int, id string) int {
 	if depth, ok := touched[id]; ok {
 		return depth
@@ -281,10 +231,6 @@ func specificity(touched map[string]int, id string) int {
 	return -1
 }
 
-// classifyLink types one URL. A link to an issue, a pull request or a commit
-// becomes that thing, spelled the way the source spells its artifact ids
-// (docs/connector-contract.md); anything else is the link itself, normalised so
-// that two spellings of one URL are one reference.
 func classifyLink(link string) (RefType, string) {
 	u, err := url.Parse(link)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
@@ -301,35 +247,16 @@ func classifyLink(link string) (RefType, string) {
 			return RefCommit, repo + "@" + m[4]
 		}
 	}
-	// The fragment is a position in a page, not a different page; the userinfo
-	// is who is asking, not what is being pointed at, and two links to one page
-	// with different credentials are one reference. The scheme and host are
-	// compared without case because they are not case-sensitive. Everything
-	// else is left exactly as the source wrote it: a query string can be the
-	// whole of what a link points at.
 	u.Fragment = ""
 	u.User = nil
 	u.Scheme = strings.ToLower(u.Scheme)
 	u.Host = strings.ToLower(u.Host)
-	// A url reference is the one reference id that is free text from the
-	// source, so it is the one that can carry a secret — a token in a query
-	// string outlives the userinfo rule above. It is scrubbed for the same
-	// reason text and raw_text are: refs is a column the store hands back.
-	// The structured ids are not scrubbed, because they are assembled from
-	// constrained captures and configuration, and a marker in one would break
-	// the join it exists for.
 	id, _ := Scrub(strings.TrimSuffix(u.String(), "/"))
 	return RefURL, id
 }
 
-// trimLink drops the punctuation a sentence puts after a URL, and the closing
-// bracket of a markdown link the pattern stopped at.
 func trimLink(link string) string { return strings.TrimRight(link, ".,;:!?") }
 
-// maskSpans blanks out the given byte ranges, keeping every other byte where it
-// was. Offsets are preserved rather than the spans removed, so that a word-edge
-// test either side of what is left reads the neighbour the source actually
-// wrote, and a space is not a word byte, so a masked link is an edge.
 func maskSpans(text string, spans [][]int) string {
 	if len(spans) == 0 {
 		return text
@@ -343,8 +270,6 @@ func maskSpans(text string, spans [][]int) string {
 	return string(b)
 }
 
-// group is one submatch of a FindAllStringSubmatchIndex result, and the empty
-// string for a group that did not participate.
 func group(s string, m []int, n int) string {
 	if 2*n+1 >= len(m) || m[2*n] < 0 {
 		return ""
@@ -352,8 +277,6 @@ func group(s string, m []int, n int) string {
 	return s[m[2*n]:m[2*n+1]]
 }
 
-// resolvePerson is the principal an identity hint names, and the empty string
-// for one that does not resolve.
 func resolvePerson(resolver *principal.Resolver, hint connector.Identity) string {
 	if resolver == nil {
 		return ""
@@ -364,10 +287,6 @@ func resolvePerson(resolver *principal.Resolver, hint connector.Identity) string
 	return ""
 }
 
-// resolveMention is the principal an @-mention names. `@org/team` is a group —
-// a team is a principal that never acts, and a document referring to one is
-// referring to the team — so it goes through the group lookup, with the
-// source's own `@` stripped the way internal/principal asks.
 func resolveMention(resolver *principal.Resolver, source, handle, team string) string {
 	if resolver == nil {
 		return ""
@@ -381,15 +300,11 @@ func resolveMention(resolver *principal.Resolver, source, handle, team string) s
 	return resolvePerson(resolver, connector.Identity{Source: source, Kind: connector.IdentityUser, Handle: handle})
 }
 
-// alias is one name a code entity answers to, folded for matching.
 type alias struct {
 	folded string
 	entity string
 }
 
-// systemAliases is every name and alias of every configured code entity,
-// longest first so that "engine server" wins over "engine" where both are
-// configured and both match at the same place.
 func systemAliases(code []config.CodeEntity) []alias {
 	aliases := make([]alias, 0, len(code)*2)
 	owners := map[string]map[string]bool{}
@@ -426,9 +341,6 @@ func systemAliases(code []config.CodeEntity) []alias {
 	return aliases
 }
 
-// systemsIn is every code entity a text names. Matching is case-insensitive and
-// bounded by word edges, so "the engine" matches "The Engine" and does not
-// match "engineering".
 func systemsIn(text string, aliases []alias) []string {
 	if len(aliases) == 0 {
 		return nil
@@ -443,8 +355,6 @@ func systemsIn(text string, aliases []alias) []string {
 	return found
 }
 
-// containsWord reports whether needle appears in haystack at word edges. Both
-// are already folded.
 func containsWord(haystack, needle string) bool {
 	for at := 0; at+len(needle) <= len(haystack); {
 		i := strings.Index(haystack[at:], needle)
@@ -461,8 +371,6 @@ func containsWord(haystack, needle string) bool {
 	return false
 }
 
-// isEdge reports whether the byte on one side of a position is not part of a
-// word. A match at the start or the end of the text is an edge.
 func isEdge(s string, at, dir int) bool {
 	if dir < 0 {
 		if at == 0 {
@@ -476,8 +384,6 @@ func isEdge(s string, at, dir int) bool {
 	return !isWordByte(s[at])
 }
 
-// isWordByte reports whether a byte continues a word. Bytes above ASCII are
-// word bytes, so an alias is not matched inside a word of another script.
 func isWordByte(c byte) bool {
 	return c >= 0x80 || c == '_' || unicode.IsLetter(rune(c)) || unicode.IsDigit(rune(c))
 }

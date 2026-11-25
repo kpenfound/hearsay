@@ -9,11 +9,10 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
 )
 
-// conversationExample is the conversation source's example in docs/config.md,
-// the whole configuration it documents.
 func conversationExample(t *testing.T) string {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "config.md"))
@@ -27,15 +26,8 @@ func conversationExample(t *testing.T) string {
 	return string(m[1])
 }
 
-// The documented conversation source is accepted by `hearsay config validate`,
-// and the connector the binary registers for it builds from it: what a person
-// copies out of the docs starts a service, with the agent's token in its
-// environment.
 func TestDocumentedConversationSourceValidatesAndBuilds(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "hearsay.yaml"), []byte(conversationExample(t)), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	dir := configtest.Write(t, map[string]string{"hearsay.yaml": conversationExample(t)})
 	var out, errOut bytes.Buffer
 	if err := run(t.Context(), []string{"config", "validate", dir}, &out, &errOut); err != nil {
 		t.Fatalf("hearsay config validate = %v\n%s", err, errOut.String())

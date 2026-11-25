@@ -12,10 +12,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector"
 )
 
-// GitHub's objects, as far as the connector reads them. REST and webhooks send
-// the same shapes; the fields here are the ones both send identically, because
-// an event built from one must equal the event built from the other.
-
 type user struct {
 	Login  string `json:"login"`
 	NodeID string `json:"node_id"`
@@ -33,27 +29,20 @@ type repository struct {
 }
 
 type issue struct {
-	// URL is the issue's API URL, which is how a sub-issue names its parent.
-	URL       string     `json:"url"`
-	Number    int        `json:"number"`
-	Title     string     `json:"title"`
-	Body      string     `json:"body"`
-	User      *user      `json:"user"`
-	State     string     `json:"state"`
-	Labels    []label    `json:"labels"`
-	HTMLURL   string     `json:"html_url"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
-	ClosedAt  *time.Time `json:"closed_at"`
-	// PullRequest is set on the issues list for an issue that is a pull
-	// request, which the backfill reads from the pulls list instead.
-	PullRequest json.RawMessage `json:"pull_request"`
-	// ParentIssueURL is the API URL of the issue this one is a sub-issue of,
-	// absent where it has no parent.
-	ParentIssueURL string `json:"parent_issue_url"`
-	// RepositoryURL is the API URL of the repository the issue is in, which a
-	// sub_issues delivery needs: it is sent to both ends of the relationship.
-	RepositoryURL string `json:"repository_url"`
+	URL            string          `json:"url"`
+	Number         int             `json:"number"`
+	Title          string          `json:"title"`
+	Body           string          `json:"body"`
+	User           *user           `json:"user"`
+	State          string          `json:"state"`
+	Labels         []label         `json:"labels"`
+	HTMLURL        string          `json:"html_url"`
+	CreatedAt      time.Time       `json:"created_at"`
+	UpdatedAt      time.Time       `json:"updated_at"`
+	ClosedAt       *time.Time      `json:"closed_at"`
+	PullRequest    json.RawMessage `json:"pull_request"`
+	ParentIssueURL string          `json:"parent_issue_url"`
+	RepositoryURL  string          `json:"repository_url"`
 }
 
 type gitRef struct {
@@ -78,23 +67,19 @@ type pull struct {
 	Base      gitRef     `json:"base"`
 }
 
-// comment is an issue comment or a review comment; the two differ in which URL
-// names what they hang off.
 type comment struct {
-	ID             int64     `json:"id"`
-	Body           string    `json:"body"`
-	User           *user     `json:"user"`
-	HTMLURL        string    `json:"html_url"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-	IssueURL       string    `json:"issue_url"`
-	PullRequestURL string    `json:"pull_request_url"`
-	// The review comment fields that do not move: `line` and `commit_id` are
-	// rewritten when a diff goes stale, without `updated_at` changing.
-	Path             string `json:"path"`
-	OriginalCommitID string `json:"original_commit_id"`
-	InReplyToID      int64  `json:"in_reply_to_id"`
-	ReviewID         int64  `json:"pull_request_review_id"`
+	ID               int64     `json:"id"`
+	Body             string    `json:"body"`
+	User             *user     `json:"user"`
+	HTMLURL          string    `json:"html_url"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+	IssueURL         string    `json:"issue_url"`
+	PullRequestURL   string    `json:"pull_request_url"`
+	Path             string    `json:"path"`
+	OriginalCommitID string    `json:"original_commit_id"`
+	InReplyToID      int64     `json:"in_reply_to_id"`
+	ReviewID         int64     `json:"pull_request_review_id"`
 }
 
 type review struct {
@@ -127,28 +112,15 @@ type commit struct {
 	} `json:"parents"`
 }
 
-// ghostNodeID is GitHub's own stable id for the user it shows in place of a
-// deleted account, `ghost`. It stands in for an author GitHub does not name —
-// a deleted user, a commit whose email belongs to no account — because every
-// kind the connector emits requires an author and the contract forbids keying
-// one on a login or an email.
 const ghostNodeID = "MDQ6VXNlcjEwMTM3"
 
-// permPrivate is the permission part of a revision token on an artifact in a
-// private repository. GitHub has no version for a repository's visibility, so
-// the connector composes one (docs/connector-contract.md, GitHub).
 const permPrivate = "perm:private"
 
-// view is one repository as an event is built in it: its canonical name and
-// whether it is private, which decides the ACL and the revision tokens.
 type view struct {
-	source  string
-	repo    string
-	private bool
-	// repos are the configured repositories, for spelling a repository an
-	// artifact in this one points at.
-	repos []string
-	// readOnly is a source whose `/hearsay` comments are not commands.
+	source   string
+	repo     string
+	private  bool
+	repos    []string
 	readOnly bool
 }
 
@@ -156,8 +128,6 @@ func (v view) container() connector.Container {
 	return connector.Container{Kind: connector.ContainerRepository, NativeID: v.repo, Name: v.repo}
 }
 
-// acl is `public` for a public repository and the repository's collaborators,
-// as a group resolved at read time, for a private one.
 func (v view) acl() connector.ACL {
 	if v.private {
 		return connector.ACL{{Kind: connector.ACLGroup, Source: v.source, NativeID: v.repo}}
@@ -165,10 +135,6 @@ func (v view) acl() connector.ACL {
 	return connector.ACL{{Kind: connector.ACLPublic}}
 }
 
-// revise returns the native id and revision for an artifact whose content token
-// is content ("" for one that never changes): the token composed with the
-// permission part in a private repository, and no revision at all for an
-// unchanging artifact in a public one.
 func (v view) revise(artifact, content string, editedAt time.Time) (string, *connector.Revision) {
 	token := content
 	if v.private {
@@ -195,7 +161,6 @@ func (v view) identity(u *user) *connector.Identity {
 	return &connector.Identity{Source: v.source, Kind: kind, NativeID: u.NodeID, Handle: u.Login}
 }
 
-// event is the part of every event that is the same for every kind.
 func (v view) event(kind connector.Kind, artifact, content string, at, editedAt time.Time, native any) (connector.Event, error) {
 	raw, err := json.Marshal(native)
 	if err != nil {
@@ -229,7 +194,6 @@ func reviewArtifact(repo string, number int, id int64) string {
 
 func commitArtifact(repo, sha string) string { return repo + "@" + sha }
 
-// stamp is a timestamp as a revision token: GitHub's own spelling, in UTC.
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 
 func utc(t *time.Time) *time.Time {
@@ -255,11 +219,6 @@ type issueNative struct {
 	ClosedAt *time.Time `json:"closed_at,omitempty"`
 }
 
-// issueEvent is an issue, part of the issue its parent_issue_url names. Its
-// content token is its updated_at, and `<updated_at>+parent:<parent artifact>`
-// for a sub-issue: GitHub does not promise to move updated_at when an issue
-// changes parent, and two observations that differ in part_of must not share a
-// native id (docs/connector-contract.md).
 func (v view) issueEvent(is issue) (connector.Event, error) {
 	artifact := issueArtifact(v.repo, is.Number)
 	var parent string
@@ -288,8 +247,6 @@ func (v view) issueEvent(is issue) (connector.Event, error) {
 	return ev, nil
 }
 
-// issueAt is the repository and number of the issue an API URL names:
-// `.../repos/acme/api/issues/12`.
 func issueAt(apiURL string) (string, int, error) {
 	i := strings.Index(apiURL, "/repos/")
 	if i < 0 {
@@ -304,8 +261,6 @@ func issueAt(apiURL string) (string, int, error) {
 	return repo, n, nil
 }
 
-// repositoryAt is the full name of the repository an API URL names:
-// `.../repos/acme/api`.
 func repositoryAt(apiURL string) (string, bool) {
 	i := strings.Index(apiURL, "/repos/")
 	if i < 0 {
@@ -327,27 +282,16 @@ type pullNative struct {
 	Base     gitRef     `json:"base"`
 }
 
-// changedFile is one entry of a pull request's files list, as far as the
-// connector reads it: the names. The entry also carries the patch, which is
-// never decoded.
 type changedFile struct {
-	Filename string `json:"filename"`
-	// PreviousFilename is the name a renamed file had.
+	Filename         string `json:"filename"`
 	PreviousFilename string `json:"previous_filename"`
 }
 
-// touched is what a pull request's files say it touched, in the shape
-// payload.paths takes: every name, and every name a renamed file had.
 type touched struct {
 	paths     []string
 	truncated bool
 }
 
-// pathsToken is the part of a pull request's content token that names what it
-// touches: `paths:` and the first 16 hex digits of the SHA-256 of every path
-// followed by a newline, then `truncated` where the list was cut. A path has
-// no control character in it (connector.BoundPaths), so the encoding is
-// unambiguous. It is empty for a pull request that touches nothing.
 func pathsToken(t touched) string {
 	if len(t.paths) == 0 {
 		return ""
@@ -362,10 +306,6 @@ func pathsToken(t touched) string {
 	return "paths:" + hex.EncodeToString(h.Sum(nil))[:16]
 }
 
-// pullEvent is a pull request and the paths it touches. Its content token is
-// its updated_at, and `<updated_at>+paths:<hash>` where it touches any: the
-// files list is read separately from the pull request, and two observations
-// that differ in it must not share a native id (docs/connector-contract.md).
 func (v view) pullEvent(p pull, t touched) (connector.Event, error) {
 	artifact := issueArtifact(v.repo, p.Number)
 	token := stamp(p.UpdatedAt)
@@ -387,8 +327,6 @@ func (v view) pullEvent(p pull, t touched) (connector.Event, error) {
 	return ev, nil
 }
 
-// numberFrom is the issue or pull request number at the end of an API URL:
-// `.../issues/12`, `.../pulls/31`.
 func numberFrom(apiURL, segment string) (int, error) {
 	i := strings.LastIndex(apiURL, segment)
 	if i < 0 {
@@ -401,8 +339,6 @@ func numberFrom(apiURL, segment string) (int, error) {
 	return n, nil
 }
 
-// commentOn is the artifact an issue comment is, and the issue or pull request
-// it hangs off.
 func (v view) commentOn(cm comment) (artifact, parent string, err error) {
 	n, err := numberFrom(cm.IssueURL, "/issues/")
 	if err != nil {
@@ -411,7 +347,6 @@ func (v view) commentOn(cm comment) (artifact, parent string, err error) {
 	return commentArtifact(v.repo, n, cm.ID), issueArtifact(v.repo, n), nil
 }
 
-// reviewCommentOn is the same for a review comment.
 func (v view) reviewCommentOn(cm comment) (artifact, parent string, err error) {
 	n, err := numberFrom(cm.PullRequestURL, "/pulls/")
 	if err != nil {
@@ -424,9 +359,6 @@ type commentNative struct {
 	ID int64 `json:"id"`
 }
 
-// commentEvent is an issue or pull request comment: a `message`, or, where it
-// is a `/hearsay` command or Hearsay's reply to one, a `command` or a
-// [KindReply] ([controlEvent]).
 func (v view) commentEvent(cm comment) (connector.Event, error) {
 	artifact, parent, err := v.commentOn(cm)
 	if err != nil {
@@ -476,26 +408,15 @@ type reviewNative struct {
 	CommitID string `json:"commit_id,omitempty"`
 }
 
-// submitted reports whether a review has been submitted: a pending review is a
-// draft only its author can see, and is not an artifact yet.
 func (r review) submitted() bool {
 	return r.SubmittedAt != nil && !strings.EqualFold(r.State, "pending")
 }
 
-// reviewToken is a review's content token: the first 16 hex digits of the
-// SHA-256 of its lower-case state, a newline, and its body. GitHub
-// moves no version field when a review is edited or dismissed, so what changed
-// is hashed instead; a state has no newline in it, so the two cannot run
-// together.
 func reviewToken(r review) string {
 	sum := sha256.Sum256([]byte(strings.ToLower(r.State) + "\n" + r.Body))
 	return hex.EncodeToString(sum[:])[:16]
 }
 
-// reviewEvent is a submitted review on pull request number. Its state is lower
-// case whichever encoding it came in: REST says `APPROVED`, a webhook
-// `approved`. GitHub gives no time for an edit or a dismissal, so the revision
-// has no edited_at and ingest order decides which is current.
 func (v view) reviewEvent(number int, r review) (connector.Event, error) {
 	artifact := reviewArtifact(v.repo, number, r.ID)
 	parent := issueArtifact(v.repo, number)
@@ -518,10 +439,6 @@ type commitNative struct {
 	AuthoredAt time.Time `json:"authored_at"`
 }
 
-// commitEvent is a commit on the default branch, timed when it was committed.
-// Its author is the GitHub account the commit is attributed to, with the git
-// author's name and email as hints; a commit attributed to no account has the
-// ghost's id and the same hints.
 func (v view) commitEvent(c commit) (connector.Event, error) {
 	parents := make([]string, 0, len(c.Parents))
 	for _, p := range c.Parents {
@@ -544,9 +461,6 @@ func (v view) commitEvent(c commit) (connector.Event, error) {
 	return ev, nil
 }
 
-// tombstone retracts target, timed by the deleted object's own last update:
-// GitHub sends no time for a deletion, and a tombstone timed by when the
-// delivery arrived would be a different event on every redelivery.
 func (v view) tombstone(target string, at time.Time) (connector.Event, error) {
 	ev, err := v.event(connector.KindTombstone, target+":tombstone", "", at, time.Time{}, struct{}{})
 	if err != nil {

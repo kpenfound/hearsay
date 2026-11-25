@@ -17,20 +17,12 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
-// The fixture: an issue that proposes one thing, and a later pull request that
-// fixes it another way and is merged. The model's answers are recorded in
-// testdata/fixtures, keyed by the request, and replayed through the fake in
-// internal/llm (CLAUDE.md). Change the prompt and the keys change:
-//
-//	go test ./internal/service/assertworker -record
-
 var record = flag.Bool("record", false, "rewrite the recorded model answers in testdata/fixtures")
 
 const (
 	repo      = "acme/api"
 	topicName = "Where the engine takes its lock relative to the write"
-	// issuePosition is what the issue proposes, and prPosition what the merged
-	// pull request did instead.
+
 	issuePosition = "Move the lock into the job queue."
 	prPosition    = "The engine takes its own lock, before it writes."
 )
@@ -57,8 +49,6 @@ func event(src string, kind connector.Kind, artifact string, when time.Time, han
 	}
 }
 
-// fixture is the two artifacts as a connector would emit them: each root with
-// the events that hang off it.
 type fixture struct {
 	issue, pr       connector.Event
 	prChildren      []connector.Event
@@ -74,8 +64,7 @@ func newFixture(src string) fixture {
 	pr := event(src, connector.KindPullRequest, repo+"#31", at(3), "kpenfound", "u1",
 		"engine: take the lock before writing",
 		"Fixes #12. Rather than moving the lock into the job queue, the engine now takes it before the write. See https://github.com/acme/api/issues/12.")
-	// It merged, and the source says so: that is what makes its document a
-	// merged_pr, and a stance read from it ratified.
+
 	pr.Payload.Native = json.RawMessage(`{"state":"closed","merged_at":"` + at(4).Format(time.RFC3339) + `"}`)
 	review := event(src, connector.KindReview, repo+"#31:review:77", at(4), "samr", "u2", "", "Approved, and merged.")
 	review.Payload.Parent, review.Payload.Thread = repo+"#31", repo+"#31"
@@ -87,7 +76,6 @@ func newFixture(src string) fixture {
 	}
 }
 
-// bodies are what the distiller concluded about each artifact.
 var (
 	issueBody = l1.Body{
 		Summary:     "The engine writes before taking its lock, which races with the job queue. The author proposes moving the lock into the job queue.",
@@ -103,9 +91,6 @@ var (
 	}
 )
 
-// testRepo is the configuration the fixture is asserted under. The scope is
-// named after the source, so every test has a scope — and so a topic list — of
-// its own in a database the tests share; nothing a request holds depends on it.
 func testRepo(src string) config.Repo {
 	return config.Repo{
 		Path:   "testdata",
@@ -124,16 +109,12 @@ func testRepo(src string) config.Repo {
 	}
 }
 
-// documents are the two L1 documents the fixture distils to.
 func documents(t *testing.T, src string) (issue, pr l1.Document) {
 	t.Helper()
 	f := newFixture(src)
 	return buildDoc(t, src, f.issue, nil, issueBody), buildDoc(t, src, f.pr, f.prChildren, prBody)
 }
 
-// commitDocument is a third document, whose recorded answer is one a model
-// should not give: an email address in a position, a topic with a blank name
-// and a position that is blank.
 func commitDocument(t *testing.T, src string) l1.Document {
 	t.Helper()
 	commit := event(src, connector.KindCommit, repo+"@1f0e3dad99908345f7439f8ffabdffc4", at(7), "kpenfound", "u1",
@@ -148,7 +129,6 @@ var commitBody = l1.Body{
 	OutcomeKind: l1.OutcomeResolved,
 }
 
-// commitEmail is the address the commit's recorded answer puts in a position.
 const commitEmail = "robin@example.com"
 
 func buildDoc(t *testing.T, src string, root connector.Event, children []connector.Event, body l1.Body) l1.Document {
@@ -169,20 +149,14 @@ func buildDoc(t *testing.T, src string, root connector.Event, children []connect
 	return doc
 }
 
-// exchange is one recorded call: what the worker asks, and what the model says.
-// The request is the document alone, so each document has one answer: the
-// model extracts the same positions however often the document is read.
 type exchange struct {
 	name   string
 	doc    func(t *testing.T, src string) l1.Document
 	answer map[string]any
 }
 
-// restatedPosition is the issue's proposal as the model words it when the
-// issue is read again after a comment: the same position, other words.
 const restatedPosition = "The job queue should hold the lock."
 
-// issueComment is a comment on the issue made after the pull request merged.
 func issueComment(src string) connector.Event {
 	comment := event(src, connector.KindMessage, repo+"#12:comment:90", at(5), "samr", "u2", "",
 		"Noting for the record that this was fixed differently in #31.")
@@ -197,8 +171,6 @@ var commentedIssueBody = l1.Body{
 	OutcomeKind: l1.OutcomeProposed,
 }
 
-// commentedIssueDoc is the issue's second version: re-distilled after the
-// comment, so its last activity is after the merge.
 func commentedIssueDoc(t *testing.T, src string) l1.Document {
 	t.Helper()
 	f := newFixture(src)
@@ -244,8 +216,6 @@ func loadFixtures(t *testing.T) *llm.Fixtures {
 	return fx
 }
 
-// TestRecordFixtures rewrites the recorded answers with -record, and without it
-// checks that what is on disk is what this package would send.
 func TestRecordFixtures(t *testing.T) {
 	file := llm.FixtureFile{}
 	for _, ex := range exchanges() {
@@ -259,7 +229,7 @@ func TestRecordFixtures(t *testing.T) {
 			Response: llm.Response{JSON: body, StopReason: llm.StopEnd, Model: "recorded"},
 		})
 	}
-	// The command retry test runs a real distill job for a new issue.
+
 	root := commandIssue("github-acme")
 	doc := buildDoc(t, root.Source, root, nil, issueBody)
 	budget, _ := llm.Default().Tier(llm.TierDistill)
@@ -298,8 +268,6 @@ func TestRecordFixtures(t *testing.T) {
 		t.Fatalf("%s is not what this package would record: run `go test ./internal/service/assertworker -record`", fixturePath())
 	}
 
-	// The fake loads them, which validates every answer against the schema its
-	// request asked for — so the answers above are ones this build accepts.
 	registry, err := llm.NewFake(llm.Default(), loadFixtures(t))
 	if err != nil {
 		t.Fatalf("building the fake registry: %v", err)
@@ -315,8 +283,6 @@ func TestRecordFixtures(t *testing.T) {
 	}
 }
 
-// The model answers with positions and their questions alone: which topic a
-// position continues, and whether it changes it, are Jev's to judge.
 func TestTheAnswerIsPositionsAndTheirQuestions(t *testing.T) {
 	request := assertworker.RequestFor(prDoc(t, "github-acme"), assertBudget())
 	for _, tc := range []struct {
@@ -339,7 +305,6 @@ func TestTheAnswerIsPositionsAndTheirQuestions(t *testing.T) {
 	}
 }
 
-// commandIssue has the fixture's proposal on a conversation with no L1 yet.
 func commandIssue(src string) connector.Event {
 	ev := newFixture(src).issue
 	ev.NativeID, ev.Payload.Artifact = repo+"#77", repo+"#77"

@@ -13,23 +13,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
+	"github.com/kpenfound/hearsay/internal/poll"
 	"github.com/kpenfound/hearsay/internal/queue"
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
-// quiet is a worker's context with a logger that goes nowhere: the loop logs
-// what it does, and a test that passes has nothing to say.
 func quiet(t *testing.T) (context.Context, context.CancelFunc) {
 	t.Helper()
 	ctx := telemetry.WithLogger(t.Context(), slog.New(slog.DiscardHandler))
 	return context.WithCancel(ctx)
 }
 
-// run starts a worker and returns a function that stops it and reports what
-// Run returned. A worker asked to stop has not failed, so that is nil.
-func run(t *testing.T, cfg queue.Config, handler queue.Handler) (*queue.Worker, func()) {
+func run(t *testing.T, cfg queue.Config, handler queue.Handler) func() {
 	t.Helper()
-	worker, err := queue.NewWorker(newPool(t), cfg, handler)
+	worker, err := queue.NewWorker(dbtest.Pool(t), cfg, handler)
 	if err != nil {
 		t.Fatalf("NewWorker = %v, want no error", err)
 	}
@@ -54,43 +52,18 @@ func run(t *testing.T, cfg queue.Config, handler queue.Handler) (*queue.Worker, 
 		}
 	}
 	t.Cleanup(stop)
-	return worker, stop
+	return stop
 }
 
-func waitFor(t *testing.T, what string, cond func() bool) {
-	t.Helper()
-	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); {
-		if cond() {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
-}
-
-// A worker with a backlog still does its maintenance. The drain loop is where
-// a busy worker lives — the distiller backfill keeps it there for as
-// long as the backfill lasts — so if the maintenance tick were only read by
-// the outer select, a kind's expired leases would go unreclaimed for exactly
-// as long as there is most to reclaim, and every extra worker would make that
-// worse rather than better, because they would all be draining.
-//
-// Staged rather than raced: a job is claimed with a lease measured in
-// milliseconds and then abandoned, which is the row a worker that died
-// mid-job leaves behind, and the work that keeps the loop fed enqueues its own
-// successor so that a claim never comes back empty.
 func TestABusyWorkerStillReclaimsExpiredLeases(t *testing.T) {
 	kind := newKind(t, false)
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 
 	enqueue(t, pool, queue.Request{Kind: kind, TargetID: "evt-abandoned"})
 	abandoning := newClient(t, queue.Config{Kind: kind, Lease: time.Millisecond})
 	if got := claim(t, abandoning); len(got) != 1 || got[0].TargetID != "evt-abandoned" {
 		t.Fatalf("the staged claim = %v, want the one job, which is then abandoned", got)
 	}
-	// Nothing completes it, so it is `running` with a lease that is already
-	// gone. Only a reclaim can make it claimable again — which is the point:
-	// the worker below cannot reach it any other way.
 
 	var (
 		mu      sync.Mutex
@@ -99,13 +72,11 @@ func TestABusyWorkerStillReclaimsExpiredLeases(t *testing.T) {
 		feedErr error
 	)
 	enqueue(t, pool, queue.Request{Kind: kind, TargetID: "evt-feed-0"})
-	_, stop := run(t, queue.Config{
+	stop := run(t, queue.Config{
 		Kind:                kind,
 		Lease:               30 * time.Second,
 		MaintenanceInterval: 100 * time.Millisecond,
-		// Long, so that nothing here is explained by a poll: the drain loop
-		// never sleeps while there is work anyway.
-		PollInterval: time.Minute,
+		PollInterval:        time.Minute,
 	}, func(ctx context.Context, job queue.Job) error {
 		mu.Lock()
 		ran = append(ran, job.TargetID)
@@ -114,8 +85,6 @@ func TestABusyWorkerStillReclaimsExpiredLeases(t *testing.T) {
 		mu.Unlock()
 
 		if keepFeeding {
-			// Enqueued before the handler returns, so there is always
-			// something pending when the loop claims again.
 			if _, err := queue.Enqueue(ctx, pool, queue.Request{Kind: kind, TargetID: next}); err != nil {
 				mu.Lock()
 				feedErr, feeding = err, false
@@ -126,7 +95,7 @@ func TestABusyWorkerStillReclaimsExpiredLeases(t *testing.T) {
 		return nil
 	})
 
-	waitFor(t, "the abandoned job to be reclaimed and re-run while the worker is busy", func() bool {
+	poll.Until(t, "the abandoned job to be reclaimed and re-run while the worker is busy", func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return slices.Contains(ran, "evt-abandoned")
@@ -141,22 +110,14 @@ func TestABusyWorkerStillReclaimsExpiredLeases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("keeping the worker fed failed: %v", err)
 	}
-	// The reclaim has to have happened while the loop had work, or the test
-	// proved nothing: with only the abandoned job and its feed, a worker that
-	// had gone idle would show barely any runs.
 	if worked < 3 {
 		t.Errorf("the worker ran %d jobs before the abandoned one was reclaimed, want a drain loop that stayed fed", worked)
 	}
 }
 
-// The other half of the same tick, and the ordinary case: a worker with
-// nothing to do still reclaims. The drain loop's non-blocking check cannot
-// cover this one — an idle worker sits in the outer select, which is what
-// receives the tick — so both places that read it are load-bearing, and each
-// is the only one for a worker in one of the two states.
 func TestAnIdleWorkerReclaimsAnExpiredLease(t *testing.T) {
 	kind := newKind(t, false)
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 
 	enqueue(t, pool, queue.Request{Kind: kind, TargetID: "evt-abandoned"})
 	abandoning := newClient(t, queue.Config{Kind: kind, Lease: time.Millisecond})
@@ -168,11 +129,7 @@ func TestAnIdleWorkerReclaimsAnExpiredLease(t *testing.T) {
 		mu  sync.Mutex
 		ran []string
 	)
-	// There is nothing pending — the only job is `running` on a lease that has
-	// gone — so this worker claims nothing until its maintenance reclaims it.
-	// The polling floor is long, so a reclaim is the only thing that can put
-	// the job back within the wait.
-	_, stop := run(t, queue.Config{
+	stop := run(t, queue.Config{
 		Kind:                kind,
 		Lease:               30 * time.Second,
 		MaintenanceInterval: 100 * time.Millisecond,
@@ -184,7 +141,7 @@ func TestAnIdleWorkerReclaimsAnExpiredLease(t *testing.T) {
 		return nil
 	})
 
-	waitFor(t, "the idle worker to reclaim the abandoned job and run it", func() bool {
+	poll.Until(t, "the idle worker to reclaim the abandoned job and run it", func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return slices.Contains(ran, "evt-abandoned")
@@ -192,24 +149,18 @@ func TestAnIdleWorkerReclaimsAnExpiredLease(t *testing.T) {
 	stop()
 }
 
-// LISTEN/NOTIFY is what makes a job start now rather than at the next poll.
-// The polling floor here is a minute, so a job that is handled within seconds
-// was handled because the enqueue announced it.
 func TestAWorkerStartsAJobItIsNotifiedOfWithoutWaitingForThePoll(t *testing.T) {
 	kind := newKind(t, false)
 	handled := make(chan queue.Job, 1)
-	worker, stop := run(t, queue.Config{
+	stop := run(t, queue.Config{
 		Kind: kind, PollInterval: time.Minute, MaintenanceInterval: time.Minute,
 	}, func(_ context.Context, job queue.Job) error {
 		handled <- job
 		return nil
 	})
 
-	// Wait until the worker is listening: a job enqueued before that would be
-	// found by the claim the worker makes on starting, which would prove
-	// nothing about the notification.
-	pool := newPool(t)
-	waitFor(t, "the worker to listen on its kind's channel", func() bool {
+	pool := dbtest.Pool(t)
+	poll.Until(t, "the worker to listen on its kind's channel", func() bool {
 		var listening bool
 		err := pool.QueryRow(t.Context(),
 			`SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE query ILIKE 'LISTEN %' AND strpos(query, $1) > 0)`,
@@ -218,8 +169,6 @@ func TestAWorkerStartsAJobItIsNotifiedOfWithoutWaitingForThePoll(t *testing.T) {
 	})
 
 	enqueue(t, pool, queue.Request{Kind: kind, TargetID: "evt-1"})
-	// Well inside the minute-long polling floor, so only the notification can
-	// have woken the worker in time.
 	select {
 	case job := <-handled:
 		if job.TargetID != "evt-1" || job.Attempt != 1 {
@@ -230,16 +179,14 @@ func TestAWorkerStartsAJobItIsNotifiedOfWithoutWaitingForThePoll(t *testing.T) {
 	}
 
 	stop()
-	client := worker.Client()
-	waitFor(t, "the job to be recorded as done", func() bool { return stats(t, client).Done == 1 })
+	client := newClient(t, queue.Config{Kind: kind})
+	poll.Until(t, "the job to be recorded as done", func() bool { return stats(t, client).Done == 1 })
 }
 
-// A handler that keeps failing is retried up to the limit and then gives up,
-// through the loop rather than through the client's own Fail.
 func TestAWorkerRetriesAFailingHandlerAndThenGivesUp(t *testing.T) {
 	kind := newKind(t, false)
 	var attempts atomic.Int64
-	worker, _ := run(t, queue.Config{
+	run(t, queue.Config{
 		Kind: kind, MaxAttempts: 3, Backoff: time.Millisecond, MaxBackoff: 2 * time.Millisecond,
 		PollInterval: 20 * time.Millisecond, MaintenanceInterval: time.Minute,
 	}, func(context.Context, queue.Job) error {
@@ -247,9 +194,9 @@ func TestAWorkerRetriesAFailingHandlerAndThenGivesUp(t *testing.T) {
 		return errors.New("the model refused")
 	})
 
-	enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
-	client := worker.Client()
-	waitFor(t, "the job to run out of attempts", func() bool { return stats(t, client).Failed == 1 })
+	enqueue(t, dbtest.Pool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
+	client := newClient(t, queue.Config{Kind: kind})
+	poll.Until(t, "the job to run out of attempts", func() bool { return stats(t, client).Failed == 1 })
 
 	if got := attempts.Load(); got != 3 {
 		t.Errorf("the handler ran %d times, want the 3 attempts it was given", got)
@@ -263,13 +210,11 @@ func TestAWorkerRetriesAFailingHandlerAndThenGivesUp(t *testing.T) {
 	}
 }
 
-// A worker that is shutting down cancels the handler and still records what
-// happened, rather than leaving a running row for the reclaimer to work out.
 func TestAWorkerShuttingDownCancelsAndRecordsTheJobItWasRunning(t *testing.T) {
 	kind := newKind(t, false)
 	started := make(chan struct{})
 	var once sync.Once
-	worker, stop := run(t, queue.Config{
+	stop := run(t, queue.Config{
 		Kind: kind, PollInterval: 20 * time.Millisecond, MaintenanceInterval: time.Minute,
 	}, func(ctx context.Context, _ queue.Job) error {
 		once.Do(func() { close(started) })
@@ -277,7 +222,7 @@ func TestAWorkerShuttingDownCancelsAndRecordsTheJobItWasRunning(t *testing.T) {
 		return ctx.Err()
 	})
 
-	enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
+	enqueue(t, dbtest.Pool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
 	select {
 	case <-started:
 	case <-time.After(20 * time.Second):
@@ -285,30 +230,24 @@ func TestAWorkerShuttingDownCancelsAndRecordsTheJobItWasRunning(t *testing.T) {
 	}
 
 	stop()
-	client := worker.Client()
+	client := newClient(t, queue.Config{Kind: kind})
 	got := stats(t, client)
 	if got.Running != 0 || got.Pending != 1 {
 		t.Errorf("stats after a shutdown = %+v, want the job back in the queue rather than left running", got)
 	}
 }
 
-// A worker whose lease has been taken away is told so by its own heartbeat,
-// and stops working on a job something else is now running. The lease here is
-// shorter than the heartbeat floor, which is how the test gets an expiry
-// without waiting a minute for one.
 func TestAWorkerStopsRunningAJobWhoseLeaseWasReclaimed(t *testing.T) {
 	kind := newKind(t, false)
 	cancelled := make(chan struct{})
 	var once sync.Once
 	var running atomic.Bool
-	_, _ = run(t, queue.Config{
+	run(t, queue.Config{
 		Kind: kind, Lease: 20 * time.Millisecond, MaxAttempts: 10,
 		Backoff: time.Second, MaxBackoff: time.Second,
 		PollInterval: 20 * time.Millisecond, MaintenanceInterval: time.Minute,
 	}, func(ctx context.Context, _ queue.Job) error {
 		if !running.CompareAndSwap(false, true) {
-			// A later run of the same job: it is somebody else's now, and
-			// blocking again would only hide the first one's cancellation.
 			return nil
 		}
 		<-ctx.Done()
@@ -316,13 +255,11 @@ func TestAWorkerStopsRunningAJobWhoseLeaseWasReclaimed(t *testing.T) {
 		return ctx.Err()
 	})
 
-	enqueue(t, newPool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
-	waitFor(t, "the worker to start the job", func() bool { return running.Load() })
+	enqueue(t, dbtest.Pool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
+	poll.Until(t, "the worker to start the job", func() bool { return running.Load() })
 
-	// Something else takes the expired lease. The worker's next heartbeat is
-	// what tells it, and cancelling the run is what it does about it.
 	reclaimer := newClient(t, queue.Config{Kind: kind, Lease: 20 * time.Millisecond, MaxAttempts: 10})
-	waitFor(t, "the expired lease to be reclaimed", func() bool {
+	poll.Until(t, "the expired lease to be reclaimed", func() bool {
 		reclaimed, err := reclaimer.Reclaim(t.Context())
 		if err != nil {
 			t.Fatalf("Reclaim = %v, want no error", err)

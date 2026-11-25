@@ -2,51 +2,8 @@
 
 package main
 
-// The owner/work decision path, end to end, in a running Hearsay.
-//
-// This test runs the shipped command, `hearsay all` — connectors, distiller,
-// assertion worker and API, wired by the same code the binary runs — against a
-// database of its own in the Postgres HEARSAY_DATABASE_URL names, with the
-// configuration docs/config.md documents for an owner/work pair. It posts
-// hand-written requests, in the shape docs/connector-contract.md documents, to
-// the connectors' real HTTP listener at /hooks/<source>, and reads the result
-// as people read it, through the API's real HTTP listener:
-//
-//   - on the work source: a project (no `repos`) and a workstream, a chief's
-//     assumption, a decision that supersedes it, and a relay of an owner ruling
-//     that names the owner as author and decider;
-//   - on the owner source, authored by the owner through the publisher agent
-//     (an attributor on both): a sealed-spec document, a charter, and owner
-//     rulings.
-//
-// It then reads the project's and the workstream's `work:` entities with
-// get_bundle and traverse as the owner, and logs every output, and checks that
-// the owner ruling is served ratified, the assumption superseded by its
-// successor, the successor and the relay inferred, the sealed spec a `spec`
-// document, and that a configured principal who is neither the poster nor the
-// owner is served what an unknown scope gets and nothing by handle.
-//
-// The only things replaced are the model provider and Jev: the distill and
-// assert tiers' and llm.judgments' `base_url` point at a local stub that
-// answers the Anthropic Messages API with a one-line summary and no stances, and
-// Jev's System One API with a confident no to every question (no credential is
-// reachable from a test, and none is needed). The stub also records every
-// prompt and judged state, and the test fails if any decision's text was sent
-// to it: decisions take no model call and no judgment.
-//
-// Rerun it with a Postgres of your own, or inside the image's tree with Dagger
-// (CONTRIBUTING.md, "The owner/work decision path, end to end"):
-//
-//	HEARSAY_DATABASE_URL=postgres://... go test -tags=integration -count=1 -v \
-//	    -run TestWorkRecordsEndToEnd ./cmd/hearsay
-//
-// `dagger check hearsay:integration-test` runs it with every other integration
-// test. Set HEARSAY_E2E_EVIDENCE to a directory to also write each read's raw
-// output there as JSON files.
-
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -57,24 +14,20 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/kpenfound/hearsay/internal/bundle"
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l3"
 	"github.com/kpenfound/hearsay/internal/service/api"
+	"github.com/kpenfound/hearsay/internal/telemetry/logtest"
 )
 
-// modelStub answers the Anthropic Messages API as the distill and assert tiers
-// call it, and Jev's System One API as the distiller and the assertion worker
-// call it, and remembers what it was asked.
 type modelStub struct {
 	mu      sync.Mutex
 	prompts []string
@@ -82,86 +35,44 @@ type modelStub struct {
 }
 
 func (m *modelStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/v1/systemone" {
-		m.judge(w, r)
-		return
-	}
-	var req struct {
-		Messages []struct {
-			Content string `json:"content"`
-		} `json:"messages"`
-		Tools []struct {
-			Name        string `json:"name"`
-			InputSchema struct {
-				Properties map[string]json.RawMessage `json:"properties"`
-			} `json:"input_schema"`
-		} `json:"tools"`
-	}
-	if r.URL.Path != "/v1/messages" || json.NewDecoder(r.Body).Decode(&req) != nil || len(req.Tools) != 1 || len(req.Messages) == 0 {
-		http.Error(w, `{"error":{"type":"invalid_request_error","message":"the stub answers structured Messages calls only"}}`, http.StatusBadRequest)
-		return
-	}
-	tool := req.Tools[0]
-	text := req.Messages[0].Content
+	serveModelStub(w, r, m.structured, m.judge)
+}
+
+func (m *modelStub) structured(tool, text string, properties map[string]json.RawMessage) (any, bool) {
 	m.mu.Lock()
 	m.prompts = append(m.prompts, text)
 	if m.schemas == nil {
 		m.schemas = map[string]int{}
 	}
-	m.schemas[tool.Name]++
+	m.schemas[tool]++
 	m.mu.Unlock()
-
-	var answer any
-	if _, ok := tool.InputSchema.Properties["assertions"]; ok {
-		answer = map[string]any{"assertions": []any{}}
-	} else if _, ok := tool.InputSchema.Properties["summary"]; ok {
+	if _, ok := properties["assertions"]; ok {
+		return map[string]any{"assertions": []any{}}, true
+	}
+	if _, ok := properties["summary"]; ok {
 		first, _, _ := strings.Cut(strings.TrimSpace(text), "\n")
-		answer = map[string]any{"summary": first}
-	} else {
-		http.Error(w, `{"error":{"type":"invalid_request_error","message":"the stub does not know this schema"}}`, http.StatusBadRequest)
-		return
+		return map[string]any{"summary": first}, true
 	}
-	w.Header().Set("content-type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"id": "msg_stub", "type": "message", "role": "assistant", "model": "stub", "stop_reason": "tool_use",
-		"content": []any{map[string]any{"type": "tool_use", "id": "toolu_stub", "name": tool.Name, "input": answer}},
-		"usage":   map[string]int{"input_tokens": 1, "output_tokens": 1},
-	})
+	return nil, false
 }
 
-// judge answers every yes/no question no, confidently: nothing in these
-// documents is concluded, which is what the stub's distillation says too.
-func (m *modelStub) judge(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		State     string                     `json:"state"`
-		Questions map[string]json.RawMessage `json:"questions"`
-	}
-	if json.NewDecoder(r.Body).Decode(&req) != nil || len(req.Questions) == 0 {
-		http.Error(w, `{"error":"the stub answers System One calls only"}`, http.StatusBadRequest)
-		return
-	}
+func (m *modelStub) judge(state string, ids []string) map[string]float64 {
 	m.mu.Lock()
-	m.prompts = append(m.prompts, req.State)
+	m.prompts = append(m.prompts, state)
 	m.mu.Unlock()
-	answers := map[string]any{}
-	for id := range req.Questions {
-		answers[id] = map[string]any{"type": "noul", "noul": 0.02}
+	answers := map[string]float64{}
+	for _, id := range ids {
+		answers[id] = 0.02
 	}
-	w.Header().Set("content-type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"model": "jev-stub", "answers": answers, "usage": map[string]int{"input_tokens": 1, "output_tokens": 0}})
+	return answers
 }
 
-// sawText reports whether any prompt the stub received contains s.
 func (m *modelStub) sawText(s string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return slices.ContainsFunc(m.prompts, func(p string) bool { return strings.Contains(p, s) })
 }
 
-// e2eConfig is the documented owner/work pair, as docs/config.md has it, with
-// what a running Hearsay also needs: tokens for the people who read, one more
-// person who may not read the project, and the model stub in place of the
-// provider.
 func e2eConfig(t *testing.T, stubURL string) string {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "config.md"))
@@ -178,14 +89,9 @@ func e2eConfig(t *testing.T, stubURL string) string {
 		t.Fatalf("the documented pair no longer lists kyle as a bare human principal:\n%s", text)
 	}
 	text = strings.Replace(text, owner, "  - id: kyle\n    kind: human\n    token_env: HEARSAY_E2E_KYLE_TOKEN\n  - id: ann\n    kind: human\n    token_env: HEARSAY_E2E_ANN_TOKEN\n", 1)
-	tier := func(name string) string {
-		return fmt.Sprintf("    %s:\n      provider: anthropic\n      model: model-stub\n      base_url: %s\n      api_key_env: HEARSAY_E2E_MODEL_KEY\n      max_retries: -1\n", name, stubURL)
-	}
-	judgments := fmt.Sprintf("  judgments:\n    model: jev-stub\n    base_url: %s\n    api_key_env: HEARSAY_E2E_MODEL_KEY\n    max_retries: -1\n", stubURL)
-	return text + "\nllm:\n  tiers:\n" + tier("distill") + tier("assert") + judgments
+	return text + e2eLLMSection(stubURL)
 }
 
-// freeAddr is an address nothing is listening on, for a service to take.
 func freeAddr(t *testing.T) string {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -196,42 +102,15 @@ func freeAddr(t *testing.T) string {
 	return l.Addr().String()
 }
 
-// scratchDatabase creates a database of its own on the server, so that the run
-// reads the change feed of nothing but its own records, and drops it after.
-func scratchDatabase(t *testing.T, url string) string {
-	t.Helper()
-	name := "e2e_work_" + strconv.FormatInt(time.Now().UnixNano(), 36)
-	admin, err := pgx.Connect(t.Context(), swapDatabaseName(url, "postgres"))
-	if err != nil {
-		t.Fatalf("connecting to the server: %v", err)
-	}
-	defer func() { _ = admin.Close(context.WithoutCancel(t.Context())) }()
-	if _, err := admin.Exec(t.Context(), "CREATE DATABASE "+name); err != nil {
-		t.Fatalf("creating %s: %v", name, err)
-	}
-	t.Cleanup(func() {
-		ctx := context.WithoutCancel(t.Context())
-		c, err := pgx.Connect(ctx, swapDatabaseName(url, "postgres"))
-		if err != nil {
-			return
-		}
-		defer func() { _ = c.Close(ctx) }()
-		_, _ = c.Exec(ctx, "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)")
-	})
-	return swapDatabaseName(url, name)
-}
-
-// e2eRun is a running Hearsay and the two listeners the test talks to.
 type e2eRun struct {
 	t        *testing.T
-	hooks    string // the connectors' address
+	hooks    string
 	apiAddr  string
 	tokens   map[string]string
-	stderr   *syncBuffer
+	stderr   *logtest.Buffer
 	evidence string
 }
 
-// post sends one record to a source's push endpoint as the publisher.
 func (r *e2eRun) post(source string, fields map[string]any) (int, string) {
 	r.t.Helper()
 	body, err := json.Marshal(fields)
@@ -258,7 +137,6 @@ func (r *e2eRun) do(req *http.Request) (int, string) {
 	return resp.StatusCode, string(raw)
 }
 
-// must posts and requires 202.
 func (r *e2eRun) must(source string, fields map[string]any) {
 	r.t.Helper()
 	if code, body := r.post(source, fields); code != http.StatusAccepted {
@@ -280,7 +158,6 @@ func recordID(fields map[string]any) string {
 	return ""
 }
 
-// read calls an API tool as a person.
 func (r *e2eRun) read(who, call string, args any) (int, []byte) {
 	r.t.Helper()
 	body, _ := json.Marshal(args)
@@ -295,7 +172,6 @@ func (r *e2eRun) read(who, call string, args any) (int, []byte) {
 	return code, []byte(got)
 }
 
-// keep logs a read's output, and writes it to HEARSAY_E2E_EVIDENCE when set.
 func (r *e2eRun) keep(name string, raw []byte) {
 	r.t.Helper()
 	var pretty bytes.Buffer
@@ -338,13 +214,10 @@ func (r *e2eRun) traverse(who, scope string, steps ...string) (l3.Subgraph, []by
 	return g, raw, code
 }
 
-// entry is what a read serves of one decision.
 type entry struct {
 	Status, SupersededBy, Tier, Decider, Outcome string
 }
 
-// log is the decisions get_bundle serves for an entity, by decision id. Any
-// decision served twice fails the run.
 func (r *e2eRun) log(scope string, b bundle.Bundle) map[string]entry {
 	r.t.Helper()
 	out := map[string]entry{}
@@ -360,8 +233,6 @@ func (r *e2eRun) log(scope string, b bundle.Bundle) map[string]entry {
 	return out
 }
 
-// traversedLog is the same log as traverse serves it: a decision is a topic
-// of its own, with its tier, and one stance.
 func (r *e2eRun) traversedLog(scope string, g l3.Subgraph) map[string]entry {
 	r.t.Helper()
 	out := map[string]entry{}
@@ -378,58 +249,22 @@ func (r *e2eRun) traversedLog(scope string, g l3.Subgraph) map[string]entry {
 }
 
 func TestWorkRecordsEndToEnd(t *testing.T) {
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
 
 	stub := &modelStub{}
 	stubServer := httptest.NewServer(stub)
 	t.Cleanup(stubServer.Close)
 
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "hearsay.yaml"), []byte(e2eConfig(t, stubServer.URL)), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	dir := writeStackConfig(t, e2eConfig(t, stubServer.URL))
 	tokens := map[string]string{"osmia": "e2e-osmia-token", "kyle": "e2e-kyle-token", "ann": "e2e-ann-token"}
-	t.Setenv("HEARSAY_DATABASE_URL", scratchDatabase(t, url))
+	t.Setenv("HEARSAY_DATABASE_URL", dbtest.Create(t, "e2e"))
 	t.Setenv("HEARSAY_OSMIA_TOKEN", tokens["osmia"])
 	t.Setenv("HEARSAY_E2E_KYLE_TOKEN", tokens["kyle"])
 	t.Setenv("HEARSAY_E2E_ANN_TOKEN", tokens["ann"])
 	t.Setenv("HEARSAY_E2E_MODEL_KEY", "model-stub-key")
-	t.Setenv("HEARSAY_DISTILL_QUIET", "0") // no debounce: the run waits for nothing but the work
+	t.Setenv("HEARSAY_DISTILL_QUIET", "0")
 
-	r := &e2eRun{t: t, hooks: freeAddr(t), apiAddr: freeAddr(t), tokens: tokens, stderr: &syncBuffer{}, evidence: os.Getenv("HEARSAY_E2E_EVIDENCE")}
-	if r.evidence != "" {
-		if err := os.MkdirAll(r.evidence, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	distillerAddr, assertAddr := freeAddr(t), freeAddr(t)
-
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() {
-		done <- run(ctx, []string{"all", "--config", dir, "--listen", r.hooks, "--api-listen", r.apiAddr,
-			"--distiller-listen", distillerAddr, "--assert-worker-listen", assertAddr, "--log-format", "json"}, io.Discard, r.stderr)
-	}()
-	stopped := false
-	stop := func() {
-		if stopped {
-			return
-		}
-		stopped = true
-		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Errorf("hearsay all stopped with %v\n%s", err, r.stderr.String())
-			}
-		case <-time.After(30 * time.Second):
-			t.Error("hearsay all did not stop")
-		}
-	}
-	t.Cleanup(stop)
+	r := newE2ERun(t, tokens)
+	stop, _, _ := r.startAll(dir, "/healthz")
 
 	container := "not detected as a container"
 	for _, marker := range []string{"/.dockerenv", "/run/.containerenv"} {
@@ -440,26 +275,6 @@ func TestWorkRecordsEndToEnd(t *testing.T) {
 	t.Logf("EVIDENCE: `hearsay all` (connectors %s, API %s, distiller, assertion worker), run in-process by cmd/hearsay's run() against Postgres, scratch database; environment: %s", r.hooks, r.apiAddr, container)
 	t.Logf("EVIDENCE: the model provider is replaced by a local stub at %s for the distill and assert tiers (base_url); it answers a one-line summary and no stances", stubServer.URL)
 
-	for _, addr := range []string{r.hooks, r.apiAddr, distillerAddr, assertAddr} {
-		deadline := time.Now().Add(60 * time.Second)
-		for {
-			resp, err := http.Get("http://" + addr + "/healthz")
-			if err == nil {
-				_ = resp.Body.Close()
-				if resp.StatusCode == http.StatusOK {
-					break
-				}
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("%s never answered /healthz:\n%s", addr, r.stderr.String())
-			}
-			time.Sleep(50 * time.Millisecond)
-		}
-	}
-
-	// The records, as hand-written requests in the documented shape. The
-	// publisher (osmia) posts them all; the owner is the author of the project
-	// and of what the owner source holds, through the attributor mechanism.
 	const (
 		project = "payments"
 		stream  = "retry"
@@ -479,8 +294,6 @@ func TestWorkRecordsEndToEnd(t *testing.T) {
 	r.must("projects", map[string]any{"kind": "decision", "project": project, "workstream": stream, "decision": "assume-2", "outcome": "Assume a retry cap of four, pending the sealed spec.", "decider": "chief_of_staff", "supersedes": "assume-1", "created_at": ts(7), "updated_at": ts(7)})
 	r.must("projects", map[string]any{"kind": "decision", "project": project, "workstream": stream, "decision": "relay-1", "outcome": "Relayed: the owner wants jitter on every retry.", "decider": "owner", "author": "kyle", "created_at": ts(8), "updated_at": ts(8)})
 
-	// A refusal is as observable as an acceptance: the id of a decision held on
-	// the work source cannot be held again on the owner source.
 	code, body := r.post("projects-owner", map[string]any{"kind": "decision", "project": project, "workstream": stream, "decision": "assume-1", "outcome": "Again.", "decider": "owner", "author": "kyle", "created_at": ts(9), "updated_at": ts(9)})
 	if code != http.StatusConflict || !strings.Contains(body, "assume-1") {
 		t.Errorf("a decision id held on the work source, posted on the owner source = %d %s, want 409 saying where it is held", code, body)
@@ -493,37 +306,30 @@ func TestWorkRecordsEndToEnd(t *testing.T) {
 		"assume-2": {"current", "", "inferred", "chief_of_staff", "Assume a retry cap of four, pending the sealed spec."},
 		"relay-1":  {"current", "", "inferred", "owner", "Relayed: the owner wants jitter on every retry."},
 	}
-	// The workstream's read also serves the project's decisions, which it inherits.
 	wantStream := map[string]entry{"ruling-0": {"current", "", "ratified", "owner", "Settle through the new queue only."}}
 	for k, v := range want {
 		wantStream[k] = v
 	}
 	wantProject := map[string]entry{"ruling-0": wantStream["ruling-0"]}
 
-	// Wait for the distiller and the assertion worker to have placed all of it.
 	var last map[string]entry
-	deadline := time.Now().Add(3 * time.Minute)
-	for {
+	waitUntil(t, "the records being served as expected", 3*time.Minute, r.stderr, func() string {
 		b, _ := r.bundle("kyle", strm)
 		last = r.log(strm, b)
 		pb, _ := r.bundle("kyle", proj)
 		if fmt.Sprint(last) == fmt.Sprint(wantStream) && fmt.Sprint(r.log(proj, pb)) == fmt.Sprint(wantProject) && len(b.Anchors) > 0 && len(pb.Anchors) > 0 {
-			break
+			return ""
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the records were not served as expected within 3 minutes.\nserved on %s: %v\nwant: %v\n%s", strm, last, wantStream, r.stderr.String())
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
+		return fmt.Sprintf("served on %s: %v, want: %v", strm, last, wantStream)
+	})
 
-	// ---- the owner's reads, recorded ----
 	var specIDs []string
 	for _, c := range []struct {
 		scope string
 		name  string
 		want  map[string]entry
-		spec  string // the heading of a document the entity serves as an anchor
-		body  string // what that section says
+		spec  string
+		body  string
 	}{{proj, "project", wantProject, "# Charter", "Payments never settle twice."}, {strm, "workstream", wantStream, "# Retry policy", "Cap retries at 5 with jittered backoff."}} {
 		b, raw := r.bundle("kyle", c.scope)
 		r.keep("get_bundle-"+c.name+"-as-kyle", raw)
@@ -538,7 +344,6 @@ func TestWorkRecordsEndToEnd(t *testing.T) {
 				t.Errorf("get_bundle(%s) serves %q as contested", c.scope, s.Current)
 			}
 		}
-		// The sealed spec (and the charter) are `spec` documents, anchors of the entity.
 		found := false
 		for _, a := range b.Anchors {
 			if a.Line != c.spec {
@@ -587,7 +392,6 @@ func TestWorkRecordsEndToEnd(t *testing.T) {
 		}
 	}
 
-	// ---- a principal who is neither the poster nor the owner reads nothing ----
 	_, unknown := r.read("ann", "get_bundle", map[string]string{"scope": "work:projects:no-such-project"})
 	for _, scope := range []string{proj, strm} {
 		code, raw := r.read("ann", "get_bundle", map[string]string{"scope": scope})
@@ -607,7 +411,6 @@ func TestWorkRecordsEndToEnd(t *testing.T) {
 			t.Errorf("ann searches %s = %d %s, want nothing", scope, code, raw)
 		}
 	}
-	// A direct fetch by handle, of every document and decision kyle was served.
 	ids := slices.Clone(specIDs)
 	b, _ := r.bundle("kyle", strm)
 	for _, s := range b.Stances {
@@ -625,7 +428,6 @@ func TestWorkRecordsEndToEnd(t *testing.T) {
 	}
 	t.Logf("direct fetch (get_l1) of %d spec/decision documents: served to kyle, refused to ann", len(ids))
 
-	// ---- decisions take no model call ----
 	for _, text := range []string{"Settle through the new queue only.", "Cap retries at five attempts.", "Assume a retry cap of three", "Assume a retry cap of four", "Relayed: the owner wants jitter"} {
 		if stub.sawText(text) {
 			t.Errorf("the model stub was sent decision text %q: a decision must be placed with no model call", text)

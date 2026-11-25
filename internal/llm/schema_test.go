@@ -2,13 +2,12 @@ package llm_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/llm"
 )
 
-// distillSchema is the shape a distillation prompt asks for, which is the
-// reason this validator exists.
 const distillSchema = `{
   "type": "object",
   "properties": {
@@ -85,7 +84,7 @@ func TestSchemaValidate(t *testing.T) {
 				return
 			case err == nil:
 				t.Fatalf("Validate() = nil, want an error about %q", tt.wantErr)
-			case !contains(err.Error(), tt.wantErr):
+			case !strings.Contains(err.Error(), tt.wantErr):
 				t.Errorf("Validate() = %q, want it to mention %q", err, tt.wantErr)
 			}
 		})
@@ -214,9 +213,7 @@ func TestSchemaValidateJSON(t *testing.T) {
 			definition: `{"type":"object","properties":{"v":{"enum":[1,2]}}}`,
 			answer:     `{"v":1.0}`,
 		},
-		// A schema is bytes somebody typed and an answer is a value the
-		// decoder produced. Everything below is the same value written two
-		// ways, and an answer that is right has to pass.
+
 		{
 			name:       "an enum member with a byte an encoder escapes",
 			definition: `{"type":"object","properties":{"label":{"type":"string","enum":["a & b","x < y","plain"]}}}`,
@@ -288,18 +285,13 @@ func TestSchemaValidateJSON(t *testing.T) {
 				return
 			case err == nil:
 				t.Fatalf("ValidateJSON() = nil, want an error about %q", tt.wantErr)
-			case !contains(err.Error(), tt.wantErr):
+			case !strings.Contains(err.Error(), tt.wantErr):
 				t.Errorf("ValidateJSON() = %q, want it to mention %q", err, tt.wantErr)
 			}
 		})
 	}
 }
 
-// An enum is matched against a completion, and the error goes to the caller,
-// which for the distiller and the assertion worker is a queue handler: its text
-// is written to last_error and logged at error level, and a completion must
-// reach neither. So the message says what was allowed and what
-// kind of thing came back, and not one byte of what came back.
 func TestASchemaViolationDoesNotQuoteTheAnswer(t *testing.T) {
 	answered := "the team decided to defer until the Acme contract closes"
 	for _, tt := range []struct {
@@ -332,20 +324,16 @@ func TestASchemaViolationDoesNotQuoteTheAnswer(t *testing.T) {
 			if err == nil {
 				t.Fatal("ValidateJSON() = nil, want the violation")
 			}
-			if contains(err.Error(), answered) || contains(err.Error(), "Acme") {
+			if strings.Contains(err.Error(), answered) || strings.Contains(err.Error(), "Acme") {
 				t.Errorf("ValidateJSON() = %q, want the answer kept out of it", err)
 			}
-			if !contains(err.Error(), tt.want) {
+			if !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("ValidateJSON() = %q, want it to mention %q", err, tt.want)
 			}
 		})
 	}
 }
 
-// The one thing a model produced that does reach an error is the name of a
-// field the schema does not allow — it is what tells a prompt's author what the
-// model wrote instead — and it is bounded, because a model that answered with a
-// sentence for a key must not put the sentence in a log line.
 func TestARejectedFieldNameIsNamedAndBounded(t *testing.T) {
 	long := "the team decided to defer until the Acme contract closes and the paperwork is signed"
 	err := schema(distillSchema).ValidateJSON([]byte(
@@ -353,24 +341,22 @@ func TestARejectedFieldNameIsNamedAndBounded(t *testing.T) {
 	if err == nil {
 		t.Fatal("ValidateJSON() = nil, want the field refused")
 	}
-	if contains(err.Error(), long) || contains(err.Error(), "paperwork") {
+	if strings.Contains(err.Error(), long) || strings.Contains(err.Error(), "paperwork") {
 		t.Errorf("ValidateJSON() = %q, want the name cut", err)
 	}
-	if !contains(err.Error(), `no such field "the team decided`) || !contains(err.Error(), "…") {
+	if !strings.Contains(err.Error(), `no such field "the team decided`) || !strings.Contains(err.Error(), "…") {
 		t.Errorf("ValidateJSON() = %q, want the start of the name and a mark that it was cut", err)
 	}
 	if len(err.Error()) > 128 {
 		t.Errorf("ValidateJSON() is %d bytes: %q", len(err.Error()), err)
 	}
-	// A name of an ordinary size is not cut.
+
 	err = schema(distillSchema).ValidateJSON([]byte(`{"summary":"s","outcome_kind":"open","vibes":"good"}`))
-	if err == nil || !contains(err.Error(), `no such field "vibes"`) {
+	if err == nil || !strings.Contains(err.Error(), `no such field "vibes"`) {
 		t.Errorf("ValidateJSON() = %v, want the whole name of a short field", err)
 	}
 }
 
-// Every keyword the package says it understands has to be one it accepts, and
-// nothing outside the list may be accepted in silence.
 func TestSchemaKeywordsAreTheOnesUnderstood(t *testing.T) {
 	values := map[string]string{
 		"additionalProperties": "false",

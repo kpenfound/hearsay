@@ -2,14 +2,9 @@
 // internal/llm's [llm.Provider], and the only place in Hearsay that knows what
 // an Anthropic request looks like.
 //
-// It is deliberately thin. Retries, backoff, rate-limit waits, timeouts and
-// token accounting belong to the registry that wraps it, so what is here is one
-// HTTP call, the translation in each direction, and enough of the provider's
-// error vocabulary to say whether trying again could work.
-//
-// Anthropic has no embedding model, which is why the embed tier points at
-// another provider from the first day. That is declared as a
-// capability rather than discovered on the first call.
+// Retries, backoff, rate-limit waits, timeouts and token accounting belong to
+// the registry that wraps it. Anthropic has no embedding model, which is
+// declared as a capability.
 package anthropic
 
 import (
@@ -28,18 +23,14 @@ import (
 )
 
 const (
-	// DefaultBaseURL is the API. A tier's `base_url` replaces it, which is how
-	// an operator puts a gateway in front of the provider and how a test points
-	// one at a server replaying recorded responses.
+	// DefaultBaseURL is the API. A tier's `base_url` replaces it.
 	DefaultBaseURL = "https://api.anthropic.com"
 	// APIKeyEnv is where the credential comes from unless a tier names another
 	// variable. Credentials are never in the configuration repository.
 	APIKeyEnv = "ANTHROPIC_API_KEY"
-	// apiVersion is the version header every request carries. It is pinned:
-	// the shape this adapter reads is the shape this version returns.
+
 	apiVersion = "2023-06-01"
-	// maxResponseBytes bounds what one answer may be, so that a provider or a
-	// gateway that streams something enormous cannot exhaust a worker.
+
 	maxResponseBytes = 32 << 20
 )
 
@@ -81,14 +72,11 @@ func (p *Provider) Completer(b llm.Build) (llm.Completer, error) {
 	}, nil
 }
 
-// Embedder implements [llm.Provider]. The registry does not call it — it reads
-// [Provider.Capabilities] first — but a caller building an adapter by hand gets
-// the same answer rather than a nil client.
+// Embedder implements [llm.Provider]. This provider has no embedding model.
 func (p *Provider) Embedder(llm.Build) (llm.Embedder, error) {
 	return nil, fmt.Errorf("%s has no embedding model: point the embed tier at a provider that has one", llm.ProviderAnthropic)
 }
 
-// client is one tier's Anthropic client.
 type client struct {
 	tier        llm.Tier
 	model       string
@@ -98,7 +86,6 @@ type client struct {
 	http        *http.Client
 }
 
-// Complete implements [llm.Completer]: one Messages call, one answer.
 func (c *client) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	body, err := json.Marshal(c.request(req))
 	if err != nil {
@@ -115,8 +102,6 @@ func (c *client) Complete(ctx context.Context, req llm.Request) (llm.Response, e
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
-		// A request that never got an answer may get one next time, and a
-		// context that is done stops the retry loop before it tries.
 		return llm.Response{}, c.err(0, "", "the request did not complete", true, 0, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -131,9 +116,6 @@ func (c *client) Complete(ctx context.Context, req llm.Request) (llm.Response, e
 	return c.response(req, answer)
 }
 
-// messagesRequest is the Messages API's request. Every field of it comes from
-// the [llm.Request] or the tier's configuration: nothing about this shape is
-// visible to a caller, which is the point of the abstraction.
 type messagesRequest struct {
 	Model       string      `json:"model"`
 	MaxTokens   int         `json:"max_tokens"`
@@ -161,13 +143,6 @@ type toolChoice struct {
 	DisableParallelToolUse bool   `json:"disable_parallel_tool_use,omitempty"`
 }
 
-// request translates a call.
-//
-// Structured output is a tool the model is required to call, whose input schema
-// is the caller's schema: the answer then arrives already parsed by the
-// provider, and the abstraction validates it against the same schema before the
-// caller sees it. Parallel tool use is disabled so that there is exactly one
-// answer to read.
 func (c *client) request(req llm.Request) messagesRequest {
 	out := messagesRequest{
 		Model:       c.model,
@@ -190,7 +165,6 @@ func (c *client) request(req llm.Request) messagesRequest {
 	return out
 }
 
-// messagesResponse is what comes back.
 type messagesResponse struct {
 	ID         string         `json:"id"`
 	Model      string         `json:"model"`
@@ -211,7 +185,6 @@ type usage struct {
 	OutputTokens *int64 `json:"output_tokens"`
 }
 
-// response translates an answer back into terms no provider owns.
 func (c *client) response(req llm.Request, body []byte) (llm.Response, error) {
 	var decoded messagesResponse
 	if err := json.Unmarshal(body, &decoded); err != nil {
@@ -251,9 +224,6 @@ func (c *client) response(req llm.Request, body []byte) (llm.Response, error) {
 	})
 	if i < 0 {
 		if out.StopReason == llm.StopMaxTokens || out.StopReason == llm.StopRefusal {
-			// The registry turns a truncated structured answer into
-			// llm.ErrTruncated, and a refusal is the model's answer rather
-			// than a failure of this adapter's.
 			return out, nil
 		}
 		return out, c.err(http.StatusOK, "", fmt.Sprintf("the answer did not use the %s tool it was told to use", req.Schema.Name), false, 0, nil)
@@ -262,9 +232,6 @@ func (c *client) response(req llm.Request, body []byte) (llm.Response, error) {
 	return out, nil
 }
 
-// stopReason translates the provider's vocabulary. A reason this build does not
-// know is [llm.StopOther] rather than an error: a provider adding one must not
-// stop an answer being returned.
 func stopReason(s string) llm.StopReason {
 	switch s {
 	case "end_turn", "tool_use", "stop_sequence":
@@ -278,7 +245,6 @@ func stopReason(s string) llm.StopReason {
 	}
 }
 
-// errorBody is the shape of a refused request.
 type errorBody struct {
 	Error struct {
 		Type    string `json:"type"`
@@ -286,11 +252,6 @@ type errorBody struct {
 	} `json:"error"`
 }
 
-// apiError turns a refusal into an [*llm.Error], which is what the registry's
-// retry loop reads. What is retryable is the provider's own list: too many
-// requests, an overloaded server, and the 5xx family. Everything else — a bad
-// request, a credential that is not accepted, a model that does not exist — is
-// a call that will fail the same way however often it is made.
 func (c *client) apiError(resp *http.Response, body []byte) error {
 	var decoded errorBody
 	_ = json.Unmarshal(body, &decoded)
@@ -301,17 +262,13 @@ func (c *client) apiError(resp *http.Response, body []byte) error {
 			msg = msg[:512] + "…"
 		}
 	}
-	// 5xx covers the overloaded_error the API answers with under load, which
-	// is 529.
+
 	retryable := resp.StatusCode == http.StatusTooManyRequests ||
 		resp.StatusCode == http.StatusRequestTimeout ||
 		resp.StatusCode >= 500 && resp.StatusCode <= 599
 	return c.err(resp.StatusCode, kind, msg, retryable, retryAfter(resp.Header), nil)
 }
 
-// retryAfter reads the header a rate-limited provider asks to be left alone
-// with. Anthropic sends whole seconds; anything else is ignored, and the
-// registry falls back to its own backoff.
 func retryAfter(h http.Header) time.Duration {
 	seconds, err := strconv.Atoi(strings.TrimSpace(h.Get("retry-after")))
 	if err != nil || seconds < 0 {
@@ -320,9 +277,6 @@ func retryAfter(h http.Header) time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
-// err builds this provider's error, with what the registry needs to decide
-// whether to try again. It carries no request content: an error string reaches
-// a log line, and a prompt in a log line is L1 text in a log line.
 func (c *client) err(status int, kind, msg string, retryable bool, after time.Duration, wrapped error) error {
 	return &llm.Error{
 		Provider:   llm.ProviderAnthropic,
@@ -337,7 +291,6 @@ func (c *client) err(status int, kind, msg string, retryable bool, after time.Du
 	}
 }
 
-// The adapter satisfies the interfaces the registry builds from.
 var (
 	_ llm.Provider  = (*Provider)(nil)
 	_ llm.Completer = (*client)(nil)

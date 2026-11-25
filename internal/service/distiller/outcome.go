@@ -17,13 +17,8 @@ import (
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
-// outcomeVersion is the version the outcome questions are journaled under. A
-// change to what they ask, or to what code decides from them, is a new one.
 const outcomeVersion = "outcome-v3"
 
-// outcomeJudgment is one of the yes/no questions the outcome is decided from,
-// and the outcome a yes means. The order is the order code reads them in: the
-// first confident yes decides, and no confident yes is none.
 type outcomeJudgment struct {
 	Task     llm.JudgmentTask
 	ID       string
@@ -42,19 +37,14 @@ var outcomeJudgments = []outcomeJudgment{
 		"Does the document say the matter is still being worked out?"},
 }
 
-// outcomeQuestionRoom is what Jev's per-question budget keeps for one
-// question beside the state: the question, its id and the wire's framing.
-// The longest outcome question encodes to well under half of it.
 const outcomeQuestionRoom = 2048
 
 // OutcomeRequest asks the outcome judgments about this document's scrubbed
 // source text, as one request of independent yes/no questions. The model's
 // distillation is deliberately absent: the judgments read the source.
 //
-// Jev's budget is smaller than the distill tier's, so the source is cut, from
-// the end and on a rune boundary, until its encoded form fits beside every
-// question in cfg's per-question budget. A document that does not fit would
-// otherwise be refused on every retry.
+// The source is cut from the end, on a rune boundary, until its encoded form
+// fits beside every question in cfg's per-question budget.
 func OutcomeRequest(doc l1.Document, cfg llm.JudgmentConfig) llm.JudgmentRequest {
 	state, rule := promptFor(doc), ""
 	if doc.Kind == l1.KindConversationSegment {
@@ -69,15 +59,6 @@ func OutcomeRequest(doc l1.Document, cfg llm.JudgmentConfig) llm.JudgmentRequest
 	return req
 }
 
-// decideOutcome is code's decision over the outcome judgments, one record per
-// judgment in [outcomeJudgments] order: the kind of the first confident yes,
-// or none. A yes below the threshold is a no.
-//
-// The outcome sentence is the model's, and the kind has to fit it. None clears
-// the sentence, because nothing was concluded. Resolved, decided and proposed
-// each state something, so with no sentence to state they are none as well: a
-// document whose model found nothing concluded, settled or put forward enters
-// no assertion, whatever the judgments say. Open needs no sentence.
 func decideOutcome(cfg llm.JudgmentConfig, records []l1.JudgmentRecord, body l1.Body) l1.Body {
 	body.OutcomeKind = l1.OutcomeNone
 	for i, r := range records {
@@ -95,7 +76,6 @@ func decideOutcome(cfg llm.JudgmentConfig, records []l1.JudgmentRecord, body l1.
 	return body
 }
 
-// confident reports whether a record is a yes that counts.
 func confident(cfg llm.JudgmentConfig, r l1.JudgmentRecord) bool {
 	if r.Label != "yes" || r.Confidence == nil {
 		return false
@@ -104,8 +84,6 @@ func confident(cfg llm.JudgmentConfig, r l1.JudgmentRecord) bool {
 	return cfg.Yes(llm.JudgmentAnswer{Yes: &yes, Confidence: *r.Confidence})
 }
 
-// questionHash identifies one question over its state, so that a record is
-// reused only for exactly that question.
 func questionHash(state string, q llm.JudgmentQuestion) string {
 	raw, _ := json.Marshal(struct{ State, ID, Question string }{state, q.ID, q.Question})
 	sum := sha256.Sum256(raw)
@@ -114,19 +92,8 @@ func questionHash(state string, q llm.JudgmentQuestion) string {
 
 type queueDelayKey struct{}
 
-// errInputsMoved is a document whose sources changed while it was judged. Its
-// distillation is superseded, which the caller's provenance re-read finds; if
-// that read still finds it current, the job fails and is retried.
 var errInputsMoved = errors.New("the document's sources changed while its outcome was judged")
 
-// outcomeRun is one document's distillation: the document as it is written,
-// the judgments its outcome was decided from, and the stage's observation.
-//
-// A document an operator deletion touched is never journaled (the journal
-// refuses inputs a deletion covers), so its judgments are asked and decided
-// from but not recorded, and it has no observation: journaled is false.
-// moved is a document whose sources changed while it was judged
-// ([errInputsMoved]).
 type outcomeRun struct {
 	doc         l1.Document
 	records     []l1.JudgmentRecord
@@ -137,8 +104,6 @@ type outcomeRun struct {
 	moved       bool
 }
 
-// stale is the error for a write whose provenance re-read found it current
-// even though a run's sources moved while it was judged: the queue retries it.
 func stale(runs ...*outcomeRun) error {
 	for _, run := range runs {
 		if run != nil && run.moved {
@@ -148,8 +113,6 @@ func stale(runs ...*outcomeRun) error {
 	return nil
 }
 
-// deletedInputs reports whether an operator deletion covers these inputs,
-// which the journal refuses to record judgments over.
 func deletedInputs(in l1.JudgmentInputs) bool {
 	var state struct {
 		Deleted bool `json:"deleted"`
@@ -167,14 +130,6 @@ func observationID() (string, error) {
 	return "distill_" + hex.EncodeToString(b[:]), nil
 }
 
-// modelDocument distils one document and decides its outcome. The model writes
-// the body; Jev answers the outcome questions; code decides the kind. A failed
-// model call, a failed judgment or a failed journal read is the job's error,
-// and the queue retries it. A judgment journaled for exactly these inputs is
-// reused rather than asked again, so a retry asks only what is still missing.
-//
-// A chat burst asks nothing: its containing thread owns any conclusion, so it
-// is always none.
 func (d *Distiller) modelDocument(ctx context.Context, doc l1.Document) (*outcomeRun, error) {
 	ctx, accounting := llm.ObserveCompletions(ctx)
 	run := &outcomeRun{started: time.Now()}
@@ -234,10 +189,6 @@ func (d *Distiller) modelDocument(ctx context.Context, doc l1.Document) (*outcom
 	return run, nil
 }
 
-// judgeOutcome returns one record per outcome judgment, in [outcomeJudgments]
-// order: the journaled ones for these inputs as they were, and the rest asked
-// of Jev as one request. Unjournaled, it reads and records nothing and asks
-// every question.
 func (d *Distiller) judgeOutcome(ctx context.Context, doc l1.Document, inputs l1.JudgmentInputs, journaled bool, observation *l1.PipelineObservation) ([]l1.JudgmentRecord, error) {
 	request := OutcomeRequest(doc, d.judgments.Config())
 	reader := l1.Reader{Effective: principal.Effective{Human: "distiller", Grant: principal.Grant{Scopes: principal.Scopes{All: true}}}, Audience: doc.ACL}
@@ -300,8 +251,7 @@ func (d *Distiller) judgeOutcome(ctx context.Context, doc l1.Document, inputs l1
 	}
 	for n, i := range pending {
 		r := &records[i]
-		// A batched request's attempts and usage are recorded on its first
-		// record and zero on the others, so totals over records stay exact.
+
 		r.ModelVersion, r.Attempts, r.Usage = result.ModelVersion, count(int64(result.Attempts)), result.Usage
 		if n > 0 {
 			zero, cost := int64(0), float64(0)
@@ -318,9 +268,6 @@ func (d *Distiller) judgeOutcome(ctx context.Context, doc l1.Document, inputs l1
 	return records, nil
 }
 
-// commitOutcomes journals the judgments and observations of a write, in its
-// transaction, before any consumer row changes. A refusal is the write's
-// error: the transaction rolls back and the queue retries the job.
 func commitOutcomes(ctx context.Context, tx pgx.Tx, runs ...*outcomeRun) error {
 	var records []l1.JudgmentRecord
 	var observations []l1.PipelineObservation
@@ -341,8 +288,6 @@ func commitOutcomes(ctx context.Context, tx pgx.Tx, runs ...*outcomeRun) error {
 	return nil
 }
 
-// fitState is text cut so that its JSON encoding, the form Jev measures, is at
-// most limit bytes, with the distiller's note that the rest was left out.
 func fitState(text string, limit int) string {
 	if encodedLen(text) <= limit {
 		return text

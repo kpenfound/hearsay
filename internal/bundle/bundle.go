@@ -19,7 +19,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
-// The caps and the budget (docs/design.md#the-context-bundle).
 const (
 	// RecentCap is how many documents `recent` holds: a count, never an age.
 	RecentCap = 5
@@ -37,8 +36,6 @@ const (
 	// tokenizer would make the bundle depend on which model a deployment
 	// named, and a bundle is identical whichever interface or model is behind it.
 	BytesPerToken = 4
-	// MaxLine is the most bytes one line of distillation takes.
-	MaxLine = l3.MaxLine
 )
 
 // Handles are the calls a consumer follows a bundle's ids with.
@@ -126,19 +123,8 @@ type Stance struct {
 	// Decision is set where the stance is a decision of the scope's decision
 	// log: who decided it, whether it is current or superseded and by which
 	// decision, and the document holding its full record.
-	Decision *Decision `json:"decision,omitempty"`
+	Decision *l3.Decision `json:"decision,omitempty"`
 }
-
-// Decision is what a decision's stance adds: the decision's id and decider,
-// its status in the log, the decision that superseded it when it is, and the
-// L1 documents (`get_l1`) holding its full record — context, rationale,
-// rejected options and links — and its successor's. The status follows the
-// latest revision of every held decision of the project, so a decision whose
-// successor was revised away or deleted is current again.
-type Decision = l3.Decision
-
-// DecisionOf is the decision a mark describes, as reads serve it.
-func DecisionOf(m *l2.DecisionMark) *Decision { return l3.DecisionOf(m) }
 
 // Recent is the recent activity on the scope.
 type Recent struct {
@@ -226,7 +212,7 @@ type Assembler struct {
 }
 
 // New returns an assembler over a pool or a transaction, with the default budget.
-func New(q l3.Querier) *Assembler {
+func New(q l2.Querier) *Assembler {
 	return &Assembler{views: l3.New(q), graph: l2.New(q), docs: l1.New(q), events: l0.New(q), budget: DefaultBudget}
 }
 
@@ -253,25 +239,20 @@ func (a *Assembler) WithBudget(tokens int) *Assembler {
 	return &c
 }
 
-// Assemble builds the bundle for one entity and one reader. It is a structured
-// lookup and calls no model. A scope outside the reader's reach gets the bundle
-// an unknown scope gets rather than an error: scopes filter for relevance, and
-// a refusal would say something about what is there. Inside it, the bundle
-// holds only the entities, documents and stances in reach ([l1.Reader.InReach]),
-// and the access lists filter what is left.
-func (a *Assembler) Assemble(ctx context.Context, reader l1.Reader, scope string) (Bundle, Report, error) {
-	return a.AssembleForEvent(ctx, reader, scope, "")
-}
-
-// AssembleForEvent adds a directive only from a current, readable event in the scope.
+// AssembleForEvent builds the bundle for one entity and one reader. It is a
+// structured lookup and calls no model. A scope outside the reader's reach gets
+// the bundle an unknown scope gets rather than an error: scopes filter for
+// relevance, and a refusal would say something about what is there. Inside it,
+// the bundle holds only the entities, documents and stances in reach
+// ([l1.Reader.InReach]), and the access lists filter what is left. A directive
+// is added only from a current, readable event in the scope; an empty eventID
+// adds none.
 func (a *Assembler) AssembleForEvent(ctx context.Context, reader l1.Reader, scope, eventID string) (Bundle, Report, error) {
 	hidden, err := a.graph.HiddenWorkEntities(ctx, reader)
 	if err != nil {
 		return Bundle{}, Report{}, err
 	}
 	if hidden.Hidden(scope) {
-		// Missing and unreadable work entities have the same empty bundle,
-		// even when the caller's grants explicitly name the requested id.
 		b, trimmed, tokens, err := Build(Inputs{Scope: scope}, a.budget)
 		return b, Report{Trimmed: trimmed, Tokens: tokens}, err
 	}
@@ -336,8 +317,6 @@ func (a *Assembler) gather(ctx context.Context, reader l1.Reader, scope string, 
 			if slices.Contains(direct, id) {
 				continue
 			}
-			// An entity out of reach is neither listed nor followed: its
-			// topics are not the reader's to inherit.
 			if !reader.InReach([]string{id}) {
 				reach.Entities++
 				continue
@@ -352,8 +331,6 @@ func (a *Assembler) gather(ctx context.Context, reader l1.Reader, scope string, 
 	if in.Stances, withheld.Stances, reach.Stances, err = a.views.CurrentStances(ctx, reader, scope, direct[1:]); err != nil {
 		return in, withheld, reach, err
 	}
-	// Anchors before recent: an anchor is not activity, and is not repeated as
-	// it, and does not cost `recent` one of its places.
 	if in.Anchors, err = a.views.Anchors(ctx, reader, scope, AnchorCap); err != nil {
 		return in, withheld, reach, err
 	}
@@ -373,9 +350,6 @@ func (a *Assembler) gather(ctx context.Context, reader l1.Reader, scope string, 
 	return in, withheld, reach, nil
 }
 
-// directive reads the requested event only to identify its artifact, then reads
-// the current revision. A tombstone or an ACL change therefore takes effect on
-// every assembly, including a repeated request for an old revision's id.
 func (a *Assembler) directive(ctx context.Context, reader l1.Reader, scope, id string) (*Directive, error) {
 	if a.resolver == nil {
 		return nil, nil
@@ -398,8 +372,6 @@ func (a *Assembler) directive(ctx context.Context, reader l1.Reader, scope, id s
 	if ev.Kind != connector.KindMessage || !reader.Allows(ev.ACL) || ev.Payload.Text == "" {
 		return nil, nil
 	}
-	// The conversation's document is the authoritative scope mapping once it
-	// exists. Before distillation, a configured covering scope is enough.
 	conversation := ev.Payload.Thread
 	if conversation == "" {
 		conversation = ev.Payload.Parent
@@ -504,26 +476,26 @@ func Build(in Inputs, budget int) (Bundle, Trimmed, int, error) {
 			entity.Type, entity.Name, entity.Owners = string(e.Type), e.Name, slices.Clone(e.Owners)
 		}
 		if id == in.Scope && in.Subject != nil {
-			entity.L1, entity.Line = in.Subject.ID, Line(in.Subject.Body.Summary)
+			entity.L1, entity.Line = in.Subject.ID, l3.Line(in.Subject.Body.Summary)
 		}
 		b.Scope.Entities = append(b.Scope.Entities, entity)
 	}
 	for _, a := range in.Anchors {
 		b.Anchors = append(b.Anchors, Anchor{
-			L1: a.Doc.ID, Kind: string(a.Doc.Kind), Line: Line(a.Doc.Body.Summary), PinnedBy: a.PinnedBy,
+			L1: a.Doc.ID, Kind: string(a.Doc.Kind), Line: l3.Line(a.Doc.Body.Summary), PinnedBy: a.PinnedBy,
 		})
 	}
 	for _, c := range in.Stances {
 		b.Stances = append(b.Stances, Stance{
-			Topic:      Line(c.Topic.Name),
+			Topic:      l3.Line(c.Topic.Name),
 			TopicID:    c.Topic.ID,
-			Current:    Line(c.Stance.Position),
+			Current:    l3.Line(c.Stance.Position),
 			Tier:       string(c.Tier),
 			Since:      stamp(c.Stance.StatedAt),
-			Supersedes: Line(c.Supersedes),
+			Supersedes: l3.Line(c.Supersedes),
 			Evidence:   slices.Clone(c.Stance.Evidence),
 			Inherited:  c.Inherited,
-			Decision:   DecisionOf(c.Decision),
+			Decision:   l3.DecisionOf(c.Decision),
 		})
 	}
 	b.Conflicts = conflicts(in.Directive, in.Stances, in.EvidenceURLs)
@@ -532,11 +504,11 @@ func Build(in Inputs, budget int) (Bundle, Trimmed, int, error) {
 	}
 	for _, doc := range in.Recent.Items {
 		b.Recent.Items = append(b.Recent.Items, Item{
-			L1: doc.ID, Kind: string(doc.Kind), When: stamp(doc.Time.LastActivity), Line: Line(doc.Body.Summary),
+			L1: doc.ID, Kind: string(doc.Kind), When: stamp(doc.Time.LastActivity), Line: l3.Line(doc.Body.Summary),
 		})
 	}
 	for _, q := range in.Questions {
-		b.OpenQuestions = append(b.OpenQuestions, Question{Line: Line(q.Text), Evidence: slices.Clone(q.Evidence)})
+		b.OpenQuestions = append(b.OpenQuestions, Question{Line: l3.Line(q.Text), Evidence: slices.Clone(q.Evidence)})
 	}
 
 	return trim(b, budget)
@@ -555,7 +527,7 @@ func conflicts(d *Directive, stances []l3.CurrentStance, evidenceURLs map[string
 		if c.Tier == l2.TierRatified {
 			stakes = "departing from it needs ratification"
 		}
-		out = append(out, Conflict{TopicID: c.Topic.ID, Current: Line(c.Stance.Position), Tier: string(c.Tier), Stakes: stakes})
+		out = append(out, Conflict{TopicID: c.Topic.ID, Current: l3.Line(c.Stance.Position), Tier: string(c.Tier), Stakes: stakes})
 	}
 	priority := func(t string) int {
 		switch l2.Tier(t) {
@@ -590,8 +562,6 @@ func bearsOn(d *Directive, c l3.CurrentStance, evidenceURLs map[string]string) b
 		if slices.Contains(c.Topic.About, ref.ID) || slices.Contains(c.Stance.Evidence, ref.ID) {
 			return true
 		}
-		// Tracker references name a source artifact; L1 evidence and L2
-		// tracker entities prefix it with their layer and source.
 		for _, evidence := range c.Stance.Evidence {
 			if ref.Type == l1.RefURL && evidenceURLs[evidence] == ref.ID {
 				return true
@@ -615,13 +585,6 @@ func textMatch(directive, phrase string) bool {
 	return phrase != "" && strings.Contains(directive, phrase)
 }
 
-// trim holds a laid-out bundle to its budget. The drop order is Build's, one
-// element at a time, and the size after each drop is exactly what encoding the
-// smaller bundle would give: an array element's encoding does not depend on its
-// neighbours, so removing one takes its own bytes and, when others remain, one
-// comma. That is what keeps a repository with thousands of inherited stances
-// linear — the bundle is encoded once before trimming and once after, never per
-// step.
 func trim(b Bundle, budget int) (Bundle, Trimmed, int, error) {
 	encoded, err := Encode(b)
 	if err != nil {
@@ -631,8 +594,6 @@ func trim(b Bundle, budget int) (Bundle, Trimmed, int, error) {
 	fits := func() bool { return (size+BytesPerToken-1)/BytesPerToken <= budget }
 	var trimmed Trimmed
 
-	// drop takes the last kept element of a section off, given its size and
-	// how many are kept.
 	drop := func(elem int, kept *int) {
 		size -= elem
 		if *kept > 1 {
@@ -686,9 +647,6 @@ func trim(b Bundle, budget int) (Bundle, Trimmed, int, error) {
 	if err != nil {
 		return Bundle{}, Trimmed{}, 0, err
 	}
-	// Inherited stances from the last back, then the scope's own stances that
-	// are not ratified from the last back — the order removing "the last
-	// inherited one" and then "the last non-ratified one" one at a time takes.
 	var order []int
 	for i := len(b.Stances) - 1; i >= 0; i-- {
 		if b.Stances[i].Inherited {
@@ -721,16 +679,10 @@ func trim(b Bundle, budget int) (Bundle, Trimmed, int, error) {
 		}
 	}
 	b.Stances = kept
-	// The reported size is the encoding's own, not the count: the count decides
-	// what drops, and TestTrimMatchesReEncodingAfterEveryDrop holds the two equal.
 	if encoded, err = Encode(b); err != nil {
 		return Bundle{}, Trimmed{}, 0, err
 	}
 	return b, trimmed, Tokens(encoded), nil
 }
-
-// Line is one line of distillation: the first non-empty line of a text, its
-// whitespace collapsed, cut to [MaxLine] bytes on a character boundary.
-func Line(text string) string { return l3.Line(text) }
 
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }

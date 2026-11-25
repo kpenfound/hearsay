@@ -160,10 +160,6 @@ func ApplyRequest(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, req
 		return Applied{}, fmt.Errorf("starting deletion %s: %w", id, err)
 	}
 	defer conn.Release()
-	// A message of a conversation source that a post and a deletion both reach
-	// is held first: a post that wins the lock is in the deletion's snapshot,
-	// and one that loses it finds the message deleted. This precedes the
-	// snapshot, which is taken after the locks are.
 	held, err := conversationArtifacts(ctx, conn, repo, req.Selectors)
 	if err != nil {
 		return Applied{}, fmt.Errorf("starting deletion %s: %w", id, err)
@@ -173,10 +169,6 @@ func ApplyRequest(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, req
 		return Applied{}, fmt.Errorf("starting deletion %s: %w", id, err)
 	}
 	defer unlock()
-	// A deleted event takes the gesture it made out of force, and the pins
-	// that gesture made with it. Hold the pins before the snapshot is taken,
-	// so that the snapshot sees every pin gesture recorded before the
-	// deletion and none is recorded during it.
 	unhold, err := l2.HoldPins(ctx, conn)
 	if err != nil {
 		return Applied{}, fmt.Errorf("starting deletion %s: %w", id, err)
@@ -188,11 +180,6 @@ func ApplyRequest(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, req
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// Take this before the repeatable-read snapshot in walk. Otherwise a
-	// journal commit completing after that snapshot could be invisible to
-	// the deletion trigger, even though it committed before our deletion.
-	// LOCK itself takes no data snapshot. Attempts and journal commits wait
-	// until deletion finishes and then see its deleted-evidence guard.
 	if _, err := tx.Exec(ctx, `LOCK TABLE judgment_input_guard IN ROW EXCLUSIVE MODE`); err != nil {
 		return Applied{}, fmt.Errorf("holding judgment evidence for deletion: %w", err)
 	}
@@ -248,8 +235,6 @@ func ApplyRequest(ctx context.Context, pool *pgxpool.Pool, repo config.Repo, req
 	}, nil
 }
 
-// priorDeletion reads a deletion already recorded under id, as an [Applied]
-// with Replay set.
 func priorDeletion(ctx context.Context, tx pgx.Tx, id string) (Applied, bool, error) {
 	var (
 		a        = Applied{Deletion: id, Replay: true}
@@ -269,8 +254,6 @@ func priorDeletion(ctx context.Context, tx pgx.Tx, id string) (Applied, bool, er
 	return a, true, nil
 }
 
-// conversationArtifacts is the messages of conversation sources that the
-// selectors cover: what a post could write around the deletion.
 func conversationArtifacts(ctx context.Context, conn *pgxpool.Conn, repo config.Repo, sels []Selector) ([]l0.ArtifactRef, error) {
 	held := map[string]bool{}
 	for _, src := range repo.Sources {
@@ -303,7 +286,6 @@ func conversationArtifacts(ctx context.Context, conn *pgxpool.Conn, repo config.
 	return slices.DeleteFunc(refs, func(r l0.ArtifactRef) bool { return !held[r.Source] }), nil
 }
 
-// newID mints a deletion id: `del_` and 128 random bits in hex.
 func newID() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {

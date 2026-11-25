@@ -9,8 +9,6 @@ import (
 	"testing"
 )
 
-// agentcore attaches claude's own text to some of its warnings. The logger the
-// runner is given keeps the warning and drops the text.
 func TestRunnerLoggerDropsAttributesThatCanCarryText(t *testing.T) {
 	const marker = "LEAK-MARKER"
 	var buf bytes.Buffer

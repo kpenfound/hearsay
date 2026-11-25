@@ -1,14 +1,11 @@
 // Package claudesbxtest is the fake `sbx` and `claude` programs the claude-sbx
 // adapter is tested against, so that no test makes a real model call or needs a
 // real Docker Sandboxes install. A test that builds a registry with a
-// `claude-sbx` tier, here or in another package, installs them first.
+// `claude-sbx` tier installs them first.
 //
-// The `sbx` is agentcore's own fake (agenttest.Sbx), which runs the command a
-// call gives it on this machine, so the `claude` that runs is the fake in this
-// package: it records what it was started with, then prints a recorded
-// stream-json answer. Both are put on PATH, which is how the adapter finds them
-// (it runs the Runner's defaults, `sbx` and `claude`, and holds no setting for
-// either).
+// The `sbx` is agentcore's own fake (agenttest.Sbx); the `claude` is the fake in
+// this package: it records what it was started with, then prints a recorded
+// stream-json answer. Both are put on PATH.
 package claudesbxtest
 
 import (
@@ -21,8 +18,6 @@ import (
 	"github.com/kpenfound/agentcore/agent/agenttest"
 )
 
-// claude is the fake claude: what it was started with is recorded beside the
-// sbx recordings, then the stream the test chose is printed.
 const claude = `
 printf '%s\n' "$@" > "$CLAUDE_SBX_REC/claude-args.txt"
 env > "$CLAUDE_SBX_REC/claude-env.txt"
@@ -41,10 +36,8 @@ type Rig struct {
 }
 
 // Install puts a fake `sbx` and a fake `claude` first on PATH for the test, and
-// has the claude print stream. The fakes are under the test's temporary
-// directory, which agentcore requires of anything it is told to run as an
-// agent. Whatever ANTHROPIC_API_KEY the environment holds is cleared, because
-// this provider needs none and a test must show it does not read one.
+// has the claude print stream. Whatever ANTHROPIC_API_KEY the environment holds
+// is cleared, because this provider needs none.
 func Install(t *testing.T, stream string) *Rig {
 	t.Helper()
 	rec := t.TempDir()

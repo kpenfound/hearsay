@@ -4,7 +4,6 @@ package github_test
 
 import (
 	"net/http"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -12,28 +11,15 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/connector"
-	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
+	"github.com/kpenfound/hearsay/internal/poll"
 )
 
-// Against the real store: a backfill of a named
-// repository lands its issues, pull requests, reviews and commits in L0 with
-// the contract's native ids; a second backfill writes nothing new; webhook
-// events for the same objects are deduplicated against the backfilled ones;
-// and a repository going private lands one new revision per artifact.
 func TestBackfillAndWebhooksLandInL0Once(t *testing.T) {
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	pool, err := db.Connect(t.Context(), url)
-	if err != nil {
-		t.Fatalf("connecting to postgres: %v", err)
-	}
-	t.Cleanup(pool.Close)
+	pool := dbtest.Pool(t)
 	store := l0.New(pool)
 
-	// A source nothing else in the shared database uses.
 	id := "gh" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	stored := func() []string {
 		t.Helper()
@@ -73,16 +59,13 @@ func TestBackfillAndWebhooksLandInL0Once(t *testing.T) {
 		t.Errorf("after the webhooks L0 holds %d events, want %d", n, len(wantBackfill))
 	}
 
-	// The repository goes private and no delivery says so. The first process
-	// finds it at startup and is stopped partway through the walk; the second
-	// has only the database and finishes it.
 	gh.private.Store(true)
 	resyncs := l0.NewResyncs(pool)
 	commits := "/repos/acme/api/commits"
 	release := gh.hold(commits)
 	begun := len(gh.seen())
 	_, stopFirst := runtimeFor(t, src, connector.RuntimeOptions{Sink: store, Resyncs: resyncs, Exposure: store})
-	waitFor(t, "the re-sync to reach the commits", requestedSince(gh, begun, commits))
+	poll.Until(t, "the re-sync to reach the commits", requestedSince(gh, begun, commits))
 	stopFirst()
 	release()
 	if resynced(t, resyncs, id, "acme/api")() {
@@ -90,7 +73,7 @@ func TestBackfillAndWebhooksLandInL0Once(t *testing.T) {
 	}
 
 	_, stop := runtimeFor(t, src, connector.RuntimeOptions{Sink: store, Resyncs: resyncs, Exposure: store})
-	waitFor(t, "the resumed re-sync", resynced(t, resyncs, id, "acme/api"))
+	poll.Until(t, "the resumed re-sync", resynced(t, resyncs, id, "acme/api"))
 	stop()
 	if n := len(stored()); n != 2*len(wantBackfill) {
 		t.Errorf("after the re-sync L0 holds %d events, want %d", n, 2*len(wantBackfill))
@@ -113,19 +96,8 @@ func TestBackfillAndWebhooksLandInL0Once(t *testing.T) {
 	}
 }
 
-// Against the real store: a review edited after it was ingested is read again
-// by a backfill over a cleared cursor, which lands a second revision rather
-// than failing with ErrRewrite, and the edit's webhook deduplicates against it.
 func TestABackfillOverAnEditedReviewLandsANewRevision(t *testing.T) {
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	pool, err := db.Connect(t.Context(), url)
-	if err != nil {
-		t.Fatalf("connecting to postgres: %v", err)
-	}
-	t.Cleanup(pool.Close)
+	pool := dbtest.Pool(t)
 	store := l0.New(pool)
 	id := "gh" + strconv.FormatInt(time.Now().UnixNano(), 36)
 

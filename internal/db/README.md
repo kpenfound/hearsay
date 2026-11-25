@@ -24,4 +24,6 @@ migrates its own database before starting the services. A service whose binary i
 refuses to start.
 
 Tests never build a schema of their own: they run the same migrations, so a
-missing one fails CI instead of being papered over by a fixture.
+missing one fails CI instead of being papered over by a fixture. `dbtest` opens
+the migrated database that `HEARSAY_DATABASE_URL` names, or a scratch database
+of its own, for the integration tests of every layer.

@@ -22,9 +22,8 @@ import (
 const fileFields = "id,name,mimeType,parents,webViewLink,createdTime,modifiedTime,headRevisionId,owners(permissionId,emailAddress,displayName),lastModifyingUser(permissionId,emailAddress,displayName),properties,trashed"
 
 type driveChange struct {
-	FileID  string `json:"fileId"`
-	Type    string `json:"changeType"`
-	Removed bool   `json:"removed"`
+	FileID string `json:"fileId"`
+	Type   string `json:"changeType"`
 }
 
 // PollFrom consumes one Drive change page. The runtime persists the returned
@@ -88,8 +87,6 @@ func (c *Connector) PollFrom(ctx context.Context, sink connector.Sink, from conn
 	if len(next) > connector.MaxCursorLen {
 		return from, errors.New("drive change token is too long")
 	}
-	// A folder or account that cannot register push channels still has the
-	// durable polling feed. A failed watch must never hold its cursor back.
 	if err := c.ensureWatch(ctx, next); err != nil {
 		telemetry.Logger(ctx).WarnContext(ctx, "Drive notification watch unavailable; continuing to poll", "error", err)
 	}
@@ -105,8 +102,6 @@ func (c *Connector) syncFile(ctx context.Context, sink connector.Sink, id, obser
 	if err != nil {
 		return err
 	}
-	// Change pages describe a past transition. Always fetch the current file:
-	// a replayed removal may now refer to an eligible file again.
 	var f file
 	removed := false
 	err = c.api.getJSON(ctx, "/files/"+url.PathEscape(id), url.Values{"fields": {fileFields}, "supportsAllDrives": {"true"}}, &f)
@@ -157,14 +152,8 @@ func (c *Connector) syncFile(ctx context.Context, sink connector.Sink, id, obser
 				retractionID = tomb.ID
 			}
 		}
-		// Drive has no permission version. Hash the normalized ACL with the
-		// metadata whose change must also produce a revision (notably folder).
 		acl := slices.Clone(ev.ACL)
-		slices.SortFunc(acl, func(a, b connector.ACLEntry) int {
-			aj, _ := json.Marshal(a)
-			bj, _ := json.Marshal(b)
-			return strings.Compare(string(aj), string(bj))
-		})
+		slices.SortFunc(acl, compareACLEntries)
 		versionInput, _ := json.Marshal(struct {
 			ACL               connector.ACL
 			Folder, Name, URL string
@@ -177,9 +166,6 @@ func (c *Connector) syncFile(ctx context.Context, sink connector.Sink, id, obser
 		token := ev.Payload.Revision.Token + "+perm:" + hex.EncodeToString(hash[:12])
 		ev.NativeID = id + "@" + token
 		ev.Payload.Revision.Token = token
-		// The source gives no timestamp for permission changes. A stable
-		// successor to modifiedTime lets L0 order this after backfill, while
-		// arrival order resolves multiple sharing changes on the same head.
 		modified := f.Modified
 		if modified.IsZero() || modified.Before(f.Created) {
 			modified = f.Created
@@ -188,9 +174,7 @@ func (c *Connector) syncFile(ctx context.Context, sink connector.Sink, id, obser
 		if err := sink.Emit(ctx, ev); err != nil {
 			return err
 		}
-		c.mu.Lock()
-		c.lastEventAt = time.Now()
-		c.mu.Unlock()
+		c.noteEvent()
 		return nil
 	}
 	return c.tombstone(ctx, sink, previous, had)
@@ -216,25 +200,24 @@ func sameDriveState(a, b connector.Event) bool {
 	return sameACL(a.ACL, b.ACL)
 }
 
+func compareACLEntries(a, b connector.ACLEntry) int {
+	aj, _ := json.Marshal(a)
+	bj, _ := json.Marshal(b)
+	return strings.Compare(string(aj), string(bj))
+}
+
 func sameACL(a, b connector.ACL) bool {
 	if len(a) != len(b) {
 		return false
 	}
 	left, right := slices.Clone(a), slices.Clone(b)
-	order := func(a, b connector.ACLEntry) int {
-		aj, _ := json.Marshal(a)
-		bj, _ := json.Marshal(b)
-		return strings.Compare(string(aj), string(bj))
-	}
-	slices.SortFunc(left, order)
-	slices.SortFunc(right, order)
+	slices.SortFunc(left, compareACLEntries)
+	slices.SortFunc(right, compareACLEntries)
 	l, _ := json.Marshal(left)
 	r, _ := json.Marshal(right)
 	return string(l) == string(r)
 }
 
-// reconcile runs after acquiring a fresh change token. A token captured before
-// this scan lets the ordinary feed replay any mutation concurrent with it.
 func (c *Connector) reconcile(ctx context.Context, sink connector.Sink, token string) error {
 	r, ok := sink.(connector.ArtifactReader)
 	if !ok {
@@ -289,8 +272,6 @@ func (c *Connector) tombstone(ctx context.Context, sink connector.Sink, previous
 		return nil
 	}
 	id := previous.Payload.Artifact
-	// The current revision's identity makes each eligible → ineligible cycle
-	// distinct while a replay of that cycle retains the same tombstone ID.
 	hash := sha256.Sum256([]byte(previous.NativeID))
 	name := id + ":tombstone:" + hex.EncodeToString(hash[:12])
 	ev := connector.Event{Source: c.source, NativeID: name, Kind: connector.KindTombstone, Time: previous.Time,
@@ -298,9 +279,7 @@ func (c *Connector) tombstone(ctx context.Context, sink connector.Sink, previous
 	if err := sink.Emit(ctx, ev); err != nil {
 		return err
 	}
-	c.mu.Lock()
-	c.lastEventAt = time.Now()
-	c.mu.Unlock()
+	c.noteEvent()
 	return nil
 }
 

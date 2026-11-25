@@ -7,8 +7,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
-// The table in docs/design.md#access-control, in a test: if the design changes
-// what a class may do, this is what fails.
 func TestClassRights(t *testing.T) {
 	tests := []struct {
 		class principal.Class
@@ -19,8 +17,6 @@ func TestClassRights(t *testing.T) {
 		{principal.ClassWorker, principal.ReadScopedCode, principal.WriteAssert},
 		{principal.ClassOrchestrator, principal.ReadScopedCode, principal.WriteAssert | principal.WriteSubscribe},
 		{principal.ClassSteward, principal.ReadAll, principal.WriteAssert | principal.WriteSubscribe | principal.WriteRatify | principal.WriteMerge},
-		// A class that is not one of the four reads nothing and writes
-		// nothing: a typo that got past validation must not read everything.
 		{principal.Class("admin"), principal.ReadNone, 0},
 		{principal.Class(""), principal.ReadNone, 0},
 	}
@@ -34,8 +30,6 @@ func TestClassRights(t *testing.T) {
 	}
 }
 
-// The four classes are a chain, which is what makes intersecting two of them
-// the smaller of the two rather than an arbitrary choice.
 func TestClassesAreAChain(t *testing.T) {
 	classes := principal.Classes()
 	if !slices.Equal(classes, []principal.Class{
@@ -52,8 +46,10 @@ func TestClassesAreAChain(t *testing.T) {
 			t.Errorf("%s writes %s, which does not include %s's %s", classes[i], higher.Write, classes[i-1], lower.Write)
 		}
 	}
-	// Classes() hands out a copy: a caller sorting it must not reorder the
-	// chain for everyone else.
+}
+
+func TestClassesDoesNotShareItsSlice(t *testing.T) {
+	classes := principal.Classes()
 	classes[0] = principal.ClassSteward
 	if principal.Classes()[0] != principal.ClassObserver {
 		t.Error("Classes() shares its slice")
@@ -107,24 +103,26 @@ func TestRightsIntersect(t *testing.T) {
 	}
 }
 
-func TestWriteHasAndString(t *testing.T) {
-	all := principal.WriteAssert | principal.WriteSubscribe | principal.WriteRatify | principal.WriteMerge
+const allWrites = principal.WriteAssert | principal.WriteSubscribe | principal.WriteRatify | principal.WriteMerge
+
+func TestWriteHas(t *testing.T) {
+	all := allWrites
 	if !all.Has(principal.WriteRatify | principal.WriteMerge) {
 		t.Error("everything does not have ratify and merge")
 	}
-	// Has means all of them, not any of them.
 	if (principal.WriteAssert).Has(principal.WriteAssert | principal.WriteRatify) {
 		t.Error("assert alone has assert and ratify")
 	}
 	if principal.Write(0).Has(principal.WriteAssert) {
 		t.Error("nothing has assert")
 	}
-	// An empty set has an empty set: a caller asking "may it do nothing" is
-	// not told no.
 	if !principal.Write(0).Has(0) {
 		t.Error("nothing does not have nothing")
 	}
+}
 
+func TestWriteString(t *testing.T) {
+	all := allWrites
 	tests := []struct {
 		in   principal.Write
 		want string

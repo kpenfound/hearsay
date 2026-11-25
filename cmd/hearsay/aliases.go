@@ -14,8 +14,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
-// runAliases lets a named human inspect and decide only candidates whose
-// current evidence access lists allow that human to read them.
 func runAliases(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, cfg, configPath := newFlagSet("aliases", stderr)
 	resolveDatabase := databaseFlag(fs, cfg)

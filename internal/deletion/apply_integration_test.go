@@ -4,9 +4,7 @@ package deletion_test
 
 import (
 	"context"
-	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,61 +13,12 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
-	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/deletion"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
-// scratch is a migrated database of this test's own: the rollback cases put
-// triggers on shared tables, which no other test may run beside.
-func scratch(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	adminURL := os.Getenv("HEARSAY_DATABASE_URL")
-	if adminURL == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	ctx := context.Background()
-	admin, err := db.Open(ctx, adminURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer admin.Close()
-	name := "deletion_apply_" + strconv.FormatInt(time.Now().UnixNano(), 36)
-	if _, err := admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		dropper, err := db.Open(ctx, adminURL)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		defer dropper.Close()
-		_, _ = dropper.Exec(ctx, "DROP DATABASE "+name+" WITH (FORCE)")
-	})
-	base, query, hasQuery := strings.Cut(adminURL, "?")
-	url := base[:strings.LastIndex(base, "/")+1] + name
-	if hasQuery {
-		url += "?" + query
-	}
-	m, err := db.NewMigrator(ctx, url, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := m.Up(ctx); err != nil {
-		t.Fatal(err)
-	}
-	_ = m.Close()
-	pool, err := db.Connect(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
-// state is everything a deletion writes, as one comparable value.
 func state(t *testing.T, pool *pgxpool.Pool) string {
 	t.Helper()
 	var s string
@@ -82,12 +31,8 @@ func state(t *testing.T, pool *pgxpool.Pool) string {
 	return s
 }
 
-// Applying a deletion: the operator is a configured human or nothing is
-// written, a failure anywhere leaves no partial redaction, record, event or
-// job, and a successful apply records the human as operator and queues the
-// documents the walk found.
 func TestApplyIsAllOrNothing(t *testing.T) {
-	pool := scratch(t)
+	pool := dbtest.Scratch(t, "deletion")
 	ctx := t.Context()
 	store := l0.New(pool)
 	when := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)

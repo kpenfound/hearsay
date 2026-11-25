@@ -3,52 +3,18 @@
 package l1_test
 
 import (
-	"context"
 	"errors"
-	"os"
 	"slices"
-	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
-	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 )
 
-// newPool connects to the database the integration-test check brings up. It
-// uses db.Connect rather than Open, so a database the migrations have not been
-// run against fails here saying so: tests never build a schema of their own.
-func newPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	pool, err := db.Connect(context.Background(), url)
-	if err != nil {
-		t.Fatalf("connecting to postgres: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
-// sources is what keeps tests out of each other's way: the database outlives
-// one test, so a test takes a source id nothing else uses rather than
-// truncating a table another test is reading.
-var sources atomic.Int64
-
-func newSource(t *testing.T) string {
-	t.Helper()
-	return "t" + strconv.FormatInt(time.Now().UnixNano(), 36) + "x" + strconv.FormatInt(sources.Add(1), 36)
-}
-
-// storedDoc is a document ready to be written, from a source nothing else uses.
 func storedDoc(t *testing.T, src, artifact string, with func(*l1.Document)) l1.Document {
 	t.Helper()
 	doc := l1.Document{
@@ -80,11 +46,9 @@ func storedDoc(t *testing.T, src, artifact string, with func(*l1.Document)) l1.D
 	return doc
 }
 
-// The artifact class is part of what makes a document changed: a pull request
-// that merges is rewritten, and writing the merged one again is not.
 func TestChangingArtifactClassUpdatesRow(t *testing.T) {
-	store := l1.New(newPool(t))
-	doc := storedDoc(t, newSource(t), "acme/api#class", nil)
+	store := l1.New(dbtest.Pool(t))
+	doc := storedDoc(t, dbtest.UniqueID(), "acme/api#class", nil)
 	seenMerged := false
 	for _, class := range []config.ArtifactClass{config.ArtifactPullRequest, config.ArtifactMergedPR, config.ArtifactMergedPR} {
 		doc.ArtifactClass = class
@@ -106,8 +70,8 @@ func TestChangingArtifactClassUpdatesRow(t *testing.T) {
 }
 
 func TestPutIsIdempotent(t *testing.T) {
-	store := l1.New(newPool(t))
-	src := newSource(t)
+	store := l1.New(dbtest.Pool(t))
+	src := dbtest.UniqueID()
 	doc := storedDoc(t, src, "acme/api#31", nil)
 
 	written, err := store.Put(t.Context(), doc)
@@ -122,8 +86,6 @@ func TestPutIsIdempotent(t *testing.T) {
 		t.Fatalf("Get() = %v", err)
 	}
 
-	// A second run of a stateless distiller rebuilds the same document from the
-	// same events. Nothing about the row may move, distilled_at included.
 	written, err = store.Put(t.Context(), doc)
 	if err != nil {
 		t.Fatalf("Put(again) = %v", err)
@@ -140,8 +102,6 @@ func TestPutIsIdempotent(t *testing.T) {
 	}
 	assertSameDocument(t, first.Document, second.Document)
 
-	// And a document that did change is written, with the row's timestamp
-	// moving with it.
 	changed := doc
 	changed.Body.Outcome = "reverted"
 	changed.Text = "a different distillation"
@@ -164,11 +124,9 @@ func TestPutIsIdempotent(t *testing.T) {
 	}
 }
 
-// Every field of the envelope survives the round trip, which is what makes a
-// stored document the one that was built.
 func TestPutAndGetRoundTrip(t *testing.T) {
-	store := l1.New(newPool(t))
-	src := newSource(t)
+	store := l1.New(dbtest.Pool(t))
+	src := dbtest.UniqueID()
 	doc := storedDoc(t, src, "acme/api#31", func(d *l1.Document) {
 		d.Time.Updated = day.Add(time.Hour)
 		d.Time.LastActivity = day.Add(2 * time.Hour)
@@ -195,11 +153,9 @@ func TestPutAndGetRoundTrip(t *testing.T) {
 	}
 }
 
-// A document with no scope and no references is a document, not a row with
-// nulls in columns that cannot hold one.
 func TestPutADocumentWithNothingOptionalOnIt(t *testing.T) {
-	store := l1.New(newPool(t))
-	src := newSource(t)
+	store := l1.New(dbtest.Pool(t))
+	src := dbtest.UniqueID()
 	doc := storedDoc(t, src, "acme/api#51", func(d *l1.Document) {
 		d.Participants = nil
 		d.Scope = nil
@@ -216,8 +172,6 @@ func TestPutADocumentWithNothingOptionalOnIt(t *testing.T) {
 	if len(stored.Scope) != 0 || len(stored.References) != 0 || len(stored.Participants) != 0 {
 		t.Errorf("the empty columns came back as %v, %v, %v", stored.Scope, stored.References, stored.Participants)
 	}
-	// And writing it again still changes nothing: an absent list and an empty
-	// one are one value here, so they must not rewrite each other.
 	empty := doc
 	empty.Scope = []string{}
 	empty.References = []l1.Reference{}
@@ -228,8 +182,8 @@ func TestPutADocumentWithNothingOptionalOnIt(t *testing.T) {
 }
 
 func TestGetAndDelete(t *testing.T) {
-	store := l1.New(newPool(t))
-	src := newSource(t)
+	store := l1.New(dbtest.Pool(t))
+	src := dbtest.UniqueID()
 	doc := storedDoc(t, src, "acme/api#31", nil)
 
 	if _, err := store.Get(t.Context(), doc.ID); !errors.Is(err, l1.ErrNotFound) {
@@ -249,13 +203,9 @@ func TestGetAndDelete(t *testing.T) {
 	}
 }
 
-// The table enforces what the layer enforces, so a row written by anything else
-// — a migration, a repair script, a later package — behaves the same. Go's
-// validation refuses these before any SQL runs, so this is the only thing that
-// can tell whether the constraints are still there.
 func TestTheTableRefusesWhatTheLayerRefuses(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	insert := `INSERT INTO l1_docs (id, kind, artifact_class, source, source_native_id, source_url, l0_refs,
 		created_at, updated_at, last_activity_at, participants, scope, refs, acl,
 		text, raw_text, body, outcome_kind)
@@ -297,8 +247,6 @@ func TestTheTableRefusesWhatTheLayerRefuses(t *testing.T) {
 		})
 	}
 
-	// And an id that is not derived from the source and the artifact, which is
-	// what makes a document id parseable back to what it distils.
 	_, err := pool.Exec(t.Context(), insert,
 		"l1:"+src+":something-else", src, "acme/api#5", []string{"evt:x"}, day,
 		`[{"kind":"public"}]`, `{"outcome_kind":"none"}`, "none")
@@ -310,12 +258,10 @@ func TestTheTableRefusesWhatTheLayerRefuses(t *testing.T) {
 	}
 }
 
-// Every filter on a listing narrows it, and one that nobody set contributes
-// nothing.
 func TestList(t *testing.T) {
-	store := l1.New(newPool(t))
-	src := newSource(t)
-	other := newSource(t)
+	store := l1.New(dbtest.Pool(t))
+	src := dbtest.UniqueID()
+	other := dbtest.UniqueID()
 
 	pr := storedDoc(t, src, "acme/api#1", func(d *l1.Document) {
 		d.Kind = l1.KindPR
@@ -371,8 +317,6 @@ func TestList(t *testing.T) {
 	}
 }
 
-// assertSameDocument compares every field of the envelope, so that a column
-// nothing else looks at is still checked.
 func assertSameDocument(t *testing.T, got, want l1.Document) {
 	t.Helper()
 	if got.ID != want.ID || got.Kind != want.Kind || got.Source != want.Source {

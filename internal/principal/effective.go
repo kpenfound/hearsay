@@ -116,9 +116,7 @@ func HumanRead(human Principal, grant Grant) (Effective, error) {
 // agent's class allows (docs/design.md#access-control).
 //
 // Ratifying and merging topics are taken away from the agent whatever its
-// class, including a steward's. The class exists so the door is there, closed:
-// ratification is a human action by default, and the day it is opened it is
-// opened by a configured grant rather than by an agent's class alone.
+// class, including a steward's.
 func AgentRead(agent, human Principal, agentGrant, humanGrant Grant) (Effective, error) {
 	if err := mustBe(human, KindHuman, "delegate a read"); err != nil {
 		return Effective{}, err
@@ -137,9 +135,6 @@ func AgentRead(agent, human Principal, agentGrant, humanGrant Grant) (Effective,
 }
 
 func mustBe(p Principal, want Kind, verb string) error {
-	// The id first, because it is what an audit event carries: a read whose
-	// principal has no id is a read nobody is accountable for, and this is the
-	// package access control fails closed against.
 	if !ValidID(p.ID) {
 		return fmt.Errorf("%w: %q is not a principal id, so nothing would be accountable for the read",
 			ErrCannotAct, p.ID)

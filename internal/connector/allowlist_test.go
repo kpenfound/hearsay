@@ -1,10 +1,14 @@
 package connector_test
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
 func TestAllowlistAllows(t *testing.T) {
@@ -39,8 +43,6 @@ func TestAllowlistAllows(t *testing.T) {
 	}
 }
 
-// The zero Allowlist is default deny, so a runtime that forgets to build one
-// writes nothing rather than everything.
 func TestZeroAllowlistAllowsNothing(t *testing.T) {
 	var allow connector.Allowlist
 	if allow.Allows("github-acme", "acme/api") {
@@ -67,7 +69,6 @@ func TestGateWritesAnAllowlistedEvent(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("recorded %d events, want 1", len(got))
 	}
-	// The gate stamps the id so that a connector does not have to derive it.
 	if want := connector.EventID(ev.Source, ev.NativeID); got[0].ID != want {
 		t.Errorf("emitted id = %q, want %q", got[0].ID, want)
 	}
@@ -76,9 +77,6 @@ func TestGateWritesAnAllowlistedEvent(t *testing.T) {
 	}
 }
 
-// The ingest allowlist is the control point the design puts first: what is not
-// in L0 cannot leak. An event from a container config does not name must not
-// reach the sink, and the drop must be visible.
 func TestGateDropsEventsOutsideTheAllowlist(t *testing.T) {
 	gate, rec := gateFixture(t)
 	ev := validEvent()
@@ -150,5 +148,25 @@ func TestGatePassesSinkErrorsBack(t *testing.T) {
 
 	if err := gate.Emit(t.Context(), validEvent()); !errors.Is(err, wantErr) {
 		t.Errorf("Emit() = %v, want %v", err, wantErr)
+	}
+}
+
+func TestAGateDropLogsIdsAndNeverThePayload(t *testing.T) {
+	var out bytes.Buffer
+	ctx := telemetry.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&out, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	gate, _ := gateFixture(t)
+	ev := validEvent()
+	ev.Payload.Container.NativeID = "acme/secrets"
+	ev.Payload.Text = "the migration password is hunter2"
+
+	if err := gate.Emit(ctx, ev); err != nil {
+		t.Fatalf("Emit() = %v, want no error", err)
+	}
+	logs := out.String()
+	if !strings.Contains(logs, "acme/secrets") || !strings.Contains(logs, ev.NativeID) {
+		t.Fatalf("the drop was logged as %q, want the container and native id", logs)
+	}
+	if strings.Contains(logs, "hunter2") || strings.Contains(logs, ev.Payload.Author.Handle) {
+		t.Errorf("the drop log carries payload or author content: %s", logs)
 	}
 }

@@ -9,16 +9,15 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/llm/claudesbx/claudesbxtest"
 	"github.com/kpenfound/hearsay/internal/llm/providers"
 )
 
-// claudeSbxConfig is a configuration with the two completion tiers on
-// claude-sbx, as one file in the single-file form.
 func claudeSbxConfig(t *testing.T, tiers string) string {
 	t.Helper()
-	return writeConfig(t, map[string]string{
+	return configtest.Write(t, map[string]string{
 		"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\n",
 		"scopes/api.yaml":     "id: api\nsources: [github]\n",
 		"llm/tiers.yaml":      tiers,
@@ -28,11 +27,7 @@ func claudeSbxConfig(t *testing.T, tiers string) string {
 const claudeSbxTiers = "tiers:\n  distill:\n    provider: claude-sbx\n    model: claude-haiku-5-5\n    max_tokens: 1500\n" +
 	"  assert:\n    provider: claude-sbx\n    model: claude-sonnet-5-5\n"
 
-// Validating a configuration that names claude-sbx needs no sbx: it is a check
-// of the file, which runs in CI on the configuration repository where there is
-// no Docker Sandboxes install.
 func TestConfigValidateAcceptsClaudeSbxWithNoSbx(t *testing.T) {
-	// A PATH with nothing on it: neither sbx nor claude can be found.
 	t.Setenv("PATH", t.TempDir())
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	path := claudeSbxConfig(t, claudeSbxTiers)
@@ -48,9 +43,6 @@ func TestConfigValidateAcceptsClaudeSbxWithNoSbx(t *testing.T) {
 	}
 }
 
-// What claude-sbx refuses is refused by config validation and by the registry
-// alike, naming the tier and the setting; an embed tier is refused for having
-// no embedding model.
 func TestClaudeSbxRefusalsAreTheSameInValidationAndTheRegistry(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	for _, tt := range []struct {
@@ -85,10 +77,6 @@ func TestClaudeSbxRefusalsAreTheSameInValidationAndTheRegistry(t *testing.T) {
 	}
 }
 
-// The whole path: a configuration file loaded through config.Load, built
-// through the shipped provider catalogue as modelRegistry builds it, answering a
-// schema-carrying request through the fake sbx and claude. No credential is set,
-// and nothing real is called.
 func TestClaudeSbxAnswersThroughTheWholePath(t *testing.T) {
 	stream, err := os.ReadFile(filepath.Join("testdata", "claudesbx", "structured_answer.jsonl"))
 	if err != nil {

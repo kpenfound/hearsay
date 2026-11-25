@@ -1,10 +1,10 @@
 package agent_test
 
 import (
-	"context"
+	"bytes"
 	"encoding/json"
-	"io"
-	"net"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -12,27 +12,24 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/agent"
+	"github.com/kpenfound/hearsay/internal/connector/connectortest"
+	"github.com/kpenfound/hearsay/internal/connector/push"
 	"github.com/kpenfound/hearsay/internal/principal"
-	"github.com/kpenfound/hearsay/internal/service/connectors"
 	"github.com/kpenfound/hearsay/internal/service/distiller"
+	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
 const sourceID = "sessions"
 
-// The tokens, by the environment variable the principals name.
 var env = map[string]string{
 	"SHED_TOKEN":  "shed-secret",
 	"SCOUT_TOKEN": "scout-secret",
 	"KYLE_TOKEN":  "kyle-secret",
 }
 
-func lookup(name string) (string, bool) {
-	v, ok := env[name]
-	return v, ok
-}
+var lookup = connectortest.Lookup(env)
 
 var principals = []principal.Principal{
 	{ID: "kyle", Kind: principal.KindHuman, TokenEnv: "KYLE_TOKEN"},
@@ -50,44 +47,15 @@ func source(containers ...string) connector.SourceConfig {
 	return connector.SourceConfig{ID: sourceID, Type: agent.Type, Containers: containers}
 }
 
-// server is the connector's handler behind the gate the runtime would give it,
-// writing to a recorder.
 func server(t *testing.T, src connector.SourceConfig) (*httptest.Server, *connector.Recorder) {
 	t.Helper()
 	c, err := agent.New(src, principals, lookup)
 	if err != nil {
 		t.Fatalf("New() = %v", err)
 	}
-	rec := &connector.Recorder{}
-	gate := connector.NewGate(rec, src.ID, c.Describe(), connector.NewAllowlist(src))
-	srv := httptest.NewServer(c.Handler(gate))
-	t.Cleanup(srv.Close)
-	return srv, rec
+	return connectortest.Serve(t, src, c)
 }
 
-func post(t *testing.T, url, token, body string) (int, string) {
-	t.Helper()
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, strings.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	out, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return resp.StatusCode, string(out)
-}
-
-// The requests of one session, one per kind, as docs/connector-contract.md
-// shows them.
 const (
 	start = `{"on_behalf_of":"kyle","session":"s-01","kind":"agent_session","phase":"start",
 		"started_at":"2026-09-23T17:00:00Z","time":"2026-09-23T17:00:00Z"}`
@@ -103,8 +71,6 @@ const (
 		"started_at":"2026-09-23T17:00:00Z","time":"2026-09-23T17:10:00Z"}`
 )
 
-// A whole session goes in as five revisions of one artifact, authored by the
-// agent the token belongs to and readable by it and the person it acted for.
 func TestASessionIsIngested(t *testing.T) {
 	srv, rec := server(t, source())
 	started := time.Date(2026, 9, 23, 17, 0, 0, 0, time.UTC)
@@ -125,11 +91,11 @@ func TestASessionIsIngested(t *testing.T) {
 	}
 	for i, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			code, body := post(t, srv.URL, env["SHED_TOKEN"], tt.body)
+			code, body := connectortest.PostWithToken(t, srv.URL, env["SHED_TOKEN"], tt.body)
 			if code != http.StatusAccepted {
 				t.Fatalf("POST = %d %s, want 202", code, body)
 			}
-			var accepted agent.Accepted
+			var accepted push.Accepted
 			if err := json.Unmarshal([]byte(body), &accepted); err != nil {
 				t.Fatalf("response %q is not JSON: %v", body, err)
 			}
@@ -167,28 +133,46 @@ func TestASessionIsIngested(t *testing.T) {
 			if want := (connector.Container{Kind: agent.ContainerStream, NativeID: "shed"}); ev.Payload.Container != want {
 				t.Errorf("container = %+v, want %+v", ev.Payload.Container, want)
 			}
-			wantACL := connector.ACL{
-				{Kind: connector.ACLIdentity, Source: sourceID, NativeID: "shed"},
-				{Kind: connector.ACLIdentity, Source: sourceID, NativeID: "kyle"},
-			}
-			if !reflect.DeepEqual(ev.ACL, wantACL) {
-				t.Errorf("acl = %+v, want exactly the agent and the person %+v", ev.ACL, wantACL)
-			}
-			// The distiller makes no document of any of it.
-			if target, ok, err := distiller.TargetOf(t.Context(), ev, nil); ok || err != nil {
-				t.Errorf("distiller.TargetOf() = %q, %v, %v, want no target", target, ok, err)
-			}
 		})
 	}
 }
 
-// Posting an event again is the same event: the same id and the same content,
-// which L0 writes once.
+func ingestSession(t *testing.T) []connector.Event {
+	t.Helper()
+	srv, rec := server(t, source())
+	for _, body := range []string{start, turn, call, next, end} {
+		if code, out := connectortest.PostWithToken(t, srv.URL, env["SHED_TOKEN"], body); code != http.StatusAccepted {
+			t.Fatalf("POST = %d %s, want 202", code, out)
+		}
+	}
+	return rec.Events()
+}
+
+func TestASessionEventIsReadableByTheAgentAndThePersonItActedForOnly(t *testing.T) {
+	wantACL := connector.ACL{
+		{Kind: connector.ACLIdentity, Source: sourceID, NativeID: "shed"},
+		{Kind: connector.ACLIdentity, Source: sourceID, NativeID: "kyle"},
+	}
+	for _, ev := range ingestSession(t) {
+		if !reflect.DeepEqual(ev.ACL, wantACL) {
+			t.Errorf("%s acl = %+v, want exactly the agent and the person %+v", ev.NativeID, ev.ACL, wantACL)
+		}
+	}
+}
+
+func TestTheDistillerMakesNoDocumentOfASessionEvent(t *testing.T) {
+	for _, ev := range ingestSession(t) {
+		if target, ok, err := distiller.TargetOf(t.Context(), ev, nil); ok || err != nil {
+			t.Errorf("%s: distiller.TargetOf() = %q, %v, %v, want no target", ev.NativeID, target, ok, err)
+		}
+	}
+}
+
 func TestAReplayIsTheSameEvent(t *testing.T) {
 	for _, body := range []string{start, turn, call, next, end} {
 		srv, rec := server(t, source())
 		for range 2 {
-			if code, out := post(t, srv.URL, env["SHED_TOKEN"], body); code != http.StatusAccepted {
+			if code, out := connectortest.PostWithToken(t, srv.URL, env["SHED_TOKEN"], body); code != http.StatusAccepted {
 				t.Fatalf("POST = %d %s, want 202", code, out)
 			}
 		}
@@ -208,7 +192,7 @@ func TestNextActionVariants(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			srv, rec := server(t, source())
-			if code, body := post(t, srv.URL, env["SHED_TOKEN"], tt.body); code != http.StatusAccepted {
+			if code, body := connectortest.PostWithToken(t, srv.URL, env["SHED_TOKEN"], tt.body); code != http.StatusAccepted {
 				t.Fatalf("POST = %d %s, want 202", code, body)
 			}
 			if events := rec.Events(); len(events) != 1 || events[0].Kind != connector.KindNextAction {
@@ -218,8 +202,6 @@ func TestNextActionVariants(t *testing.T) {
 	}
 }
 
-// Nothing is emitted for a request the connector refuses, and the refusal says
-// whose fault it is.
 func TestARequestIsRefused(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -269,7 +251,7 @@ func TestARequestIsRefused(t *testing.T) {
 				src = source()
 			}
 			srv, rec := server(t, src)
-			if code, body := post(t, srv.URL, tt.token, tt.body); code != tt.want {
+			if code, body := connectortest.PostWithToken(t, srv.URL, tt.token, tt.body); code != tt.want {
 				t.Errorf("POST = %d %s, want %d", code, body, tt.want)
 			}
 			if n := len(rec.Events()); n != 0 {
@@ -279,8 +261,6 @@ func TestARequestIsRefused(t *testing.T) {
 	}
 }
 
-// A source that could not accept anything, or could not check who is posting,
-// does not start.
 func TestNewRefusesASourceItCannotServe(t *testing.T) {
 	unset := func(string) (string, bool) { return "", false }
 	tests := []struct {
@@ -325,61 +305,58 @@ func TestNewRefusesASourceItCannotServe(t *testing.T) {
 	}
 }
 
-// The source is hosted like any other: mounted under /hooks/<source>, and
-// reported by /readyz with the time it last took an event.
 func TestTheServiceHostsAndReportsTheSource(t *testing.T) {
-	src := source()
-	registry := connector.NewRegistry()
-	if err := registry.Register(agent.Type, agent.NewFactory(principals, lookup)); err != nil {
-		t.Fatal(err)
-	}
-	var lc net.ListenConfig
-	listener, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := "http://" + listener.Addr().String()
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() {
-		done <- connectors.Run(ctx, &config.Config{Repo: config.Repo{Sources: []connector.SourceConfig{src}}}, connectors.Deps{
-			Registry: registry,
-			Sink:     &connector.Recorder{},
-			Cursors:  connector.NewMemoryCursors(),
-			Listener: listener,
-		})
-	}()
-	defer func() {
-		cancel()
-		if err := <-done; err != nil {
-			t.Errorf("Run() = %v", err)
-		}
-	}()
+	connectortest.HostedSource(t, source(), agent.Type, agent.NewFactory(principals, lookup), env["SHED_TOKEN"], start)
+}
 
-	// The listener is bound, so these wait for the service rather than fail.
-	if code, body := post(t, addr+connector.HookPath(sourceID), env["SHED_TOKEN"], start); code != http.StatusAccepted {
-		t.Fatalf("POST %s = %d %s, want 202", connector.HookPath(sourceID), code, body)
-	}
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, addr+"/readyz", nil)
+func logOf(t *testing.T, level slog.Level) string {
+	t.Helper()
+	var out bytes.Buffer
+	ctx := telemetry.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&out, &slog.HandlerOptions{Level: level})))
+	src := source()
+	c, err := agent.New(src, principals, lookup)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("New() = %v", err)
 	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
+	rec := &connector.Recorder{}
+	handler := c.Handler(connector.NewGate(rec, src.ID, c.Describe(), connector.NewAllowlist(src)))
+	send := func(token, body string) {
+		req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/", strings.NewReader(body))
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		handler.ServeHTTP(httptest.NewRecorder(), req)
 	}
-	defer func() { _ = resp.Body.Close() }()
-	var ready connectors.Readiness
-	if err := json.NewDecoder(resp.Body).Decode(&ready); err != nil {
-		t.Fatal(err)
+	send(env["SHED_TOKEN"], turn)
+	send(env["SCOUT_TOKEN"], end)
+	send(env["SHED_TOKEN"], strings.Replace(turn, `"kyle"`, `"nobody"`, 1))
+	send(env["KYLE_TOKEN"], turn)
+	send("not-a-token", turn)
+	rec.Err = errors.New("the store is down")
+	send(env["SHED_TOKEN"], call)
+	return out.String()
+}
+
+func TestInfoLogsCarryNoSessionText(t *testing.T) {
+	logs := logOf(t, slog.LevelInfo)
+	if !strings.Contains(logs, "refused") || !strings.Contains(logs, "failed") {
+		t.Fatalf("info-level logs hold no refusal or failure line, so this checks nothing: %s", logs)
 	}
-	if resp.StatusCode != http.StatusOK || ready.Status != connector.HealthOK {
-		t.Errorf("GET /readyz = %d %+v, want 200 and ok", resp.StatusCode, ready)
+	for _, content := range []string{"Reading the retry policy", "get_bundle", "retry-policy"} {
+		if strings.Contains(logs, content) {
+			t.Errorf("info-level logs carry session content %q: %s", content, logs)
+		}
 	}
-	if len(ready.Sources) != 1 || ready.Sources[0].Source != sourceID || ready.Sources[0].Type != agent.Type {
-		t.Fatalf("readiness lists %+v, want the agent source", ready.Sources)
+}
+
+func TestDebugLogsCarryNoCredential(t *testing.T) {
+	logs := logOf(t, slog.LevelDebug)
+	if !strings.Contains(logs, "agent session event ingested") {
+		t.Fatalf("debug-level logs hold no ingest line, so this checks nothing: %s", logs)
 	}
-	if ready.Sources[0].LastEventAt.IsZero() {
-		t.Error("readiness has no last event time after an event was taken")
+	for _, secret := range []string{env["SHED_TOKEN"], env["SCOUT_TOKEN"], env["KYLE_TOKEN"], "not-a-token"} {
+		if strings.Contains(logs, secret) {
+			t.Errorf("debug-level logs carry the credential %q: %s", secret, logs)
+		}
 	}
 }

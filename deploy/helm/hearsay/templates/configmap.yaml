@@ -1,7 +1,5 @@
 {{- $form := include "hearsay.configForm" . -}}
 {{- if ne $form "volume" }}
-# The configuration repository, mounted read-only at /etc/hearsay. The pods
-# carry a checksum of this object, so any change to it rolls them.
 apiVersion: v1
 kind: ConfigMap
 metadata:

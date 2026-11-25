@@ -18,7 +18,9 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/connector/connectortest"
 	"github.com/kpenfound/hearsay/internal/connector/slack"
+	"github.com/kpenfound/hearsay/internal/poll"
 )
 
 const (
@@ -27,8 +29,6 @@ const (
 	public   = "C0PUBLIC"
 )
 
-// fakeSlack is the Web API and the Socket Mode endpoint, serving recorded
-// frames. session runs once per WebSocket connection, numbered from 1.
 type fakeSlack struct {
 	t        *testing.T
 	server   *httptest.Server
@@ -137,8 +137,6 @@ func frames(t *testing.T, name string) []map[string]any {
 	return out
 }
 
-// deliver sends recorded frames, and reads the acknowledgement Slack expects
-// for every event envelope before sending the next one.
 func deliver(t *testing.T, ws *websocket.Conn, fs []map[string]any) bool {
 	t.Helper()
 	for _, frame := range fs {
@@ -161,44 +159,12 @@ func deliver(t *testing.T, ws *websocket.Conn, fs []map[string]any) bool {
 	return true
 }
 
-// deduplicating is L0's idempotence: an event id it holds is not written twice.
-type deduplicating struct {
-	mu         sync.Mutex
-	recorder   connector.Recorder
-	seen       map[string]bool
-	deliveries []string
-}
-
-func (s *deduplicating) Emit(ctx context.Context, ev connector.Event) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.deliveries = append(s.deliveries, ev.ID)
-	if s.seen[ev.ID] {
-		return nil
-	}
-	s.seen[ev.ID] = true
-	return s.recorder.Emit(ctx, ev)
-}
-
-func (s *deduplicating) delivered() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return slices.Clone(s.deliveries)
-}
-
-func waitFor(t *testing.T, what string, ok func() bool) {
+func startRuntime(t *testing.T, src connector.SourceConfig, configure func(*connector.RuntimeOptions)) *connector.Runtime {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for !ok() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	rt, _ := connectortest.Run(t, slack.Type, slack.Factory, src, lookup, configure)
+	return rt
 }
 
-// want is what one emitted event must say. Messages carry a hashed content
-// token, so their native id is checked as `<artifact>@<token>`.
 type want struct {
 	kind                 connector.Kind
 	artifact             string
@@ -213,40 +179,25 @@ type want struct {
 	revision             bool
 }
 
-func TestStreamThroughRuntimeGate(t *testing.T) {
-	root := public + "/1758700000.000100"
-	reply := public + "/1758700060.000200"
-	reaction := root + ":reaction:U0SAM:%2B1"
-	wants := []want{
-		{kind: connector.KindMessage, artifact: root, author: "U0KYLE", authorKind: connector.IdentityUser, text: "Should we ship the retry change? <@U0SAM>", mentions: []string{"U0SAM"}, url: "https://slack.com/archives/C0PUBLIC/p1758700000000100", revision: true},
-		{kind: connector.KindMessage, artifact: reply, author: "U0SAM", authorKind: connector.IdentityUser, text: "Yes, once the tests pass.", parent: root, thread: root, url: "https://slack.com/archives/C0PUBLIC/p1758700060000200?thread_ts=1758700000.000100&cid=C0PUBLIC", revision: true},
-		{kind: connector.KindMessage, artifact: reply, author: "U0SAM", authorKind: connector.IdentityUser, text: "Yes, once the integration tests pass.", parent: root, thread: root, url: "https://slack.com/archives/C0PUBLIC/p1758700060000200?thread_ts=1758700000.000100&cid=C0PUBLIC", editedAt: time.Unix(1758700120, 0).UTC(), revision: true},
-		{kind: connector.KindMessage, artifact: public + "/1758700180.000300", author: "B0DEPLOY", authorKind: connector.IdentityBot, text: "Deployed v1.2.3", url: "https://slack.com/archives/C0PUBLIC/p1758700180000300", revision: true},
-		{kind: connector.KindReaction, artifact: reaction, author: "U0SAM", authorKind: connector.IdentityUser, parent: root, url: "https://slack.com/archives/C0PUBLIC/p1758700000000100", emoji: "+1"},
-		{kind: connector.KindTombstone, artifact: reaction + ":tombstone", target: reaction, url: "https://slack.com/archives/C0PUBLIC/p1758700000000100"},
-		{kind: connector.KindTombstone, artifact: public + "/1758700180.000300:tombstone", target: public + "/1758700180.000300", url: "https://slack.com/archives/C0PUBLIC/p1758700180000300"},
-		{kind: connector.KindMessage, artifact: public + "/1758700240.000400", author: "U0KYLE", authorKind: connector.IdentityUser, text: "Scratch that.", url: "https://slack.com/archives/C0PUBLIC/p1758700240000400", revision: true},
-		{kind: connector.KindTombstone, artifact: public + "/1758700240.000400:tombstone", target: public + "/1758700240.000400", url: "https://slack.com/archives/C0PUBLIC/p1758700240000400"},
-	}
-	times := map[string]time.Time{
-		root:  time.Unix(1758700000, 100000).UTC(),
-		reply: time.Unix(1758700060, 200000).UTC(),
-	}
+type streamRun struct {
+	sink         *connectortest.Deduplicating
+	reconnecting connector.SourceHealth
+	connected    connector.SourceHealth
+}
+
+func runStreamScenario(t *testing.T) streamRun {
+	t.Helper()
 	refreshed := make(chan struct{})
 	holdThird := make(chan struct{})
 	third := make(chan struct{})
 	release := sync.OnceFunc(func() { close(holdThird) })
-	defer release()
 	fake := newFakeSlack(t, func(n int, ws *websocket.Conn) {
 		switch n {
 		case 1:
 			deliver(t, ws, frames(t, "first"))
-			// Slack closes the socket some seconds after its disconnect frame.
 			_, _, _ = ws.ReadMessage()
 		case 2:
 			close(refreshed)
-			// A connection that breaks without warning, after Slack
-			// redelivers the reply it believes was never acknowledged.
 			deliver(t, ws, frames(t, "second"))
 		case 3:
 			close(third)
@@ -255,34 +206,9 @@ func TestStreamThroughRuntimeGate(t *testing.T) {
 			_, _, _ = ws.ReadMessage()
 		}
 	})
-	reg := connector.NewRegistry()
-	if err := reg.Register(slack.Type, slack.Factory); err != nil {
-		t.Fatal(err)
-	}
-	sink := &deduplicating{seen: map[string]bool{}}
-	rt, err := connector.NewRuntime(t.Context(), connector.RuntimeOptions{
-		Sources: []connector.SourceConfig{fake.source(false)}, Registry: reg, Sink: sink, Lookup: lookup,
-		Cadence: connector.Cadence{MinRefresh: time.Millisecond, Refresh: time.Millisecond, MaxBackoff: 5 * time.Millisecond, Shutdown: time.Second},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() { done <- rt.Run(ctx) }()
-	defer func() {
-		cancel()
-		release()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Error(err)
-			}
-		case <-time.After(5 * time.Second):
-			t.Error("runtime did not stop")
-		}
-	}()
-
+	t.Cleanup(release)
+	sink := connectortest.NewDeduplicating()
+	rt := startRuntime(t, fake.source(false), func(o *connector.RuntimeOptions) { o.Sink = sink })
 	select {
 	case <-refreshed:
 	case <-time.After(5 * time.Second):
@@ -293,19 +219,47 @@ func TestStreamThroughRuntimeGate(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the runtime did not reconnect a broken stream")
 	}
-	// Slack's refresh is not a failure; the broken connection is.
-	h := rt.Health(t.Context()).Sources[0]
+	run := streamRun{sink: sink, reconnecting: rt.Health(t.Context()).Sources[0]}
+	release()
+	poll.Until(t, "a connected stream", func() bool { return rt.Health(t.Context()).Sources[0].Status == connector.HealthOK })
+	run.connected = rt.Health(t.Context()).Sources[0]
+	return run
+}
+
+func TestRuntimeReportsReconnectingHealthAfterBrokenStream(t *testing.T) {
+	h := runStreamScenario(t).reconnecting
 	if h.Status != connector.HealthDegraded || h.Detail != "reconnecting" || h.StreamFailures != 1 {
 		t.Errorf("health while reconnecting = %+v, want degraded, reconnecting, one stream failure", h)
 	}
-	release()
-	waitFor(t, "a connected stream", func() bool { return rt.Health(t.Context()).Sources[0].Status == connector.HealthOK })
-	h = rt.Health(t.Context()).Sources[0]
+}
+
+func TestRuntimeReportsConnectedHealthWithAllowlistDrop(t *testing.T) {
+	h := runStreamScenario(t).connected
 	if h.Detail != "connected" || h.Dropped != 1 || h.LastEventAt.IsZero() {
 		t.Errorf("connected health = %+v, want connected, one allowlist drop, a last event", h)
 	}
+}
 
-	got := sink.recorder.Events()
+func streamWants() []want {
+	root := public + "/1758700000.000100"
+	reply := public + "/1758700060.000200"
+	reaction := root + ":reaction:U0SAM:%2B1"
+	return []want{
+		{kind: connector.KindMessage, artifact: root, author: "U0KYLE", authorKind: connector.IdentityUser, text: "Should we ship the retry change? <@U0SAM>", mentions: []string{"U0SAM"}, url: "https://slack.com/archives/C0PUBLIC/p1758700000000100", revision: true},
+		{kind: connector.KindMessage, artifact: reply, author: "U0SAM", authorKind: connector.IdentityUser, text: "Yes, once the tests pass.", parent: root, thread: root, url: "https://slack.com/archives/C0PUBLIC/p1758700060000200?thread_ts=1758700000.000100&cid=C0PUBLIC", revision: true},
+		{kind: connector.KindMessage, artifact: reply, author: "U0SAM", authorKind: connector.IdentityUser, text: "Yes, once the integration tests pass.", parent: root, thread: root, url: "https://slack.com/archives/C0PUBLIC/p1758700060000200?thread_ts=1758700000.000100&cid=C0PUBLIC", editedAt: time.Unix(1758700120, 0).UTC(), revision: true},
+		{kind: connector.KindMessage, artifact: public + "/1758700180.000300", author: "B0DEPLOY", authorKind: connector.IdentityBot, text: "Deployed v1.2.3", url: "https://slack.com/archives/C0PUBLIC/p1758700180000300", revision: true},
+		{kind: connector.KindReaction, artifact: reaction, author: "U0SAM", authorKind: connector.IdentityUser, parent: root, url: "https://slack.com/archives/C0PUBLIC/p1758700000000100", emoji: "+1"},
+		{kind: connector.KindTombstone, artifact: reaction + ":tombstone", target: reaction, url: "https://slack.com/archives/C0PUBLIC/p1758700000000100"},
+		{kind: connector.KindTombstone, artifact: public + "/1758700180.000300:tombstone", target: public + "/1758700180.000300", url: "https://slack.com/archives/C0PUBLIC/p1758700180000300"},
+		{kind: connector.KindMessage, artifact: public + "/1758700240.000400", author: "U0KYLE", authorKind: connector.IdentityUser, text: "Scratch that.", url: "https://slack.com/archives/C0PUBLIC/p1758700240000400", revision: true},
+		{kind: connector.KindTombstone, artifact: public + "/1758700240.000400:tombstone", target: public + "/1758700240.000400", url: "https://slack.com/archives/C0PUBLIC/p1758700240000400"},
+	}
+}
+
+func TestStreamEmitsPublicChannelEvents(t *testing.T) {
+	wants := streamWants()
+	got := runStreamScenario(t).sink.Events()
 	if len(got) != len(wants) {
 		for _, ev := range got {
 			t.Logf("emitted %s", ev.NativeID)
@@ -313,18 +267,34 @@ func TestStreamThroughRuntimeGate(t *testing.T) {
 		t.Fatalf("emitted %d events, want %d", len(got), len(wants))
 	}
 	for i, w := range wants {
-		ev := got[i]
-		check(t, ev, w)
-		if at, ok := times[w.artifact]; ok && !ev.Time.Equal(at) {
-			t.Errorf("%s time = %v, want %v", ev.NativeID, ev.Time, at)
+		check(t, got[i], w)
+	}
+}
+
+func TestStreamEventTimesFollowSlackTimestamps(t *testing.T) {
+	wants := streamWants()
+	times := map[string]time.Time{
+		public + "/1758700000.000100": time.Unix(1758700000, 100000).UTC(),
+		public + "/1758700060.000200": time.Unix(1758700060, 200000).UTC(),
+	}
+	got := runStreamScenario(t).sink.Events()
+	for i, w := range wants {
+		if at, ok := times[w.artifact]; ok && i < len(got) && !got[i].Time.Equal(at) {
+			t.Errorf("%s time = %v, want %v", got[i].NativeID, got[i].Time, at)
 		}
 	}
-	// The thread root reported again for its reply, and the reply Slack
-	// redelivered, are the observations already held.
-	deliveries := sink.delivered()
-	if len(deliveries) != len(wants)+2 || deliveries[2] != deliveries[0] || deliveries[len(deliveries)-1] != deliveries[1] {
+}
+
+func TestRedeliveredEnvelopesReuseEventIDs(t *testing.T) {
+	sink := runStreamScenario(t).sink
+	deliveries := sink.DeliveredIDs()
+	if len(deliveries) != len(streamWants())+2 || deliveries[2] != deliveries[0] || deliveries[len(deliveries)-1] != deliveries[1] {
 		t.Errorf("deliveries = %v, want the root's and the reply's repeats to reuse their ids", deliveries)
 	}
+}
+
+func TestEditedReplyGetsNewEventID(t *testing.T) {
+	got := runStreamScenario(t).sink.Events()
 	if got[1].ID == got[2].ID {
 		t.Error("an edited reply kept the id of the reply it revises")
 	}
@@ -382,13 +352,10 @@ func check(t *testing.T, ev connector.Event, w want) {
 	}
 }
 
-// TestStreamRefusesUnsupportedChannels covers the channel classes only Slack
-// can tell apart, which stop the source, and the failures a retry can fix,
-// which do not.
 func TestStreamRefusesUnsupportedChannels(t *testing.T) {
 	tests := []struct {
 		name      string
-		channel   string // conversations.info's channel; "" is channel_not_found
+		channel   string
 		infoCode  int
 		openErr   string
 		permanent bool
@@ -433,9 +400,6 @@ func TestStreamRefusesUnsupportedChannels(t *testing.T) {
 	}
 }
 
-// TestStreamReportsAChannelWithoutTheApp: Slack sends nothing from a channel
-// the app was not invited to, which health says, and a link Slack disabled
-// stops the stream.
 func TestStreamReportsAChannelWithoutTheApp(t *testing.T) {
 	checked := make(chan struct{})
 	fake := newFakeSlack(t, func(_ int, ws *websocket.Conn) {
@@ -452,7 +416,7 @@ func TestStreamReportsAChannelWithoutTheApp(t *testing.T) {
 	defer c.Close(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- c.Stream(t.Context(), &connector.Recorder{}) }()
-	waitFor(t, "hello", func() bool { return c.Health(t.Context()).Detail != "connecting" })
+	poll.Until(t, "hello", func() bool { return c.Health(t.Context()).Detail != "connecting" })
 	if h := c.Health(t.Context()); h.Status != connector.HealthDegraded || !strings.Contains(h.Detail, "not a member of C0PUBLIC") {
 		t.Errorf("health = %+v, want degraded naming the channel without the app", h)
 	}
@@ -474,9 +438,6 @@ type failing struct{}
 
 func (failing) Emit(context.Context, connector.Event) error { return errors.New("store unavailable") }
 
-// TestStreamLeavesAFailedEventUnacknowledged: Slack delivers again an
-// envelope it was not told about, so one whose event did not reach L0 is not
-// acknowledged.
 func TestStreamLeavesAFailedEventUnacknowledged(t *testing.T) {
 	acked := make(chan bool, 1)
 	fake := newFakeSlack(t, func(_ int, ws *websocket.Conn) {
@@ -518,7 +479,7 @@ func TestCloseStopsStream(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() { done <- c.Stream(t.Context(), &connector.Recorder{}) }()
-	waitFor(t, "hello", func() bool { return c.Health(t.Context()).Status == connector.HealthOK })
+	poll.Until(t, "hello", func() bool { return c.Health(t.Context()).Status == connector.HealthOK })
 	if err := c.Close(t.Context()); err != nil {
 		t.Fatal(err)
 	}

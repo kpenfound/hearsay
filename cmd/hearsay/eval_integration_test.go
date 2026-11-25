@@ -10,30 +10,16 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l2"
 )
 
-// `hearsay eval` end to end over a scratch database: stance history, gestures
-// and topic operations seeded at known times, and the metrics each window and
-// scope reads from them, as text and as JSON, with nothing in either but
-// counts, durations, rates and ids.
-//
-// Scope api: topic a is ratified by hand ten hours after its stance, c three
-// hours after, b never; d was merged into a and the merge undone; b was split,
-// and the split's topic s is a topic of its own. Scope web holds w, never
-// ratified.
-//
-// The sessions, on bundle scope api: s1 is served a bundle at hour 1, follows
-// its anchor, searches past it, and proceeds, judging topic a's conflict real.
-// s2 is served one at hour 4, follows nothing, and asks, judging neither
-// conflict. A bundle on api at hour 5 has no session, and s3's bundle at hour
-// 6 is on web.
 func TestEvalCommand(t *testing.T) {
 	url, pool := deleteDatabase(t, "eval_cli_")
 	ctx := t.Context()
-	configPath := writeConfig(t, map[string]string{
+	configPath := configtest.Write(t, map[string]string{
 		"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\n",
 		"scopes/api.yaml":     "id: api\nsources: [github]\n",
 		"principals/p.yaml":   "- id: kyle\n  identities: [{source: github, native_id: u1}]\n",
@@ -48,7 +34,6 @@ func TestEvalCommand(t *testing.T) {
 	stamp := func(h int) string { return hour(h).Format(time.RFC3339) }
 	graph := l2.New(pool)
 	public := connector.ACL{{Kind: connector.ACLPublic}}
-	// secrets is every name and position seeded: none may be printed.
 	var secrets []string
 	open := func(scope, name string) l2.Topic {
 		t.Helper()
@@ -63,8 +48,6 @@ func TestEvalCommand(t *testing.T) {
 		secrets = append(secrets, name)
 		return topic
 	}
-	// stance writes a position on a topic from a document of its own, as
-	// written at hour h, and returns the stance and its document.
 	stance := func(topic l2.Topic, position string, h int) (string, string) {
 		t.Helper()
 		doc := "l1:discord:" + strings.ReplaceAll(position, " ", "-")
@@ -130,7 +113,6 @@ func TestEvalCommand(t *testing.T) {
 		}
 	}
 	kyle := connector.Identity{Source: connector.SelfSource, Kind: connector.IdentityUser, NativeID: "kyle"}
-	// audit writes an audit record at hour h, as the API writes one.
 	audit := func(id string, h int, record map[string]any) {
 		t.Helper()
 		native, err := json.Marshal(record)
@@ -166,9 +148,6 @@ func TestEvalCommand(t *testing.T) {
 		}
 		audit("handle:"+id, h, record)
 	}
-	// nextAction posts a next action at hour h, as the agent source writes
-	// one: its time is the session's start and its revision's is when it
-	// happened.
 	nextAction := func(session, next string, h int, native map[string]any) {
 		t.Helper()
 		native["session"], native["next"] = session, next
@@ -332,9 +311,6 @@ func TestEvalCommand(t *testing.T) {
 		want []string
 	}{
 		{
-			// a is ratified at hour 10, after the window; the undo at hour 6
-			// is not before its end, so the merge is not undone yet, and the
-			// split at hour 7 has not happened.
 			name: "until hour 6",
 			args: []string{"--scope", "api", "--since", stamp(0), "--until", stamp(6)},
 			want: []string{"topics 5", "ratified 1", "still unratified 4 80.0%", "median 3h0m0s", "p90 3h0m0s",
@@ -342,19 +318,14 @@ func TestEvalCommand(t *testing.T) {
 				"session-linked bundles 2", "excluded, no session 1"},
 		},
 		{
-			// s1's next action happens at hour 3, the window's end.
 			name: "until hour 3",
 			args: []string{"--scope", "api", "--until", stamp(3)},
 			want: []string{"session-linked bundles 1", "excluded, no session 0", "anchors 1 of 1 100.0%", "search 1 of 1 100.0%",
 				"flagged 2", "verdicts 0 0 real 0 spurious", "precision -", "coverage 0.0%", "after a bundle 0", "asked 0 -"},
 		},
 		{
-			// Only the clocks that started at or after hour 2, and no topic
-			// opened in the window to divide by.
 			name: "since hour 2",
 			args: []string{"--scope", "api", "--since", stamp(2), "--until", stamp(24)},
-			// s1's bundle is before the window, so its handle calls follow
-			// nothing in it and its next action has no bundle before it.
 			want: []string{"topics 3", "ratified 0", "still unratified 3 100.0%", "median -", "p90 -", "topics opened 0",
 				"merges 1 - per topic 1 undone", "splits 1 - per topic 0 undone",
 				"session-linked bundles 1", "excluded, no session 1", "anchors 0 of 1 0.0%", "search 0 of 0 -",
@@ -398,8 +369,6 @@ func TestEvalCommand(t *testing.T) {
 	}
 }
 
-// clocksAt3 is the two clocks that started at hour 3, d's and the split's,
-// in topic id order, which is how clocks that start together are ordered.
 func clocksAt3(d, s, at string) string {
 	first, second := d, s
 	if s < d {

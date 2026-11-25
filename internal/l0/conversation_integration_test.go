@@ -8,28 +8,22 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 )
 
-// revise turns an event into a revision of itself: the source's own version
-// token in the native id, which is what makes an edit a new event rather than
-// an overwrite.
 func revise(ev connector.Event, token string, editedAt time.Time) connector.Event {
 	ev.NativeID = ev.Payload.Artifact + "@" + token
 	ev.Payload.Revision = &connector.Revision{Token: token, EditedAt: editedAt}
 	return ev
 }
 
-// Current is what everything above L0 reads: one row per artifact, and the row
-// is the revision that is current by the contract's order.
 func TestCurrentReturnsTheCurrentRevisionOfEachArtifact(t *testing.T) {
 	store, fake, source := newStore(t)
 	first := fake.NewEvent(connector.KindIssue, "acme/api#1", "as first written")
 	first.Payload.Title = "an issue"
 	edited := revise(first, "t2", first.Time.Add(time.Hour))
 	edited.Payload.Text = "as edited"
-	// An access-list re-sync is a revision like any other, and it is the one
-	// that makes taking the newest load-bearing.
 	resynced := revise(first, "t2+perm:private", first.Time.Add(2*time.Hour))
 	resynced.Payload.Text = "as edited"
 	resynced.ACL = connector.ACL{{Kind: connector.ACLGroup, Source: source, NativeID: "acme/api"}}
@@ -57,12 +51,10 @@ func TestCurrentReturnsTheCurrentRevisionOfEachArtifact(t *testing.T) {
 	if len(got[0].ACL) != 1 || got[0].ACL[0].Kind != connector.ACLGroup {
 		t.Errorf("Current()[0].ACL = %v, want the re-synced access list", got[0].ACL)
 	}
-	// Oldest artifact first, by the artifact's own time.
 	if got[1].Payload.Artifact != other.Payload.Artifact {
 		t.Errorf("Current()[1] = %q, want %q: artifacts come back oldest first", got[1].Payload.Artifact, other.Payload.Artifact)
 	}
 
-	// One artifact's current revision, which is what a distillation reads.
 	one, err := store.Current(t.Context(), l0.ListOptions{Filter: l0.Filter{Source: source, Artifact: "acme/api#1"}})
 	if err != nil {
 		t.Fatalf("Current(one artifact) = %v", err)
@@ -71,7 +63,6 @@ func TestCurrentReturnsTheCurrentRevisionOfEachArtifact(t *testing.T) {
 		t.Fatalf("Current(one artifact) = %v, want just the newest revision", one)
 	}
 
-	// A tombstone hides the artifact from every read, this one included.
 	tomb := fake.NewEvent(connector.KindTombstone, "acme/api#1:tombstone", "")
 	tomb.Payload.Target = "acme/api#1"
 	tomb.Payload.Author = nil
@@ -87,8 +78,6 @@ func TestCurrentReturnsTheCurrentRevisionOfEachArtifact(t *testing.T) {
 	}
 }
 
-// Reading one conversation is what a document is assembled from: everything
-// that hangs off an artifact, and not the artifact itself.
 func TestFilterByThread(t *testing.T) {
 	store, fake, source := newStore(t)
 	pr := fake.NewEvent(connector.KindPullRequest, "acme/api#31", "the change")
@@ -99,15 +88,10 @@ func TestFilterByThread(t *testing.T) {
 	comment.Payload.Thread = "acme/api#31"
 	comment.Time = pr.Time.Add(time.Hour)
 
-	// A source with no threads gives only a parent, and the contract says the
-	// parent is the conversation there.
 	review := fake.NewEvent(connector.KindReview, "acme/api#31:review:1", "approved")
 	review.Payload.Parent = "acme/api#31"
 	review.Time = pr.Time.Add(2 * time.Hour)
 
-	// A source with three levels — a reply to a reply — hangs off its thread
-	// and not off what it answers. The thread is what a document is assembled
-	// from, which is why the predicate reads it first.
 	nested := fake.NewEvent(connector.KindMessage, "acme/api#31:comment:2", "and another thing")
 	nested.Payload.Parent = "acme/api#31:comment:1"
 	nested.Payload.Thread = "acme/api#31"
@@ -146,19 +130,16 @@ func TestFilterByThread(t *testing.T) {
 		})
 	}
 
-	// An artifact id means nothing without the source that minted it.
 	if _, err := store.Current(t.Context(), l0.ListOptions{Filter: l0.Filter{Thread: "acme/api#31"}}); err == nil {
 		t.Error("Current() with a thread and no source = nil, want an error")
 	}
 }
 
-// A feed consumer's position survives a restart, and two replicas of one
-// consumer cannot pull it backwards.
 func TestFeedCursors(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	cursors := l0.NewCursors(pool)
 	store, fake, _ := newStore(t)
-	consumer := newSourceID(t)
+	consumer := dbtest.UniqueID()
 
 	if got, err := cursors.Load(t.Context(), consumer); err != nil || !got.IsZero() {
 		t.Fatalf("Load(never saved) = %v, %v, want the beginning of the feed", got, err)
@@ -184,8 +165,6 @@ func TestFeedCursors(t *testing.T) {
 		t.Errorf("Load() = %s, want %s", got, second.Cursor)
 	}
 
-	// The other replica is behind. Its save is refused rather than making the
-	// feed be read again from where it had got to.
 	if moved, err := cursors.Save(t.Context(), consumer, first.Cursor); err != nil || moved {
 		t.Fatalf("Save(behind) = %v, %v, want it to have been refused", moved, err)
 	}
@@ -193,15 +172,10 @@ func TestFeedCursors(t *testing.T) {
 		t.Errorf("Load(after a save from behind) = %s, %v, want %s", got, err, second.Cursor)
 	}
 
-	// The zero cursor is the beginning of the feed, so saving it is asking to
-	// go backwards.
 	if moved, err := cursors.Save(t.Context(), consumer, l0.Cursor{}); err != nil || moved {
 		t.Errorf("Save(zero) = %v, %v, want it to have been refused", moved, err)
 	}
 
-	// A name the column cannot hold is refused before any SQL runs: a cursor is
-	// saved inside the caller's transaction, and a statement error there would
-	// abort the work the cursor is being saved for.
 	for _, name := range []string{"", "with a NUL \x00 in it", string(make([]byte, l0.MaxConsumerLen+1))} {
 		if _, err := cursors.Save(t.Context(), name, second.Cursor); err == nil {
 			t.Errorf("Save(%q) = nil, want an error", name)

@@ -77,8 +77,6 @@ func pipelineStage(os []l1.PipelineObservation) PipelineStage {
 	c.JudgmentUsage = c.GenerativeUsage
 	handler, queue := &zero, &zero
 	var durations []int64
-	// A separate known-only queue sum supplies its mean; the total remains null
-	// if some delays are missing. Integer overflow still makes the mean unknown.
 	knownQueue := &zero
 	knownQueues := 0
 	for _, o := range os {

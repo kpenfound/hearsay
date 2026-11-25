@@ -12,9 +12,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
-// recorder is a [l1.Querier] that answers nothing and remembers whether it was
-// asked, so that a test can tell a search that was refused before it ran from
-// one that reached the database.
 type recorder struct {
 	ran bool
 }
@@ -31,23 +28,18 @@ func (r *recorder) QueryRow(context.Context, string, ...any) pgx.Row {
 	return nil
 }
 
-// searchHits is a search's documents, for the tests that do not care whether it
-// was truncated.
 func searchHits(r l1.SearchResult, err error) ([]l1.Hit, error) { return r.Hits, err }
 
 func readerFor(human string, scopes principal.Scopes) l1.Reader {
 	return l1.Reader{Effective: principal.Effective{Human: human, Grant: principal.Grant{Scopes: scopes}}}
 }
 
-// A reader who may see nothing gets nothing, and the database is never asked:
-// the filter is not a WHERE clause somebody could forget, it is the reason the
-// statement runs at all.
 func TestSearchFailsClosedBeforeItRuns(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		reader l1.Reader
 		scope  string
-		want   bool // whether the database is asked
+		want   bool
 	}{{
 		name:   "nobody",
 		reader: l1.Reader{},
@@ -98,8 +90,6 @@ func TestSearchFailsClosedBeforeItRuns(t *testing.T) {
 	}
 }
 
-// A search with nothing to search for is a listing, and saying so is better
-// than ranking the whole table by nothing.
 func TestSearchRefusesAnEmptyQuery(t *testing.T) {
 	for _, query := range []string{"", "   ", "\n\t"} {
 		var rec recorder
@@ -113,7 +103,6 @@ func TestSearchRefusesAnEmptyQuery(t *testing.T) {
 	}
 }
 
-// The bounds a search is held to.
 func TestSearchLimit(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -134,9 +123,6 @@ func TestSearchLimit(t *testing.T) {
 	}
 }
 
-// stubEmbedder is an embed tier that answers whatever it was built with. No
-// test here makes a model call: what the fixture-backed fake in internal/llm is
-// for is a test of a request, and this is a test of what happens to the answer.
 type stubEmbedder struct {
 	dimensions int
 	vectors    [][]float32
@@ -149,11 +135,7 @@ func (e stubEmbedder) Embed(context.Context, []string) ([][]float32, error) {
 	return e.vectors, e.err
 }
 
-// A caller that asked for both halves and silently got one could not tell, so
-// an embed tier that cannot answer takes the search with it rather than
-// quietly leaving it to full text.
 func TestSearchRefusesAnEmbedTierItCannotUse(t *testing.T) {
-	full := make([]float32, l1.EmbeddingDimensions)
 	for _, tc := range []struct {
 		name     string
 		embedder l1.Embedder
@@ -173,7 +155,7 @@ func TestSearchRefusesAnEmbedTierItCannotUse(t *testing.T) {
 	}, {
 		name:     "a tier that answers with no vector at all",
 		embedder: stubEmbedder{dimensions: l1.EmbeddingDimensions},
-		want:     nil, // no sentinel: the message is what a caller reads
+		want:     nil,
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
 			var rec recorder
@@ -193,7 +175,10 @@ func TestSearchRefusesAnEmbedTierItCannotUse(t *testing.T) {
 			}
 		})
 	}
-	// The positive control: a tier that answers properly reaches the database.
+}
+
+func TestSearchRunsTheStatementWithAWorkingEmbedTier(t *testing.T) {
+	full := make([]float32, l1.EmbeddingDimensions)
 	var rec recorder
 	_, err := l1.New(&rec).Search(t.Context(), readerFor("kyle", principal.AllScopes()),
 		l1.SearchOptions{Query: "the engine schema", Embedder: stubEmbedder{

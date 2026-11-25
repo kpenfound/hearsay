@@ -9,9 +9,10 @@ import (
 	"github.com/kpenfound/hearsay/internal/l1"
 )
 
-func TestSplitWikiSections(t *testing.T) {
-	const page = "---\ntags: [#alpha]\n# YAML comment\n---\nIntro [[Home]]\n# Alpha\nDecision here.\n## Detail\nNested fact.\n```md\n# code, not a heading\n```\n# Beta\nUnrelated outcome."
-	sections := l1.SplitWikiSections("file-1", page)
+const wikiPage = "---\ntags: [#alpha]\n# YAML comment\n---\nIntro [[Home]]\n# Alpha\nDecision here.\n## Detail\nNested fact.\n```md\n# code, not a heading\n```\n# Beta\nUnrelated outcome."
+
+func TestSplitWikiSectionsAtHeadingsOutsideFrontMatterAndCode(t *testing.T) {
+	sections := l1.SplitWikiSections("file-1", wikiPage)
 	if len(sections) != 4 {
 		t.Fatalf("sections = %+v", sections)
 	}
@@ -23,23 +24,42 @@ func TestSplitWikiSections(t *testing.T) {
 	if sections[0].Heading != "" || sections[1].Heading != "Alpha" || sections[2].Heading != "Detail" {
 		t.Errorf("headings = %+v", sections)
 	}
-	if got := l1.SplitWikiSections("file-1", "No headings.\n#tag [[Wiki]]"); len(got) != 1 || got[0].Text != "No headings.\n#tag [[Wiki]]" || got[0].Key != sections[0].Key {
+}
+
+func TestSplitWikiSectionsOfAPageWithNoHeadingsIsOneSection(t *testing.T) {
+	got := l1.SplitWikiSections("file-1", "No headings.\n#tag [[Wiki]]")
+	if len(got) != 1 || got[0].Text != "No headings.\n#tag [[Wiki]]" || got[0].Key != l1.SplitWikiSections("file-1", wikiPage)[0].Key {
 		t.Errorf("no-heading fallback = %+v", got)
-	}
-	changed := l1.SplitWikiSections("file-1", strings.Replace(page, "# Alpha", "# Renamed", 1))
-	if changed[1].Key == sections[1].Key || changed[2].Key != sections[2].Key || changed[3].Key != sections[3].Key {
-		t.Errorf("heading edit changed unrelated identities: %+v", changed)
-	}
-	if !slices.EqualFunc(sections, l1.SplitWikiSections("file-1", page), func(a, b l1.WikiSection) bool { return a == b }) {
-		t.Fatal("same input changed sections")
-	}
-	duplicate := l1.SplitWikiSections("file-1", "# Same\nFirst.\n# Same\nSecond.")
-	if len(duplicate) != 2 || duplicate[0].Key == duplicate[1].Key || duplicate[0].Key == l1.SplitWikiSections("file-2", "# Same\nFirst.")[0].Key {
-		t.Errorf("duplicate or source identities collided: %+v", duplicate)
 	}
 }
 
-func TestBuildWikiSections(t *testing.T) {
+func TestSplitWikiSectionsKeepsTheKeysOfSectionsAHeadingEditDidNotTouch(t *testing.T) {
+	sections := l1.SplitWikiSections("file-1", wikiPage)
+	changed := l1.SplitWikiSections("file-1", strings.Replace(wikiPage, "# Alpha", "# Renamed", 1))
+	if changed[1].Key == sections[1].Key || changed[2].Key != sections[2].Key || changed[3].Key != sections[3].Key {
+		t.Errorf("heading edit changed unrelated identities: %+v", changed)
+	}
+}
+
+func TestSplitWikiSectionsIsDeterministic(t *testing.T) {
+	first := l1.SplitWikiSections("file-1", wikiPage)
+	if !slices.EqualFunc(first, l1.SplitWikiSections("file-1", wikiPage), func(a, b l1.WikiSection) bool { return a == b }) {
+		t.Fatal("same input changed sections")
+	}
+}
+
+func TestSplitWikiSectionsKeysSeparateDuplicateHeadingsAndSources(t *testing.T) {
+	duplicate := l1.SplitWikiSections("file-1", "# Same\nFirst.\n# Same\nSecond.")
+	if len(duplicate) != 2 || duplicate[0].Key == duplicate[1].Key {
+		t.Errorf("duplicate headings collided: %+v", duplicate)
+	}
+	if other := l1.SplitWikiSections("file-2", "# Same\nFirst.")[0].Key; duplicate[0].Key == other {
+		t.Errorf("two sources share the key %s", other)
+	}
+}
+
+func buildWikiSections(t *testing.T) (connector.Event, []l1.Document) {
+	t.Helper()
 	root := event(connector.KindDocument, "file-1", at(0), who("u1", "kpenfound"), "Design", "# A\nDecision on #31.\n# B\nNotes with token=longsecretvalue and [[Wiki]].")
 	root.ACL = connector.ACL{{Kind: connector.ACLGroup, Source: source, NativeID: "team"}}
 	docs, err := l1.BuildWikiSections(root, testPrincipals(t), testRepo)
@@ -49,6 +69,11 @@ func TestBuildWikiSections(t *testing.T) {
 	if len(docs) != 2 {
 		t.Fatalf("documents = %+v", docs)
 	}
+	return root, docs
+}
+
+func TestBuildWikiSectionsInheritTheArtifactsProvenanceAndAccess(t *testing.T) {
+	root, docs := buildWikiSections(t)
 	for _, doc := range docs {
 		if doc.Kind != l1.KindWikiSection || doc.ID != l1.DocID(source, doc.Source.NativeID) || doc.Source.URL != root.Payload.URL {
 			t.Errorf("envelope = %+v", doc)
@@ -57,9 +82,17 @@ func TestBuildWikiSections(t *testing.T) {
 			t.Errorf("provenance/ACL = %+v", doc)
 		}
 	}
+}
+
+func TestBuildWikiSectionsKeepReferencesInTheirOwnSection(t *testing.T) {
+	_, docs := buildWikiSections(t)
 	if !slices.Contains(docs[0].References, l1.Reference{Type: l1.RefTrackerItem, ID: repo + "#31"}) || slices.Contains(docs[1].References, l1.Reference{Type: l1.RefTrackerItem, ID: repo + "#31"}) {
 		t.Errorf("references crossed section boundary: %+v", docs)
 	}
+}
+
+func TestBuildWikiSectionsScrubSecretsAndKeepWikilinks(t *testing.T) {
+	_, docs := buildWikiSections(t)
 	if strings.Contains(docs[1].RawText, "longsecretvalue") || !strings.Contains(docs[1].RawText, "[[Wiki]]") {
 		t.Errorf("scrub or wikilink = %q", docs[1].RawText)
 	}

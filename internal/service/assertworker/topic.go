@@ -9,9 +9,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/llm"
 )
 
-// sameQuestionVersion is the topic.same_question variant journaled. v2 asks
-// it of every position, over the candidates no earlier position of the
-// document took.
 const sameQuestionVersion = "topic-same-question-v2"
 
 // TopicSameQuestionRequest is the provider request [sameQuestionQuestions] makes.
@@ -19,10 +16,6 @@ func TopicSameQuestionRequest(name, position string, candidates []Candidate) llm
 	return toRequest(sameQuestionQuestions(name, position, candidates))
 }
 
-// sameQuestionQuestions asks, once per candidate, whether a position answers
-// the same question as that topic, rather than sharing subject matter.
-// Candidate text is already filtered for the audience. Each question is judged
-// on its own; code decides which, if any, the position continues.
 func sameQuestionQuestions(name, position string, candidates []Candidate) (string, []yesNo) {
 	type offered struct{ Label, Name, Current string }
 	state := struct {
@@ -40,21 +33,13 @@ func sameQuestionQuestions(name, position string, candidates []Candidate) (strin
 	return string(raw), questions
 }
 
-// placement is where code puts one position: on candidate at, or a new topic
-// when at is -1, with the judgement against the position it was compared to.
 type placement struct {
-	index          int // the position's place in the model's answer
+	index          int
 	at             int
 	name, position string
 	judgement      l2.Judgement
 }
 
-// place decides where each position the model extracted goes. Per position,
-// Jev is asked topic.same_question of every candidate no earlier position of
-// this document took: the confident yes most likely to be yes wins (the first,
-// on a tie), and no confident yes opens a new topic. A position on a topic
-// whose current position its readers may read is then compared to it
-// (stance.same_answer).
 func (a *Asserter) place(ctx context.Context, ans answer, p preparedAssertion, batch *judgmentBatch) ([]placement, error) {
 	taken := map[int]bool{}
 	var out []placement
@@ -88,7 +73,6 @@ func (a *Asserter) place(ctx context.Context, ans answer, p preparedAssertion, b
 		}
 		if pl.at < 0 {
 			if pl.name == "" {
-				// A new topic needs a question to be named by.
 				continue
 			}
 		} else {

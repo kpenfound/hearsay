@@ -51,14 +51,10 @@ type Native struct {
 	Interrupted bool `json:"interrupted,omitempty"`
 }
 
-// maxKey is the longest conversation or exchange id.
 const maxKey = 128
 
 const keyGrammar = "1 to 128 bytes of letters, digits, -, _ and ."
 
-// validKey reports whether s may be a conversation or an exchange id. The set
-// leaves out `/`, `:` and `@`, which separate the parts of an artifact id and
-// its revision, and anything an event id would have to escape.
 func validKey(s string) bool {
 	if s == "" || len(s) > maxKey {
 		return false
@@ -100,8 +96,6 @@ func badRequest(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", push.ErrBadRequest, fmt.Sprintf(format, args...))
 }
 
-// check holds a request to the shape of a message. A body naming another owner
-// is the caller's to be refused, and is reported first.
 func (c *Connector) check(req Request) error {
 	switch {
 	case req.Owner == "":
@@ -126,9 +120,6 @@ func (c *Connector) check(req Request) error {
 	return nil
 }
 
-// event is the event a checked request from agent means, as a revision of the
-// message artifact after the revision named previous, which is empty for the
-// first.
 func (c *Connector) event(agent string, req Request, previous string) (connector.Event, error) {
 	author := connector.Identity{Source: c.source, Kind: connector.IdentityUser, NativeID: c.owner}
 	if req.Role == RoleAssistant {
@@ -142,9 +133,7 @@ func (c *Connector) event(agent string, req Request, previous string) (connector
 	ev := connector.Event{
 		Source: c.source,
 		Kind:   Kind,
-		// Microseconds are what L0 keeps, so a message posted again compares equal
-		// to the revision that was read back.
-		Time: req.Time.UTC().Truncate(time.Microsecond),
+		Time:   req.Time.UTC().Truncate(time.Microsecond),
 		Payload: connector.Payload{
 			Artifact:  artifact,
 			BaseKind:  connector.KindMessage,
@@ -162,14 +151,10 @@ func (c *Connector) event(agent string, req Request, previous string) (connector
 	}
 	ev.NativeID = artifact + "@" + token
 	ev.ID = connector.EventID(c.source, ev.NativeID)
-	// No edited_at: the contract orders revisions that have none by arrival,
-	// which is what a message posted again is.
 	ev.Payload.Revision = &connector.Revision{Token: token}
 	return ev, nil
 }
 
-// content is what makes one revision of a message differ from another: the
-// words, the mark, when they were said, who said them and who may read them.
 type content struct {
 	Time        string             `json:"time"`
 	Text        string             `json:"text"`
@@ -192,11 +177,6 @@ func contentOf(ev connector.Event) (content, error) {
 	return out, nil
 }
 
-// revisionToken names a revision: a hash of what it says and of the revision it
-// follows. Posting the same words again over the same revision is the same
-// token, so it is the same event; words that come back after another revision
-// are a new revision, which the same words alone would not be, so that the last
-// post is always the current one.
 func revisionToken(ev connector.Event, previous string) (string, error) {
 	c, err := contentOf(ev)
 	if err != nil {
@@ -213,7 +193,6 @@ func revisionToken(ev connector.Event, previous string) (string, error) {
 	return hex.EncodeToString(sum[:8]), nil
 }
 
-// same reports whether two events say the same thing.
 func same(a, b connector.Event) (bool, error) {
 	x, err := contentOf(a)
 	if err != nil {
@@ -226,13 +205,6 @@ func same(a, b connector.Event) (bool, error) {
 	return x.Time == y.Time && x.Text == y.Text && x.Interrupted == y.Interrupted && x.Author == y.Author && x.ACL.Equal(y.ACL), nil
 }
 
-// store writes a checked request from agent: the one place the source's events
-// reach L0, and so the place to refuse one that may not be stored. The
-// artifact is held still while it runs, so that a message deleted before the
-// post, or while it waits, is never written again, and a deletion that
-// follows sees what the post wrote. It writes nothing when the artifact's
-// current revision already says it, and returns the event the artifact now
-// stands at.
 func (c *Connector) store(ctx context.Context, sink connector.Sink, agent string, req Request) (connector.Event, Outcome, error) {
 	serializer, ok := sink.(connector.ArtifactSerializer)
 	if !ok {

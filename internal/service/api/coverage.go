@@ -12,8 +12,6 @@ import (
 // MaxCoverageEvents is how many event ids one `coverage` call takes.
 const MaxCoverageEvents = 100
 
-// maxCoverageEventID bounds one id: an event id is a source id and a native id
-// and nothing a caller has reason to make longer than this.
 const maxCoverageEventID = 1024
 
 var coverageTool = Tool{"coverage", "Whether Hearsay covers each of up to 100 L0 event ids: a message of a conversation source. pending: held, and no published distillation of its conversation has read its current revision (not consumed yet, an attempt failed or was stopped, or it was rewritten or arrived since). covered: the published distillation that read its current revision quotes it, with the ids of the current L1 documents whose L0 refs cite it. excluded: deleted, left out of every document by the distillation of its current revision, or an id that does not exist or that the caller may not read (those two are answered identically). An id superseded by a newer revision is answered for the artifact's current revision. Results are in request order, one per id as asked. Decided from the recorded distillations, current documents and deletions, never from job state or timing; no model call.",
@@ -32,10 +30,6 @@ type Covered struct {
 	Results []CoverageResult `json:"results"`
 }
 
-// coverage is `coverage(event_ids)` (docs/design.md#read-and-assert-api). It
-// holds no state and makes no model call: it reads the published conversation
-// distillations, the current documents and L0, in one snapshot, under the
-// caller's access lists and reach.
 func coverage(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw json.RawMessage) (any, error) {
 	var args struct {
 		EventIDs []string `json:"event_ids"`
@@ -51,8 +45,7 @@ func coverage(ctx context.Context, c *Calls, _ Caller, reader l1.Reader, raw jso
 			return nil, refusal(http.StatusBadRequest, ReasonInvalidRequest, "an event id is empty or too long")
 		}
 	}
-	// One snapshot, so the event's current revision, the distillation that
-	// read it and the documents that cite it are the same moment's.
+
 	tx, err := c.db.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("reading coverage: %w", err)

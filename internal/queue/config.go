@@ -30,9 +30,6 @@ const (
 	DefaultMaintenanceInterval = time.Minute
 )
 
-// minHeartbeatInterval keeps a very short lease from turning into a heartbeat
-// per millisecond, which is what a test with a 30ms lease would otherwise ask
-// for.
 const minHeartbeatInterval = 50 * time.Millisecond
 
 // Config is the consumer side of one job kind: what a [Client]'s operations
@@ -83,7 +80,6 @@ type Config struct {
 	MaintenanceInterval time.Duration
 }
 
-// withDefaults fills in what was left zero.
 func (c Config) withDefaults() Config {
 	if c.Concurrency == 0 {
 		c.Concurrency = 1
@@ -178,9 +174,6 @@ func (c Config) RetryDelay(attempt int) time.Duration {
 		attempt = 1
 	}
 	d := c.Backoff
-	// Doubling in a loop rather than by shifting: an attempt count high enough
-	// to overflow a shift is reachable by configuration, and the cap is the
-	// answer to both.
 	for i := 1; i < attempt && d < c.MaxBackoff; i++ {
 		d *= 2
 	}

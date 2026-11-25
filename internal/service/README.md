@@ -32,8 +32,7 @@ All four services expose health endpoints. `connectors` and `api` also have appl
 connector's handler has to be reachable, the API is one, and every service has
 `/healthz` and `/readyz`. The paths under `/hooks/` are the
 connector runtime's and are mounted from it; `/v1/` and `/mcp` are the API's
-call layer, served twice; the two health endpoints are each service's own. What
-the two endpoints mean was settled in `connectors`; the API and workers share the database/schema probe:
+call layer, served twice; the two health endpoints are each service's own. The API and workers share the database/schema probe:
 
 - `/healthz` is 200 while the process is up, and nothing else. It answers "is
   this container alive", so it must not depend on anything that can be slow.
@@ -52,10 +51,8 @@ clears the cache along with the loaded configuration and grants.
 
 The four subcommand names are a contract with the Dagger module and the
 deployment manifests. `hearsay all` is a development convenience and is never a
-deployment target. It is built on `RunAll`, which is a `sync.WaitGroup` and
-`errors.Join` rather than an errgroup — it needs no
-extra concurrency dependency, and stopping on the first *return* rather than
-the first *error* is what `all` actually wants. The reasoning is on `RunAll`'s doc comment.
+deployment target. It is built on `RunAll`, which stops on the first *return* rather than the
+first *error*, and reports every error.
 
 Each subpackage describes its responsibility in its package comment. The
 distiller also has a README for segmentation and outcome rules.

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
@@ -34,7 +35,7 @@ func TestPrincipalScopes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			repo, err := config.Load(writeFiles(t, with(map[string]string{"principals/p.yaml": tt.body})))
+			repo, err := config.Load(configtest.Write(t, with(map[string]string{"principals/p.yaml": tt.body})))
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("Load() error = %v, want %q", err, tt.wantErr)

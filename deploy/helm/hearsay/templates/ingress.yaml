@@ -1,8 +1,3 @@
-{{- /*
-Routes what callers and sources need, as docs/deploy.md's proxy does: webhooks
-to the connectors, the API's calls, MCP and Discord interactions to the API.
-The health endpoints stay inside the cluster.
-*/ -}}
 {{- if .Values.ingress.enabled }}
 {{- $host := required "ingress.host is required when the ingress is enabled" .Values.ingress.host }}
 {{- $fullname := include "hearsay.fullname" . }}

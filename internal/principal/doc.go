@@ -8,8 +8,8 @@
 //
 // The mapping is configuration's `principals/` (docs/config.md), parsed into
 // [Principal] values. [Resolver] turns the identity hints a connector emits
-// into principals against it, and records what it could not resolve rather than
-// dropping an author nobody can name. [Class] is what an agent may read and
+// into principals against it, and leaves an author nobody can name unresolved
+// rather than minting a principal for it. [Class] is what an agent may read and
 // write, and [AgentRead] is the effective principal a read runs as: the
 // intersection of an agent's grants and the invoking human's
 // (docs/design.md#access-control). [Reach] turns that into the entity ids

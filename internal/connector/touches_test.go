@@ -52,7 +52,7 @@ func TestEventTouches(t *testing.T) {
 	}
 }
 
-func TestTouchesOptionalJSON(t *testing.T) {
+func TestTouchesJSON(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
 		touches []connector.Touch
@@ -61,6 +61,7 @@ func TestTouchesOptionalJSON(t *testing.T) {
 		{"absent", nil, ""},
 		{"empty", []connector.Touch{}, ""},
 		{"without paths", []connector.Touch{{Source: "github", Project: "acme/api"}}, `"touches":[{"source":"github","project":"acme/api"}]`},
+		{"with paths", []connector.Touch{{Source: "github-acme", Project: "acme/api", Paths: []string{"internal/api.go"}}}, `"touches":[{"source":"github-acme","project":"acme/api","paths":["internal/api.go"]}]`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			encoded, err := json.Marshal(connector.Payload{Touches: tt.touches})

@@ -8,14 +8,16 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l2"
+	"github.com/kpenfound/hearsay/internal/poll"
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
 )
 
 func TestControlEventsUseTheirRootsTouches(t *testing.T) {
 	for _, kind := range []string{"command", "reaction"} {
 		t.Run(kind, func(t *testing.T) {
-			c := newCommands(t, scratchPool(t))
+			c := newCommands(t, dbtest.Scratch(t, "hearsay_assert"))
 			root := c.f.issue
 			root.NativeID = root.Payload.Artifact + "@touches"
 			root.Payload.Revision = &connector.Revision{Token: "touches", EditedAt: at(12)}
@@ -40,7 +42,7 @@ func TestControlEventsUseTheirRootsTouches(t *testing.T) {
 			}
 			check := func(ev connector.Event) {
 				t.Helper()
-				waitFor(t, "control event to be enqueued", func() bool {
+				poll.Until(t, "control event to be enqueued", func() bool {
 					if _, err := once(); err != nil {
 						t.Fatal(err)
 					}
