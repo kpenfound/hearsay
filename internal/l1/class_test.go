@@ -25,9 +25,9 @@ func TestClassFor(t *testing.T) {
 		{"issue", l1.KindIssue, "", connector.ContainerRepository, config.ArtifactIssue},
 		{"commit", l1.KindCommit, "", connector.ContainerRepository, config.ArtifactCommit},
 		{"channel thread", l1.KindChatThread, "", connector.ContainerChannel, config.ArtifactChatThread},
-		{"direct thread", l1.KindChatThread, "", "dm", config.ArtifactDM},
+		{"direct thread", l1.KindChatThread, "", connector.ContainerDM, config.ArtifactDM},
 		{"channel burst", l1.KindChatBurst, "", connector.ContainerChannel, config.ArtifactChatThread},
-		{"direct burst", l1.KindChatBurst, "", "direct_message", config.ArtifactDM},
+		{"direct burst", l1.KindChatBurst, "", connector.ContainerDM, config.ArtifactDM},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {

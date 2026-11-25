@@ -15,14 +15,13 @@ func ClassFor(kind Kind, root connector.Event) (config.ArtifactClass, error) {
 	case KindPR:
 		var state struct {
 			MergedAt *string `json:"merged_at"`
-			State    string  `json:"state"`
 		}
 		if len(root.Payload.Native) != 0 {
 			if err := json.Unmarshal(root.Payload.Native, &state); err != nil {
 				return "", fmt.Errorf("reading pull request state: %w", err)
 			}
 		}
-		if state.MergedAt != nil && *state.MergedAt != "" || state.State == "merged" {
+		if state.MergedAt != nil && *state.MergedAt != "" {
 			return config.ArtifactMergedPR, nil
 		}
 		return config.ArtifactPullRequest, nil
@@ -42,12 +41,10 @@ func ClassFor(kind Kind, root connector.Event) (config.ArtifactClass, error) {
 	case KindCommit:
 		return config.ArtifactCommit, nil
 	case KindChatThread, KindChatBurst:
-		switch root.Payload.Container.Kind {
-		case connector.ContainerDM, "direct_message":
+		if root.Payload.Container.Kind == connector.ContainerDM {
 			return config.ArtifactDM, nil
-		default:
-			return config.ArtifactChatThread, nil
 		}
+		return config.ArtifactChatThread, nil
 	default:
 		return "", fmt.Errorf("%w: no artifact class for kind %q", ErrInvalidDocument, kind)
 	}

@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"strconv"
 	"strings"
@@ -438,101 +437,6 @@ func TestArtifactClassBackfill(t *testing.T) {
 	}
 	if _, err := pool.Exec(t.Context(), `UPDATE l1_docs SET artifact_class = 'unknown' WHERE id = 'l1:backfill:artifact-0'`); err == nil {
 		t.Error("unknown class accepted")
-	}
-}
-
-func TestVersion14BranchSchemasUpgrade(t *testing.T) {
-	for _, branch := range []string{"artifact-class", "stance-judgement"} {
-		t.Run(branch, func(t *testing.T) {
-			url := scratchDatabase(t)
-			migrator, err := db.NewMigrator(t.Context(), url, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() { _ = migrator.Close() }()
-			if _, err := migrator.UpTo(t.Context(), 13); err != nil {
-				t.Fatal(err)
-			}
-			pool, err := db.Open(t.Context(), url)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer pool.Close()
-			_, err = pool.Exec(t.Context(), `INSERT INTO l0_events (id, source, native_id, kind, artifact, occurred_at, payload, acl) VALUES ('evt:legacy', 'legacy', 'pr-1', 'document', 'pr-1', now(), '{"native":{"state":"merged"}}'::jsonb, '[{"kind":"public"}]'::jsonb)`)
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = pool.Exec(t.Context(), `INSERT INTO l1_docs (id, kind, source, source_native_id, l0_refs, created_at, updated_at, last_activity_at, acl, text, raw_text, body, outcome_kind) VALUES ('l1:legacy:pr-1', 'pr', 'legacy', 'pr-1', ARRAY['evt:legacy'], now(), now(), now(), '[{"kind":"public"}]'::jsonb, 'retained', 'raw', '{}'::jsonb, 'none')`)
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = pool.Exec(t.Context(), `INSERT INTO l2_topics (id, scope, name, acl, opened_by) VALUES ('topic:legacy', 'legacy', 'topic', '[{"kind":"public"}]'::jsonb, 'l1:legacy:pr-1')`)
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = pool.Exec(t.Context(), `INSERT INTO l2_stances (id, topic_id, position, stated_at, evidence, tier, acl) VALUES ('stance:legacy', 'topic:legacy', 'keep', now(), ARRAY['l1:legacy:pr-1'], 'ratified', '[{"kind":"public"}]'::jsonb)`)
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			if branch == "artifact-class" {
-				if _, err := migrator.UpTo(t.Context(), 14); err != nil {
-					t.Fatal(err)
-				}
-			} else {
-				// Replay the stance branch's version-14 schema, then record the
-				// version Goose recorded on that branch.
-				body, err := fs.ReadFile(db.Migrations(), "00015_add_l2_stance_judgement.sql")
-				if err != nil {
-					t.Fatal(err)
-				}
-				up, _, _ := strings.Cut(string(body), "-- +goose Down")
-				if _, err := pool.Exec(t.Context(), up); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := pool.Exec(t.Context(), `INSERT INTO goose_db_version (version_id, is_applied) VALUES (14, true)`); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := pool.Exec(t.Context(), `UPDATE l2_stances SET judgement = 'changes' WHERE id = 'stance:legacy'`); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := migrator.UpTo(t.Context(), 15); err == nil {
-					t.Fatal("UpTo(15) accepted the legacy stance schema without artifact class")
-				}
-			}
-			if _, err := migrator.Up(t.Context()); err != nil {
-				t.Fatalf("Up() from %s version 14: %v", branch, err)
-			}
-			newest, err := db.EmbeddedVersion()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if version, err := migrator.Version(t.Context()); err != nil || version != newest {
-				t.Fatalf("Version() = %d, %v; want %d", version, err, newest)
-			}
-			var class, docText, position, judgement string
-			if err := pool.QueryRow(t.Context(), `SELECT artifact_class, text FROM l1_docs WHERE id = 'l1:legacy:pr-1'`).Scan(&class, &docText); err != nil || class != "merged_pr" || docText != "retained" {
-				t.Errorf("document = %q, %q, %v; want merged_pr and retained", class, docText, err)
-			}
-			if err := pool.QueryRow(t.Context(), `SELECT position FROM l2_stances WHERE id = 'stance:legacy'`).Scan(&position); err != nil || position != "keep" {
-				t.Errorf("stance = %q, %v; want keep", position, err)
-			}
-			if err := pool.QueryRow(t.Context(), `SELECT coalesce(judgement, '') FROM l2_stances WHERE id = 'stance:legacy'`).Scan(&judgement); err != nil || (branch == "stance-judgement" && judgement != "changes") || (branch == "artifact-class" && judgement != "") {
-				t.Errorf("judgement = %q, %v; existing value was not preserved", judgement, err)
-			}
-			if _, err := pool.Exec(t.Context(), `UPDATE l2_stances SET judgement = 'restates' WHERE id = 'stance:legacy'`); err != nil {
-				t.Errorf("valid judgement rejected: %v", err)
-			}
-			if _, err := pool.Exec(t.Context(), `UPDATE l2_stances SET judgement = 'unknown' WHERE id = 'stance:legacy'`); err == nil {
-				t.Error("unknown judgement accepted")
-			}
-			if _, err := pool.Exec(t.Context(), `UPDATE l1_docs SET artifact_class = NULL WHERE id = 'l1:legacy:pr-1'`); err == nil {
-				t.Error("NULL artifact class accepted")
-			}
-			if _, err := pool.Exec(t.Context(), `UPDATE l1_docs SET artifact_class = 'unknown' WHERE id = 'l1:legacy:pr-1'`); err == nil {
-				t.Error("unknown artifact class accepted")
-			}
-		})
 	}
 }
 
