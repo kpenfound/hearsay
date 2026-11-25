@@ -13,31 +13,18 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector"
 )
 
-var (
-	_ connector.ResyncStore     = (*connector.MemoryResyncs)(nil)
-	_ connector.ExposureReader  = (*connector.Recorder)(nil)
-	_ connector.ResyncRequester = (*connector.Gate)(nil)
-)
-
-// walker is a [connector.Resyncer] whose re-sync of a container is a walk of
-// pages calls, the cursor being the number of the next one. It records every
-// call, and captures the sink its handler was given, which is how a test asks
-// for a re-sync the way a push connector does.
 type walker struct {
 	*connector.Fake
 	pages int
 
-	mu        sync.Mutex
-	calls     []string
-	asked     []string
-	private   map[string]bool
-	publicErr error
-	sink      connector.Sink
-	// fail is what Resync returns for a container, and stuck makes it hand
-	// back the cursor it was given with nothing emitted.
-	fail  map[string]error
-	stuck map[string]bool
-	// during, if set, runs inside the call for this cursor, once.
+	mu         sync.Mutex
+	calls      []string
+	asked      []string
+	private    map[string]bool
+	publicErr  error
+	sink       connector.Sink
+	fail       map[string]error
+	stuck      map[string]bool
 	during     func()
 	duringAt   connector.Cursor
 	duringOnce sync.Once
@@ -118,14 +105,10 @@ func (w *walker) requester(t *testing.T) connector.ResyncRequester {
 	return req
 }
 
-// exposure is an [connector.ExposureReader] with a fixed answer.
 type exposure []connector.Exposure
 
 func (e exposure) Exposed(context.Context, string) ([]connector.Exposure, error) { return e, nil }
 
-// idleSignal is an [connector.ExposureReader] with nothing exposed that says
-// when it has been read: the runtime reads it last, so after that it is idle
-// until something wakes it.
 type idleSignal chan struct{}
 
 func (s idleSignal) Exposed(context.Context, string) ([]connector.Exposure, error) {
@@ -140,8 +123,6 @@ func settled(store *connector.MemoryResyncs, source, container string) func() bo
 	}
 }
 
-// A re-sync the store says is owed is resumed from its stored cursor, not
-// started again, and finishing it settles the debt.
 func TestAnOwedResyncResumesFromItsStoredCursor(t *testing.T) {
 	src := runtimeSource("resume")
 	w := newWalker(src, 4)
@@ -163,11 +144,6 @@ func TestAnOwedResyncResumesFromItsStoredCursor(t *testing.T) {
 	}
 }
 
-// A push connector asks for a re-sync through the sink it was handed, which
-// records it before returning and wakes the runtime, idle by then, to walk it.
-// A container
-// config does not allow owes nothing, and without a store nothing is recorded
-// and the connector is told.
 func TestARequestedResyncIsRecordedAndRun(t *testing.T) {
 	src := runtimeSource("request")
 	w := newWalker(src, 2)
@@ -182,11 +158,7 @@ func TestARequestedResyncIsRecordedAndRun(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for the runtime to finish its startup check")
 	}
-	req := w.requester(t)
-	if err := req.RequestResync(t.Context(), "elsewhere"); err != nil {
-		t.Errorf("RequestResync(a container config does not allow) = %v, want nil", err)
-	}
-	if err := req.RequestResync(t.Context(), "C123"); err != nil {
+	if err := w.requester(t).RequestResync(t.Context(), "C123"); err != nil {
 		t.Fatalf("RequestResync(C123) = %v", err)
 	}
 	waitFor(t, "the re-sync to finish", settled(resyncs, src.ID, "C123"))
@@ -196,25 +168,49 @@ func TestARequestedResyncIsRecordedAndRun(t *testing.T) {
 	if got, want := w.callsSoFar(), []string{"C123@", "C123@1"}; !slices.Equal(got, want) {
 		t.Errorf("calls = %v, want %v", got, want)
 	}
+}
+
+func TestARequestedResyncOfAContainerConfigDoesNotAllowOwesNothing(t *testing.T) {
+	src := runtimeSource("request")
+	w := newWalker(src, 2)
+	resyncs := connector.NewMemoryResyncs()
+	idle := make(idleSignal)
+	_, stop := start(t, connector.RuntimeOptions{
+		Sources: []connector.SourceConfig{src}, Registry: registryOf(t, map[string]connector.Connector{src.ID: w}),
+		Sink: &connector.Recorder{}, Resyncs: resyncs, Exposure: idle,
+	})
+	select {
+	case <-idle:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for the runtime to finish its startup check")
+	}
+	if err := w.requester(t).RequestResync(t.Context(), "elsewhere"); err != nil {
+		t.Errorf("RequestResync(elsewhere) = %v, want nil", err)
+	}
+	if err := stop(); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
 	if rec := resyncs.Get(src.ID, "elsewhere"); rec.Generation != 0 {
 		t.Errorf("a container config does not allow was recorded: %+v", rec)
 	}
+	if got := w.callsSoFar(); len(got) != 0 {
+		t.Errorf("calls = %v, want none", got)
+	}
+}
 
-	bare := newWalker(src, 2)
-	_, stopBare := start(t, connector.RuntimeOptions{
-		Sources: []connector.SourceConfig{src}, Registry: registryOf(t, map[string]connector.Connector{src.ID: bare}),
+func TestARequestedResyncWithNoStoreIsRefused(t *testing.T) {
+	src := runtimeSource("request")
+	w := newWalker(src, 2)
+	_, stop := start(t, connector.RuntimeOptions{
+		Sources: []connector.SourceConfig{src}, Registry: registryOf(t, map[string]connector.Connector{src.ID: w}),
 		Sink: &connector.Recorder{},
 	})
-	defer func() { _ = stopBare() }()
-	if err := bare.requester(t).RequestResync(t.Context(), "C123"); !errors.Is(err, connector.ErrNoResyncStore) {
+	defer func() { _ = stop() }()
+	if err := w.requester(t).RequestResync(t.Context(), "C123"); !errors.Is(err, connector.ErrNoResyncStore) {
 		t.Errorf("RequestResync with no store = %v, want ErrNoResyncStore", err)
 	}
 }
 
-// A request that arrives while its container's walk is running starts the walk
-// over, rather than being settled by a walk that began before it: part of that
-// walk may have read the container before it changed. The page the old walk
-// was reading does not move the new walk's cursor.
 func TestARequestDuringAWalkStartsItOver(t *testing.T) {
 	src := runtimeSource("again")
 	w := newWalker(src, 3)
@@ -239,8 +235,6 @@ func TestARequestDuringAWalkStartsItOver(t *testing.T) {
 	}
 }
 
-// An owed re-sync of a container config no longer allows is not walked, and
-// does not stand in the way of one that is.
 func TestAnOwedResyncOfAContainerConfigDroppedIsNotWalked(t *testing.T) {
 	src := runtimeSource("dropped")
 	w := newWalker(src, 1)
@@ -260,11 +254,6 @@ func TestAnOwedResyncOfAContainerConfigDroppedIsNotWalked(t *testing.T) {
 	}
 }
 
-// At startup the runtime asks the connector about every container L0 serves as
-// public, unless config does not allow it or it has been re-synced since the
-// last public artifact arrived, and owes a re-sync for each the source says is
-// private. The sentinel container, last in the answer and always private, is
-// how the test knows the check has decided about the one before it.
 func TestTheStartupCheckOwesAResyncForAContainerNoLongerPublic(t *testing.T) {
 	now := time.Now()
 	tests := []struct {
@@ -317,8 +306,6 @@ func TestTheStartupCheckOwesAResyncForAContainerNoLongerPublic(t *testing.T) {
 	}
 }
 
-// A re-sync that fails — the store, or the connector's answer — is counted in
-// health and retried, and the count clears once it works.
 func TestAFailingResyncIsCountedAndRetried(t *testing.T) {
 	boom := errors.New("boom")
 	tests := []struct {
@@ -362,8 +349,6 @@ func (w *walker) callsTo(container string) int {
 	return n
 }
 
-// A re-sync that makes no progress is a failure and not progress: it is
-// counted, and the stored record neither moves nor settles.
 func TestAResyncThatMakesNoProgressIsNotProgress(t *testing.T) {
 	src := runtimeSource("stuck")
 	w := newWalker(src, 4)
@@ -384,8 +369,6 @@ func TestAResyncThatMakesNoProgressIsNotProgress(t *testing.T) {
 	}
 }
 
-// A container whose re-sync keeps failing holds up neither another owed
-// container, which sorts after it, nor the startup check.
 func TestAFailingResyncHoldsUpNothingElse(t *testing.T) {
 	src := runtimeSource("blocked")
 	src.Containers = []string{"A000", "C123", "D456"}
@@ -410,10 +393,6 @@ func TestAFailingResyncHoldsUpNothingElse(t *testing.T) {
 	}
 }
 
-// A request that arrives while the runtime is backing off from a failure is
-// walked at once, not after the backoff, which here is an hour; and a re-sync
-// the startup check owes while another container fails is walked before the
-// runtime backs off at all.
 func TestARequestDuringABackoffIsNotKeptWaiting(t *testing.T) {
 	src := runtimeSource("backoff")
 	src.Containers = []string{"A000", "C123", "D456"}

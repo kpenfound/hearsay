@@ -20,10 +20,7 @@ const AllowAll = "*"
 // step with them, and it is default deny — a source that is not configured, or
 // a container that is not listed, is not ingested.
 type Allowlist struct {
-	// containers maps a source id to its allowed container ids. A source
-	// present with an empty set allows nothing.
-	containers map[string]map[string]bool
-	// folderPrefixes applies only to filesystem vault sources.
+	containers     map[string]map[string]bool
 	folderPrefixes map[string][]string
 }
 
@@ -86,14 +83,10 @@ type Gate struct {
 	allow   Allowlist
 	dropped atomic.Int64
 
-	// resyncs and wake are set by the runtime for a [Resyncer] it has a
-	// [ResyncStore] for; a gate without them records no re-sync.
 	resyncs  ResyncStore
 	wake     chan struct{}
 	pollWake chan struct{}
 
-	// commands and readOnly are set by the runtime: what a [Command] is
-	// applied through, and whether the source takes commands at all.
 	commands CommandApplier
 	readOnly bool
 }
@@ -131,8 +124,6 @@ func (g *Gate) emit(ctx context.Context, ev Event, retraction bool) error {
 	return g.sink.Emit(ctx, ev)
 }
 
-// admit is what the gate checks of an event before it reaches the sink: it
-// returns the event with its id stamped, and false for one the allowlist drops.
 func (g *Gate) admit(ctx context.Context, ev Event, retraction bool) (Event, bool, error) {
 	if ev.Source != g.source {
 		return ev, false, fmt.Errorf("%w: source %q, connector is configured for %q", ErrForeignSource, ev.Source, g.source)
@@ -145,8 +136,6 @@ func (g *Gate) admit(ctx context.Context, ev Event, retraction bool) (Event, boo
 	}
 	if !retraction && !g.allow.Allows(ev.Source, ev.Payload.Container.NativeID) {
 		g.dropped.Add(1)
-		// Debug, and ids only: a busy container that config excludes would
-		// otherwise fill the log, and payload text never goes above debug.
 		telemetry.Logger(ctx).DebugContext(ctx, "event dropped: container is not in the ingest allowlist",
 			"source", ev.Source,
 			"container", ev.Payload.Container.NativeID,
@@ -173,7 +162,6 @@ func (g *Gate) SerializeArtifact(ctx context.Context, source, artifact string, f
 	})
 }
 
-// gated is a locked artifact whose writes go through the gate.
 type gated struct {
 	gate *Gate
 	LockedArtifact
@@ -215,8 +203,6 @@ func (g *Gate) RequestResync(ctx context.Context, container string) error {
 	select {
 	case g.wake <- struct{}{}:
 	default:
-		// A wake is already pending, and the runtime reads every owed re-sync
-		// when it takes it.
 	}
 	return nil
 }

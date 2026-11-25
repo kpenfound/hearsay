@@ -35,14 +35,6 @@ const (
 	DefaultShutdown = 10 * time.Second
 )
 
-// jitterFraction is how much later than its due time a tick may run: a tenth of
-// the interval, drawn uniformly, and never earlier.
-//
-// One-sided, unlike the queue's retry jitter, because the interval is a promise
-// to the source — a floor of 30 seconds that a jittered tick could undercut is
-// not a floor — and because polls do not arrive in a herd the way the retries
-// of jobs a provider rate-limited together do. What it is for is two sources,
-// or two replicas, whose ticks would otherwise stay in lockstep forever.
 const jitterFraction = 10
 
 // HookPrefix is the path prefix the runtime owns for push connectors. A
@@ -158,8 +150,6 @@ func (c Cadence) Backoff(interval time.Duration, fails int) time.Duration {
 	c = c.withDefaults()
 	limit := max(c.MaxBackoff, interval)
 	d := interval
-	// Doubling in a loop rather than by shifting, so that a long-failing source
-	// cannot shift its way to a negative duration.
 	for i := 1; i < fails && d < limit; i++ {
 		d *= 2
 	}
@@ -169,8 +159,6 @@ func (c Cadence) Backoff(interval time.Duration, fails int) time.Duration {
 	return jitter(d)
 }
 
-// jitter spreads a tick over the [jitterFraction] of the interval after it is
-// due.
 func jitter(d time.Duration) time.Duration {
 	if d < 0 {
 		return 0
@@ -212,9 +200,6 @@ func ResolveSecrets(src SourceConfig, lookup func(string) (string, bool)) (Sourc
 	return src, nil
 }
 
-// hosted is one connector the runtime is running, and what the runtime knows
-// about it that the connector does not: what it writes through, how its poll
-// loop is going, and where its backfill has got to.
 type hosted struct {
 	src  SourceConfig
 	conn Connector
@@ -265,10 +250,6 @@ func NewRuntime(ctx context.Context, opts RuntimeOptions) (*Runtime, error) {
 	r := &Runtime{opts: opts, mux: http.NewServeMux()}
 	seen := make(map[string]bool, len(opts.Sources))
 	for _, src := range opts.Sources {
-		// Two connectors for one source id would share a gate's allowlist, two
-		// backfills would share a cursor, and two push handlers would claim one
-		// path — which is a panic rather than an error, so this is checked
-		// before anything is built.
 		if seen[src.ID] {
 			return nil, r.abandon(ctx, fmt.Errorf("source %q is configured twice", src.ID))
 		}
@@ -296,8 +277,6 @@ func NewRuntime(ctx context.Context, opts RuntimeOptions) (*Runtime, error) {
 	return r, nil
 }
 
-// abandon closes the connectors a failed NewRuntime had already built. Nothing
-// else holds them, so nothing else can.
 func (r *Runtime) abandon(ctx context.Context, reason error) error {
 	if err := r.Close(ctx); err != nil {
 		return errors.Join(reason, err)
@@ -352,9 +331,6 @@ func (r *Runtime) Run(ctx context.Context) error {
 		switch {
 		case !ok:
 		case r.opts.Cursors == nil:
-			// Driving a backfill with nowhere to keep the cursor would walk the
-			// whole of a source's history again on every restart, which is the
-			// expensive half of ingest.
 			telemetry.Logger(hctx).WarnContext(hctx, "no cursor store: history is not backfilled")
 		default:
 			wg.Add(1)
@@ -377,22 +353,13 @@ func (r *Runtime) Run(ctx context.Context) error {
 		}
 	}
 	wg.Wait()
-	// Every loop above returns when ctx is done, but a backfill that reaches
-	// the end of history returns before that and a push-only source has no loop
-	// at all: the process still hosts their handlers and their health until it
-	// is asked to stop.
 	<-ctx.Done()
 
-	// The context that stopped the loops is done, and a connector's Close is
-	// entitled to a context that is not: closing is what a connector does with
-	// the goroutines and sockets it owns.
 	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.opts.Cadence.Shutdown)
 	defer cancel()
 	return r.Close(closeCtx)
 }
 
-// stream supervises a client-dialed connection. A completed stream is also
-// restarted: a live source is not complete merely because its socket closed.
 func (r *Runtime) stream(ctx context.Context, h *hosted, streamer Streamer) {
 	log := telemetry.Logger(ctx)
 	interval := r.opts.Cadence.MinRefresh
@@ -438,22 +405,16 @@ func (r *Runtime) Close(ctx context.Context) error {
 	return r.closeErr
 }
 
-// poll calls Poll on the source's cadence, and never concurrently with itself:
-// this goroutine is the only caller, which is what lets a poller keep its
-// position in memory without locking.
 func (r *Runtime) poll(ctx context.Context, h *hosted, poller Poller) {
 	log := telemetry.Logger(ctx)
 	interval := r.opts.Cadence.Interval(h.src)
 	log.InfoContext(ctx, "polling", "refresh", interval.String())
 
-	// The first poll is immediate but for the jitter, so that a process that
-	// has just started ingests rather than waiting out a refresh interval.
 	wait := jitter(0)
 	fails := 0
 	var cursor Cursor
 	var cursorKey string
 	if _, ok := poller.(CursorPoller); ok {
-		// A separate key keeps the completed initial backfill untouched.
 		sum := sha256.Sum256([]byte(h.src.ID))
 		cursorKey = fmt.Sprintf("live-%x", sum[:16])
 	}
@@ -489,8 +450,6 @@ func (r *Runtime) poll(ctx context.Context, h *hosted, poller Poller) {
 		}
 		switch {
 		case err != nil && ctx.Err() != nil:
-			// Cancelled mid-poll: the process is shutting down, not the source
-			// failing.
 			log.InfoContext(ctx, "polling stopped")
 			return
 		case err != nil:
@@ -506,9 +465,6 @@ func (r *Runtime) poll(ctx context.Context, h *hosted, poller Poller) {
 	}
 }
 
-// backfill walks a source's history: Backfill against the stored cursor, and
-// the cursor it returns stored before the next call, so that a restart resumes
-// where this left off rather than at the beginning.
 func (r *Runtime) backfill(ctx context.Context, h *hosted, backfiller Backfiller) {
 	log := telemetry.Logger(ctx)
 	interval := r.opts.Cadence.Interval(h.src)
@@ -522,14 +478,8 @@ func (r *Runtime) backfill(ctx context.Context, h *hosted, backfiller Backfiller
 		version = v.BackfillVersion()
 	}
 	if state.Done && version != "" && state.Cursor != Cursor(version) {
-		// A different configured input set must be walked again, even when the
-		// previous backfill finished. Re-emission deduplicates unchanged events.
 		state = BackfillState{}
 	}
-	// What health says about the backfill is what the stored position says,
-	// including on a process that did none of the walking: a source walked in an
-	// earlier process is walked, and readiness that said otherwise would have an
-	// operator conclude a deploy had lost it.
 	h.backfilled.Store(state.Events)
 	h.backfillDone.Store(state.Done)
 	if state.Done {
@@ -545,12 +495,6 @@ func (r *Runtime) backfill(ctx context.Context, h *hosted, backfiller Backfiller
 			return
 		}
 		if err == nil && !res.Done && res.Events == 0 && res.Next == state.Cursor {
-			// A call that emitted nothing and handed back the cursor it was
-			// given would be called with that cursor forever. It is the
-			// connector breaking the contract — one call does a bounded amount
-			// of work and returns Done when there is no more — so it is treated
-			// as a failure rather than as the end of history, which would
-			// record a walk that never happened.
 			err = errors.New("backfill made no progress: it emitted nothing and returned the cursor it was given")
 		}
 		if err != nil {
@@ -567,8 +511,6 @@ func (r *Runtime) backfill(ctx context.Context, h *hosted, backfiller Backfiller
 
 		next := BackfillState{Cursor: res.Next, Done: res.Done, Events: state.Events + int64(res.Events)}
 		if res.Done {
-			// Next is ignored when Done is set, so the position stays where the
-			// last call that meant one left it.
 			next.Cursor = state.Cursor
 			if version != "" {
 				next.Cursor = Cursor(version)
@@ -577,10 +519,6 @@ func (r *Runtime) backfill(ctx context.Context, h *hosted, backfiller Backfiller
 		if err := r.save(ctx, h, next, interval); err != nil {
 			return
 		}
-		// The count clears here, when a whole iteration has worked — the call
-		// and the position it produced — rather than between the two. (A save
-		// that is retrying keeps the count itself, so the two orders report the
-		// same thing; this one is the one that reads as what it means.)
 		fails = 0
 		h.backfillFails.Store(0)
 		state = next
@@ -593,29 +531,17 @@ func (r *Runtime) backfill(ctx context.Context, h *hosted, backfiller Backfiller
 	}
 }
 
-// load reads the source's position, retrying until it works or the process
-// stops: a database that is briefly unreachable is not a reason to skip a
-// source's history for the lifetime of the process.
 func (r *Runtime) load(ctx context.Context, h *hosted, interval time.Duration) (BackfillState, error) {
 	log := telemetry.Logger(ctx)
 	for fails := 1; ; fails++ {
 		state, err := r.opts.Cursors.Load(ctx, h.src.ID)
 		if err == nil {
-			// A read that worked clears the count, however many attempts it
-			// took. The loop below clears it too, after a call and its save —
-			// but a source whose history is already walked never reaches the
-			// loop, so a transient failure here would be the number health
-			// reported for the life of the process.
 			h.backfillFails.Store(0)
 			return state, nil
 		}
 		if ctx.Err() != nil {
 			return BackfillState{}, ctx.Err()
 		}
-		// Counted like every other backfill failure: a source whose position
-		// cannot even be read is one whose history is not being walked, and
-		// health has to say so rather than showing a source with nothing left
-		// to do.
 		h.backfillFails.Store(int64(fails))
 		wait := r.opts.Cadence.Backoff(interval, fails)
 		log.WarnContext(ctx, "reading the backfill cursor failed, retrying", "error", err, "failures", fails, "retry_in", wait.String())
@@ -625,10 +551,6 @@ func (r *Runtime) load(ctx context.Context, h *hosted, interval time.Duration) (
 	}
 }
 
-// save stores the position, retrying until it works or the process stops. It
-// retries rather than carrying on because carrying on is what loses the
-// position: the next call would move the cursor past a page whose position was
-// never written down.
 func (r *Runtime) save(ctx context.Context, h *hosted, state BackfillState, interval time.Duration) error {
 	log := telemetry.Logger(ctx)
 	for fails := 1; ; fails++ {
@@ -648,7 +570,6 @@ func (r *Runtime) save(ctx context.Context, h *hosted, state BackfillState, inte
 	}
 }
 
-// sleep waits, and reports whether the wait finished rather than the context.
 func sleep(ctx context.Context, d time.Duration) bool {
 	timer := time.NewTimer(d)
 	defer timer.Stop()
@@ -746,9 +667,6 @@ func (r *Runtime) Health(ctx context.Context) RuntimeHealth {
 	return out
 }
 
-// worse is the worse of two statuses. An unknown status counts as failed: a
-// connector reporting something the runtime does not understand is not one to
-// call healthy.
 func worse(a, b HealthStatus) HealthStatus {
 	if rank(b) > rank(a) {
 		return known(b)
@@ -756,8 +674,6 @@ func worse(a, b HealthStatus) HealthStatus {
 	return known(a)
 }
 
-// known maps a status the contract does not define onto failed, so that a
-// connector reporting something nobody understands is not reported as working.
 func known(s HealthStatus) HealthStatus {
 	switch s {
 	case HealthOK, HealthDegraded, HealthFailed:

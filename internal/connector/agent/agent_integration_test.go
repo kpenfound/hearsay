@@ -18,8 +18,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/l0"
 )
 
-// Through the real store: a replayed event writes nothing, and the same event
-// key posted with other content is refused rather than rewritten.
 func TestASessionLandsInL0Once(t *testing.T) {
 	url := os.Getenv("HEARSAY_DATABASE_URL")
 	if url == "" {
@@ -63,7 +61,6 @@ func TestASessionLandsInL0Once(t *testing.T) {
 		}
 	}
 
-	// The artifact's history is the session, in the order it happened.
 	history, err := store.List(t.Context(), l0.ListOptions{Filter: l0.Filter{Source: src.ID, Artifact: "s-01"}, Limit: l0.MaxLimit})
 	if err != nil {
 		t.Fatal(err)

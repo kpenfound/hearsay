@@ -27,7 +27,6 @@ func TestRevisionStability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The first 16 SHA-256 hex digits of the original tracker's canonical JSON.
 	const token = "0ace0b89398878c6"
 	if revised.Payload.Revision.Token != token || revised.NativeID != "p@"+token || revised.ID != "evt:projects:p@"+token {
 		t.Fatalf("Revise() = %+v, want the fixed original revision %s", revised, token)
@@ -83,52 +82,78 @@ type artifactReader struct {
 func (r artifactReader) CurrentArtifact(context.Context, string, string) (connector.Event, bool, error) {
 	return r.current, r.held, r.err
 }
+
 func (r artifactReader) CurrentArtifacts(context.Context, string) ([]connector.Event, error) {
 	return nil, r.err
 }
 
-func TestTombstone(t *testing.T) {
+func heldTombstoneFixture(t *testing.T) (connector.Event, connector.Event) {
+	t.Helper()
 	ev, edited := observation()
 	current, err := push.Revise(ev, edited)
 	if err != nil {
 		t.Fatal(err)
 	}
-	readErr := errors.New("read unavailable")
-	tests := []struct {
-		name          string
-		reader        connector.ArtifactReader
-		held, wantErr bool
-	}{
-		{"held", artifactReader{current: current, held: true}, true, false},
-		{"not held", artifactReader{}, false, false},
-		{"read failure", artifactReader{err: readErr}, false, true},
-		{"no reader", nil, false, true},
+	return ev, current
+}
+
+func TestTombstoneRetractsTheHeldRevisionWithItsContainerTimeAndACL(t *testing.T) {
+	ev, current := heldTombstoneFixture(t)
+	got, held, err := push.Tombstone(t.Context(), artifactReader{current: current, held: true}, ev.Source, ev.Payload.Artifact)
+	if err != nil || !held {
+		t.Fatalf("Tombstone() = %+v, %v, %v, want a held retraction", got, held, err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, held, err := push.Tombstone(t.Context(), tt.reader, ev.Source, ev.Payload.Artifact)
-			if held != tt.held || (err != nil) != tt.wantErr {
-				t.Fatalf("Tombstone() = %+v, %v, %v, want held %v, error %v", got, held, err, tt.held, tt.wantErr)
-			}
-			if tt.name == "read failure" && !errors.Is(err, readErr) {
-				t.Fatalf("Tombstone() = %v, want wrapped read failure", err)
-			}
-			if !held {
-				return
-			}
-			if got.Kind != connector.KindTombstone || got.Payload.Target != ev.Payload.Artifact || got.Time != ev.Time || got.Payload.Container != ev.Payload.Container || !reflect.DeepEqual(got.ACL, ev.ACL) || got.Payload.State != nil || got.Payload.Revision != nil {
-				t.Fatalf("Tombstone() = %+v, want stateless retraction with current time, container and ACL", got)
-			}
-			again, _, err := push.Tombstone(t.Context(), tt.reader, ev.Source, ev.Payload.Artifact)
-			if err != nil || !reflect.DeepEqual(got, again) {
-				t.Fatalf("Tombstone(retry) = %+v, %v, want %+v", again, err, got)
-			}
-			changed := current
-			changed.NativeID += "changed"
-			next, _, err := push.Tombstone(t.Context(), artifactReader{current: changed, held: true}, ev.Source, ev.Payload.Artifact)
-			if err != nil || next.ID == got.ID {
-				t.Fatalf("Tombstone(new revision) = %+v, %v, want a different id", next, err)
-			}
-		})
+	if got.Kind != connector.KindTombstone || got.Payload.Target != ev.Payload.Artifact || got.Time != ev.Time || got.Payload.Container != ev.Payload.Container || !reflect.DeepEqual(got.ACL, ev.ACL) || got.Payload.State != nil || got.Payload.Revision != nil {
+		t.Fatalf("Tombstone() = %+v, want stateless retraction with current time, container and ACL", got)
+	}
+}
+
+func TestTombstoneOfTheSameRevisionIsTheSameEvent(t *testing.T) {
+	ev, current := heldTombstoneFixture(t)
+	reader := artifactReader{current: current, held: true}
+	first, _, err := push.Tombstone(t.Context(), reader, ev.Source, ev.Payload.Artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, _, err := push.Tombstone(t.Context(), reader, ev.Source, ev.Payload.Artifact)
+	if err != nil || !reflect.DeepEqual(first, again) {
+		t.Fatalf("Tombstone(retry) = %+v, %v, want %+v", again, err, first)
+	}
+}
+
+func TestTombstoneOfANewRevisionIsANewEvent(t *testing.T) {
+	ev, current := heldTombstoneFixture(t)
+	first, _, err := push.Tombstone(t.Context(), artifactReader{current: current, held: true}, ev.Source, ev.Payload.Artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := current
+	changed.NativeID += "changed"
+	next, _, err := push.Tombstone(t.Context(), artifactReader{current: changed, held: true}, ev.Source, ev.Payload.Artifact)
+	if err != nil || next.ID == first.ID {
+		t.Fatalf("Tombstone(new revision) = %+v, %v, want a different id", next, err)
+	}
+}
+
+func TestTombstoneOfAnArtifactNotHeldEmitsNothing(t *testing.T) {
+	ev, _ := heldTombstoneFixture(t)
+	got, held, err := push.Tombstone(t.Context(), artifactReader{}, ev.Source, ev.Payload.Artifact)
+	if err != nil || held {
+		t.Fatalf("Tombstone() = %+v, %v, %v, want not held and no error", got, held, err)
+	}
+}
+
+func TestTombstoneWrapsTheReadFailure(t *testing.T) {
+	ev, _ := heldTombstoneFixture(t)
+	readErr := errors.New("read unavailable")
+	if _, held, err := push.Tombstone(t.Context(), artifactReader{err: readErr}, ev.Source, ev.Payload.Artifact); held || !errors.Is(err, readErr) {
+		t.Fatalf("Tombstone() = %v, %v, want the wrapped read failure", held, err)
+	}
+}
+
+func TestTombstoneWithNoReaderFails(t *testing.T) {
+	ev, _ := heldTombstoneFixture(t)
+	if _, held, err := push.Tombstone(t.Context(), nil, ev.Source, ev.Payload.Artifact); held || err == nil {
+		t.Fatalf("Tombstone(nil reader) = %v, %v, want an error", held, err)
 	}
 }

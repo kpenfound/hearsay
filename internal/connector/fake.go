@@ -43,10 +43,6 @@ type Fake struct {
 	Queue []Event
 	// Pages is what Backfill returns, one page per call, oldest first.
 	Pages [][]Event
-	// PollErr, if set, is what Poll returns instead of emitting.
-	PollErr error
-	// BackfillErr, if set, is what Backfill returns instead of emitting.
-	BackfillErr error
 	// Status is what Health reports. It defaults to HealthOK.
 	Status HealthStatus
 
@@ -148,10 +144,6 @@ func (f *Fake) Poll(ctx context.Context, sink Sink) error {
 		f.mu.Unlock()
 		return ErrClosed
 	}
-	if err := f.PollErr; err != nil {
-		f.mu.Unlock()
-		return err
-	}
 	queued := f.Queue
 	f.Queue = nil
 	f.mu.Unlock()
@@ -171,10 +163,6 @@ func (f *Fake) Backfill(ctx context.Context, sink Sink, from Cursor) (BackfillRe
 	if f.closed {
 		f.mu.Unlock()
 		return BackfillResult{}, ErrClosed
-	}
-	if err := f.BackfillErr; err != nil {
-		f.mu.Unlock()
-		return BackfillResult{}, err
 	}
 	pages := f.Pages
 	f.mu.Unlock()
@@ -218,7 +206,6 @@ func (f *Fake) Handler(sink Sink) http.Handler {
 			http.Error(w, "post an event", http.StatusMethodNotAllowed)
 			return
 		}
-		// A webhook body is small; a fake does not need to be generous.
 		const maxBody = 1 << 20
 		body, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
 		if err != nil {
@@ -253,7 +240,6 @@ func (f *Fake) Handler(sink Sink) http.Handler {
 	})
 }
 
-// command hands a posted command to the runtime and answers with its result.
 func (f *Fake) command(w http.ResponseWriter, r *http.Request, sink Sink, body []byte) {
 	var cmd Command
 	if err := json.Unmarshal(body, &cmd); err != nil {
@@ -297,7 +283,6 @@ type Recorder struct {
 	// connector does when the store is failing.
 	Err error
 
-	// serial is held for the whole of a [Recorder.SerializeArtifact].
 	serial  sync.Mutex
 	deleted map[string]bool
 	mu      sync.Mutex

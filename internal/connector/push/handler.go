@@ -94,7 +94,6 @@ func Handler[T any](opts Options[T]) http.Handler {
 			http.Error(w, fmt.Sprintf("%s: %v", msg.Invalid, err), http.StatusBadRequest)
 			return
 		}
-		// A second decode checks both trailing values and malformed trailing JSON.
 		var extra any
 		if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 			http.Error(w, msg.One, http.StatusBadRequest)

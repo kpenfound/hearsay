@@ -111,8 +111,6 @@ type ExposureReader interface {
 // MemoryResyncs is a [ResyncStore] in memory, for a test that has no database.
 // It is safe for concurrent use.
 type MemoryResyncs struct {
-	// err is what every method returns instead of reading or writing, set by
-	// SetErr.
 	err error
 
 	mu    sync.Mutex

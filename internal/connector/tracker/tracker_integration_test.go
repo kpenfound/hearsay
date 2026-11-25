@@ -16,13 +16,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/connector/push"
 	"github.com/kpenfound/hearsay/internal/connector/tracker"
 	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/l0"
 )
 
-// through serves a fresh source's handler behind the runtime's gate over the
-// real L0 store.
 func through(t *testing.T, settings map[string]any) (*httptest.Server, *pgxpool.Pool, string) {
 	t.Helper()
 	url := os.Getenv("HEARSAY_DATABASE_URL")
@@ -45,8 +44,6 @@ func through(t *testing.T, settings map[string]any) (*httptest.Server, *pgxpool.
 	return srv, pool, src.ID
 }
 
-// stored is every native id L0 holds for a source, tombstoned or not, in the
-// order it received them.
 func stored(t *testing.T, pool *pgxpool.Pool, source string) []string {
 	t.Helper()
 	rows, err := pool.Query(t.Context(), `SELECT native_id FROM l0_events WHERE source = $1 ORDER BY seq`, source)
@@ -70,7 +67,7 @@ func stored(t *testing.T, pool *pgxpool.Pool, source string) []string {
 
 func eventID(t *testing.T, answer string) string {
 	t.Helper()
-	var a tracker.Accepted
+	var a push.Accepted
 	if err := json.Unmarshal([]byte(answer), &a); err != nil {
 		t.Fatal(err)
 	}
@@ -81,9 +78,6 @@ func eventID(t *testing.T, answer string) string {
 	return native
 }
 
-// A sender re-posting everything it holds — the backfill — writes nothing new,
-// a late stale revision does not become current, and a deletion posted twice
-// is one tombstone.
 func TestReplayingWritesNothing(t *testing.T) {
 	srv, pool, source := through(t, nil)
 	ticket, comment, deletion := fixture(t, "ticket.json"), fixture(t, "comment.json"), fixture(t, "delete.json")
@@ -117,8 +111,6 @@ func TestReplayingWritesNothing(t *testing.T) {
 	}
 }
 
-// With per-ticket access lists, a comment reads its ticket's through the gate
-// from L0.
 func TestACommentReadsItsTicketsAccessFromL0(t *testing.T) {
 	srv, pool, source := through(t, map[string]any{"ticket_acl": true})
 	own := []map[string]string{{"kind": "identity", "native_id": "u-17"}}

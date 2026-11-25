@@ -11,9 +11,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
-// Accepted is the response to an event that was written or already held.
-type Accepted = push.Accepted
-
 // Handler implements [connector.Pusher]: one ticket or comment per POST, from
 // the sender holding the source's token. Authentication precedes body parsing;
 // the entire request is validated before anything is emitted.

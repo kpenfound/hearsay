@@ -94,14 +94,10 @@ type CommentNative struct {
 	ID      string `json:"id"`
 }
 
-// maxKey is the longest project key, ticket key or comment id.
 const maxKey = 128
 
 const keyGrammar = "1 to 128 bytes of letters, digits, -, _, . and /"
 
-// validKey reports whether s may be a project key, a ticket key or a comment
-// id. The set leaves out `#`, `:` and `@`, which separate the parts of an
-// artifact id, and anything an event id would have to escape.
 func validKey(s string) bool {
 	if s == "" || len(s) > maxKey {
 		return false
@@ -126,23 +122,16 @@ func CommentArtifact(project, ticket, comment string) string {
 	return TicketArtifact(project, ticket) + ":comment:" + comment
 }
 
-// The refusals. Each is answered with its own status, and none emits anything.
 var (
-	// errBadRequest is a request that is not a ticket or a comment: 400.
 	errBadRequest = push.ErrBadRequest
-	// errForbidden is a project the source does not grant: 403.
-	errForbidden = push.ErrForbidden
-	// errNoTicket is a comment whose access list is its ticket's, on a ticket
-	// Hearsay does not hold: 409.
-	errNoTicket = push.Refuse(push.ErrConflict, "the ticket is not held")
+	errForbidden  = push.ErrForbidden
+	errNoTicket   = push.Refuse(push.ErrConflict, "the ticket is not held")
 )
 
 func badRequest(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", errBadRequest, fmt.Sprintf(format, args...))
 }
 
-// artifact checks the ids every request carries, deletions included, and
-// returns the artifact the request is about.
 func (c *Connector) artifact(req Request) (string, error) {
 	if !validKey(req.Project) || !validKey(req.ID) {
 		return "", badRequest("project and id must each be %s", keyGrammar)
@@ -166,9 +155,6 @@ func (c *Connector) artifact(req Request) (string, error) {
 	}
 }
 
-// event turns an authenticated sender's request, which is not a deletion,
-// into the event it means. The reader is where a comment's access list is
-// read from when tickets carry their own.
 func (c *Connector) event(ctx context.Context, reader connector.ArtifactReader, req Request) (connector.Event, error) {
 	artifact, err := c.artifact(req)
 	if err != nil {
@@ -270,7 +256,6 @@ func (c *Connector) event(ctx context.Context, reader connector.ArtifactReader, 
 	return push.Revise(ev, req.UpdatedAt.UTC())
 }
 
-// identity is the identity hint a person stands for, in this source.
 func (c *Connector) identity(p Person, field string) (connector.Identity, error) {
 	if p.ID == "" {
 		return connector.Identity{}, badRequest("%s.id is required: it is the tracker's stable id for the account", field)
@@ -286,8 +271,6 @@ func (c *Connector) identity(p Person, field string) (connector.Identity, error)
 	return connector.Identity{Source: c.source, Kind: kind, NativeID: p.ID, Handle: p.Handle, DisplayName: p.Name, Email: p.Email}, nil
 }
 
-// ticketAccess is the access list of a ticket: its own, where the source lets
-// it carry one and it does, and its project's otherwise.
 func (c *Connector) ticketAccess(req Request) (connector.ACL, error) {
 	if req.ACL == nil {
 		return c.access[req.Project], nil
@@ -302,8 +285,6 @@ func (c *Connector) ticketAccess(req Request) (connector.ACL, error) {
 	return acl, nil
 }
 
-// commentAccess is the access list of a comment on ticket: the project's where
-// tickets carry no list of their own, and the ticket's current one otherwise.
 func (c *Connector) commentAccess(ctx context.Context, reader connector.ArtifactReader, project, ticket string) (connector.ACL, error) {
 	if !c.ticketACL {
 		return c.access[project], nil

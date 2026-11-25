@@ -105,10 +105,7 @@ func OwnerOf(src connector.SourceConfig) (owner string, agents []string, ok bool
 type Connector struct {
 	source string
 	owner  string
-	// agents are the agents allowed to post.
 	agents map[string]bool
-	// tokens authenticates every agent that has a token, so that an agent the
-	// source does not allow is told so rather than refused as unknown.
 	tokens push.Tokens
 	last   atomic.Int64
 }
@@ -158,8 +155,6 @@ func New(src connector.SourceConfig, principals []principal.Principal, lookup fu
 		c.agents[id] = true
 	}
 
-	// The allowed agents' tokens are required. Another agent's is kept when it
-	// has one, only to answer it 403, and is left out when it cannot be used.
 	for _, p := range principals {
 		if p.Kind != principal.KindAgent || p.TokenEnv == "" {
 			continue
@@ -196,8 +191,6 @@ func New(src connector.SourceConfig, principals []principal.Principal, lookup fu
 		return nil, fmt.Errorf("containers does not allow the owner %q, so every message would be dropped", c.owner)
 	}
 
-	// Without an identity mapping the owner could not read their own events and
-	// the author of a message would resolve to nobody.
 	for _, id := range append([]string{c.owner}, settings.Agents...) {
 		if !mapped(byID[id], src.ID) {
 			return nil, fmt.Errorf("principal %q has no identity in source %q: list {source: %s, native_id: %s} under its identities", id, src.ID, src.ID, id)
@@ -206,8 +199,6 @@ func New(src connector.SourceConfig, principals []principal.Principal, lookup fu
 	return c, nil
 }
 
-// mapped reports whether p lists the identity this source gives it: its own
-// principal id as the native id.
 func mapped(p principal.Principal, source string) bool {
 	return slices.ContainsFunc(p.Identities, func(i principal.Identity) bool {
 		return i.Source == source && i.NativeID == p.ID
