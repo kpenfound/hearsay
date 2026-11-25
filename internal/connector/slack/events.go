@@ -14,11 +14,8 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector"
 )
 
-// permPublic is the permission part of a public message revision token. A
-// visibility change uses perm:private so ACL re-sync is a new revision.
 const permPublic = "perm:public"
 
-// callback is an Events API payload, as a Socket Mode envelope carries it.
 type callback struct {
 	Type      string          `json:"type"`
 	TeamID    string          `json:"team_id"`
@@ -30,7 +27,6 @@ type edited struct {
 	TS string `json:"ts"`
 }
 
-// message is a `message` event, and the message a `message_changed` carries.
 type message struct {
 	Type        string   `json:"type"`
 	Subtype     string   `json:"subtype"`
@@ -58,13 +54,8 @@ type reaction struct {
 	} `json:"item"`
 }
 
-// content is the message subtypes that are something a person or an app
-// said. The rest — joins, leaves, topic and name changes, pins — are channel
-// housekeeping and are not ingested.
 var content = map[string]bool{"": true, "bot_message": true, "thread_broadcast": true, "file_share": true, "me_message": true}
 
-// dispatch turns one Events API payload into L0 events. A payload this
-// version does not ingest returns nil, so its envelope is acknowledged.
 func (c *Connector) dispatch(ctx context.Context, sink connector.Sink, raw json.RawMessage) error {
 	var cb callback
 	if err := json.Unmarshal(raw, &cb); err != nil {
@@ -95,8 +86,6 @@ func (c *Connector) dispatch(ctx context.Context, sink connector.Sink, raw json.
 			}
 			inner := *m.Message
 			inner.Channel = m.Channel
-			// A deleted message with replies stays as a placeholder, which
-			// Slack reports as a change to subtype tombstone.
 			if inner.Subtype == "tombstone" {
 				return c.emitTombstone(ctx, sink, m.Channel, inner.TS)
 			}
@@ -122,7 +111,6 @@ func (c *Connector) dispatch(ctx context.Context, sink connector.Sink, raw json.
 		if !c.configured(change.Channel) {
 			return nil
 		}
-		// Read the current state rather than trusting a possibly delayed event.
 		private, err := c.Public(ctx, change.Channel)
 		if err != nil {
 			return err
@@ -141,7 +129,6 @@ func (c *Connector) dispatch(ctx context.Context, sink connector.Sink, raw json.
 	return nil
 }
 
-// tsTime reads a Slack timestamp, `<unix seconds>.<microseconds>`.
 func tsTime(ts string) (time.Time, bool) {
 	sec, micro, ok := strings.Cut(ts, ".")
 	if !ok || len(micro) != 6 {
@@ -158,12 +145,8 @@ func tsTime(ts string) (time.Time, bool) {
 	return time.Unix(s, u*1000).UTC(), true
 }
 
-// messageArtifact is a message's stable id. A Slack timestamp is unique only
-// within its channel, so the channel is part of it.
 func messageArtifact(channel, ts string) string { return channel + "/" + ts }
 
-// permalink is the archive link Slack itself gives a message, on slack.com,
-// which sends a signed-in reader to their workspace.
 func permalink(channel, ts, thread string) string {
 	link := "https://slack.com/archives/" + channel + "/p" + strings.Replace(ts, ".", "", 1)
 	if thread != "" {
@@ -172,7 +155,6 @@ func permalink(channel, ts, thread string) string {
 	return link
 }
 
-// mention is a user mention in message text: `<@U123>` or `<@U123|name>`.
 var mention = regexp.MustCompile(`<@([UW][A-Z0-9]+)(?:\|[^>]*)?>`)
 
 func (c *Connector) mentions(text string) []connector.Identity {
@@ -188,9 +170,6 @@ func (c *Connector) mentions(text string) []connector.Identity {
 	return out
 }
 
-// author is who posted a message. An app's message carries a bot id, and the
-// bot user's id where it has one. Slack events carry no names, so the hint is
-// the id alone.
 func (c *Connector) author(m message) *connector.Identity {
 	switch {
 	case m.User != "" && m.BotID != "":
@@ -203,8 +182,6 @@ func (c *Connector) author(m message) *connector.Identity {
 	return nil
 }
 
-// event is the part every Slack event shares: a channel's container
-// and ACL.
 func (c *Connector) event(kind connector.Kind, artifact, channel string, at time.Time) connector.Event {
 	c.mu.Lock()
 	restricted := c.restricted[channel]
@@ -234,10 +211,6 @@ func (c *Connector) emit(ctx context.Context, sink connector.Sink, ev connector.
 	return nil
 }
 
-// emitMessage emits one observation of a message. Its content token hashes
-// everything the payload says, so two observations that differ are two
-// revisions: Slack reports a thread root again whenever it gets a reply, and
-// an app can change a message without marking it edited.
 func (c *Connector) emitMessage(ctx context.Context, sink connector.Sink, m message) error {
 	at, ok := tsTime(m.TS)
 	author := c.author(m)
@@ -284,9 +257,6 @@ func (c *Connector) emitMessage(ctx context.Context, sink connector.Sink, m mess
 	return c.emit(ctx, sink, ev)
 }
 
-// emitTombstone retracts a message. Slack gives no time for a deletion, so the
-// tombstone is timed by the message it retracts and its id is fixed: a
-// redelivered deletion is the same event.
 func (c *Connector) emitTombstone(ctx context.Context, sink connector.Sink, channel, ts string) error {
 	at, ok := tsTime(ts)
 	if !ok || channel == "" {
@@ -299,9 +269,6 @@ func (c *Connector) emitTombstone(ctx context.Context, sink connector.Sink, chan
 	return c.emit(ctx, sink, ev)
 }
 
-// emitReaction emits a reaction, or the tombstone of a removed one. The
-// reaction's name is escaped so its punctuation (`+1`, skin tones) cannot
-// change the id's structure.
 func (c *Connector) emitReaction(ctx context.Context, sink connector.Sink, r reaction, remove bool) error {
 	at, ok := tsTime(r.Item.TS)
 	if !ok || r.User == "" || r.Reaction == "" || r.Item.Channel == "" {

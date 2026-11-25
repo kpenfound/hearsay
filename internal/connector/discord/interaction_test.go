@@ -35,11 +35,6 @@ func appSource(settings map[string]any) connector.SourceConfig {
 		Settings: raw, Secrets: map[string]string{discord.SecretToken: "bot-secret"}}
 }
 
-// The application settings are set together or not at all, and the
-// connector refuses the same half-configured source the API would. A
-// read-only source has no application, whatever its settings name, so the
-// API registers no command and answers no interaction for it; its settings
-// are still checked.
 func TestApplicationSettings(t *testing.T) {
 	pub, _ := testKey(t)
 	key := hex.EncodeToString(pub)
@@ -128,7 +123,6 @@ func TestVerify(t *testing.T) {
 	}
 }
 
-// fakeREST records the calls Hearsay makes to Discord's REST API.
 type fakeREST struct {
 	mu     sync.Mutex
 	calls  []restCall
@@ -165,23 +159,28 @@ func restApp(t *testing.T, rest *fakeREST) *discord.App {
 	return app
 }
 
-// Registration replaces the guild's commands with /hearsay pin and
-// /hearsay merge, whose topics are autocompleted, with the bot token.
-func TestRegister(t *testing.T) {
+func registerCall(t *testing.T) restCall {
+	t.Helper()
 	rest := &fakeREST{}
-	app := restApp(t, rest)
-	if err := app.Register(t.Context()); err != nil {
+	if err := restApp(t, rest).Register(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	if len(rest.calls) != 1 {
 		t.Fatalf("Register made %d calls, want 1", len(rest.calls))
 	}
-	call := rest.calls[0]
+	return rest.calls[0]
+}
+
+func TestRegisterReplacesGuildCommandsWithBotToken(t *testing.T) {
+	call := registerCall(t)
 	if call.method != http.MethodPut || call.path != "/api/v10/applications/"+testApp+"/guilds/"+appGuild+"/commands" || call.auth != "Bot bot-secret" {
 		t.Errorf("Register called %s %s with %q", call.method, call.path, call.auth)
 	}
+}
+
+func TestRegisterSendsPinAndMergeSubcommands(t *testing.T) {
 	var got []discord.Command
-	if err := json.Unmarshal(call.body, &got); err != nil {
+	if err := json.Unmarshal(registerCall(t).body, &got); err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 || got[0].Name != discord.CommandName || len(got[0].Options) != 2 {
@@ -200,16 +199,16 @@ func TestRegister(t *testing.T) {
 			t.Errorf("merge option %d = %+v, want required, autocompleted text %q", i, o, name)
 		}
 	}
+}
 
-	rest.status = []int{http.StatusForbidden}
-	if err := app.Register(t.Context()); err == nil {
+func TestRegisterRefusedByDiscordIsAnError(t *testing.T) {
+	rest := &fakeREST{status: []int{http.StatusForbidden}}
+	if err := restApp(t, rest).Register(t.Context()); err == nil {
 		t.Error("Register() against a 403 = nil, want an error")
 	}
 }
 
-// An edit uses the interaction's token and not the bot's, and retries while
-// Discord has not seen the deferral.
-func TestEdit(t *testing.T) {
+func TestEditUsesInteractionTokenAndRetriesNotFound(t *testing.T) {
 	rest := &fakeREST{status: []int{http.StatusNotFound}}
 	app := restApp(t, rest)
 	if err := app.Edit(t.Context(), "interaction-token", "Pinned."); err != nil {
@@ -229,15 +228,16 @@ func TestEdit(t *testing.T) {
 	if body["content"] != "Pinned." {
 		t.Errorf("Edit sent %s", call.body)
 	}
-	rest.status = []int{http.StatusBadRequest}
-	if err := app.Edit(t.Context(), "interaction-token", "x"); err == nil {
+}
+
+func TestEditRefusedByDiscordIsAnError(t *testing.T) {
+	rest := &fakeREST{status: []int{http.StatusBadRequest}}
+	if err := restApp(t, rest).Edit(t.Context(), "interaction-token", "x"); err == nil {
 		t.Error("Edit() against a 400 = nil, want an error")
 	}
 }
 
-// The edit's URL holds the interaction token, and a request that never reaches
-// Discord fails with an error that would quote that URL.
-func TestAnEditThatCannotReachDiscordDoesNotQuoteTheToken(t *testing.T) {
+func TestEditErrorOmitsInteractionToken(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	srv.Close()
 	pub, _ := testKey(t)
@@ -304,13 +304,14 @@ func TestParseInteraction(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestParseInteractionRequiresID(t *testing.T) {
 	if _, err := discord.ParseInteraction([]byte(`{"type":2}`)); err == nil {
 		t.Error("ParseInteraction accepted a command with no id")
 	}
 }
 
-// A command is a valid L0 `command` event, under the channel a thread
-// belongs to, readable through the channel it was run in.
 func TestCommandEvent(t *testing.T) {
 	pub, _ := testKey(t)
 	app, err := discord.NewApp(appSource(map[string]any{"guild": appGuild, "application_id": testApp, "public_key": hex.EncodeToString(pub)}))
@@ -362,6 +363,13 @@ func TestResponses(t *testing.T) {
 				t.Errorf("got %s, want %s", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestChoicesAreCutToDiscordLimits(t *testing.T) {
+	encode := func(r discord.Response) string {
+		b, _ := json.Marshal(r)
+		return string(b)
 	}
 	many := make([]discord.Choice, 30)
 	for i := range many {

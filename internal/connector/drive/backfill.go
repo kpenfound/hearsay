@@ -48,7 +48,6 @@ type permission struct {
 	ID      string `json:"id"`
 	Type    string `json:"type"`
 	Email   string `json:"emailAddress"`
-	Domain  string `json:"domain"`
 	Name    string `json:"displayName"`
 	Deleted bool   `json:"deleted"`
 }
@@ -73,8 +72,6 @@ func (c *Connector) Backfill(ctx context.Context, sink connector.Sink, from conn
 	if err := c.api.getJSON(ctx, "/files", q, &page); err != nil {
 		var status *statusError
 		if pos.PageToken != "" && errors.As(err, &status) && status.status == http.StatusBadRequest {
-			// An expired Drive token is not durable. Rewalk the folder; event IDs
-			// make this safe and the replacement cursor contains no process state.
 			raw, _ := json.Marshal(position{Folder: pos.Folder})
 			return connector.BackfillResult{Next: connector.Cursor(raw)}, nil
 		}
@@ -82,8 +79,6 @@ func (c *Connector) Backfill(ctx context.Context, sink connector.Sink, from conn
 	}
 	n := 0
 	for _, f := range page.Files {
-		// The server query narrows the walk; this direct-parent check is the
-		// authorization boundary when a fixture or API response is surprising.
 		if len(f.Parents) != 1 || f.Parents[0] != pos.Folder || f.ID == "" || f.MIME == "application/vnd.google-apps.folder" {
 			continue
 		}
@@ -111,9 +106,7 @@ func (c *Connector) Backfill(ctx context.Context, sink connector.Sink, from conn
 		if err := sink.Emit(ctx, ev); err != nil {
 			return connector.BackfillResult{}, fmt.Errorf("emitting Drive file %s: %w", f.ID, err)
 		}
-		c.mu.Lock()
-		c.lastEventAt = time.Now()
-		c.mu.Unlock()
+		c.noteEvent()
 		n++
 	}
 	if page.Next != "" {
@@ -133,8 +126,6 @@ func (c *Connector) Backfill(ctx context.Context, sink connector.Sink, from conn
 	return connector.BackfillResult{Next: connector.Cursor(raw), Events: n}, nil
 }
 
-// tagged accepts only a single, directly applied exact ID. A 403 on this
-// file's labels is unreadable metadata and skips it; server failures retry.
 func (c *Connector) tagged(ctx context.Context, id string) (bool, error) {
 	var found bool
 	var token string

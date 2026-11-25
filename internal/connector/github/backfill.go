@@ -15,13 +15,8 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector"
 )
 
-// perPage is the page size of every list call: GitHub's largest. It is a
-// variable so that a test can walk pages of a few items.
 var perPage = 100
 
-// The steps a backfill walks each repository through, in order. Issues come
-// before their comments and pull requests before their reviews and review
-// comments, so a walk that stops early has the things comments hang off.
 const (
 	stepIssues         = "issues"
 	stepPulls          = "pulls"
@@ -32,22 +27,12 @@ const (
 
 var steps = []string{stepIssues, stepPulls, stepIssueComments, stepReviewComments, stepCommits}
 
-// position is a backfill cursor: the repository and step being walked, and
-// where in the step the next page starts. What "where" is depends on the step;
-// see [Connector.page]. It holds no URL, so a cursor carries no host and the
-// token only ever goes to the configured API.
 type position struct {
-	Repo string `json:"repo"`
-	Step string `json:"step"`
-	// Since is the updated_at the next page starts from, on the steps walked
-	// by it. Empty is the start date.
+	Repo  string `json:"repo"`
+	Step  string `json:"step"`
 	Since string `json:"since,omitempty"`
-	// Page is the page number the next call reads, within Since or within a
-	// fixed ordering. Zero is the first.
-	Page int `json:"page,omitempty"`
-	// Head is the commit a walk of the default branch is pinned to, once its
-	// first page is read.
-	Head string `json:"head,omitempty"`
+	Page  int    `json:"page,omitempty"`
+	Head  string `json:"head,omitempty"`
 }
 
 // Backfill implements [connector.Backfiller]: one page of one step of one
@@ -104,13 +89,11 @@ func (c *Connector) Resync(ctx context.Context, sink connector.Sink, container s
 		return connector.BackfillResult{}, err
 	}
 	if next != nil && next.Repo != container {
-		// The walk moved on to the next configured repository.
 		next = nil
 	}
 	return result(n, next)
 }
 
-// result is what a page means to the runtime: done, or the cursor after it.
 func result(n int, next *position) (connector.BackfillResult, error) {
 	if next == nil {
 		return connector.BackfillResult{Done: true, Events: n}, nil
@@ -125,10 +108,6 @@ func result(n int, next *position) (connector.BackfillResult, error) {
 	return connector.BackfillResult{Next: connector.Cursor(raw), Events: n}, nil
 }
 
-// resume decodes a cursor into where to walk next, or nil when there is nothing
-// left. A cursor naming a repository config no longer lists resumes at the first
-// configured repository after it, so removing one from config neither restarts
-// the walk nor strands it.
 func (c *Connector) resume(from connector.Cursor) (*position, error) {
 	if from == "" {
 		return &position{Repo: c.repos[0], Step: steps[0]}, nil
@@ -149,8 +128,6 @@ func (c *Connector) resume(from connector.Cursor) (*position, error) {
 	return nil, nil
 }
 
-// decode reads a cursor the connector wrote, backfill or re-sync, and refuses
-// one it could not have.
 func decode(from connector.Cursor) (*position, error) {
 	var pos position
 	if err := json.Unmarshal([]byte(from), &pos); err != nil {
@@ -168,7 +145,6 @@ func decode(from connector.Cursor) (*position, error) {
 	return &pos, nil
 }
 
-// parseStamp reads a position's Since; empty is the zero time.
 func parseStamp(s string) (time.Time, error) {
 	if s == "" {
 		return time.Time{}, nil
@@ -180,8 +156,6 @@ func parseStamp(s string) (time.Time, error) {
 	return t, nil
 }
 
-// advance is the position after a step that has no more pages: the next step,
-// the next repository's first, or nil at the end of history.
 func (c *Connector) advance(pos position) *position {
 	if i := slices.Index(steps, pos.Step); i+1 < len(steps) {
 		return &position{Repo: pos.Repo, Step: steps[i+1]}
@@ -192,28 +166,6 @@ func (c *Connector) advance(pos position) *position {
 	return nil
 }
 
-// page walks one page at pos and emits what is on it, returning how many
-// events it emitted and the position after it. floor is the start date: the
-// configured one for a backfill, and none for a re-sync, which has to reach
-// everything a webhook may have emitted whatever its date.
-//
-// The repository is read first, on every page, because its visibility is what
-// the events' ACL and revision tokens are made of.
-//
-// No step pages by offset into an ordering that can change while it walks: an
-// item moving out of a page already read would shift its neighbours back, and
-// the one at the boundary would never be read — nor, if it never changes, sent
-// by a webhook. Instead:
-//
-//   - issues and both comment lists are walked by updated_at, ascending, and
-//     each page starts one second before the last updated_at of the page before
-//     it. What changes moves ahead of the walk; what does not stays where it
-//     was. The overlap re-emits the tail of a page, which is free, and makes the
-//     walk independent of whether GitHub's `since` is inclusive.
-//   - pull requests, whose list takes no `since`, are walked in creation order,
-//     which nothing changes: a pull request cannot be deleted.
-//   - commits are walked from the commit the default branch pointed at when the
-//     walk began, whose history cannot change.
 func (c *Connector) page(ctx context.Context, sink connector.Sink, pos position, floor time.Time) (int, *position, error) {
 	repo, err := c.api.repository(ctx, pos.Repo)
 	if err != nil {
@@ -231,7 +183,6 @@ func (c *Connector) page(ctx context.Context, sink connector.Sink, pos position,
 			func(is issue) time.Time { return is.UpdatedAt },
 			func(is issue) (*connector.Event, error) {
 				if isPull(is.PullRequest) {
-					// Read from the pulls list, which has what an issue lacks.
 					return nil, nil
 				}
 				ev, err := v.issueEvent(is)
@@ -264,18 +215,8 @@ func eventOf[T any](build func(T) (connector.Event, error)) func(T) (*connector.
 	}
 }
 
-// before reports whether something last updated at t is older than floor. Only
-// the pulls list needs it: every other list is bounded by `since` at GitHub.
 func before(floor, t time.Time) bool { return !floor.IsZero() && t.Before(floor) }
 
-// walkUpdated reads one page of a list GitHub sorts by updated_at and filters
-// with `since`, emits what build makes of each item (nil is nothing), and
-// returns the position of the next page, or nil when the list is exhausted.
-//
-// The next page starts one second before the last item's updated_at. Where
-// that is not past where this page started — a page's worth of items updated in
-// the same second — the next page is the next page number at the same since,
-// so the walk always moves.
 func walkUpdated[T any](ctx context.Context, c *Connector, sink connector.Sink, pos position, floor time.Time,
 	endpoint string, q url.Values, updated func(T) time.Time, build func(T) (*connector.Event, error),
 ) (int, *position, error) {
@@ -293,9 +234,6 @@ func walkUpdated[T any](ctx context.Context, c *Connector, sink connector.Sink, 
 	if !since.IsZero() {
 		query := since
 		if pos.Since == "" {
-			// GitHub documents since as "updated after", so the start date
-			// itself is asked for a second early. Timestamps are whole seconds,
-			// so nothing earlier than the start date comes back.
 			query = since.Add(-time.Second)
 		}
 		q.Set("since", stamp(query))
@@ -339,9 +277,6 @@ func isPull(raw json.RawMessage) bool {
 	return len(raw) > 0 && string(raw) != "null"
 }
 
-// pulls emits a page of pull requests, in creation order, and every submitted
-// review of each: GitHub lists reviews per pull request and not per
-// repository. The list takes no `since`, so the page is filtered instead.
 func (c *Connector) pulls(ctx context.Context, sink connector.Sink, v view, pos position, floor time.Time) (int, *position, error) {
 	page := max(pos.Page, 1)
 	q := url.Values{"state": {"all"}, "sort": {"created"}, "direction": {"asc"}, "per_page": {strconv.Itoa(perPage)}}
@@ -382,14 +317,6 @@ func (c *Connector) pulls(ctx context.Context, sink connector.Sink, v view, pos 
 	return n, &position{Repo: pos.Repo, Step: pos.Step, Page: page + 1}, nil
 }
 
-// touched reads the paths one pull request touches from its files list, and
-// stops once it has [connector.MaxPaths] of them: at the largest page size,
-// that is at most three calls for a pull request of any size. What was read is
-// put in the contract's shape by [connector.BoundPaths], and the list is
-// truncated where GitHub had more to give or the bound cut what was read.
-//
-// Only names are read. The files list also carries every file's patch, which
-// is not decoded, and nothing reads a file's content.
 func (c *Connector) touched(ctx context.Context, repo string, number int) (touched, error) {
 	var (
 		paths []string
@@ -420,8 +347,6 @@ func (c *Connector) touched(ctx context.Context, repo string, number int) (touch
 	return touched{paths: bounded, truncated: cut || more}, nil
 }
 
-// reviews emits every submitted review of one pull request, all its pages in
-// this call.
 func (c *Connector) reviews(ctx context.Context, sink connector.Sink, v view, number int) (int, error) {
 	n := 0
 	for page, more := 1, true; more; page++ {
@@ -455,10 +380,6 @@ func (c *Connector) reviews(ctx context.Context, sink connector.Sink, v view, nu
 	return n, nil
 }
 
-// commits emits a page of the default branch's history. The first page reads
-// the commit the branch points at and pins the walk to it, so a push or a force
-// push while the walk runs cannot move a commit between pages; what the branch
-// gains in the meantime is the push webhook's.
 func (c *Connector) commits(ctx context.Context, sink connector.Sink, v view, pos position, floor time.Time, branch string) (int, *position, error) {
 	head := pos.Head
 	if head == "" {
@@ -469,7 +390,6 @@ func (c *Connector) commits(ctx context.Context, sink connector.Sink, v view, po
 		}
 		_, err := c.api.get(ctx, repoPath(v.repo)+"/branches/"+url.PathEscape(branch), &b)
 		if serr := (*statusError)(nil); errors.As(err, &serr) && serr.status == http.StatusNotFound {
-			// The default branch of a repository with no commits yet.
 			return 0, nil, nil
 		}
 		if err != nil {
@@ -487,7 +407,6 @@ func (c *Connector) commits(ctx context.Context, sink connector.Sink, v view, po
 		q.Set("page", strconv.Itoa(page))
 	}
 	if !floor.IsZero() {
-		// "After" the start date, as for the lists: a second early.
 		q.Set("since", stamp(floor.Add(-time.Second)))
 	}
 	var items []commit
@@ -512,7 +431,6 @@ func (c *Connector) commits(ctx context.Context, sink connector.Sink, v view, po
 	return n, &position{Repo: pos.Repo, Step: pos.Step, Head: head, Page: page + 1}, nil
 }
 
-// repoPath is a repository's REST path.
 func repoPath(fullName string) string {
 	owner, name, _ := strings.Cut(fullName, "/")
 	return "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(name)

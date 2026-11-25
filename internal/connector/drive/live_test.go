@@ -1,8 +1,10 @@
 package drive_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/drive"
+	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
 type liveFile struct {
@@ -27,6 +30,7 @@ type liveFixture struct {
 	changes             map[string][]string
 	start               string
 	watchID, watchToken string
+	attemptedToken      string
 	failWatch           bool
 }
 
@@ -63,13 +67,14 @@ func (f *liveFixture) serve(w http.ResponseWriter, r *http.Request) {
 	case path == "/changes/startPageToken":
 		write(map[string]string{"startPageToken": f.start})
 	case path == "/changes/watch":
-		if f.failWatch {
-			http.Error(w, "watch unavailable", http.StatusForbidden)
-			return
-		}
 		var request struct{ ID, Token string }
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			http.Error(w, "body", 400)
+			return
+		}
+		f.attemptedToken = request.Token
+		if f.failWatch {
+			http.Error(w, "watch unavailable", http.StatusForbidden)
 			return
 		}
 		f.watchID, f.watchToken = request.ID, request.Token
@@ -146,125 +151,215 @@ func fileJSON(id string, f liveFile) map[string]any {
 	return map[string]any{"id": id, "name": id, "mimeType": "text/plain", "parents": []string{f.Folder}, "headRevisionId": f.Head, "createdTime": "2026-01-01T00:00:00Z", "modifiedTime": "2026-01-02T00:00:00Z", "owners": []map[string]string{{"permissionId": "u1", "emailAddress": "a@example.com"}}}
 }
 
-func TestLiveChangesReplayRestartAndEligibility(t *testing.T) {
-	f := &liveFixture{files: map[string]liveFile{
-		"doc":      {Folder: "docs", Head: "r1", Text: "first", Public: true},
-		"tagged":   {Folder: "meet", Head: "r1", Text: "meeting", Tagged: true, Public: true},
-		"untagged": {Folder: "meet", Head: "r1", Text: "private", Public: true},
-		"outside":  {Folder: "elsewhere", Head: "r1", Text: "outside", Public: true},
-	}, changes: map[string][]string{"s0": {}}, start: "s0"}
+type liveEnv struct {
+	f      *liveFixture
+	src    connector.SourceConfig
+	c      *drive.Connector
+	gate   *connector.Gate
+	rec    *connector.Recorder
+	cursor connector.Cursor
+}
+
+func startLive(t *testing.T, files map[string]liveFile) *liveEnv {
+	t.Helper()
+	f := &liveFixture{files: files, changes: map[string][]string{"s0": {}}, start: "s0"}
 	server := httptest.NewServer(http.HandlerFunc(f.serve))
-	defer server.Close()
+	t.Cleanup(server.Close)
 	src := source(t, server.URL)
 	c, err := drive.New(src)
 	if err != nil {
 		t.Fatal(err)
 	}
 	rec := &connector.Recorder{}
-	gate := connector.NewGate(rec, src.ID, c.Describe(), connector.NewAllowlist(src))
-	cursor, err := c.PollFrom(t.Context(), gate, "")
+	env := &liveEnv{f: f, src: src, c: c, rec: rec, gate: connector.NewGate(rec, src.ID, c.Describe(), connector.NewAllowlist(src))}
+	env.cursor, err = c.PollFrom(t.Context(), env.gate, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cursor != "s0" || len(rec.Events()) != 2 {
-		t.Fatalf("initial cursor %s, events %+v", cursor, rec.Events())
-	}
-	assertCurrent := func(id, head, folder, text string, public bool) {
-		t.Helper()
-		ev, ok, err := gate.CurrentArtifact(t.Context(), src.ID, id)
-		if err != nil || !ok {
-			t.Fatalf("current %s: %v %v", id, ok, err)
-		}
-		if !strings.HasPrefix(ev.Payload.Revision.Token, head+"+perm:") || ev.Payload.Container.NativeID != folder || ev.Payload.Text != text {
-			t.Errorf("current %s = %+v", id, ev)
-		}
-		foundPublic := false
-		for _, a := range ev.ACL {
-			if a.Kind == connector.ACLPublic {
-				foundPublic = true
-			}
-		}
-		if foundPublic != public {
-			t.Errorf("current %s public = %v", id, foundPublic)
-		}
-	}
-	f.set("doc", liveFile{Folder: "docs", Head: "r2", Text: "second", Public: true})
-	f.next("s0", "s1", "doc", "untagged", "outside")
-	cursor, err = c.PollFrom(t.Context(), gate, cursor)
+	return env
+}
+
+func (e *liveEnv) restart(t *testing.T) {
+	t.Helper()
+	c, err := drive.New(e.src)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertCurrent("doc", "r2", "docs", "second", true)
-	count := len(rec.Events())
-	if _, err := c.PollFrom(t.Context(), gate, "s0"); err != nil {
-		t.Fatal(err)
-	}
-	if len(rec.Events()) != count {
-		t.Errorf("replay emitted %d events", len(rec.Events())-count)
-	}
-	// A replacement connector resumes from the persisted token, including a
-	// sharing change with no content revision.
-	c, err = drive.New(src)
+	e.c = c
+}
+
+func (e *liveEnv) poll(t *testing.T, to string, ids ...string) {
+	t.Helper()
+	e.f.next(string(e.cursor), to, ids...)
+	next, err := e.c.PollFrom(t.Context(), e.gate, e.cursor)
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.set("doc", liveFile{Folder: "docs", Head: "r2", Text: "second", Public: false})
-	f.next("s1", "s2", "doc")
-	cursor, err = c.PollFrom(t.Context(), gate, cursor)
+	e.cursor = next
+}
+
+func (e *liveEnv) current(t *testing.T, id string) (connector.Event, bool) {
+	t.Helper()
+	ev, ok, err := e.gate.CurrentArtifact(t.Context(), e.src.ID, id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertCurrent("doc", "r2", "docs", "second", false)
-	// Reopening the same ACL must append a new public revision, not select
-	// the older public revision that preceded the tightening.
-	f.set("doc", liveFile{Folder: "docs", Head: "r2", Text: "second", Public: true})
-	f.next("s2", "s2b", "doc")
-	cursor, err = c.PollFrom(t.Context(), gate, cursor)
-	if err != nil {
-		t.Fatal(err)
+	return ev, ok
+}
+
+func isPublic(ev connector.Event) bool {
+	return slices.ContainsFunc(ev.ACL, func(a connector.ACLEntry) bool { return a.Kind == connector.ACLPublic })
+}
+
+func defaultLiveFiles() map[string]liveFile {
+	return map[string]liveFile{
+		"doc":      {Folder: "docs", Head: "r1", Text: "first", Public: true},
+		"tagged":   {Folder: "meet", Head: "r1", Text: "meeting", Tagged: true, Public: true},
+		"untagged": {Folder: "meet", Head: "r1", Text: "private", Public: true},
+		"outside":  {Folder: "elsewhere", Head: "r1", Text: "outside", Public: true},
 	}
-	assertCurrent("doc", "r2", "docs", "second", true)
-	f.set("outside", liveFile{Folder: "docs", Head: "r1", Text: "outside", Public: true})
-	f.set("doc", liveFile{Folder: "meet", Head: "r2", Text: "second", Tagged: true, Public: false})
-	f.next("s2b", "s3", "outside", "doc")
-	cursor, err = c.PollFrom(t.Context(), gate, cursor)
-	if err != nil {
-		t.Fatal(err)
+}
+
+func TestInitialPollEmitsOnlyEligibleFiles(t *testing.T) {
+	env := startLive(t, defaultLiveFiles())
+	if env.cursor != "s0" {
+		t.Errorf("cursor = %q", env.cursor)
 	}
-	assertCurrent("outside", "r1", "docs", "outside", true)
-	assertCurrent("doc", "r2", "meet", "second", false)
-	f.set("doc", liveFile{Folder: "meet", Head: "r2", Text: "second", Tagged: false, Public: false})
-	f.set("tagged", liveFile{Folder: "meet", Head: "r1", Text: "meeting", Tagged: true, Public: true, Deleted: true})
-	f.next("s3", "s4", "doc", "tagged")
-	_, err = c.PollFrom(t.Context(), gate, cursor)
-	if err != nil {
-		t.Fatal(err)
+	ids := []string{}
+	for _, ev := range env.rec.Events() {
+		ids = append(ids, ev.Payload.Artifact)
 	}
-	for _, id := range []string{"doc", "tagged"} {
-		_, ok, err := gate.CurrentArtifact(t.Context(), src.ID, id)
-		if err != nil || ok {
-			t.Errorf("%s remains current: %v %v", id, ok, err)
-		}
+	slices.Sort(ids)
+	if !slices.Equal(ids, []string{"doc", "tagged"}) {
+		t.Errorf("artifacts = %v", ids)
 	}
-	for _, ev := range rec.Events() {
-		if ev.Kind == connector.KindTombstone && ev.Payload.Container.NativeID != "meet" {
-			t.Errorf("tombstone container = %+v", ev)
+}
+
+func TestChangePageEmitsCurrentRevision(t *testing.T) {
+	env := startLive(t, defaultLiveFiles())
+	env.f.set("doc", liveFile{Folder: "docs", Head: "r2", Text: "second", Public: true})
+	env.poll(t, "s1", "doc", "untagged", "outside")
+	ev, ok := env.current(t, "doc")
+	if !ok || !strings.HasPrefix(ev.Payload.Revision.Token, "r2+perm:") || ev.Payload.Text != "second" || ev.Payload.Container.NativeID != "docs" || !isPublic(ev) {
+		t.Errorf("current doc = %+v", ev)
+	}
+	for _, id := range []string{"untagged", "outside"} {
+		if _, ok := env.current(t, id); ok {
+			t.Errorf("%s is current", id)
 		}
 	}
 }
 
-func TestNotificationWakesPollerAndExpiredTokenRecovers(t *testing.T) {
+func TestReplayedChangePageEmitsNothing(t *testing.T) {
+	env := startLive(t, defaultLiveFiles())
+	env.f.set("doc", liveFile{Folder: "docs", Head: "r2", Text: "second", Public: true})
+	env.poll(t, "s1", "doc")
+	count := len(env.rec.Events())
+	if _, err := env.c.PollFrom(t.Context(), env.gate, "s0"); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(env.rec.Events()); got != count {
+		t.Errorf("replay emitted %d events", got-count)
+	}
+}
+
+func TestPermissionChangeIsNewRevisionAfterRestart(t *testing.T) {
+	env := startLive(t, defaultLiveFiles())
+	before, _ := env.current(t, "doc")
+	env.restart(t)
+	env.f.set("doc", liveFile{Folder: "docs", Head: "r1", Text: "first", Public: false})
+	env.poll(t, "s1", "doc")
+	private, _ := env.current(t, "doc")
+	if isPublic(private) || private.NativeID == before.NativeID {
+		t.Fatalf("after losing public access: %+v", private)
+	}
+	env.f.set("doc", liveFile{Folder: "docs", Head: "r1", Text: "first", Public: true})
+	env.poll(t, "s2", "doc")
+	public, _ := env.current(t, "doc")
+	if !isPublic(public) || public.NativeID == private.NativeID {
+		t.Errorf("after regaining public access: %+v", public)
+	}
+}
+
+func TestFileMovedIntoAllowlistedFolderIsEmitted(t *testing.T) {
+	env := startLive(t, defaultLiveFiles())
+	env.f.set("outside", liveFile{Folder: "docs", Head: "r1", Text: "outside", Public: true})
+	env.poll(t, "s1", "outside")
+	ev, ok := env.current(t, "outside")
+	if !ok || ev.Payload.Container.NativeID != "docs" || ev.Payload.Text != "outside" || !isPublic(ev) {
+		t.Errorf("current outside = %+v", ev)
+	}
+}
+
+func TestFileMovedToCandidateFolderIsTranscriptWhenTagged(t *testing.T) {
+	env := startLive(t, defaultLiveFiles())
+	env.f.set("doc", liveFile{Folder: "meet", Head: "r2", Text: "second", Tagged: true, Public: false})
+	env.poll(t, "s1", "doc")
+	ev, ok := env.current(t, "doc")
+	if !ok || ev.Kind != connector.KindTranscript || ev.Payload.Container.NativeID != "meet" || ev.Payload.Text != "second" || isPublic(ev) {
+		t.Errorf("current doc = %+v", ev)
+	}
+}
+
+func TestUntaggedFileIsRetractedFromItsFolder(t *testing.T) {
+	env := startLive(t, defaultLiveFiles())
+	env.f.set("tagged", liveFile{Folder: "meet", Head: "r1", Text: "meeting", Public: true})
+	env.poll(t, "s1", "tagged")
+	if _, ok := env.current(t, "tagged"); ok {
+		t.Error("untagged file remains current")
+	}
+	assertTombstoneIn(t, env.rec, "meet")
+}
+
+func TestDeletedFileIsRetractedFromItsFolder(t *testing.T) {
+	env := startLive(t, defaultLiveFiles())
+	env.f.set("tagged", liveFile{Folder: "meet", Head: "r1", Text: "meeting", Tagged: true, Public: true, Deleted: true})
+	env.poll(t, "s1", "tagged")
+	if _, ok := env.current(t, "tagged"); ok {
+		t.Error("deleted file remains current")
+	}
+	assertTombstoneIn(t, env.rec, "meet")
+}
+
+func assertTombstoneIn(t *testing.T, rec *connector.Recorder, folder string) {
+	t.Helper()
+	found := false
+	for _, ev := range rec.Events() {
+		if ev.Kind != connector.KindTombstone {
+			continue
+		}
+		found = true
+		if ev.Payload.Container.NativeID != folder {
+			t.Errorf("tombstone container = %+v", ev)
+		}
+	}
+	if !found {
+		t.Error("no tombstone was emitted")
+	}
+}
+
+type watchEnv struct {
+	f       *liveFixture
+	src     connector.SourceConfig
+	c       *drive.Connector
+	gate    *connector.Gate
+	cursor  connector.Cursor
+	channel string
+	token   string
+}
+
+func startWatched(t *testing.T) *watchEnv {
+	t.Helper()
 	f := &liveFixture{files: map[string]liveFile{"doc": {Folder: "docs", Head: "r1", Text: "one", Public: true}}, changes: map[string][]string{"s0": {}}, start: "s0"}
 	server := httptest.NewServer(http.HandlerFunc(f.serve))
-	defer server.Close()
+	t.Cleanup(server.Close)
 	src := source(t, server.URL)
 	src.Settings = json.RawMessage(fmt.Sprintf(`{"transcript_candidate_folder_ids":["meet"],"meeting_transcript_label_id":"label","api_url":%q,"notification_url":%q}`, server.URL+"/drive/v3", server.URL+"/hooks/drive"))
 	c, err := drive.New(src)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec := &connector.Recorder{}
-	gate := connector.NewGate(rec, src.ID, c.Describe(), connector.NewAllowlist(src))
+	gate := connector.NewGate(&connector.Recorder{}, src.ID, c.Describe(), connector.NewAllowlist(src))
 	first, err := c.PollFrom(t.Context(), gate, "")
 	if err != nil {
 		t.Fatal(err)
@@ -273,54 +368,99 @@ func TestNotificationWakesPollerAndExpiredTokenRecovers(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.mu.Lock()
-	id, token := f.watchID, f.watchToken
-	f.mu.Unlock()
-	if id == "" || token == "" {
+	defer f.mu.Unlock()
+	if f.watchID == "" || f.watchToken == "" {
 		t.Fatal("no Drive channel was created")
 	}
-	wake := &wakeSink{Sink: gate}
-	// A watch registration failure leaves the polling feed usable.
-	f.mu.Lock()
-	f.failWatch = true
-	f.mu.Unlock()
-	fallback, err := drive.New(src)
+	return &watchEnv{f: f, src: src, c: c, gate: gate, cursor: first, channel: f.watchID, token: f.watchToken}
+}
+
+func (w *watchEnv) notify(t *testing.T, sink connector.Sink, token string) int {
+	t.Helper()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/hooks/drive", nil)
+	req.Header.Set("X-Goog-Channel-ID", w.channel)
+	req.Header.Set("X-Goog-Channel-Token", token)
+	req.Header.Set("X-Goog-Resource-State", "change")
+	rec := httptest.NewRecorder()
+	w.c.Handler(sink).ServeHTTP(rec, req)
+	return rec.Code
+}
+
+func TestNotificationFromActiveChannelWakesPoller(t *testing.T) {
+	env := startWatched(t)
+	wake := &wakeSink{Sink: env.gate}
+	if code := env.notify(t, wake, env.token); code != http.StatusNoContent {
+		t.Errorf("status %d", code)
+	}
+	if wake.calls != 1 {
+		t.Errorf("woke poller %d times", wake.calls)
+	}
+}
+
+func TestNotificationWithWrongChannelTokenIsRefused(t *testing.T) {
+	env := startWatched(t)
+	wake := &wakeSink{Sink: env.gate}
+	if code := env.notify(t, wake, "wrong"); code != http.StatusUnauthorized {
+		t.Errorf("status %d", code)
+	}
+	if wake.calls != 0 {
+		t.Errorf("forged notification woke poller %d times", wake.calls)
+	}
+}
+
+func TestWatchFailureLeavesPollingUsable(t *testing.T) {
+	env := startWatched(t)
+	env.f.mu.Lock()
+	env.f.failWatch = true
+	env.f.mu.Unlock()
+	fallback, err := drive.New(env.src)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, err := fallback.PollFrom(t.Context(), gate, first); err != nil || got != first {
+	got, err := fallback.PollFrom(t.Context(), env.gate, env.cursor)
+	if err != nil || got != env.cursor {
 		t.Fatalf("polling fallback = %q, %v", got, err)
 	}
-	for _, tt := range []struct {
-		name, token string
-		status      int
-	}{{"valid", token, 204}, {"forged", "wrong", 401}} {
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/hooks/drive", nil)
-			req.Header.Set("X-Goog-Channel-ID", id)
-			req.Header.Set("X-Goog-Channel-Token", tt.token)
-			req.Header.Set("X-Goog-Resource-State", "change")
-			w := httptest.NewRecorder()
-			c.Handler(wake).ServeHTTP(w, req)
-			if w.Code != tt.status {
-				t.Errorf("status %d", w.Code)
-			}
-		})
+}
+
+func TestWatchFailureLogOmitsCredentials(t *testing.T) {
+	env := startWatched(t)
+	env.f.mu.Lock()
+	env.f.failWatch = true
+	env.f.mu.Unlock()
+	fallback, err := drive.New(env.src)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if wake.calls != 1 {
-		t.Errorf("valid notification woke poller %d times", wake.calls)
+	var logs bytes.Buffer
+	ctx := telemetry.WithLogger(t.Context(), slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	if _, err := fallback.PollFrom(ctx, env.gate, env.cursor); err != nil {
+		t.Fatal(err)
 	}
-	// The saved token has expired. A new token is captured before a full
-	// reconciliation, which catches removals even with no notification.
-	f.set("doc", liveFile{Folder: "docs", Head: "r1", Text: "one", Public: true, Deleted: true})
-	f.mu.Lock()
-	f.start = "s2"
-	f.mu.Unlock()
-	got, err := c.PollFrom(t.Context(), gate, "expired")
+	env.f.mu.Lock()
+	attempted := env.f.attemptedToken
+	env.f.mu.Unlock()
+	if !strings.Contains(logs.String(), "Drive notification watch unavailable") {
+		t.Fatalf("watch failure was not logged: %q", logs.String())
+	}
+	for _, secret := range []string{"fixture-token", attempted, env.token} {
+		if secret == "" || strings.Contains(logs.String(), secret) {
+			t.Errorf("log output holds %q: %s", secret, logs.String())
+		}
+	}
+}
+
+func TestExpiredChangeTokenRecoversByReconciling(t *testing.T) {
+	env := startWatched(t)
+	env.f.set("doc", liveFile{Folder: "docs", Head: "r1", Text: "one", Public: true, Deleted: true})
+	env.f.mu.Lock()
+	env.f.start = "s2"
+	env.f.mu.Unlock()
+	got, err := env.c.PollFrom(t.Context(), env.gate, "expired")
 	if err != nil || got != "s2" {
 		t.Fatalf("recovery cursor %s: %v", got, err)
 	}
-	_, ok, err := gate.CurrentArtifact(t.Context(), src.ID, "doc")
-	if err != nil || ok {
+	if _, ok, err := env.gate.CurrentArtifact(t.Context(), env.src.ID, "doc"); err != nil || ok {
 		t.Errorf("removed file current: %v %v", ok, err)
 	}
 }

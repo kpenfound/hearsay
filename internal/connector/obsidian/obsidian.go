@@ -230,8 +230,6 @@ func (c *Connector) Poll(ctx context.Context, sink connector.Sink) error {
 			artifact := escapedPath(rel)
 			seen[artifact] = true
 			old, exists := previous[artifact]
-			// Modification times avoid reading unchanged files. A permission
-			// change still needs a revision even when the file did not move.
 			info, err := c.root.Lstat(rel)
 			if err != nil {
 				return fmt.Errorf("stat %q: %w", rel, err)
@@ -270,8 +268,6 @@ func (c *Connector) Poll(ctx context.Context, sink connector.Sink) error {
 		if seen[artifact] {
 			continue
 		}
-		// The filesystem has no deletion timestamp. The last recorded
-		// observation supplies a stable time for retries of this tombstone.
 		ev := connector.Event{Source: c.source, NativeID: artifact + ":tombstone", Kind: connector.KindTombstone, Time: old.Time, ACL: slices.Clone(old.ACL), Payload: connector.Payload{Artifact: artifact + ":tombstone", Target: artifact, Container: old.Payload.Container}}
 		if err := retractor.Retract(ctx, ev); err != nil {
 			return fmt.Errorf("retracting %q: %w", artifact, err)
@@ -337,7 +333,6 @@ func (c *Connector) Backfill(ctx context.Context, sink connector.Sink, from conn
 			return connector.BackfillResult{}, err
 		}
 		top := &p.Stack[len(p.Stack)-1]
-		// A directory replaced by a symlink cannot become a route out of the root.
 		if top.Dir != "." {
 			if err := safeDirectory(c.root, top.Dir); err != nil {
 				return connector.BackfillResult{}, fmt.Errorf("resuming %q: %w", top.Dir, err)
@@ -459,7 +454,6 @@ func (c *Connector) event(rel string) (connector.Event, error) {
 		return connector.Event{}, fmt.Errorf("opening %q: %w", rel, err)
 	}
 	defer func() { _ = file.Close() }()
-	// A changed path must not make a symlink into a device or outside-root read.
 	if stat, err := file.Stat(); err != nil || !stat.Mode().IsRegular() {
 		return connector.Event{}, fmt.Errorf("%q is no longer a regular file", rel)
 	}
@@ -480,8 +474,6 @@ func (c *Connector) event(rel string) (connector.Event, error) {
 	return connector.Event{Source: c.source, NativeID: artifact + "@" + token, Kind: connector.KindDocument, Time: info.ModTime().UTC(), ACL: slices.Clone(c.acl), Payload: connector.Payload{Artifact: artifact, Container: connector.Container{Kind: connector.ContainerFolder, NativeID: path.Dir(rel)}, Title: path.Base(rel), Text: string(data), Author: &c.owner, Native: native, Revision: &connector.Revision{Token: token}}}, nil
 }
 
-// escapedPath retains the vault-relative directory structure while making
-// names with spaces or other unsafe bytes valid contract native ids.
 func escapedPath(rel string) string {
 	parts := strings.Split(rel, "/")
 	for i, part := range parts {

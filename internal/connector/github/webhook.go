@@ -20,11 +20,8 @@ import (
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
-// maxDelivery is GitHub's own cap on a webhook payload.
 const maxDelivery = 25 << 20
 
-// delivery is a webhook payload, as far as the connector reads one. Which of
-// the objects is set depends on the event.
 type delivery struct {
 	Action      string      `json:"action"`
 	Repository  *repository `json:"repository"`
@@ -32,31 +29,20 @@ type delivery struct {
 	Comment     *comment    `json:"comment"`
 	PullRequest *pull       `json:"pull_request"`
 	Review      *review     `json:"review"`
-	// sub_issues
-	ParentIssue *issue `json:"parent_issue"`
-	SubIssue    *issue `json:"sub_issue"`
-	// push
-	Ref    string `json:"ref"`
-	Before string `json:"before"`
-	After  string `json:"after"`
+	ParentIssue *issue      `json:"parent_issue"`
+	SubIssue    *issue      `json:"sub_issue"`
+	Ref         string      `json:"ref"`
+	Before      string      `json:"before"`
+	After       string      `json:"after"`
 }
 
-// readTimeout bounds the REST reads a delivery makes: a push's one read of its
-// commits, and a pull request's read of the paths it touches. GitHub gives up
-// on a delivery that is not answered in ten seconds, closes the connection and
-// does not redeliver, so a read that cannot finish inside that is answered as
-// a failure while GitHub is still listening. A variable so that a test can
-// shorten it.
 var readTimeout = 8 * time.Second
 
-// comparison is GitHub's compare response, as far as a push reads it.
 type comparison struct {
 	TotalCommits int      `json:"total_commits"`
 	Commits      []commit `json:"commits"`
 }
 
-// errMalformed is a delivery that verified but that the connector cannot read:
-// the sender's fault, answered 400.
 var errMalformed = errors.New("malformed delivery")
 
 // Handler implements [connector.Pusher]: GitHub's webhook deliveries, each
@@ -94,8 +80,6 @@ func (c *Connector) Handler(sink connector.Sink) http.Handler {
 			return
 		}
 		if len(events) == 0 && !owed {
-			// Verified, and nothing to do: an event not ingested, a push to
-			// another branch.
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -110,7 +94,6 @@ func (c *Connector) Handler(sink connector.Sink) http.Handler {
 	})
 }
 
-// verify checks GitHub's HMAC-SHA256 signature over the body, in constant time.
 func (c *Connector) verify(header string, body []byte) bool {
 	hexSig, ok := strings.CutPrefix(header, "sha256=")
 	if !ok {
@@ -125,10 +108,6 @@ func (c *Connector) verify(header string, body []byte) bool {
 	return hmac.Equal(sig, mac.Sum(nil))
 }
 
-// deliver turns a verified delivery into the events it means, and reports
-// whether it recorded a re-sync. An event the connector does not ingest is
-// nothing, not an error: GitHub sends what the webhook was configured for, and
-// a person may have ticked more.
 func (c *Connector) deliver(ctx context.Context, sink connector.Sink, event string, body []byte) ([]connector.Event, bool, error) {
 	if event == "ping" {
 		return nil, false, nil
@@ -138,20 +117,13 @@ func (c *Connector) deliver(ctx context.Context, sink connector.Sink, event stri
 		return nil, false, fmt.Errorf("%w: %s: %w", errMalformed, event, err)
 	}
 	if d.Repository == nil || d.Repository.FullName == "" {
-		// An organisation's event that is about no repository: nothing here is.
 		return nil, false, nil
 	}
 	v := c.view(d.Repository.FullName, d.Repository.Private)
 	if event == "repository" {
-		// Only a repository config names is re-synced: the gate would drop what
-		// a walk of any other emits, and the token has no business reading it.
 		if d.Action != "privatized" || !slices.Contains(c.repos, v.repo) {
 			return nil, false, nil
 		}
-		// Recorded before the delivery is answered, and walked by the runtime:
-		// a walk held in this process would be lost to a restart. A record that
-		// cannot be written is a failed delivery, which the runtime's startup
-		// check still catches.
 		owes, ok := sink.(connector.ResyncRequester)
 		if !ok {
 			return nil, false, fmt.Errorf("repository %s went private and the sink cannot record a re-sync", v.repo)
@@ -165,7 +137,6 @@ func (c *Connector) deliver(ctx context.Context, sink connector.Sink, event stri
 	return events, false, err
 }
 
-// events is what a delivery about one repository's objects emits.
 func (c *Connector) events(ctx context.Context, event string, v view, d delivery) ([]connector.Event, error) {
 	missing := func(what string) error {
 		return fmt.Errorf("%w: %s.%s has no %s", errMalformed, event, d.Action, what)
@@ -205,10 +176,6 @@ func (c *Connector) events(ctx context.Context, event string, v view, d delivery
 		if d.PullRequest == nil {
 			return nil, missing("pull_request")
 		}
-		// A delivery does not say which files a pull request touches, so they
-		// are read from the REST API — the same list a backfill reads — on
-		// every delivery: a push to the branch changes them, and so can an
-		// edit that retargets the base.
 		ctx, cancel := context.WithTimeout(ctx, readTimeout)
 		defer cancel()
 		t, err := c.touched(ctx, v.repo, d.PullRequest.Number)
@@ -221,8 +188,6 @@ func (c *Connector) events(ctx context.Context, event string, v view, d delivery
 		if d.Review == nil || d.PullRequest == nil {
 			return nil, missing("review or pull_request")
 		}
-		// An edit or a dismissal changes a review's content token, so it is a new
-		// revision; a pending review is not an artifact yet.
 		switch d.Action {
 		case "submitted", "edited", "dismissed":
 		default:
@@ -255,15 +220,6 @@ func (c *Connector) events(ctx context.Context, event string, v view, d delivery
 	return nil, nil
 }
 
-// subIssue is a sub_issues delivery: the sub-issue again, part of the parent it
-// was added to or of none. GitHub sends one to each end of the relationship —
-// `parent_issue_*` to the sub-issue's repository and `sub_issue_*` to the
-// parent's — and they build the same event, so one that is about a sub-issue
-// in another repository is left to that repository's delivery.
-//
-// A removal keeps a parent the sub-issue already names that is not the one
-// removed: moving an issue to another parent removes it from the old one, and
-// that delivery may arrive after the one that added the new.
 func subIssue(v view, d delivery, missing func(string) error) ([]connector.Event, error) {
 	if d.SubIssue == nil || d.ParentIssue == nil {
 		return nil, missing("sub_issue or parent_issue")
@@ -293,25 +249,12 @@ func subIssue(v view, d delivery, missing func(string) error) ([]connector.Event
 	return []connector.Event{ev}, nil
 }
 
-// sameIssue reports whether two API URLs name one issue. GitHub's names are
-// case-insensitive.
 func sameIssue(a, b string) bool {
 	ra, na, errA := issueAt(a)
 	rb, nb, errB := issueAt(b)
 	return errA == nil && errB == nil && na == nb && strings.EqualFold(ra, rb)
 }
 
-// pushed is the commits a push added to the default branch. A push payload
-// names its authors by git name and email and not by account, so the commits
-// are read from the REST API — the same objects a backfill reads, and so the
-// same events — in one call, inside [readTimeout]:
-//
-//   - a push that moved the branch compares where it was with where it is,
-//     which returns up to 250 commits;
-//   - the push that created the branch reads the first page of its history.
-//
-// A push that deletes the branch is nothing. Commits beyond what the one call
-// returns are logged, by count, and not emitted.
 func (c *Connector) pushed(ctx context.Context, v view, d delivery) ([]connector.Event, error) {
 	if d.Repository.DefaultBranch == "" || d.Ref != "refs/heads/"+d.Repository.DefaultBranch {
 		return nil, nil
@@ -363,8 +306,6 @@ func (c *Connector) pushed(ctx context.Context, v view, d delivery) ([]connector
 	return events, nil
 }
 
-// isCommitID reports whether s is a commit id: 40 hex digits, or 64 in a
-// SHA-256 repository.
 func isCommitID(s string) bool {
 	if len(s) != 40 && len(s) != 64 {
 		return false
@@ -377,6 +318,4 @@ func isCommitID(s string) bool {
 	return true
 }
 
-// isNullCommit reports whether a commit id is all zeros: GitHub's `before` of a
-// push that created a branch, and `after` of one that deleted it.
 func isNullCommit(s string) bool { return strings.Trim(s, "0") == "" }

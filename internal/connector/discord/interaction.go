@@ -42,11 +42,8 @@ const (
 // MaxChoices is the most autocomplete choices Discord shows.
 const MaxChoices = 25
 
-// maxAnswer is the most characters a message holds.
 const maxAnswer = 2000
 
-// ephemeral is the message flag that shows an answer only to the person who
-// ran the command.
 const ephemeral = 1 << 6
 
 // Command is an application command as Discord registers it.
@@ -135,8 +132,6 @@ func HasApp(src connector.SourceConfig) bool {
 	return !src.ReadOnly && src.DecodeSettings(&s) == nil && (s.ApplicationID != "" || s.PublicKey != "")
 }
 
-// app validates the application settings, which are set together or not at
-// all, and returns the public key.
 func (s Settings) app() (ed25519.PublicKey, bool, error) {
 	if s.ApplicationID == "" && s.PublicKey == "" {
 		return nil, false, nil
@@ -178,7 +173,6 @@ func (a *App) Register(ctx context.Context) error {
 // interaction's token, not the bot's, and so can write nothing but that
 // answer. A 404 is retried: the deferral may not have reached Discord yet.
 func (a *App) Edit(ctx context.Context, token, content string) error {
-	// The deferral already made the answer ephemeral; an edit sets no flags.
 	edit := ephemeralAnswer(content)
 	edit.Flags = 0
 	body, err := json.Marshal(edit)
@@ -204,8 +198,6 @@ type statusError int
 
 func (e statusError) Error() string { return fmt.Sprintf("discord answered %d", int(e)) }
 
-// send makes one REST call. An error never carries the URL, which may hold an
-// interaction token.
 func (a *App) send(ctx context.Context, method, target string, body []byte, bot bool) error {
 	req, err := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(body))
 	if err != nil {
@@ -382,10 +374,6 @@ func (a *App) CommandEvent(in Interaction) connector.Event {
 	}
 }
 
-// ThreadArtifact is the artifact id a thread's events carry in
-// `payload.thread`, and so the key of the thread's L1 document.
-func ThreadArtifact(id string) string { return threadArtifact(id) }
-
 // Response is an answer to an interaction.
 type Response struct {
 	Type int `json:"type"`
@@ -398,7 +386,6 @@ type answer struct {
 	AllowedMentions mentions `json:"allowed_mentions"`
 }
 
-// mentions pings nobody.
 type mentions struct {
 	Parse []string `json:"parse"`
 }

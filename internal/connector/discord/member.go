@@ -9,9 +9,6 @@ import (
 	"strings"
 )
 
-// restStatus is a REST call Discord answered with something other than
-// success. It prints as the status line, which is what a walk reports, and
-// its value is what lets [Connector.Member] tell a 404 apart.
 type restStatus int
 
 func (e restStatus) Error() string { return fmt.Sprintf("%d %s", int(e), http.StatusText(int(e))) }

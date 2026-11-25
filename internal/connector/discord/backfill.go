@@ -18,8 +18,6 @@ import (
 
 const messagePage = 100
 
-// walkPosition is deliberately self-contained: the runtime persists it between
-// calls, and no page relies on the connector's in-memory gateway cache.
 type walkPosition struct {
 	Channel       string   `json:"channel"`
 	Phase         string   `json:"phase"`
@@ -125,9 +123,6 @@ func (c *Connector) result(p walkPosition, resync bool, n int) (connector.Backfi
 	return connector.BackfillResult{Next: connector.Cursor(raw), Events: n}, nil
 }
 
-// Each call reads at most one message page or one thread listing. Message
-// pages use snowflake keyset pagination, so new messages cannot shift history
-// across a page boundary.
 func (c *Connector) walk(ctx context.Context, sink connector.Sink, p walkPosition, resync bool) (connector.BackfillResult, error) {
 	if p.Target != "" || p.Phase == "messages" {
 		id := p.Channel
@@ -154,7 +149,6 @@ func (c *Connector) walk(ctx context.Context, sink connector.Sink, p walkPositio
 			return connector.BackfillResult{}, err
 		}
 		for _, m := range msgs {
-			// REST's channel id is authoritative, even if a fixture omits it.
 			if m.ChannelID == "" {
 				m.ChannelID = id
 			}
@@ -204,7 +198,7 @@ func (c *Connector) walk(ctx context.Context, sink connector.Sink, p walkPositio
 	}
 	if len(p.Pending) == 0 && p.More {
 		p.More = false
-	} // consume a completed archive page
+	}
 	if len(p.Pending) == 0 {
 		if p.ArchiveBefore == "done" {
 			if p.Phase == "public_archived" {
@@ -270,8 +264,6 @@ func (c *Connector) walk(ctx context.Context, sink connector.Sink, p walkPositio
 	return c.result(p, resync, 0)
 }
 
-// refresh reads current visibility before each page. A gateway and a REST
-// walk may run together; both update the same cache under the connector lock.
 func (c *Connector) refresh(ctx context.Context, parent, thread string) error {
 	var roles []role
 	if err := c.get(ctx, "/guilds/"+c.guild+"/roles", &roles); err != nil {
@@ -307,7 +299,6 @@ func (c *Connector) refresh(ctx context.Context, parent, thread string) error {
 }
 
 func (c *Connector) get(ctx context.Context, path string, v any) error {
-	// A 429 sets the next permitted request time for all concurrent walks.
 	c.mu.Lock()
 	delay := time.Until(c.nextRequest)
 	c.mu.Unlock()

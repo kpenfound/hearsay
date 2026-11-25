@@ -201,7 +201,6 @@ func New(src connector.SourceConfig) (*Connector, error) {
 	return &Connector{source: src.ID, guild: s.Guild, token: src.Secrets[SecretToken], gateway: gateway, api: api, http: &http.Client{Timeout: 30 * time.Second}, containers: containers, intents: s.Intents, status: connector.HealthDegraded, detail: "reconnecting", channels: map[string]channel{}, roles: map[string]uint64{}, messages: map[string]message{}}, nil
 }
 
-// apiURL is the REST base a source's settings name, without a trailing slash.
 func apiURL(api string) (string, error) {
 	if api == "" {
 		api = defaultAPI
@@ -443,9 +442,6 @@ func (c *Connector) Stream(ctx context.Context, sink connector.Sink) error {
 				c.resumeURL = v.ResumeGatewayURL
 				c.mu.Unlock()
 				c.setHealth(connector.HealthOK, "connected")
-				// A fresh session has no replay sequence. A durable walk fills
-				// messages posted while this process was down, even after the
-				// one-time initial backfill finished in an earlier run.
 				if requester, ok := sink.(connector.ResyncRequester); ok {
 					for _, id := range c.containers {
 						if err := requester.RequestResync(ctx, id); err != nil && !errors.Is(err, connector.ErrNoResyncStore) {
@@ -494,7 +490,6 @@ func (c *Connector) Stream(ctx context.Context, sink connector.Sink) error {
 	}
 }
 
-// Discord snowflakes encode creation time in their high 42 bits.
 func snowflakeTime(id string) time.Time {
 	n, err := strconv.ParseUint(id, 10, 64)
 	if err != nil {

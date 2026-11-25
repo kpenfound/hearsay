@@ -3,7 +3,6 @@
 package obsidian_test
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -66,8 +65,6 @@ func TestPollReconcilesVaultThroughL0(t *testing.T) {
 	if err := c.Poll(t.Context(), sink); err != nil {
 		t.Fatal(err)
 	}
-	// Changes is ordered by committed transactions across every source. Wait for
-	// this source's initial rows before using the feed as a baseline.
 	changes := func(want int) []l0.Change {
 		t.Helper()
 		deadline := time.Now().Add(30 * time.Second)
@@ -100,7 +97,7 @@ func TestPollReconcilesVaultThroughL0(t *testing.T) {
 	if err := c.Close(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	src.Containers = []string{"Notes"} // a config restart removes Projects
+	src.Containers = []string{"Notes"}
 	c = connect()
 	defer func() { _ = c.Close(t.Context()) }()
 	sink = connector.NewGate(store, src.ID, c.Describe(), connector.NewAllowlist(src))
@@ -118,8 +115,6 @@ func TestPollReconcilesVaultThroughL0(t *testing.T) {
 	if !artifacts["Notes/edit.md"] || !artifacts["Notes/renamed.md"] {
 		t.Fatalf("current artifacts = %v", artifacts)
 	}
-	// Two document revisions for edit.md, one for renamed.md, and three
-	// tombstones remain visible. The three retracted documents are hidden.
 	after := changes(6)
 	targets := map[string]bool{}
 	for _, change := range after {
@@ -157,12 +152,7 @@ func TestPollReconcilesVaultThroughL0(t *testing.T) {
 	if err := c.Close(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	var settings obsidian.Settings
-	if err := json.Unmarshal(src.Settings, &settings); err != nil {
-		t.Fatal(err)
-	}
-	settings.Public = true
-	src.Settings, _ = json.Marshal(settings)
+	src = withSettings(t, src, func(s *obsidian.Settings) { s.Public = true })
 	c = connect()
 	sink = connector.NewGate(store, src.ID, c.Describe(), connector.NewAllowlist(src))
 	if err := c.Poll(t.Context(), sink); err != nil {
@@ -251,12 +241,7 @@ func TestBackfillThroughGateAndSQL(t *testing.T) {
 			t.Fatalf("private ACL = %+v", ev.ACL)
 		}
 	}
-	var settings obsidian.Settings
-	if err := json.Unmarshal(src.Settings, &settings); err != nil {
-		t.Fatal(err)
-	}
-	settings.Public = true
-	src.Settings, _ = json.Marshal(settings)
+	src = withSettings(t, src, func(s *obsidian.Settings) { s.Public = true })
 	c, err = obsidian.New(src)
 	if err != nil {
 		t.Fatal(err)

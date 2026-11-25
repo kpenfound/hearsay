@@ -16,11 +16,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/l0"
 )
 
-// Against the real store: a backfill of a named
-// repository lands its issues, pull requests, reviews and commits in L0 with
-// the contract's native ids; a second backfill writes nothing new; webhook
-// events for the same objects are deduplicated against the backfilled ones;
-// and a repository going private lands one new revision per artifact.
 func TestBackfillAndWebhooksLandInL0Once(t *testing.T) {
 	url := os.Getenv("HEARSAY_DATABASE_URL")
 	if url == "" {
@@ -33,7 +28,6 @@ func TestBackfillAndWebhooksLandInL0Once(t *testing.T) {
 	t.Cleanup(pool.Close)
 	store := l0.New(pool)
 
-	// A source nothing else in the shared database uses.
 	id := "gh" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	stored := func() []string {
 		t.Helper()
@@ -73,9 +67,6 @@ func TestBackfillAndWebhooksLandInL0Once(t *testing.T) {
 		t.Errorf("after the webhooks L0 holds %d events, want %d", n, len(wantBackfill))
 	}
 
-	// The repository goes private and no delivery says so. The first process
-	// finds it at startup and is stopped partway through the walk; the second
-	// has only the database and finishes it.
 	gh.private.Store(true)
 	resyncs := l0.NewResyncs(pool)
 	commits := "/repos/acme/api/commits"
@@ -113,9 +104,6 @@ func TestBackfillAndWebhooksLandInL0Once(t *testing.T) {
 	}
 }
 
-// Against the real store: a review edited after it was ingested is read again
-// by a backfill over a cleared cursor, which lands a second revision rather
-// than failing with ErrRewrite, and the edit's webhook deduplicates against it.
 func TestABackfillOverAnEditedReviewLandsANewRevision(t *testing.T) {
 	url := os.Getenv("HEARSAY_DATABASE_URL")
 	if url == "" {

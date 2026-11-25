@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -27,35 +28,23 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/github"
 	"github.com/kpenfound/hearsay/internal/l1"
+	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
 const (
-	sourceID   = "github-acme"
-	testToken  = "test-token"
-	hookSecret = "hook-secret"
-	sha1       = "c0ffee0000000000000000000000000000000001"
-	sha2       = "decaf00000000000000000000000000000000002"
-	// baseSHA is where testdata/hooks/push.json says the branch was.
-	baseSHA = "a100000000000000000000000000000000000000"
-	nullSHA = "0000000000000000000000000000000000000000"
-	// reviewToken is review 77's content token: the first 16 hex digits of
-	// sha256("approved\nLooks good.").
+	sourceID    = "github-acme"
+	testToken   = "test-token"
+	hookSecret  = "hook-secret"
+	sha1        = "c0ffee0000000000000000000000000000000001"
+	sha2        = "decaf00000000000000000000000000000000002"
+	baseSHA     = "a100000000000000000000000000000000000000"
+	nullSHA     = "0000000000000000000000000000000000000000"
 	reviewToken = "cca24e8b92a08e66"
-	// pullToken is pull request 2's content token: its updated_at, and the
-	// first 16 hex digits of the SHA-256 of each path testdata/api/
-	// pulls-2-files.json names, sorted, followed by a newline.
-	pullToken = "2026-09-04T12:00:00Z+paths:83f03ef649440f8e"
+	pullToken   = "2026-09-04T12:00:00Z+paths:83f03ef649440f8e"
 )
 
-// pullPaths are the paths pull request 2 touches: its files, and the name the
-// renamed one had.
 var pullPaths = []string{"api/health.go", "docs/health.md", "engine/server/health.go", "engine/server/x.go"}
 
-// wantBackfill is every native id a backfill of acme/api emits, in the order it
-// emits them: issues by updated_at, pull requests in creation order with their
-// reviews, issue comments and review comments by updated_at, commits newest
-// first. The pull request listed among the issues and the pending review are
-// not in it.
 var wantBackfill = []string{
 	"acme/api#3@2026-08-20T09:30:00Z",
 	"acme/api#1@2026-09-02T11:00:00Z",
@@ -69,7 +58,6 @@ var wantBackfill = []string{
 	"acme/api@" + sha2,
 }
 
-// liveHooks are the deliveries for the objects the backfill fixtures hold.
 var liveHooks = []struct{ event, file string }{
 	{"issues", "issues.edited"},
 	{"issue_comment", "issue_comment.created"},
@@ -79,7 +67,6 @@ var liveHooks = []struct{ event, file string }{
 	{"push", "push"},
 }
 
-// fixtureLists are the lists acme/api starts with, by REST path.
 var fixtureLists = map[string]string{
 	"/repos/acme/api/issues":          "issues.json",
 	"/repos/acme/api/pulls":           "pulls.json",
@@ -90,37 +77,23 @@ var fixtureLists = map[string]string{
 	"/repos/acme/api/commits":         "commits.json",
 }
 
-// fixtureContents are what the contents API answers for acme/api, by REST path:
-// the root listing and the one file seeding asks for.
 var fixtureContents = map[string]string{
 	"/repos/acme/api/contents":                    "contents-root.json",
 	"/repos/acme/api/contents/.github/CODEOWNERS": "contents-codeowners.json",
 }
 
-// fakeGitHub is GitHub's REST API over the fixtures, as far as the connector
-// reads it. It is a model rather than a recording: lists honour `since`, `sort`,
-// `direction`, `page` and `per_page` the way GitHub does, and a test may change
-// the data between two calls, which is what a walk that pages safely has to
-// survive. Any repository resolves, with the visibility the test set; acme/web
-// has nothing in it.
 type fakeGitHub struct {
 	t       *testing.T
 	srv     *httptest.Server
 	private atomic.Bool
 
-	mu    sync.Mutex
-	lists map[string][]map[string]any
-	// contents are the contents API's answers, verbatim, by path; a path with
-	// none is a 404, as it is from GitHub.
+	mu       sync.Mutex
+	lists    map[string][]map[string]any
 	contents map[string][]byte
-	// rewound is how many commits a force push has taken off the front of a
-	// repository's default branch.
 	rewound  map[string]int
 	requests []string
-	// status fails every request for a path.
-	status map[string]int
-	// holds make requests for a path wait until released.
-	holds map[string]chan struct{}
+	status   map[string]int
+	holds    map[string]chan struct{}
 }
 
 func newFakeGitHub(t *testing.T) *fakeGitHub {
@@ -227,7 +200,6 @@ func (gh *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if sub != "/pulls" {
-			// The pulls list takes no since.
 			items = since(items, q.Get("since"), "updated_at")
 		}
 		if sort := q.Get("sort"); sort == "updated" || sort == "created" {
@@ -245,8 +217,6 @@ func (gh *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// paginate writes one page of items, with a Link header naming the next page
-// where there is one.
 func (gh *fakeGitHub) paginate(w http.ResponseWriter, r *http.Request, items []map[string]any) {
 	q := r.URL.Query()
 	size, page := 30, 1
@@ -261,7 +231,6 @@ func (gh *fakeGitHub) paginate(w http.ResponseWriter, r *http.Request, items []m
 	if end < len(items) {
 		q.Set("page", strconv.Itoa(page+1))
 		next := gh.srv.URL + r.URL.Path + "?" + q.Encode()
-		// rel="last" first, so the parser has to find rel="next".
 		w.Header().Set("Link", fmt.Sprintf(`<%s>; rel="last", <%s>; rel="next"`, next, next))
 	}
 	out := append([]map[string]any{}, items[start:end]...)
@@ -270,7 +239,6 @@ func (gh *fakeGitHub) paginate(w http.ResponseWriter, r *http.Request, items []m
 
 func writeJSON(w http.ResponseWriter, v any) { _ = json.NewEncoder(w).Encode(v) }
 
-// field is a string at a path of keys into a decoded object.
 func field(item map[string]any, keys ...string) string {
 	var v any = item
 	for _, k := range keys {
@@ -284,9 +252,6 @@ func field(item map[string]any, keys ...string) string {
 	return s
 }
 
-// since is the items whose field is after s. GitHub documents `since` as
-// "after"; the fake takes it at its word, which is the stricter of the two
-// readings. RFC 3339 timestamps in UTC compare as strings.
 func since(items []map[string]any, s string, keys ...string) []map[string]any {
 	if s == "" {
 		return items
@@ -306,7 +271,6 @@ func (gh *fakeGitHub) setList(path string, items []map[string]any) {
 	gh.lists[path] = items
 }
 
-// touch changes the updated_at of item number n in a list.
 func (gh *fakeGitHub) touch(path string, n int, updatedAt string) {
 	gh.mu.Lock()
 	defer gh.mu.Unlock()
@@ -319,7 +283,6 @@ func (gh *fakeGitHub) touch(path string, n int, updatedAt string) {
 	gh.t.Fatalf("no item %d in %s", n, path)
 }
 
-// edit sets field of the item with id in a list.
 func (gh *fakeGitHub) edit(path string, id int, field string, value any) {
 	gh.mu.Lock()
 	defer gh.mu.Unlock()
@@ -332,14 +295,12 @@ func (gh *fakeGitHub) edit(path string, id int, field string, value any) {
 	gh.t.Fatalf("no item with id %d in %s", id, path)
 }
 
-// rewind force-pushes a repository's default branch back one commit.
 func (gh *fakeGitHub) rewind(repo string) {
 	gh.mu.Lock()
 	defer gh.mu.Unlock()
 	gh.rewound[repo]++
 }
 
-// setContents sets what the contents API answers for a path; nil removes it.
 func (gh *fakeGitHub) setContents(path string, raw []byte) {
 	gh.mu.Lock()
 	defer gh.mu.Unlock()
@@ -356,8 +317,6 @@ func (gh *fakeGitHub) fail(path string, status int) {
 	gh.status[path] = status
 }
 
-// hold makes requests for path wait until release is called, which the test's
-// cleanup also does, so the server is never closed with a request stuck.
 func (gh *fakeGitHub) hold(path string) (release func()) {
 	ch := make(chan struct{})
 	var once sync.Once
@@ -375,7 +334,6 @@ func (gh *fakeGitHub) seen() []string {
 	return append([]string(nil), gh.requests...)
 }
 
-// genItem is an issue, or a pull request, for a list a test builds.
 func genItem(n int, created, updated string, pull bool) map[string]any {
 	it := map[string]any{
 		"number": n, "title": fmt.Sprintf("Item %d", n), "state": "open",
@@ -390,7 +348,6 @@ func genItem(n int, created, updated string, pull bool) map[string]any {
 	return it
 }
 
-// newSource is a source served by the fake, with settings merged over its URL.
 func newSource(t *testing.T, gh *fakeGitHub, id string, settings map[string]any, repos ...string) connector.SourceConfig {
 	t.Helper()
 	merged := map[string]any{"api_url": gh.srv.URL}
@@ -423,13 +380,10 @@ func newConnector(t *testing.T, src connector.SourceConfig) *github.Connector {
 	return c
 }
 
-// gateFor is the sink production puts in front of the connector.
 func gateFor(src connector.SourceConfig, c connector.Connector, sink connector.Sink) *connector.Gate {
 	return connector.NewGate(sink, src.ID, c.Describe(), connector.NewAllowlist(src))
 }
 
-// backfillAll drives a backfill to the end and returns the cursors it went
-// through.
 func backfillAll(t *testing.T, c connector.Backfiller, sink connector.Sink) []connector.Cursor {
 	t.Helper()
 	var cursors []connector.Cursor
@@ -452,8 +406,6 @@ func backfillAll(t *testing.T, c connector.Backfiller, sink connector.Sink) []co
 	return nil
 }
 
-// walkStep backfills from cursor until the walk leaves the cursor's step,
-// calling between once, after the first call.
 func walkStep(t *testing.T, c connector.Backfiller, sink connector.Sink, cursor string, between func()) {
 	t.Helper()
 	step := stepOf(t, connector.Cursor(cursor))
@@ -503,13 +455,17 @@ func sign(secret string, body []byte) string {
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
 }
 
-// deliver posts a delivery signed with the source's secret.
 func deliver(t *testing.T, h http.Handler, event string, body []byte) int {
 	t.Helper()
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/hooks/"+sourceID, bytes.NewReader(body))
+	return deliverSigned(t.Context(), t, h, event, body, sign(hookSecret, body))
+}
+
+func deliverSigned(ctx context.Context, t *testing.T, h http.Handler, event string, body []byte, signature string) int {
+	t.Helper()
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/hooks/"+sourceID, bytes.NewReader(body))
 	req.Header.Set("X-GitHub-Event", event)
 	req.Header.Set("X-GitHub-Delivery", "d-1")
-	req.Header.Set("X-Hub-Signature-256", sign(hookSecret, body))
+	req.Header.Set("X-Hub-Signature-256", signature)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
 	return rr.Code
@@ -549,6 +505,17 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+}
+
+func backfilledByID(t *testing.T, c *github.Connector, src connector.SourceConfig) map[string]connector.Event {
+	t.Helper()
+	backfilled := &connector.Recorder{}
+	backfillAll(t, c, gateFor(src, c, backfilled))
+	byID := map[string]connector.Event{}
+	for _, ev := range backfilled.Events() {
+		byID[ev.ID] = ev
+	}
+	return byID
 }
 
 func TestFactory(t *testing.T) {
@@ -592,12 +559,6 @@ func TestFactory(t *testing.T) {
 					t.Fatalf("New = %v, want a connector", err)
 				}
 				t.Cleanup(func() { _ = c.Close(context.Background()) })
-				if _, ok := c.(connector.Pusher); !ok {
-					t.Error("the connector is not a Pusher")
-				}
-				if _, ok := c.(connector.Backfiller); !ok {
-					t.Error("the connector is not a Backfiller")
-				}
 				return
 			}
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
@@ -611,7 +572,18 @@ func settings(raw string) func(*connector.SourceConfig) {
 	return func(s *connector.SourceConfig) { s.Settings = json.RawMessage(raw) }
 }
 
-func TestBackfillEmitsTheContractsEvents(t *testing.T) {
+func TestBackfillEmitsEventsInStepOrder(t *testing.T) {
+	gh := newFakeGitHub(t)
+	src := newSource(t, gh, sourceID, nil)
+	c := newConnector(t, src)
+	rec := &connector.Recorder{}
+	backfillAll(t, c, gateFor(src, c, rec))
+	if got := nativeIDs(rec.Events()); asJSON(t, got) != asJSON(t, wantBackfill) {
+		t.Errorf("native ids =\n%v\nwant\n%v", got, wantBackfill)
+	}
+}
+
+func TestBackfillEventsHaveTheContractsShape(t *testing.T) {
 	gh := newFakeGitHub(t)
 	src := newSource(t, gh, sourceID, nil)
 	c := newConnector(t, src)
@@ -619,9 +591,6 @@ func TestBackfillEmitsTheContractsEvents(t *testing.T) {
 	backfillAll(t, c, gateFor(src, c, rec))
 
 	events := rec.Events()
-	if got := nativeIDs(events); asJSON(t, got) != asJSON(t, wantBackfill) {
-		t.Fatalf("native ids =\n%v\nwant\n%v", got, wantBackfill)
-	}
 	byNativeID := map[string]connector.Event{}
 	for _, ev := range events {
 		byNativeID[ev.NativeID] = ev
@@ -644,11 +613,9 @@ func TestBackfillEmitsTheContractsEvents(t *testing.T) {
 		text     string
 		time     string
 		editedAt string
-		// token is the revision token where it is not editedAt, which is then
-		// the revision's edited_at alone.
-		token  string
-		native string
-		paths  []string
+		token    string
+		native   string
+		paths    []string
 	}{
 		{
 			nativeID: "acme/api#1@2026-09-02T11:00:00Z", kind: connector.KindIssue, artifact: "acme/api#1", author: kyle,
@@ -759,9 +726,6 @@ func TestBackfillEmitsTheContractsEvents(t *testing.T) {
 	}
 }
 
-// At a page size of one, every list is walked across pages — keyset ties,
-// review pages, the pinned commit history — and nothing is lost. Pages
-// overlap, so some events come twice, which is free.
 func TestBackfillAtASmallPageSizeEmitsEverything(t *testing.T) {
 	t.Cleanup(github.SetPageSize(1))
 	gh := newFakeGitHub(t)
@@ -777,9 +741,6 @@ func TestBackfillAtASmallPageSizeEmitsEverything(t *testing.T) {
 	}
 }
 
-// An item already read changes while the walk is between two pages, and the
-// item at the page boundary — which did not change, so no webhook brings it —
-// is still emitted.
 func TestBackfillEmitsWhatDidNotChangeWhileSomethingElseDid(t *testing.T) {
 	t.Cleanup(github.SetPageSize(2))
 	tests := []struct {
@@ -803,7 +764,6 @@ func TestBackfillEmitsWhatDidNotChangeWhileSomethingElseDid(t *testing.T) {
 			rec := &connector.Recorder{}
 
 			walkStep(t, c, gateFor(src, c, rec), `{"repo":"acme/api","step":"`+tt.step+`"}`, func() {
-				// The first item, already read, is edited and moves to the end.
 				gh.touch(tt.path, 10, "2026-09-10T00:00:00Z")
 			})
 			seen := artifacts(rec.Events())
@@ -816,8 +776,6 @@ func TestBackfillEmitsWhatDidNotChangeWhileSomethingElseDid(t *testing.T) {
 	}
 }
 
-// More items than a page share one updated_at: the walk moves on by page
-// number rather than asking for the same page forever.
 func TestBackfillPagesThroughTiesWiderThanAPage(t *testing.T) {
 	t.Cleanup(github.SetPageSize(2))
 	gh := newFakeGitHub(t)
@@ -836,8 +794,6 @@ func TestBackfillPagesThroughTiesWiderThanAPage(t *testing.T) {
 	}
 }
 
-// A force push while the commits are walked does not move a commit past the
-// walk: it stays on the history it started from.
 func TestBackfillOfCommitsStaysOnTheHistoryItStarted(t *testing.T) {
 	t.Cleanup(github.SetPageSize(1))
 	gh := newFakeGitHub(t)
@@ -853,15 +809,13 @@ func TestBackfillOfCommitsStaysOnTheHistoryItStarted(t *testing.T) {
 	}
 }
 
-// A cursor is all a restarted process has: a connector built fresh for every
-// call walks the same history.
 func TestBackfillResumesFromItsCursorInANewConnector(t *testing.T) {
 	t.Cleanup(github.SetPageSize(1))
 	gh := newFakeGitHub(t)
 	src := newSource(t, gh, sourceID, nil)
 	whole := &connector.Recorder{}
 	c := newConnector(t, src)
-	cursors := backfillAll(t, c, gateFor(src, c, whole))
+	backfillAll(t, c, gateFor(src, c, whole))
 
 	pieces := &connector.Recorder{}
 	var cur connector.Cursor
@@ -879,6 +833,14 @@ func TestBackfillResumesFromItsCursorInANewConnector(t *testing.T) {
 	if a, b := asJSON(t, whole.Events()), asJSON(t, pieces.Events()); a != b {
 		t.Errorf("resumed backfill emitted\n%s\nwant\n%s", b, a)
 	}
+}
+
+func TestBackfillCursorsAreStorableAndHoldNoHost(t *testing.T) {
+	t.Cleanup(github.SetPageSize(1))
+	gh := newFakeGitHub(t)
+	src := newSource(t, gh, sourceID, nil)
+	c := newConnector(t, src)
+	cursors := backfillAll(t, c, gateFor(src, c, &connector.Recorder{}))
 	for _, cur := range cursors {
 		if len(cur) > connector.MaxCursorLen || !utf8.ValidString(string(cur)) || strings.ContainsRune(string(cur), 0) {
 			t.Errorf("cursor %q is not one the runtime can store", cur)
@@ -901,7 +863,7 @@ func TestBackfillFromCursor(t *testing.T) {
 		{
 			name:       "a removed repository before the configured one resumes at it",
 			cursor:     `{"repo":"acme/aaa","step":"commits"}`,
-			wantEvents: 2, // issues #3 and #1; the pull request in the list is not an issue
+			wantEvents: 2,
 			wantNext:   `{"repo":"acme/api","step":"pulls"}`,
 		},
 		{
@@ -936,7 +898,6 @@ func TestBackfillFromCursor(t *testing.T) {
 		{name: "a cursor that is not JSON", cursor: "3", wantErr: "not one the github connector wrote"},
 		{name: "a step it does not have", cursor: `{"repo":"acme/api","step":"labels"}`, wantErr: `step "labels"`},
 		{name: "a since that is not a timestamp", cursor: `{"repo":"acme/api","step":"issues","since":"yesterday"}`, wantErr: `since "yesterday"`},
-		// Refused before any call, on a step that would not read it either.
 		{name: "a since that is not a timestamp on the commits step", cursor: `{"repo":"acme/api","step":"commits","since":"yesterday"}`, wantErr: `since "yesterday"`},
 		{name: "a negative page", cursor: `{"repo":"acme/api","step":"pulls","page":-1}`, wantErr: "page -1"},
 	}
@@ -982,7 +943,7 @@ func TestBackfillWalksEveryRepository(t *testing.T) {
 	}
 }
 
-func TestBackfillSince(t *testing.T) {
+func TestBackfillSinceSkipsWhatPredatesTheStartDate(t *testing.T) {
 	gh := newFakeGitHub(t)
 	src := newSource(t, gh, sourceID, map[string]any{"since": "2026-09-01"})
 	c := newConnector(t, src)
@@ -998,7 +959,13 @@ func TestBackfillSince(t *testing.T) {
 	if got := nativeIDs(rec.Events()); asJSON(t, got) != asJSON(t, want) {
 		t.Errorf("native ids = %v, want %v", got, want)
 	}
+}
 
+func TestBackfillSinceIsSentAsASecondBeforeTheStartDate(t *testing.T) {
+	gh := newFakeGitHub(t)
+	src := newSource(t, gh, sourceID, map[string]any{"since": "2026-09-01"})
+	c := newConnector(t, src)
+	backfillAll(t, c, gateFor(src, c, &connector.Recorder{}))
 	for _, uri := range gh.seen() {
 		u, err := url.Parse(uri)
 		if err != nil {
@@ -1011,7 +978,6 @@ func TestBackfillSince(t *testing.T) {
 				t.Errorf("%s: since = %q, want a second before the configured start date", uri, since)
 			}
 		case strings.HasSuffix(u.Path, "/pulls"):
-			// The pulls list takes no since; the connector filters the page.
 			if since != "" {
 				t.Errorf("%s: since = %q, want none", uri, since)
 			}
@@ -1019,9 +985,6 @@ func TestBackfillSince(t *testing.T) {
 	}
 }
 
-// The start date is on or after: what was updated at that second is in, and
-// what was updated the second before is out — on the lists GitHub bounds and
-// on the pulls list the connector bounds itself.
 func TestBackfillSinceIncludesTheStartDate(t *testing.T) {
 	gh := newFakeGitHub(t)
 	before, at := "2026-08-31T23:59:59Z", "2026-09-01T00:00:00Z"
@@ -1090,7 +1053,6 @@ func TestBackfillFailures(t *testing.T) {
 	}
 }
 
-// GitHub has no default branch to read in a repository with no commits.
 func TestBackfillOfAnEmptyRepositoryFinishes(t *testing.T) {
 	gh := newFakeGitHub(t)
 	gh.fail("/repos/acme/api/branches/main", http.StatusNotFound)
@@ -1102,9 +1064,6 @@ func TestBackfillOfAnEmptyRepositoryFinishes(t *testing.T) {
 	}
 }
 
-// assertPrivateOf checks that private is public re-observed in a private
-// repository: the same artifacts in the same order, the composed token, the
-// collaborator group, and nothing else changed.
 func assertPrivateOf(t *testing.T, public, private []connector.Event) {
 	t.Helper()
 	if len(private) != len(public) {
@@ -1205,8 +1164,48 @@ func TestWebhookSignature(t *testing.T) {
 	}
 }
 
-// Webhook events for the objects a backfill read are the same events, so
-// ingest deduplicates them — in a public repository and in a private one.
+func TestWebhookLogsCarryIdsAndNoPayloadOrCredentials(t *testing.T) {
+	const secretText = "CONFIDENTIAL-COMMENT-TEXT"
+	repo := `"repository":{"full_name":"acme/api","private":false,"default_branch":"main"}`
+	forged := "sha256=" + strings.Repeat("ab", 32)
+	malformed := []byte(`{"action":"created","comment":{"id":1,"body":"` + secretText + `","issue_url":"https://api.github.com/repos/acme/api/issues/"},` + repo + `}`)
+	tests := []struct {
+		name, event string
+		body        []byte
+		signature   string
+		sinkErr     error
+		wantLog     string
+	}{
+		{name: "a refused signature", event: "issues", body: hook(t, "issues.edited"), signature: forged, wantLog: "signature does not verify"},
+		{name: "a delivery it cannot read", event: "issue_comment", body: malformed, wantLog: "webhook delivery refused"},
+		{name: "a store failure", event: "issues", body: hook(t, "issues.edited"), sinkErr: errors.New("store is down"), wantLog: "webhook delivery failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gh := newFakeGitHub(t)
+			src := newSource(t, gh, sourceID, nil)
+			c := newConnector(t, src)
+			var logs bytes.Buffer
+			ctx := telemetry.WithLogger(t.Context(), slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+			signature := tt.signature
+			if signature == "" {
+				signature = sign(hookSecret, tt.body)
+			}
+			h := c.Handler(gateFor(src, c, &connector.Recorder{Err: tt.sinkErr}))
+			deliverSigned(ctx, t, h, tt.event, tt.body, signature)
+			out := logs.String()
+			if !strings.Contains(out, tt.wantLog) || !strings.Contains(out, "d-1") {
+				t.Fatalf("log = %q, want %q naming delivery d-1", out, tt.wantLog)
+			}
+			for _, leaked := range []string{secretText, "The API returns 500", "/health returns 500", testToken, hookSecret, forged, sign(hookSecret, tt.body)} {
+				if strings.Contains(out, leaked) {
+					t.Errorf("log output holds %q: %s", leaked, out)
+				}
+			}
+		})
+	}
+}
+
 func TestWebhookEventsEqualBackfilledEvents(t *testing.T) {
 	for _, private := range []bool{false, true} {
 		t.Run(fmt.Sprintf("private=%v", private), func(t *testing.T) {
@@ -1214,12 +1213,7 @@ func TestWebhookEventsEqualBackfilledEvents(t *testing.T) {
 			gh.private.Store(private)
 			src := newSource(t, gh, sourceID, nil)
 			c := newConnector(t, src)
-			backfilled := &connector.Recorder{}
-			backfillAll(t, c, gateFor(src, c, backfilled))
-			byID := map[string]connector.Event{}
-			for _, ev := range backfilled.Events() {
-				byID[ev.ID] = ev
-			}
+			byID := backfilledByID(t, c, src)
 
 			live := &connector.Recorder{}
 			h := c.Handler(gateFor(src, c, live))
@@ -1251,8 +1245,6 @@ func TestWebhookEventsEqualBackfilledEvents(t *testing.T) {
 	}
 }
 
-// A push reads its commits in one REST call, whatever it did to the branch,
-// and emits the events a backfill of them emits.
 func TestPushReadsItsCommitsInOneCall(t *testing.T) {
 	tests := []struct {
 		name, before, wantPath string
@@ -1265,12 +1257,7 @@ func TestPushReadsItsCommitsInOneCall(t *testing.T) {
 			gh := newFakeGitHub(t)
 			src := newSource(t, gh, sourceID, nil)
 			c := newConnector(t, src)
-			backfilled := &connector.Recorder{}
-			backfillAll(t, c, gateFor(src, c, backfilled))
-			byID := map[string]connector.Event{}
-			for _, ev := range backfilled.Events() {
-				byID[ev.ID] = ev
-			}
+			byID := backfilledByID(t, c, src)
 
 			earlier := len(gh.seen())
 			body := bytes.Replace(hook(t, "push"), []byte(`"before": "`+baseSHA+`"`), []byte(`"before": "`+tt.before+`"`), 1)
@@ -1295,8 +1282,6 @@ func TestPushReadsItsCommitsInOneCall(t *testing.T) {
 	}
 }
 
-// A push whose read does not finish inside the delivery timeout is answered as
-// a failure while GitHub is still listening.
 func TestPushThatCannotReadInTimeFails(t *testing.T) {
 	t.Cleanup(github.SetReadTimeout(50 * time.Millisecond))
 	gh := newFakeGitHub(t)
@@ -1338,7 +1323,6 @@ func TestWebhookTombstones(t *testing.T) {
 			rec := &connector.Recorder{}
 			h := c.Handler(gateFor(src, c, rec))
 			body := hook(t, tt.file)
-			// Delivered twice, as a redelivery would: one event, twice.
 			for range 2 {
 				if code := deliver(t, h, tt.event, body); code != http.StatusAccepted {
 					t.Fatalf("status = %d, want 202", code)
@@ -1362,9 +1346,6 @@ func TestWebhookTombstones(t *testing.T) {
 	}
 }
 
-// A review edited or dismissed after it was ingested is a new revision of the
-// same artifact, whether a webhook brings the change or a later backfill reads
-// it, and the two agree on the event.
 func TestAReviewEditedOrDismissedIsANewRevision(t *testing.T) {
 	const reviews = "/repos/acme/api/pulls/2/reviews"
 	submitted := string(hook(t, "pull_request_review.submitted"))
@@ -1526,7 +1507,6 @@ func TestWebhookFailuresAreServerErrors(t *testing.T) {
 			setup: func(_ *fakeGitHub, rec *connector.Recorder) { rec.Err = errors.New("store is down") },
 		},
 		{
-			// A gate outside a runtime has no store to record a re-sync in.
 			name: "a re-sync cannot be recorded", event: "repository", file: "repository.privatized",
 			setup: func(*fakeGitHub, *connector.Recorder) {},
 		},
@@ -1560,9 +1540,19 @@ func TestWebhookFailuresAreServerErrors(t *testing.T) {
 	}
 }
 
-// GitHub's names are case-insensitive; the ids and the container use the
-// configured spelling, so the allowlist admits the event and it equals the
-// backfilled one.
+func TestWebhookForARepositoryTheSourceDoesNotListIsDropped(t *testing.T) {
+	gh := newFakeGitHub(t)
+	src := newSource(t, gh, sourceID, nil)
+	c := newConnector(t, src)
+	rec := &connector.Recorder{}
+	body := bytes.ReplaceAll(hook(t, "issues.edited"), []byte(`"full_name": "acme/api"`), []byte(`"full_name": "acme/other"`))
+	gate := gateFor(src, c, rec)
+	deliver(t, c.Handler(gate), "issues", body)
+	if n := len(rec.Events()); n != 0 || gate.Dropped() != 1 {
+		t.Errorf("%d events emitted and %d dropped for an unlisted repository, want none emitted and one dropped", n, gate.Dropped())
+	}
+}
+
 func TestWebhookUsesTheConfiguredSpellingOfTheRepository(t *testing.T) {
 	gh := newFakeGitHub(t)
 	src := newSource(t, gh, sourceID, nil)
@@ -1579,9 +1569,6 @@ func TestWebhookUsesTheConfiguredSpellingOfTheRepository(t *testing.T) {
 	}
 }
 
-// runtimeFor hosts the connector for src in a runtime, the way the connectors
-// service does, and returns it with a function that stops it. A test stops a
-// runtime and starts another over the same stores to be a restart.
 func runtimeFor(t *testing.T, src connector.SourceConfig, opts connector.RuntimeOptions) (*connector.Runtime, func()) {
 	t.Helper()
 	reg := connector.NewRegistry()
@@ -1590,7 +1577,6 @@ func runtimeFor(t *testing.T, src connector.SourceConfig, opts connector.Runtime
 	}
 	opts.Sources = []connector.SourceConfig{src}
 	opts.Registry = reg
-	// newSource puts the secrets' values where config puts variable names.
 	opts.Lookup = func(v string) (string, bool) { return v, true }
 	opts.Cadence = connector.Cadence{MinRefresh: time.Millisecond, Refresh: time.Millisecond, MaxBackoff: 5 * time.Millisecond, Shutdown: time.Second}
 	rt, err := connector.NewRuntime(t.Context(), opts)
@@ -1618,16 +1604,12 @@ func runtimeFor(t *testing.T, src connector.SourceConfig, opts connector.Runtime
 	return rt, stop
 }
 
-// requestedSince reports whether the fake has had a request for path since the
-// mark'th, so that a request from before a test's re-sync began does not count.
 func requestedSince(gh *fakeGitHub, mark int, path string) func() bool {
 	return func() bool {
 		return slices.ContainsFunc(gh.seen()[mark:], func(uri string) bool { return strings.HasPrefix(uri, path+"?") })
 	}
 }
 
-// resynced reports whether a re-sync of the container was asked for and has
-// finished.
 func resynced(t *testing.T, store connector.ResyncStore, source, container string) func() bool {
 	return func() bool {
 		records, err := store.Resyncs(t.Context(), source)
@@ -1643,9 +1625,6 @@ func resynced(t *testing.T, store connector.ResyncStore, source, container strin
 	}
 }
 
-// assertEveryArtifactPrivate checks what L0 would serve after a re-sync: every
-// artifact public held has a current revision under the private token, and no
-// container is exposed.
 func assertEveryArtifactPrivate(t *testing.T, public []connector.Event, l0 *connector.Recorder) {
 	t.Helper()
 	current := map[string]connector.Event{}
@@ -1667,18 +1646,19 @@ func assertEveryArtifactPrivate(t *testing.T, public []connector.Event, l0 *conn
 	}
 }
 
-// A repository going private re-emits every artifact with the composed token
-// and the collaborator group, nothing else about any of them changes, and the
-// walk reads its own repository and no other.
-func TestRepositoryGoingPrivateResyncsEveryArtifact(t *testing.T) {
+type privatizedRun struct {
+	public  []connector.Event
+	emitted []connector.Event
+	later   []string
+}
+
+func runPrivatizedResync(t *testing.T) privatizedRun {
+	t.Helper()
 	gh := newFakeGitHub(t)
 	src := newSource(t, gh, sourceID, nil, "acme/api", "acme/web")
 	c := newConnector(t, src)
 	public := &connector.Recorder{}
 	backfillAll(t, c, gateFor(src, c, public))
-	if h := c.Health(t.Context()); h.Status != connector.HealthOK || h.LastEventAt.IsZero() {
-		t.Errorf("health = %+v, want ok with a last event", h)
-	}
 
 	gh.private.Store(true)
 	resyncs := connector.NewMemoryResyncs()
@@ -1690,17 +1670,32 @@ func TestRepositoryGoingPrivateResyncsEveryArtifact(t *testing.T) {
 	}
 	waitFor(t, "the re-sync", resynced(t, resyncs, sourceID, "acme/api"))
 	stop()
-	assertPrivateOf(t, public.Events(), rec.Events())
-	for _, uri := range gh.seen()[mark:] {
+	return privatizedRun{public: public.Events(), emitted: rec.Events(), later: gh.seen()[mark:]}
+}
+
+func TestBackfillHealthReportsLastEvent(t *testing.T) {
+	gh := newFakeGitHub(t)
+	src := newSource(t, gh, sourceID, nil)
+	c := newConnector(t, src)
+	backfillAll(t, c, gateFor(src, c, &connector.Recorder{}))
+	if h := c.Health(t.Context()); h.Status != connector.HealthOK || h.LastEventAt.IsZero() {
+		t.Errorf("health = %+v, want ok with a last event", h)
+	}
+}
+
+func TestRepositoryGoingPrivateResyncsEveryArtifact(t *testing.T) {
+	run := runPrivatizedResync(t)
+	assertPrivateOf(t, run.public, run.emitted)
+}
+
+func TestResyncReadsOnlyTheRepositoryThatWentPrivate(t *testing.T) {
+	for _, uri := range runPrivatizedResync(t).later {
 		if strings.HasPrefix(uri, "/repos/acme/web") {
 			t.Errorf("the re-sync of acme/api read %s", uri)
 		}
 	}
 }
 
-// A push emits a commit dated before the start date, and the re-sync after the
-// repository goes private re-emits it, because a re-sync reaches whatever a
-// webhook may have emitted.
 func TestResyncReachesACommitAPushEmittedBeforeTheStartDate(t *testing.T) {
 	gh := newFakeGitHub(t)
 	src := newSource(t, gh, sourceID, map[string]any{"since": "2026-09-01"})
@@ -1727,9 +1722,6 @@ func TestResyncReachesACommitAPushEmittedBeforeTheStartDate(t *testing.T) {
 	}
 }
 
-// A re-sync survives a restart: the process stops partway through the walk. A
-// new runtime, with a new connector and nothing but the re-sync store and L0
-// from the old one, resumes where the walk had got to and finishes it.
 func TestAResyncInterruptedByARestartResumes(t *testing.T) {
 	gh := newFakeGitHub(t)
 	src := newSource(t, gh, sourceID, nil)
@@ -1768,11 +1760,6 @@ func TestAResyncInterruptedByARestartResumes(t *testing.T) {
 	assertEveryArtifactPrivate(t, public, l0)
 }
 
-// A re-sync survives a lost delivery: the delivery saying the repository went
-// private is never handled — here it fails, because the process has nowhere to
-// record the re-sync; a process that was down never sees it at all. The next
-// runtime is told nothing, finds the repository L0 still serves as public, asks
-// GitHub, and re-syncs it. A runtime after that has nothing left to do.
 func TestAResyncWhoseDeliveryWasNeverHandledRunsAtStartup(t *testing.T) {
 	gh := newFakeGitHub(t)
 	src := newSource(t, gh, sourceID, nil)
@@ -1796,8 +1783,13 @@ func TestAResyncWhoseDeliveryWasNeverHandledRunsAtStartup(t *testing.T) {
 
 	mark := len(gh.seen())
 	emitted := len(l0.Events())
-	_, stopAgain := runtimeFor(t, src, connector.RuntimeOptions{Sink: l0, Resyncs: resyncs, Exposure: l0})
-	time.Sleep(50 * time.Millisecond)
+	checked := &exposureSignal{ExposureReader: l0, read: make(chan struct{}, 1)}
+	_, stopAgain := runtimeFor(t, src, connector.RuntimeOptions{Sink: l0, Resyncs: resyncs, Exposure: checked})
+	select {
+	case <-checked.read:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the runtime did not run its startup check")
+	}
 	stopAgain()
 	if seen := gh.seen()[mark:]; len(seen) != 0 {
 		t.Errorf("a runtime started after the re-sync read %v, want nothing", seen)
@@ -1807,8 +1799,20 @@ func TestAResyncWhoseDeliveryWasNeverHandledRunsAtStartup(t *testing.T) {
 	}
 }
 
-// Public is GitHub's word on the repository now, and a repository config does
-// not name is not asked about.
+type exposureSignal struct {
+	connector.ExposureReader
+	read chan struct{}
+}
+
+func (e *exposureSignal) Exposed(ctx context.Context, source string) ([]connector.Exposure, error) {
+	exposed, err := e.ExposureReader.Exposed(ctx, source)
+	select {
+	case e.read <- struct{}{}:
+	default:
+	}
+	return exposed, err
+}
+
 func TestPublic(t *testing.T) {
 	gh := newFakeGitHub(t)
 	src := newSource(t, gh, sourceID, nil)
@@ -1825,7 +1829,6 @@ func TestPublic(t *testing.T) {
 	}
 }
 
-// Resync refuses a cursor it could not have written for the repository.
 func TestResyncRefusesAForeignCursor(t *testing.T) {
 	gh := newFakeGitHub(t)
 	src := newSource(t, gh, sourceID, nil, "acme/api", "acme/web")
@@ -1848,8 +1851,6 @@ func TestResyncRefusesAForeignCursor(t *testing.T) {
 	}
 }
 
-// hierarchyList is the issues list of acme/api with sub-issues in it: #11 is a
-// sub-issue of #10, #14 of an issue in acme/web, and #12 of nothing yet.
 func hierarchyList(t *testing.T) []map[string]any {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("testdata", "api", "issues-hierarchy.json"))
@@ -1863,73 +1864,78 @@ func hierarchyList(t *testing.T) []map[string]any {
 	return items
 }
 
-// A sub-issue is part_of its parent, from the backfill and from every
-// sub_issues delivery after it — added, moved to another parent, taken out —
-// and each of those is a new revision.
-func TestASubIssueIsPartOfItsParent(t *testing.T) {
+type subIssue struct{ nativeID, partOf string }
+
+var subIssueBackfill = []subIssue{
+	{"acme/api#10@2026-09-10T08:00:00Z", ""},
+	{"acme/api#11@2026-09-10T09:00:00Z+parent:acme/api#10", "acme/api#10"},
+	{"acme/api#12@2026-09-10T10:00:00Z", ""},
+	{"acme/api#14@2026-09-10T11:00:00Z+parent:acme/web#7", "acme/web#7"},
+}
+
+func backfilledHierarchy(t *testing.T) (*github.Connector, connector.SourceConfig, *connector.Recorder) {
+	t.Helper()
 	gh := newFakeGitHub(t)
 	gh.setList("/repos/acme/api/issues", hierarchyList(t))
 	src := newSource(t, gh, sourceID, nil)
 	c := newConnector(t, src)
 	backfilled := &connector.Recorder{}
 	backfillAll(t, c, gateFor(src, c, backfilled))
+	return c, src, backfilled
+}
 
-	type want struct{ nativeID, partOf string }
-	var got []want
+func TestABackfilledSubIssueIsPartOfItsParent(t *testing.T) {
+	_, _, backfilled := backfilledHierarchy(t)
+	var got []subIssue
 	for _, ev := range backfilled.Events() {
 		if ev.Kind == connector.KindIssue {
-			got = append(got, want{ev.NativeID, ev.Payload.PartOf})
+			got = append(got, subIssue{ev.NativeID, ev.Payload.PartOf})
 		}
 	}
-	wantBackfill := []want{
-		{"acme/api#10@2026-09-10T08:00:00Z", ""},
-		{"acme/api#11@2026-09-10T09:00:00Z+parent:acme/api#10", "acme/api#10"},
-		{"acme/api#12@2026-09-10T10:00:00Z", ""},
-		{"acme/api#14@2026-09-10T11:00:00Z+parent:acme/web#7", "acme/web#7"},
+	if !slices.Equal(got, subIssueBackfill) {
+		t.Errorf("backfilled issues = %v, want %v", got, subIssueBackfill)
 	}
-	if !slices.Equal(got, wantBackfill) {
-		t.Fatalf("backfilled issues = %v, want %v", got, wantBackfill)
-	}
+}
 
+func TestSubIssueDeliveries(t *testing.T) {
+	c, src, _ := backfilledHierarchy(t)
 	live := &connector.Recorder{}
 	h := c.Handler(gateFor(src, c, live))
 	tests := []struct {
 		name, event, file string
-		// edit changes the recorded delivery before it is sent.
-		edit func([]byte) []byte
-		// want is the one event the delivery emits; nil is none.
-		want *want
+		edit              func([]byte) []byte
+		want              *subIssue
 	}{
 		{
-			name: "an edit to a sub-issue is the backfilled event", event: "issues", file: "issues.edited.sub_issue",
-			want: &wantBackfill[1],
+			name: "an edit to a sub-issue", event: "issues", file: "issues.edited.sub_issue",
+			want: &subIssueBackfill[1],
 		},
 		{
 			name: "a parent added", event: "sub_issues", file: "sub_issues.parent_issue_added",
-			want: &want{"acme/api#12@2026-09-12T09:00:00Z+parent:acme/api#10", "acme/api#10"},
+			want: &subIssue{"acme/api#12@2026-09-12T09:00:00Z+parent:acme/api#10", "acme/api#10"},
 		},
 		{
 			name: "the same relationship delivered to the parent's repository", event: "sub_issues", file: "sub_issues.sub_issue_added",
-			want: &want{"acme/api#12@2026-09-12T09:00:00Z+parent:acme/api#10", "acme/api#10"},
+			want: &subIssue{"acme/api#12@2026-09-12T09:00:00Z+parent:acme/api#10", "acme/api#10"},
 		},
 		{
 			name: "moved to another parent", event: "sub_issues", file: "sub_issues.parent_issue_added.reparent",
-			want: &want{"acme/api#11@2026-09-13T10:00:00Z+parent:acme/api#12", "acme/api#12"},
+			want: &subIssue{"acme/api#11@2026-09-13T10:00:00Z+parent:acme/api#12", "acme/api#12"},
 		},
 		{
 			name: "the old parent's removal, after the move, keeps the new parent", event: "sub_issues", file: "sub_issues.parent_issue_removed.reparent",
-			want: &want{"acme/api#11@2026-09-13T10:00:00Z+parent:acme/api#12", "acme/api#12"},
+			want: &subIssue{"acme/api#11@2026-09-13T10:00:00Z+parent:acme/api#12", "acme/api#12"},
 		},
 		{
 			name: "a parent removed", event: "sub_issues", file: "sub_issues.parent_issue_removed",
-			want: &want{"acme/api#12@2026-09-14T08:00:00Z", ""},
+			want: &subIssue{"acme/api#12@2026-09-14T08:00:00Z", ""},
 		},
 		{
 			name: "a removal whose sub-issue still names the parent removed", event: "sub_issues", file: "sub_issues.parent_issue_removed",
 			edit: func(body []byte) []byte {
 				return bytes.Replace(body, []byte(`"number": 12,`), []byte(`"number": 12, "parent_issue_url": "https://api.github.com/repos/acme/api/issues/10",`), 1)
 			},
-			want: &want{"acme/api#12@2026-09-14T08:00:00Z", ""},
+			want: &subIssue{"acme/api#12@2026-09-14T08:00:00Z", ""},
 		},
 		{
 			name: "a sub-issue in another repository is that repository's delivery", event: "sub_issues", file: "sub_issues.sub_issue_added.other_repository",
@@ -1954,7 +1960,7 @@ func TestASubIssueIsPartOfItsParent(t *testing.T) {
 				t.Fatalf("status = %d with events %v, want 202 and one", code, nativeIDs(events))
 			}
 			ev := events[0]
-			if g := (want{ev.NativeID, ev.Payload.PartOf}); g != *tt.want {
+			if g := (subIssue{ev.NativeID, ev.Payload.PartOf}); g != *tt.want {
 				t.Errorf("event = %v, want %v", g, *tt.want)
 			}
 			token := strings.TrimPrefix(ev.NativeID, ev.Payload.Artifact+"@")
@@ -1964,22 +1970,31 @@ func TestASubIssueIsPartOfItsParent(t *testing.T) {
 			if ev.Payload.Parent != "" || ev.Payload.Thread != "" {
 				t.Errorf("parent, thread = %q, %q; want neither: a parent issue is not a conversation", ev.Payload.Parent, ev.Payload.Thread)
 			}
-			if tt.file == "issues.edited.sub_issue" {
-				var same connector.Event
-				for _, b := range backfilled.Events() {
-					if b.ID == ev.ID {
-						same = b
-					}
-				}
-				if a, b := asJSON(t, ev), asJSON(t, same); a != b {
-					t.Errorf("webhook event differs from the backfilled one:\n%s\nwant\n%s", a, b)
-				}
-			}
 		})
 	}
 }
 
-// pullEvent is the one pull request event among events.
+func TestASubIssueEditEqualsTheBackfilledEvent(t *testing.T) {
+	c, src, backfilled := backfilledHierarchy(t)
+	live := &connector.Recorder{}
+	if code := deliver(t, c.Handler(gateFor(src, c, live)), "issues", hook(t, "issues.edited.sub_issue")); code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", code)
+	}
+	events := live.Events()
+	if len(events) != 1 {
+		t.Fatalf("webhook emitted %v, want one", nativeIDs(events))
+	}
+	var same connector.Event
+	for _, b := range backfilled.Events() {
+		if b.ID == events[0].ID {
+			same = b
+		}
+	}
+	if a, b := asJSON(t, events[0]), asJSON(t, same); a != b {
+		t.Errorf("webhook event differs from the backfilled one:\n%s\nwant\n%s", a, b)
+	}
+}
+
 func pullEvent(t *testing.T, events []connector.Event) connector.Event {
 	t.Helper()
 	var found []connector.Event
@@ -1994,25 +2009,31 @@ func pullEvent(t *testing.T, events []connector.Event) connector.Event {
 	return found[0]
 }
 
-// The recorded files list of pull request 2 is what its event says it
-// touches — names, never the patch the list carries — and what L1 links it to
-// code entities by: engine/server/x.go is in engine/server and not in its
-// sibling.
-func TestAPullRequestLinksToTheCodeItTouches(t *testing.T) {
+func backfilledPull(t *testing.T) connector.Event {
+	t.Helper()
 	gh := newFakeGitHub(t)
 	src := newSource(t, gh, sourceID, nil)
 	c := newConnector(t, src)
 	rec := &connector.Recorder{}
 	backfillAll(t, c, gateFor(src, c, rec))
-	pr := pullEvent(t, rec.Events())
+	return pullEvent(t, rec.Events())
+}
 
+func TestAPullRequestCarriesThePathsItTouches(t *testing.T) {
+	pr := backfilledPull(t)
 	if !slices.Equal(pr.Payload.Paths, pullPaths) || pr.Payload.PathsTruncated {
 		t.Errorf("paths = %v, truncated %v; want %v", pr.Payload.Paths, pr.Payload.PathsTruncated, pullPaths)
 	}
-	if raw := asJSON(t, pr); strings.Contains(raw, "SECRET_PATCH_LINE") || strings.Contains(raw, "@@") {
+}
+
+func TestAPullRequestHoldsNoPatch(t *testing.T) {
+	if raw := asJSON(t, backfilledPull(t)); strings.Contains(raw, "SECRET_PATCH_LINE") || strings.Contains(raw, "@@") {
 		t.Errorf("the event holds a patch: %s", raw)
 	}
+}
 
+func TestAPullRequestLinksToTheCodeItTouches(t *testing.T) {
+	pr := backfilledPull(t)
 	api := config.SourceRef{Source: sourceID, Project: "acme/api"}
 	code := []config.CodeEntity{
 		{ID: "code:acme/api:engine/server", Name: "Engine server", PathPatterns: []string{"engine/server/**"}, Repo: api},
@@ -2029,110 +2050,156 @@ func TestAPullRequestLinksToTheCodeItTouches(t *testing.T) {
 	}
 }
 
-// A push to a pull request moves its updated_at and changes what it touches:
-// the delivery reads the files again, and a backfill afterwards reads the same
-// list into the same event. A files list that changes under an unchanged
-// updated_at is a new revision too, not an event id that comes back with
-// different content.
-func TestAPullRequestUpdateRefreshesItsPaths(t *testing.T) {
+const pushedAt = "2026-09-05T09:00:00Z"
+
+type pullUpdate struct {
+	gh    *fakeGitHub
+	src   connector.SourceConfig
+	c     *github.Connector
+	old   connector.Event
+	body  []byte
+	event connector.Event
+}
+
+func updatePull(t *testing.T) *pullUpdate {
+	t.Helper()
 	gh := newFakeGitHub(t)
 	src := newSource(t, gh, sourceID, nil)
 	c := newConnector(t, src)
 	before := &connector.Recorder{}
 	backfillAll(t, c, gateFor(src, c, before))
-	old := pullEvent(t, before.Events())
+	u := &pullUpdate{gh: gh, src: src, c: c, old: pullEvent(t, before.Events())}
 
-	const pushedAt = "2026-09-05T09:00:00Z"
 	gh.setList("/repos/acme/api/pulls/2/files", []map[string]any{
 		{"filename": "engine/client/y.go", "status": "modified", "patch": "@@ -1 +1 @@"},
 	})
 	gh.touch("/repos/acme/api/pulls", 2, pushedAt)
-	body := bytes.ReplaceAll(hook(t, "pull_request.synchronize"), []byte(`"updated_at": "2026-09-04T12:00:00Z"`), []byte(`"updated_at": "`+pushedAt+`"`))
+	u.body = bytes.ReplaceAll(hook(t, "pull_request.synchronize"), []byte(`"updated_at": "2026-09-04T12:00:00Z"`), []byte(`"updated_at": "`+pushedAt+`"`))
 	live := &connector.Recorder{}
-	if code := deliver(t, c.Handler(gateFor(src, c, live)), "pull_request", body); code != http.StatusAccepted {
+	if code := deliver(t, c.Handler(gateFor(src, c, live)), "pull_request", u.body); code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202", code)
 	}
-	pushed := pullEvent(t, live.Events())
-	if want := []string{"engine/client/y.go"}; !slices.Equal(pushed.Payload.Paths, want) {
-		t.Errorf("paths after the push = %v, want %v", pushed.Payload.Paths, want)
-	}
-	if !strings.HasPrefix(pushed.NativeID, "acme/api#2@"+pushedAt+"+paths:") || pushed.NativeID == old.NativeID {
-		t.Errorf("native id after the push = %s, want a new revision at %s", pushed.NativeID, pushedAt)
-	}
+	u.event = pullEvent(t, live.Events())
+	return u
+}
 
+func TestAPullRequestUpdateRefreshesItsPaths(t *testing.T) {
+	u := updatePull(t)
+	if want := []string{"engine/client/y.go"}; !slices.Equal(u.event.Payload.Paths, want) {
+		t.Errorf("paths after the push = %v, want %v", u.event.Payload.Paths, want)
+	}
+}
+
+func TestAPullRequestUpdateIsANewRevision(t *testing.T) {
+	u := updatePull(t)
+	if !strings.HasPrefix(u.event.NativeID, "acme/api#2@"+pushedAt+"+paths:") || u.event.NativeID == u.old.NativeID {
+		t.Errorf("native id after the push = %s, want a new revision at %s", u.event.NativeID, pushedAt)
+	}
+}
+
+func TestABackfillAfterAPullRequestUpdateEqualsTheDelivery(t *testing.T) {
+	u := updatePull(t)
 	after := &connector.Recorder{}
-	fresh := newConnector(t, src)
-	backfillAll(t, fresh, gateFor(src, fresh, after))
-	if a, b := asJSON(t, pullEvent(t, after.Events())), asJSON(t, pushed); a != b {
+	fresh := newConnector(t, u.src)
+	backfillAll(t, fresh, gateFor(u.src, fresh, after))
+	if a, b := asJSON(t, pullEvent(t, after.Events())), asJSON(t, u.event); a != b {
 		t.Errorf("the backfill after the push differs from the delivery:\n%s\nwant\n%s", a, b)
 	}
+}
 
-	// The same updated_at with another files list.
-	gh.setList("/repos/acme/api/pulls/2/files", []map[string]any{{"filename": "engine/client/z.go", "status": "added"}})
+func TestAChangedFilesListUnderTheSameUpdatedAtIsANewRevision(t *testing.T) {
+	u := updatePull(t)
+	u.gh.setList("/repos/acme/api/pulls/2/files", []map[string]any{{"filename": "engine/client/z.go", "status": "added"}})
 	again := &connector.Recorder{}
-	if code := deliver(t, c.Handler(gateFor(src, c, again)), "pull_request", body); code != http.StatusAccepted {
+	if code := deliver(t, u.c.Handler(gateFor(u.src, u.c, again)), "pull_request", u.body); code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202", code)
 	}
-	if moved := pullEvent(t, again.Events()); moved.NativeID == pushed.NativeID {
+	if moved := pullEvent(t, again.Events()); moved.NativeID == u.event.NativeID {
 		t.Errorf("native id %s is the same for two files lists", moved.NativeID)
 	}
 }
 
-// A pull request touching more paths than the bound is read no further than
-// the bound, and records the first of what was read in sorted order, marked
-// truncated: the same event from a backfill, a second backfill and a delivery.
-func TestThePathsOfAPullRequestAreBounded(t *testing.T) {
-	tests := []struct {
-		name          string
-		files         int
-		wantTruncated bool
-	}{
-		{name: "exactly the bound", files: connector.MaxPaths},
-		{name: "over the bound", files: connector.MaxPaths + 57, wantTruncated: true},
+type boundedRun struct {
+	events []connector.Event
+	reads  []int
+	names  []string
+}
+
+func runBoundedPaths(t *testing.T, files int) boundedRun {
+	t.Helper()
+	items := make([]map[string]any, files)
+	names := make([]string, files)
+	for i := range items {
+		names[i] = fmt.Sprintf("engine/f%04d.go", (i*7919)%files)
+		items[i] = map[string]any{"filename": names[i], "status": "modified", "patch": "@@ -1 +1 @@"}
 	}
-	for _, tt := range tests {
+	gh := newFakeGitHub(t)
+	gh.setList("/repos/acme/api/pulls/2/files", items)
+	src := newSource(t, gh, sourceID, nil)
+
+	run := boundedRun{names: names}
+	for range 2 {
+		c := newConnector(t, src)
+		rec := &connector.Recorder{}
+		mark := len(gh.seen())
+		backfillAll(t, c, gateFor(src, c, rec))
+		run.events = append(run.events, pullEvent(t, rec.Events()))
+		reads := 0
+		for _, uri := range gh.seen()[mark:] {
+			if strings.HasPrefix(uri, "/repos/acme/api/pulls/2/files") {
+				reads++
+			}
+		}
+		run.reads = append(run.reads, reads)
+	}
+	c := newConnector(t, src)
+	live := &connector.Recorder{}
+	if code := deliver(t, c.Handler(gateFor(src, c, live)), "pull_request", hook(t, "pull_request.synchronize")); code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", code)
+	}
+	run.events = append(run.events, pullEvent(t, live.Events()))
+	return run
+}
+
+var boundedCases = []struct {
+	name          string
+	files         int
+	wantTruncated bool
+}{
+	{name: "exactly the bound", files: connector.MaxPaths},
+	{name: "over the bound", files: connector.MaxPaths + 57, wantTruncated: true},
+}
+
+func TestThePathsOfAPullRequestAreBoundedAndSorted(t *testing.T) {
+	for _, tt := range boundedCases {
 		t.Run(tt.name, func(t *testing.T) {
-			// The files in an order that is not sorted, as a list GitHub
-			// gives in diff order may not be.
-			files := make([]map[string]any, tt.files)
-			names := make([]string, tt.files)
-			for i := range files {
-				names[i] = fmt.Sprintf("engine/f%04d.go", (i*7919)%tt.files)
-				files[i] = map[string]any{"filename": names[i], "status": "modified", "patch": "@@ -1 +1 @@"}
-			}
-			gh := newFakeGitHub(t)
-			gh.setList("/repos/acme/api/pulls/2/files", files)
-			src := newSource(t, gh, sourceID, nil)
-
-			var events []connector.Event
-			for range 2 {
-				c := newConnector(t, src)
-				rec := &connector.Recorder{}
-				mark := len(gh.seen())
-				backfillAll(t, c, gateFor(src, c, rec))
-				events = append(events, pullEvent(t, rec.Events()))
-				reads := 0
-				for _, uri := range gh.seen()[mark:] {
-					if strings.HasPrefix(uri, "/repos/acme/api/pulls/2/files") {
-						reads++
-					}
-				}
-				if limit := (connector.MaxPaths + 99) / 100; reads > limit {
-					t.Errorf("the files list was read %d times, want at most %d", reads, limit)
-				}
-			}
-			c := newConnector(t, src)
-			live := &connector.Recorder{}
-			if code := deliver(t, c.Handler(gateFor(src, c, live)), "pull_request", hook(t, "pull_request.synchronize")); code != http.StatusAccepted {
-				t.Fatalf("status = %d, want 202", code)
-			}
-			events = append(events, pullEvent(t, live.Events()))
-
-			want := slices.Sorted(slices.Values(names[:connector.MaxPaths]))
-			got := events[0].Payload
+			run := runBoundedPaths(t, tt.files)
+			want := slices.Sorted(slices.Values(run.names[:connector.MaxPaths]))
+			got := run.events[0].Payload
 			if !slices.Equal(got.Paths, want) || got.PathsTruncated != tt.wantTruncated {
 				t.Errorf("paths = %d, truncated %v; want the %d read, sorted, truncated %v", len(got.Paths), got.PathsTruncated, len(want), tt.wantTruncated)
 			}
+		})
+	}
+}
+
+func TestTheFilesListOfAPullRequestIsReadAtMostOnceForTheBound(t *testing.T) {
+	for _, tt := range boundedCases {
+		t.Run(tt.name, func(t *testing.T) {
+			limit := (connector.MaxPaths + 99) / 100
+			for _, reads := range runBoundedPaths(t, tt.files).reads {
+				if reads > limit {
+					t.Errorf("the files list was read %d times, want at most %d", reads, limit)
+				}
+			}
+		})
+	}
+}
+
+func TestBoundedPathsAreTheSameEventFromEveryRead(t *testing.T) {
+	for _, tt := range boundedCases {
+		t.Run(tt.name, func(t *testing.T) {
+			events := runBoundedPaths(t, tt.files).events
 			for _, ev := range events[1:] {
 				if a, b := asJSON(t, ev), asJSON(t, events[0]); a != b {
 					t.Errorf("a second read differs:\n%s\nwant\n%s", a, b)

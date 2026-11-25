@@ -14,9 +14,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector"
 )
 
-// maxReplyPages bounds how far [Replier.Reply] reads an issue's comments
-// looking for a reply it already posted: a hundred comments a page, written
-// after the command.
 const maxReplyPages = 10
 
 // ErrReplyGone is a reply that is no longer there to revise: somebody deleted
@@ -67,8 +64,6 @@ func (r *Replier) Reply(ctx context.Context, repo string, issue int, command int
 	}
 	path := repoPath(repo) + "/issues/" + strconv.Itoa(issue) + "/comments"
 	marker := ReplyMarker(command)
-	// A minute's slack either side of the command's own clock: the reply was
-	// written after it.
 	q := url.Values{"since": {since.Add(-time.Minute).UTC().Format(time.RFC3339)}, "per_page": {"100"}}
 	for page := 1; page <= maxReplyPages; page++ {
 		q.Set("page", strconv.Itoa(page))

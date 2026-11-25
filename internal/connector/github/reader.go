@@ -41,14 +41,11 @@ func NewReader(src connector.SourceConfig) (*Reader, error) {
 	return &Reader{repos: sc.repos, api: sc.api}, nil
 }
 
-// entry is one item of a directory listing from the contents API. A listing
-// carries no file content, only what each entry is.
 type entry struct {
 	Name string `json:"name"`
 	Type string `json:"type"`
 }
 
-// file is the contents API's answer for a file.
 type file struct {
 	Type     string `json:"type"`
 	Encoding string `json:"encoding"`
@@ -99,8 +96,6 @@ func (r *Reader) ReadFile(ctx context.Context, repo, path string) ([]byte, error
 	var raw json.RawMessage
 	_, err = r.api.get(ctx, repoPath(repo)+"/contents/"+rel, &raw)
 	if serr := (*statusError)(nil); errors.As(err, &serr) && serr.status == http.StatusNotFound {
-		// GitHub answers 404 for a repository the token cannot see as well as
-		// for a file that is not there, and only the second is a missing file.
 		if _, err := r.api.repository(ctx, repo); err != nil {
 			return nil, err
 		}
@@ -120,8 +115,6 @@ func (r *Reader) ReadFile(ctx context.Context, repo, path string) ([]byte, error
 		return nil, fmt.Errorf("%s in %s is a %s, not a file", path, repo, f.Type)
 	}
 	if f.Encoding != "base64" {
-		// GitHub answers "none" for a file over a megabyte, which no CODEOWNERS
-		// file worth reading is.
 		return nil, fmt.Errorf("%s in %s came back with encoding %q, not base64: the contents API serves files of up to 1 MB", path, repo, f.Encoding)
 	}
 	content, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(f.Content, "\n", ""))
@@ -131,9 +124,6 @@ func (r *Reader) ReadFile(ctx context.Context, repo, path string) ([]byte, error
 	return content, nil
 }
 
-// contentsPath is a repository-relative path as the contents API takes it, one
-// escaped segment at a time. A path that could climb out of the repository or
-// names nothing is refused rather than sent.
 func contentsPath(path string) (string, error) {
 	parts := strings.Split(path, "/")
 	for i, part := range parts {
