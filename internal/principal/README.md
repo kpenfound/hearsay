@@ -31,13 +31,10 @@ of Hearsay's — keep it that way, because everything above L0 imports this.
   but when a hint's native id and handle name two different principals, the
   mapping has fallen behind the source, and resolving to either one would hide
   that for good. It is left unresolved instead.
-- **Nothing unresolved is dropped, and nothing is minted for it.** An unknown or
-  ambiguous identity is recorded for a person to map. L0 keeps the hint, so
+- **Nothing is minted for an unresolved identity.** An unknown or ambiguous
+  identity stays unresolved for a person to map. L0 keeps the hint, so
   authorship comes back when the documents are distilled again; a placeholder
-  principal id would leak into stances and outlive the gap it stood for. The
-  record is bounded, and past the bound `Overflow` counts *sightings* rather
-  than the identities they belong to — counting those would mean remembering
-  them, which is the memory the bound refuses.
+  principal id would leak into stances and outlive the gap it stood for.
 - **A team never acts.** It owns things and stands in for a source's group. One
   of its members is who said something, so `AgentRead` and `HumanRead` refuse a
   team.
@@ -49,11 +46,10 @@ of Hearsay's — keep it that way, because everything above L0 imports this.
   left, and a steward's own scopes are not consulted: it reaches what the person
   does.
 
-The mapping is read-only once `NewResolver` returns and the record of what did
-not resolve is behind a mutex, so one resolver serves every connector at once.
+The mapping is read-only once `NewResolver` returns, so one resolver serves
+every connector at once.
 
-Log principal ids, never email addresses or display names. That
-applies to an `Unresolved` too: it is made of source data.
+Log principal ids, never email addresses or display names.
 
 See [docs/design.md](../../docs/design.md#access-control) and the
 `principals/` section of [docs/config.md](../../docs/config.md).

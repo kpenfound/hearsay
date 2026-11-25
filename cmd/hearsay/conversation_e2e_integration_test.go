@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/kpenfound/hearsay/internal/bundle"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/service/api"
 )
@@ -56,52 +56,30 @@ func (s *conversationStub) counts() map[string]int {
 }
 
 func (s *conversationStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/v1/systemone" {
-		s.judge(w, r)
-		return
-	}
-	var req struct {
-		Messages []struct {
-			Content string `json:"content"`
-		} `json:"messages"`
-		Tools []struct {
-			Name string `json:"name"`
-		} `json:"tools"`
-	}
-	if r.URL.Path != "/v1/messages" || json.NewDecoder(r.Body).Decode(&req) != nil || len(req.Tools) != 1 || len(req.Messages) == 0 {
-		http.Error(w, `{"error":{"type":"invalid_request_error","message":"the stub answers structured Messages calls only"}}`, http.StatusBadRequest)
-		return
-	}
-	tool, text := req.Tools[0].Name, req.Messages[0].Content
+	serveModelStub(w, r, s.structured, s.judge)
+}
+
+func (s *conversationStub) structured(tool, text string, _ map[string]json.RawMessage) (any, bool) {
 	s.count(tool)
-	var answer any
 	switch tool {
 	case "conversation_topics":
-		answer = stubSegments(text)
+		return stubSegments(text), true
 	case "l1_conversation_segment":
-		answer = stubSegmentBody(text)
+		return stubSegmentBody(text), true
 	case "l1_issue":
-		answer = map[string]any{
+		return map[string]any{
 			"summary":  "Proposal about shared cache ownership: each service should own its cache lines.",
 			"question": sharedTopic,
 			"outcome":  "Each service owns its own shared cache lines.",
-		}
+		}, true
 	case "l2_assertions":
 		position := "Each service owns its own shared cache lines."
 		if _, after, ok := strings.Cut(text, "\n\n"); ok && strings.Contains(after, deletedWord) {
 			position = strings.TrimSpace(after)
 		}
-		answer = map[string]any{"assertions": []any{map[string]any{"topic_name": sharedTopic, "position": position}}}
-	default:
-		http.Error(w, `{"error":{"type":"invalid_request_error","message":"the stub does not know this schema"}}`, http.StatusBadRequest)
-		return
+		return map[string]any{"assertions": []any{map[string]any{"topic_name": sharedTopic, "position": position}}}, true
 	}
-	w.Header().Set("content-type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"id": "msg_stub", "type": "message", "role": "assistant", "model": "stub", "stop_reason": "tool_use",
-		"content": []any{map[string]any{"type": "tool_use", "id": "toolu_stub", "name": tool, "input": answer}},
-		"usage":   map[string]int{"input_tokens": 1, "output_tokens": 1},
-	})
+	return nil, false
 }
 
 func stubTopicOf(line string) string {
@@ -158,36 +136,26 @@ func stubSegmentBody(text string) any {
 	return map[string]any{"summary": "The shared cache came up."}
 }
 
-func (s *conversationStub) judge(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		State     string                     `json:"state"`
-		Questions map[string]json.RawMessage `json:"questions"`
-	}
-	if json.NewDecoder(r.Body).Decode(&req) != nil || len(req.Questions) == 0 {
-		http.Error(w, `{"error":"the stub answers System One calls only"}`, http.StatusBadRequest)
-		return
-	}
+func (s *conversationStub) judge(state string, ids []string) map[string]float64 {
 	s.count("judgment")
-	owner, _, _ := strings.Cut(req.State, "Context from Kern:")
-	answers := map[string]any{}
-	for id := range req.Questions {
+	owner, _, _ := strings.Cut(state, "Context from Kern:")
+	answers := map[string]float64{}
+	for _, id := range ids {
 		yes := false
 		switch {
 		case id == "binding_agreement":
-			yes = strings.HasPrefix(req.State, "Owner's words:") && strings.Contains(owner, deletedWord)
+			yes = strings.HasPrefix(state, "Owner's words:") && strings.Contains(owner, deletedWord)
 		case id == "unagreed_proposal":
-			yes = strings.Contains(req.State, "Nobody has agreed")
+			yes = strings.Contains(state, "Nobody has agreed")
 		case strings.HasPrefix(id, "T"):
 			yes = true
 		}
-		p := 0.02
+		answers[id] = 0.02
 		if yes {
-			p = 0.98
+			answers[id] = 0.98
 		}
-		answers[id] = map[string]any{"type": "noul", "noul": p}
 	}
-	w.Header().Set("content-type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"model": "jev-stub", "answers": answers, "usage": map[string]int{"input_tokens": 1, "output_tokens": 0}})
+	return answers
 }
 
 func conversationConfig(t *testing.T, stubURL string) string {
@@ -245,17 +213,13 @@ authority:
 }
 
 func TestConversationMemoryEndToEnd(t *testing.T) {
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
 	stub := &conversationStub{}
 	stubServer := httptest.NewServer(stub)
 	t.Cleanup(stubServer.Close)
 
 	dir := writeStackConfig(t, conversationConfig(t, stubServer.URL))
 	tokens := map[string]string{"kyle": "e2e-kyle-token", "ann": "e2e-ann-token", "kern": "e2e-kern-token", "scout": "e2e-scout-token", "tracker": "e2e-tracker-token"}
-	database := createDatabase(t, url, "e2e_work_")
+	database := dbtest.Create(t, "e2e")
 	t.Setenv("HEARSAY_DATABASE_URL", database)
 	t.Setenv("HEARSAY_E2E_KYLE_TOKEN", tokens["kyle"])
 	t.Setenv("HEARSAY_E2E_ANN_TOKEN", tokens["ann"])

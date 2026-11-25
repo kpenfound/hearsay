@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/queue"
 )
@@ -100,10 +101,10 @@ func history(t *testing.T, store *l2.Store, f l2.OperationFilter) []int64 {
 }
 
 func TestMergeSplitAndUndoAreRecordedAndTheRowsStay(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	repo := loadRepo(t, "")
-	scope, elsewhere := unique(), unique()
+	scope, elsewhere := dbtest.UniqueID(), dbtest.UniqueID()
 	a := namedTopic(t, store, scope, "the lock")
 	b := namedTopic(t, store, scope, "who holds the lock")
 	a1 := addStance(t, store, a, "l1:s:a1", "the queue takes the lock", 1)
@@ -204,10 +205,10 @@ func TestMergeSplitAndUndoAreRecordedAndTheRowsStay(t *testing.T) {
 }
 
 func TestASplitsTopicCanBeOperatedOn(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	repo := loadRepo(t, "")
-	scope := unique()
+	scope := dbtest.UniqueID()
 	a := namedTopic(t, store, scope, "the lock")
 	c := namedTopic(t, store, scope, "the keys")
 	addStance(t, store, a, "l1:s:a1", "the queue takes the lock", 1)
@@ -249,10 +250,10 @@ func stancesEqual(a, b map[string][]l2.Stance) bool {
 }
 
 func TestAFailedOperationWritesNothingAndLetsTheScopeGo(t *testing.T) {
-	pool := scratchPool(t)
+	pool := dbtest.Scratch(t, "hearsay_l2")
 	store := l2.New(pool)
 	repo := loadRepo(t, "")
-	scope := unique()
+	scope := dbtest.UniqueID()
 	a := namedTopic(t, store, scope, "the lock")
 	b := namedTopic(t, store, scope, "who holds the lock")
 	ctx := t.Context()
@@ -287,11 +288,11 @@ CREATE TRIGGER refuse_operation AFTER INSERT ON l2_topic_operations FOR EACH ROW
 }
 
 func TestOperationsSerializeWithAssertJobsPerScope(t *testing.T) {
-	pool := scratchPool(t)
+	pool := dbtest.Scratch(t, "hearsay_l2")
 	store := l2.New(pool)
 	repo := loadRepo(t, "")
 	ctx := t.Context()
-	busy, idle := unique(), unique()
+	busy, idle := dbtest.UniqueID(), dbtest.UniqueID()
 	a := namedTopic(t, store, busy, "the lock")
 	b := namedTopic(t, store, busy, "who holds the lock")
 	b1 := addStance(t, store, b, "l1:s:b1", "the engine takes the lock", 1)

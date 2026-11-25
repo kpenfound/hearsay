@@ -10,6 +10,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 )
@@ -63,10 +64,10 @@ func joined(ids ...string) string { return strings.Join(ids, " ") }
 func sortedIDs(ids ...string) []string { return slices.Sorted(slices.Values(ids)) }
 
 func TestAMergeIsReadThroughEitherTopicAndItsUndoReadsAsBefore(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	repo := loadRepo(t, "")
-	scope := unique()
+	scope := dbtest.UniqueID()
 	a := namedTopic(t, store, scope, "the lock")
 	b := namedTopic(t, store, scope, "who holds the lock")
 	a1 := addStance(t, store, a, "l1:s:a1", "the queue takes the lock", 1)
@@ -111,11 +112,11 @@ func TestAMergeIsReadThroughEitherTopicAndItsUndoReadsAsBefore(t *testing.T) {
 }
 
 func TestAStanceOnAMergedTopicGoesWhereTheTopicWent(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	repo := loadRepo(t, "")
 	ctx := t.Context()
-	scope := unique()
+	scope := dbtest.UniqueID()
 	a := namedTopic(t, store, scope, "the lock")
 	b := namedTopic(t, store, scope, "who holds the lock")
 	a1 := addStance(t, store, a, "l1:s:a1", "the queue takes the lock", 1)
@@ -154,11 +155,11 @@ func TestAStanceOnAMergedTopicGoesWhereTheTopicWent(t *testing.T) {
 }
 
 func TestASplitReadsWithExactlyTheStancesItMoved(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	repo := loadRepo(t, "")
 	ctx := t.Context()
-	scope := unique()
+	scope := dbtest.UniqueID()
 	a := namedTopic(t, store, scope, "the lock")
 	c := namedTopic(t, store, scope, "the keys")
 	a1 := addStance(t, store, a, "l1:s:d1", "the queue takes the lock", 1)
@@ -238,11 +239,11 @@ func TestASplitReadsWithExactlyTheStancesItMoved(t *testing.T) {
 }
 
 func TestMatchingFindsTopicsAsTheLedgerMakesThem(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	repo := loadRepo(t, "")
 	ctx := t.Context()
-	scope := unique()
+	scope := dbtest.UniqueID()
 	private := connector.ACL{{Kind: connector.ACLIdentity, Source: "gh", NativeID: "kyle-node"}}
 	a := openTopicFrom(t, pool, scope, "a", public, "item:1")
 	b := openTopicFrom(t, pool, scope, "b", public, "item:2")
@@ -282,11 +283,11 @@ func TestMatchingFindsTopicsAsTheLedgerMakesThem(t *testing.T) {
 }
 
 func TestDeletionRepairFollowsSplitAndUndo(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	repo := loadRepo(t, "")
 	ctx := t.Context()
-	scope := unique()
+	scope := dbtest.UniqueID()
 	a := namedTopic(t, store, scope, "the lock")
 	kept := addStance(t, store, a, putDoc(t, pool, scope, "d1", public, nil), "the queue takes the lock", 1)
 	gone := putDoc(t, pool, scope, "d2", public, nil)

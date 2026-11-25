@@ -7,8 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -18,12 +16,15 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/github"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/llm"
+	"github.com/kpenfound/hearsay/internal/poll"
 	"github.com/kpenfound/hearsay/internal/queue"
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
 	"github.com/kpenfound/hearsay/internal/service/distiller"
@@ -95,7 +96,6 @@ type commands struct {
 
 func commandConfig(t *testing.T, src string) config.Repo {
 	t.Helper()
-	dir := t.TempDir()
 	files := map[string]string{
 		"sources/github.yaml": "id: " + src + "\ntype: github\ncontainers: [" + repo + "]\n",
 		"scopes/s.yaml":       "id: " + src + "\nsources: [" + src + "]\n",
@@ -104,15 +104,7 @@ func commandConfig(t *testing.T, src string) config.Repo {
 			"- id: bot\n  kind: agent\n  class: orchestrator\n  scopes: ['*']\n  token_env: BOT_TOKEN\n  identities: [{source: " + src + ", native_id: u3}]\n",
 		"authority/a.yaml": "scope: \"*\"\nratified_by:\n  principals: [kyle]\n",
 	}
-	for name, body := range files {
-		full := filepath.Join(dir, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
+	dir := configtest.Write(t, files)
 	repo, err := config.Load(dir)
 	if err != nil {
 		t.Fatalf("config.Load() = %v", err)
@@ -122,7 +114,7 @@ func commandConfig(t *testing.T, src string) config.Repo {
 
 func newCommands(t *testing.T, pool *pgxpool.Pool) *commands {
 	t.Helper()
-	src := newSource(t)
+	src := dbtest.UniqueID()
 	c := &commands{t: t, pool: pool, src: src, repo: commandConfig(t, src), replies: newFakeReplier(), f: store(t, pool, src), next: 5000}
 	cfg := config.Default()
 	cfg.Repo = c.repo
@@ -240,7 +232,7 @@ func (c *commands) operations() []l2.Operation {
 
 func (c *commands) followUntil(f *assertworker.CommandFollower, last connector.Event) {
 	c.t.Helper()
-	waitFor(c.t, "the follower to read "+last.ID, func() bool {
+	poll.Until(c.t, "the follower to read "+last.ID, func() bool {
 		if _, err := f.Once(c.t.Context()); err != nil {
 			c.t.Fatalf("Once() = %v", err)
 		}
@@ -262,7 +254,7 @@ func commentID(t *testing.T, ev connector.Event) int64 {
 }
 
 func TestGitHubCommands(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	tests := []struct {
 		name string
 		n    int
@@ -355,7 +347,7 @@ func TestGitHubCommands(t *testing.T) {
 }
 
 func TestAGitHubCommandRunsOnceAndIsAnsweredOnce(t *testing.T) {
-	c := newCommands(t, newPool(t))
+	c := newCommands(t, dbtest.Pool(t))
 	ev := c.comment(12, "u1", "/hearsay ratify")
 	c.replies.fail = errors.New("GitHub is down")
 	if err := c.handle(ev); err == nil {
@@ -387,7 +379,7 @@ func TestAGitHubCommandRunsOnceAndIsAnsweredOnce(t *testing.T) {
 }
 
 func TestOnlyCommandsAreRun(t *testing.T) {
-	c := newCommands(t, scratchPool(t))
+	c := newCommands(t, dbtest.Scratch(t, "hearsay_assert"))
 	message := c.comment(12, "u1", "Let's /hearsay ratify this later.")
 	echo := event(c.src, github.KindReply, repo+"#12:comment:6100", at(10), "hearsay[bot]", "b1", "", "/hearsay ratify\n\n"+github.ReplyMarker(5001))
 	echo.Payload.BaseKind = connector.KindCommand
@@ -412,7 +404,7 @@ func TestOnlyCommandsAreRun(t *testing.T) {
 }
 
 func TestTheCommandFollowerEnqueuesCommandsAndTheirDeletions(t *testing.T) {
-	pool := scratchPool(t)
+	pool := dbtest.Scratch(t, "hearsay_assert")
 	c := newCommands(t, pool)
 	graph := l2.New(pool)
 	elsewhere := [2]string{}
@@ -462,7 +454,7 @@ func TestTheCommandFollowerEnqueuesCommandsAndTheirDeletions(t *testing.T) {
 func TestDeletingACommandUndoesIt(t *testing.T) {
 	for _, body := range []string{"/hearsay ratify", "/hearsay pin", "/hearsay merge {a} {b}"} {
 		t.Run(body, func(t *testing.T) {
-			c := newCommands(t, newPool(t))
+			c := newCommands(t, dbtest.Pool(t))
 			ev := c.comment(12, "u1", strings.NewReplacer("{a}", c.topics[0], "{b}", c.topics[1]).Replace(body))
 			c.mustHandle(ev)
 			tomb := c.delete(ev)
@@ -497,7 +489,7 @@ func TestDeletingACommandUndoesIt(t *testing.T) {
 }
 
 func TestUndoingAMergeALaterOperationDependsOnIsRefused(t *testing.T) {
-	c := newCommands(t, newPool(t))
+	c := newCommands(t, dbtest.Pool(t))
 	issue, _ := documents(t, c.src)
 	third := l2.Topic{ID: l2.TopicID(c.src, issue.ID, 9, "third"), Scope: c.src, Name: "third", ACL: issue.ACL, OpenedBy: issue.ID}
 	if _, err := l2.New(c.pool).OpenTopic(t.Context(), third); err != nil {
@@ -539,7 +531,7 @@ func TestUndoingAMergeALaterOperationDependsOnIsRefused(t *testing.T) {
 }
 
 func TestACommandDeletedBeforeItRanRunsNothing(t *testing.T) {
-	c := newCommands(t, newPool(t))
+	c := newCommands(t, dbtest.Pool(t))
 	ev := c.comment(12, "u1", "/hearsay ratify")
 	tomb := c.delete(ev)
 	c.mustHandle(ev)
@@ -550,7 +542,7 @@ func TestACommandDeletedBeforeItRanRunsNothing(t *testing.T) {
 }
 
 func TestACommandWaitsForItsDocument(t *testing.T) {
-	c := newCommands(t, scratchPool(t))
+	c := newCommands(t, dbtest.Scratch(t, "hearsay_assert"))
 	fresh := event(c.src, connector.KindIssue, repo+"#77", at(9), "kpenfound", "u1", "a new issue", "Nothing distilled yet.")
 	c.append(fresh)
 	doc := l1.DocID(c.src, repo+"#77")
@@ -569,7 +561,7 @@ func TestACommandWaitsForItsDocument(t *testing.T) {
 }
 
 func TestStartupSweepsTheRepliesStillOwed(t *testing.T) {
-	c := newCommands(t, scratchPool(t))
+	c := newCommands(t, dbtest.Scratch(t, "hearsay_assert"))
 	answered := c.comment(12, "u1", "/hearsay pin")
 	c.mustHandle(answered)
 	c.replies.fail = errors.New("GitHub is down")
@@ -624,7 +616,7 @@ func TestStartupSweepsTheRepliesStillOwed(t *testing.T) {
 }
 
 func TestAReadOnlySourceTakesNoCommands(t *testing.T) {
-	c := newCommands(t, scratchPool(t))
+	c := newCommands(t, dbtest.Scratch(t, "hearsay_assert"))
 	answered := c.comment(12, "u1", "/hearsay ratify")
 	c.mustHandle(answered)
 	c.replies.fail = errors.New("GitHub is down")
@@ -690,7 +682,7 @@ func TestAWaitingCommandExpeditesDistillationAcrossRollbackAndPumpReads(t *testi
 		{name: "no gesture target", verb: "ratify", readable: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c := newCommands(t, scratchPool(t))
+			c := newCommands(t, dbtest.Scratch(t, "hearsay_assert"))
 			ctx := t.Context()
 			distills, err := queue.New(c.pool, queue.Config{Kind: distiller.JobKind()})
 			if err != nil {
@@ -805,7 +797,7 @@ func TestAWaitingCommandExpeditesDistillationAcrossRollbackAndPumpReads(t *testi
 				}
 			}
 			var retry queue.Job
-			waitFor(t, "the command retry to become claimable", func() bool {
+			poll.Until(t, "the command retry to become claimable", func() bool {
 				jobs, err := commands.Claim(ctx)
 				if err != nil {
 					t.Fatal(err)
@@ -838,7 +830,7 @@ func TestAWaitingCommandExpeditesDistillationAcrossRollbackAndPumpReads(t *testi
 func commandPumpRead(t *testing.T, p *distiller.Pump, want int) {
 	t.Helper()
 	read := 0
-	waitFor(t, "the pump to read command test events", func() bool {
+	poll.Until(t, "the pump to read command test events", func() bool {
 		got, err := p.Once(t.Context())
 		if err != nil {
 			t.Fatal(err)
@@ -866,7 +858,7 @@ func commandPending(t *testing.T, c *queue.Client, target string) queue.Job {
 func TestACommandUsesReadableL1WhileADebouncedRebuildIsPending(t *testing.T) {
 	for _, verb := range []string{"pin", "ratify"} {
 		t.Run(verb, func(t *testing.T) {
-			c := newCommands(t, scratchPool(t))
+			c := newCommands(t, dbtest.Scratch(t, "hearsay_assert"))
 			doc := l1.DocID(c.src, repo+"#12")
 			if _, err := queue.Enqueue(t.Context(), c.pool, queue.Request{Kind: distiller.JobKind(), TargetID: doc, Debounce: &queue.Debounce{Quiet: time.Minute, Max: 5 * time.Minute}}); err != nil {
 				t.Fatal(err)

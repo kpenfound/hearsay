@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
@@ -20,7 +21,7 @@ import (
 func TestTopicsCommands(t *testing.T) {
 	url, pool := deleteDatabase(t, "topics_cli_")
 	ctx := t.Context()
-	configPath := writeConfig(t, map[string]string{
+	configPath := configtest.Write(t, map[string]string{
 		"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\n",
 		"scopes/api.yaml":     "id: api\nsources: [github]\n",
 		"principals/p.yaml": "- id: kyle\n  identities: [{source: github, native_id: u1}]\n" +

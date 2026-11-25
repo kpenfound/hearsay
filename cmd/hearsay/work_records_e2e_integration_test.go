@@ -21,9 +21,11 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/bundle"
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l3"
 	"github.com/kpenfound/hearsay/internal/service/api"
+	"github.com/kpenfound/hearsay/internal/telemetry/logtest"
 )
 
 type modelStub struct {
@@ -33,71 +35,36 @@ type modelStub struct {
 }
 
 func (m *modelStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/v1/systemone" {
-		m.judge(w, r)
-		return
-	}
-	var req struct {
-		Messages []struct {
-			Content string `json:"content"`
-		} `json:"messages"`
-		Tools []struct {
-			Name        string `json:"name"`
-			InputSchema struct {
-				Properties map[string]json.RawMessage `json:"properties"`
-			} `json:"input_schema"`
-		} `json:"tools"`
-	}
-	if r.URL.Path != "/v1/messages" || json.NewDecoder(r.Body).Decode(&req) != nil || len(req.Tools) != 1 || len(req.Messages) == 0 {
-		http.Error(w, `{"error":{"type":"invalid_request_error","message":"the stub answers structured Messages calls only"}}`, http.StatusBadRequest)
-		return
-	}
-	tool := req.Tools[0]
-	text := req.Messages[0].Content
+	serveModelStub(w, r, m.structured, m.judge)
+}
+
+func (m *modelStub) structured(tool, text string, properties map[string]json.RawMessage) (any, bool) {
 	m.mu.Lock()
 	m.prompts = append(m.prompts, text)
 	if m.schemas == nil {
 		m.schemas = map[string]int{}
 	}
-	m.schemas[tool.Name]++
+	m.schemas[tool]++
 	m.mu.Unlock()
-
-	var answer any
-	if _, ok := tool.InputSchema.Properties["assertions"]; ok {
-		answer = map[string]any{"assertions": []any{}}
-	} else if _, ok := tool.InputSchema.Properties["summary"]; ok {
-		first, _, _ := strings.Cut(strings.TrimSpace(text), "\n")
-		answer = map[string]any{"summary": first}
-	} else {
-		http.Error(w, `{"error":{"type":"invalid_request_error","message":"the stub does not know this schema"}}`, http.StatusBadRequest)
-		return
+	if _, ok := properties["assertions"]; ok {
+		return map[string]any{"assertions": []any{}}, true
 	}
-	w.Header().Set("content-type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"id": "msg_stub", "type": "message", "role": "assistant", "model": "stub", "stop_reason": "tool_use",
-		"content": []any{map[string]any{"type": "tool_use", "id": "toolu_stub", "name": tool.Name, "input": answer}},
-		"usage":   map[string]int{"input_tokens": 1, "output_tokens": 1},
-	})
+	if _, ok := properties["summary"]; ok {
+		first, _, _ := strings.Cut(strings.TrimSpace(text), "\n")
+		return map[string]any{"summary": first}, true
+	}
+	return nil, false
 }
 
-func (m *modelStub) judge(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		State     string                     `json:"state"`
-		Questions map[string]json.RawMessage `json:"questions"`
-	}
-	if json.NewDecoder(r.Body).Decode(&req) != nil || len(req.Questions) == 0 {
-		http.Error(w, `{"error":"the stub answers System One calls only"}`, http.StatusBadRequest)
-		return
-	}
+func (m *modelStub) judge(state string, ids []string) map[string]float64 {
 	m.mu.Lock()
-	m.prompts = append(m.prompts, req.State)
+	m.prompts = append(m.prompts, state)
 	m.mu.Unlock()
-	answers := map[string]any{}
-	for id := range req.Questions {
-		answers[id] = map[string]any{"type": "noul", "noul": 0.02}
+	answers := map[string]float64{}
+	for _, id := range ids {
+		answers[id] = 0.02
 	}
-	w.Header().Set("content-type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"model": "jev-stub", "answers": answers, "usage": map[string]int{"input_tokens": 1, "output_tokens": 0}})
+	return answers
 }
 
 func (m *modelStub) sawText(s string) bool {
@@ -140,7 +107,7 @@ type e2eRun struct {
 	hooks    string
 	apiAddr  string
 	tokens   map[string]string
-	stderr   *syncBuffer
+	stderr   *logtest.Buffer
 	evidence string
 }
 
@@ -282,10 +249,6 @@ func (r *e2eRun) traversedLog(scope string, g l3.Subgraph) map[string]entry {
 }
 
 func TestWorkRecordsEndToEnd(t *testing.T) {
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
 
 	stub := &modelStub{}
 	stubServer := httptest.NewServer(stub)
@@ -293,7 +256,7 @@ func TestWorkRecordsEndToEnd(t *testing.T) {
 
 	dir := writeStackConfig(t, e2eConfig(t, stubServer.URL))
 	tokens := map[string]string{"osmia": "e2e-osmia-token", "kyle": "e2e-kyle-token", "ann": "e2e-ann-token"}
-	t.Setenv("HEARSAY_DATABASE_URL", createDatabase(t, url, "e2e_work_"))
+	t.Setenv("HEARSAY_DATABASE_URL", dbtest.Create(t, "e2e"))
 	t.Setenv("HEARSAY_OSMIA_TOKEN", tokens["osmia"])
 	t.Setenv("HEARSAY_E2E_KYLE_TOKEN", tokens["kyle"])
 	t.Setenv("HEARSAY_E2E_ANN_TOKEN", tokens["ann"])

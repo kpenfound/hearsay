@@ -37,8 +37,8 @@ func TestReaderResolvesAllContainerAccessLists(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() { _ = tx.Rollback(t.Context()) }()
-			src := newSource(t)
-			other := newSource(t)
+			src := dbtest.UniqueID()
+			other := dbtest.UniqueID()
 			res, err := principal.NewResolver([]principal.Principal{
 				{ID: "reader", Kind: principal.KindHuman, Identities: []principal.Identity{{Source: src, NativeID: "u1"}}},
 				{ID: "team", Kind: principal.KindTeam, Members: []string{"reader"}, Identities: []principal.Identity{{Source: src, NativeID: "g1"}}},
@@ -141,7 +141,7 @@ func TestReaderRefusesMalformedContainerGrants(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() { _ = tx.Rollback(t.Context()) }()
-			src := newSource(t)
+			src := dbtest.UniqueID()
 			containers, key, err := connector.CanonicalContainers([]connector.ContainerRef{{Source: src, NativeID: "repo"}})
 			if err != nil {
 				t.Fatal(err)

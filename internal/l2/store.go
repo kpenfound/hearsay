@@ -13,6 +13,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db"
 	"github.com/kpenfound/hearsay/internal/l1"
 )
 
@@ -20,9 +21,8 @@ import (
 // on one, so that everything one document asserts is written together or not
 // at all.
 type Querier interface {
+	db.Querier
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 var (

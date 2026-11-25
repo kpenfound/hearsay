@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/poll"
 )
 
 type cursorPoller struct {
@@ -137,23 +138,12 @@ func start(t *testing.T, opts connector.RuntimeOptions) (*connector.Runtime, fun
 	}
 }
 
-func waitFor(t *testing.T, what string, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out after 10s waiting for %s", what)
-		}
-		time.Sleep(time.Millisecond)
-	}
-}
-
 func waitForPolls(t *testing.T, fake *connector.Fake, rec *connector.Recorder, n int) {
 	t.Helper()
 	for i := range n {
 		id := "tick-" + strconv.Itoa(i)
 		fake.Enqueue(fake.NewEvent(connector.KindMessage, id, "tick"))
-		waitFor(t, "the poll that emits "+id, func() bool { return slices.Contains(artifacts(rec), id) })
+		poll.Until(t, "the poll that emits "+id, func() bool { return slices.Contains(artifacts(rec), id) })
 	}
 }
 
@@ -208,7 +198,7 @@ func TestPollIsNeverConcurrentWithItself(t *testing.T) {
 		Registry: registryOf(t, map[string]connector.Connector{src.ID: p}),
 		Sink:     rec,
 	})
-	waitFor(t, "five polls", func() bool { return p.polls.Load() >= 5 })
+	poll.Until(t, "five polls", func() bool { return p.polls.Load() >= 5 })
 	if err := stop(); err != nil {
 		t.Fatalf("Run() = %v, want nil", err)
 	}
@@ -235,14 +225,14 @@ func TestAPollThatFailsIsRetried(t *testing.T) {
 		Registry: registryOf(t, map[string]connector.Connector{src.ID: p}),
 		Sink:     rec,
 	})
-	waitFor(t, "the poll after the failures to start", func() bool { return p.polls.Load() > p.failures })
+	poll.Until(t, "the poll after the failures to start", func() bool { return p.polls.Load() > p.failures })
 	if got := runtime.Health(t.Context()).Sources[0].PollFailures; got != p.failures {
 		t.Errorf("PollFailures = %d after %d failed polls, want %d", got, p.failures, p.failures)
 	}
 	close(p.release)
 
-	waitFor(t, "the event that follows them", func() bool { return len(rec.Events()) == 1 })
-	waitFor(t, "the failure count to clear", func() bool {
+	poll.Until(t, "the event that follows them", func() bool { return len(rec.Events()) == 1 })
+	poll.Until(t, "the failure count to clear", func() bool {
 		return runtime.Health(t.Context()).Sources[0].PollFailures == 0
 	})
 	if err := stop(); err != nil {
@@ -264,8 +254,8 @@ func TestAnEventOutsideTheAllowlistIsDroppedAndCounted(t *testing.T) {
 		Registry: registryOf(t, map[string]connector.Connector{src.ID: fake}),
 		Sink:     rec,
 	})
-	waitFor(t, "the allowed event", func() bool { return len(rec.Events()) >= 1 })
-	waitFor(t, "the drop to be counted", func() bool {
+	poll.Until(t, "the allowed event", func() bool { return len(rec.Events()) >= 1 })
+	poll.Until(t, "the drop to be counted", func() bool {
 		return runtime.Health(t.Context()).Sources[0].Dropped >= 1
 	})
 	if err := stop(); err != nil {
@@ -334,7 +324,7 @@ func TestBackfillResumesFromThePersistedCursor(t *testing.T) {
 		Cursors:  cursors,
 	})
 	first.tokens <- struct{}{}
-	waitFor(t, "the first page to be persisted", func() bool { return len(cursors.Saves(src.ID)) == 1 })
+	poll.Until(t, "the first page to be persisted", func() bool { return len(cursors.Saves(src.ID)) == 1 })
 	if err := stop(); err != nil {
 		t.Fatalf("Run(first) = %v, want nil", err)
 	}
@@ -352,7 +342,7 @@ func TestBackfillResumesFromThePersistedCursor(t *testing.T) {
 		Sink:     secondRec,
 		Cursors:  cursors,
 	})
-	waitFor(t, "the rest of history", func() bool {
+	poll.Until(t, "the rest of history", func() bool {
 		return runtime.Health(t.Context()).Sources[0].BackfillDone
 	})
 	if err := stop(); err != nil {
@@ -395,7 +385,7 @@ func TestBackfillPersistsAfterEveryCall(t *testing.T) {
 		Sink:     rec,
 		Cursors:  cursors,
 	})
-	waitFor(t, "history", func() bool { return runtime.Health(t.Context()).Sources[0].BackfillDone })
+	poll.Until(t, "history", func() bool { return runtime.Health(t.Context()).Sources[0].BackfillDone })
 	if err := stop(); err != nil {
 		t.Fatalf("Run() = %v, want nil", err)
 	}
@@ -438,7 +428,7 @@ func TestABackfillThatMakesNoProgressIsNotProgress(t *testing.T) {
 		Sink:     &connector.Recorder{},
 		Cursors:  cursors,
 	})
-	waitFor(t, "the backfill to be tried", func() bool { return s.calls.Load() >= 2 })
+	poll.Until(t, "the backfill to be tried", func() bool { return s.calls.Load() >= 2 })
 	health := runtime.Health(t.Context())
 	if err := stop(); err != nil {
 		t.Fatalf("Run() = %v, want nil", err)
@@ -487,13 +477,13 @@ func TestABackfillThatFailsIsRetriedAndCounted(t *testing.T) {
 		Sink:     rec,
 		Cursors:  cursors,
 	})
-	waitFor(t, "the call after the failures to start", func() bool { return f.calls.Load() > f.failures })
+	poll.Until(t, "the call after the failures to start", func() bool { return f.calls.Load() > f.failures })
 	if got := runtime.Health(t.Context()).Sources[0].BackfillFailures; got != f.failures {
 		t.Errorf("BackfillFailures = %d after %d failed calls, want %d", got, f.failures, f.failures)
 	}
 	close(f.release)
 
-	waitFor(t, "the history that follows them", func() bool {
+	poll.Until(t, "the history that follows them", func() bool {
 		return runtime.Health(t.Context()).Sources[0].BackfillDone
 	})
 	if err := stop(); err != nil {
@@ -518,7 +508,7 @@ func TestAPositionThatCannotBeStoredIsCounted(t *testing.T) {
 		Sink:     &connector.Recorder{},
 		Cursors:  cursors,
 	})
-	waitFor(t, "the failure to be reported", func() bool {
+	poll.Until(t, "the failure to be reported", func() bool {
 		return runtime.Health(t.Context()).Sources[0].BackfillFailures >= 1
 	})
 	got := runtime.Health(t.Context()).Sources[0]
@@ -542,7 +532,7 @@ func TestAPositionThatCannotBeReadIsCounted(t *testing.T) {
 		Sink:     &connector.Recorder{},
 		Cursors:  cursors,
 	})
-	waitFor(t, "the failure to be reported", func() bool {
+	poll.Until(t, "the failure to be reported", func() bool {
 		return runtime.Health(t.Context()).Sources[0].BackfillFailures >= 1
 	})
 	got := runtime.Health(t.Context()).Sources[0]
@@ -583,7 +573,7 @@ func TestADoneBackfillIsNotRestarted(t *testing.T) {
 		Sink:     rec,
 		Cursors:  cursors,
 	})
-	waitFor(t, "the stored position to be read", func() bool {
+	poll.Until(t, "the stored position to be read", func() bool {
 		return runtime.Health(t.Context()).Sources[0].BackfillDone
 	})
 	waitForPolls(t, p.Fake, rec, 2)
@@ -1006,7 +996,7 @@ func TestVersionedBackfillRestartsWhenConfigChanges(t *testing.T) {
 	p := &versionPager{pager: &pager{Fake: pages(src)}, version: "new-config"}
 	rec := &connector.Recorder{}
 	_, stop := start(t, connector.RuntimeOptions{Sources: []connector.SourceConfig{src}, Registry: registryOf(t, map[string]connector.Connector{src.ID: p}), Sink: rec, Cursors: cursors})
-	waitFor(t, "versioned walk", func() bool {
+	poll.Until(t, "versioned walk", func() bool {
 		state, _ := cursors.Load(t.Context(), src.ID)
 		return state.Done && state.Cursor == "new-config"
 	})
@@ -1025,7 +1015,7 @@ func TestVersionedBackfillIsNotRepeatedForTheSameConfig(t *testing.T) {
 	p := &versionPager{pager: &pager{Fake: pages(src)}, version: "new-config"}
 	rec := &connector.Recorder{}
 	runtime, stop := start(t, connector.RuntimeOptions{Sources: []connector.SourceConfig{src}, Registry: registryOf(t, map[string]connector.Connector{src.ID: p}), Sink: rec, Cursors: cursors})
-	waitFor(t, "the stored position to be read", func() bool { return runtime.Health(t.Context()).Sources[0].BackfillDone })
+	poll.Until(t, "the stored position to be read", func() bool { return runtime.Health(t.Context()).Sources[0].BackfillDone })
 	waitForPolls(t, p.Fake, rec, 2)
 	if err := stop(); err != nil {
 		t.Fatal(err)

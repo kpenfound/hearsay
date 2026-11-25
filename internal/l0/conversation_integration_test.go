@@ -139,7 +139,7 @@ func TestFeedCursors(t *testing.T) {
 	pool := dbtest.Pool(t)
 	cursors := l0.NewCursors(pool)
 	store, fake, _ := newStore(t)
-	consumer := newSourceID(t)
+	consumer := dbtest.UniqueID()
 
 	if got, err := cursors.Load(t.Context(), consumer); err != nil || !got.IsZero() {
 		t.Fatalf("Load(never saved) = %v, %v, want the beginning of the feed", got, err)

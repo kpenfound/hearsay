@@ -15,10 +15,12 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/discord"
 	"github.com/kpenfound/hearsay/internal/connector/slack"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/llm"
+	"github.com/kpenfound/hearsay/internal/poll"
 	"github.com/kpenfound/hearsay/internal/principal"
 	"github.com/kpenfound/hearsay/internal/queue"
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
@@ -35,8 +37,8 @@ func TestRegisteredReactionSourceUsesSharedGestureLedger(t *testing.T) {
 	if err := connectors.RegisterReactionGestures(sourceType, slack.ReactionGestureConfig); err != nil {
 		t.Fatal(err)
 	}
-	pool := scratchPool(t)
-	src := newSource(t)
+	pool := dbtest.Scratch(t, "hearsay_assert")
+	src := dbtest.UniqueID()
 	const channel, root, user = "C0PUBLIC", "C0PUBLIC/1758700000.000100", "U0SAM"
 	at := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
 	acl := connector.ACL{{Kind: connector.ACLPublic}}
@@ -114,8 +116,8 @@ func TestRegisteredReactionSourceUsesSharedGestureLedger(t *testing.T) {
 }
 
 func TestDiscordReactionGestures(t *testing.T) {
-	pool := scratchPool(t)
-	src := newSource(t)
+	pool := dbtest.Scratch(t, "hearsay_assert")
+	src := dbtest.UniqueID()
 	const channel, messageID, userID = "123456789012345678", "123456789012345679", "123456789012345680"
 	at := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
 	acl := connector.ACL{{Kind: connector.ACLPublic}}
@@ -253,8 +255,8 @@ func TestDiscordReactionGestures(t *testing.T) {
 }
 
 func TestReadOnlyDiscordReactionsAreNotGestures(t *testing.T) {
-	pool := scratchPool(t)
-	src := newSource(t)
+	pool := dbtest.Scratch(t, "hearsay_assert")
+	src := dbtest.UniqueID()
 	const channel, messageID, userID = "123456789012345678", "123456789012345679", "123456789012345680"
 	at := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
 	acl := connector.ACL{{Kind: connector.ACLPublic}}
@@ -356,7 +358,7 @@ func TestReadOnlyDiscordReactionsAreNotGestures(t *testing.T) {
 
 func readThrough(t *testing.T, pool *pgxpool.Pool, consumer string, once func(context.Context) (int, error), last l0.Cursor) {
 	t.Helper()
-	waitFor(t, consumer+" to read through "+last.String(), func() bool {
+	poll.Until(t, consumer+" to read through "+last.String(), func() bool {
 		if _, err := once(t.Context()); err != nil {
 			t.Fatalf("Once() = %v", err)
 		}
@@ -375,7 +377,7 @@ func waitForGestureFeed(t *testing.T, pool *pgxpool.Pool, id string) {
 		t.Fatal(err)
 	}
 	events := l0.New(pool)
-	waitFor(t, "the gesture feed to show event "+id, func() bool {
+	poll.Until(t, "the gesture feed to show event "+id, func() bool {
 		changes, err := events.Changes(t.Context(), from, l0.Filter{}, 100)
 		if err != nil {
 			t.Fatal(err)

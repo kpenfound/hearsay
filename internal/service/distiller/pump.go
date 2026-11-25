@@ -82,10 +82,6 @@ func NewPump(pool *pgxpool.Pool, opts PumpOptions) *Pump {
 	}
 }
 
-// Batch is how many events one read of the feed takes, after the defaults and
-// the store's own cap have been applied.
-func (p *Pump) Batch() int { return p.opts.Batch }
-
 // Run reads the feed until ctx is cancelled, and returns nil when it stops that
 // way. A read that fails is logged and retried at the next tick: the feed is a
 // cursor over a table, so nothing is lost by being late.

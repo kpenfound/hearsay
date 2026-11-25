@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/db/dbtest"
+	"github.com/kpenfound/hearsay/internal/poll"
 	"github.com/kpenfound/hearsay/internal/queue"
 )
 
@@ -31,7 +32,7 @@ func holdAsync(ctx context.Context, client *queue.Client, key, target string) <-
 
 func stillWaiting(t *testing.T, pool *pgxpool.Pool, kind queue.Kind, h <-chan held, target, why string) {
 	t.Helper()
-	waitFor(t, "the hold to write its job", func() bool {
+	poll.Until(t, "the hold to write its job", func() bool {
 		var written bool
 		if err := pool.QueryRow(t.Context(),
 			`SELECT EXISTS (SELECT 1 FROM queue_job WHERE kind = $1 AND target_id = $2 AND state = 'running')`,

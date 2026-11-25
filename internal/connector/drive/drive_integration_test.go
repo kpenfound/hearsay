@@ -5,7 +5,6 @@ package drive_test
 import (
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -13,8 +12,9 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/connector/connectortest"
 	"github.com/kpenfound/hearsay/internal/connector/drive"
-	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 )
 
@@ -28,15 +28,7 @@ func storedEvents(t *testing.T, events *l0.Store, filter l0.Filter) []connector.
 }
 
 func TestDriveBackfillThroughGateAndSQL(t *testing.T) {
-	database := os.Getenv("HEARSAY_DATABASE_URL")
-	if database == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	pool, err := db.Connect(t.Context(), database)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
+	pool := dbtest.Pool(t)
 	f := &fixture{}
 	server := httptest.NewServer(http.HandlerFunc(f.serve))
 	defer server.Close()
@@ -64,22 +56,9 @@ func TestDriveBackfillThroughGateAndSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	gate = connector.NewGate(events, src.ID, c.Describe(), connector.NewAllowlist(src))
-	state, err := cursors.Load(t.Context(), src.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for !state.Done {
-		result, err := c.Backfill(t.Context(), gate, state.Cursor)
-		if err != nil {
-			t.Fatal(err)
-		}
-		state.Cursor = result.Next
-		state.Done = result.Done
-		state.Events += int64(result.Events)
-		if err := cursors.Save(t.Context(), src.ID, state); err != nil {
-			t.Fatal(err)
-		}
-	}
+	connectortest.Finish(t, cursors, src.ID, func(cursor connector.Cursor) (connector.BackfillResult, error) {
+		return c.Backfill(t.Context(), gate, cursor)
+	})
 	stored := storedEvents(t, events, l0.Filter{Source: src.ID})
 	ids := []string{}
 	for _, ev := range stored {
@@ -99,15 +78,7 @@ func TestDriveBackfillThroughGateAndSQL(t *testing.T) {
 }
 
 func TestDriveLiveSyncThroughSQL(t *testing.T) {
-	database := os.Getenv("HEARSAY_DATABASE_URL")
-	if database == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	pool, err := db.Connect(t.Context(), database)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
+	pool := dbtest.Pool(t)
 	f := &liveFixture{files: map[string]liveFile{
 		"doc":      {Folder: "docs", Head: "r1", Text: "one", Public: true},
 		"untagged": {Folder: "meet", Head: "r1", Text: "hidden", Public: true},

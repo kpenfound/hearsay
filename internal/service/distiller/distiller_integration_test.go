@@ -9,12 +9,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,11 +19,13 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
-	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
+	"github.com/kpenfound/hearsay/internal/l1/l1test"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/llm"
+	"github.com/kpenfound/hearsay/internal/poll"
 	"github.com/kpenfound/hearsay/internal/queue"
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
 	"github.com/kpenfound/hearsay/internal/service/distiller"
@@ -37,17 +36,6 @@ func testConfig(src string) *config.Config {
 	cfg := config.Default()
 	cfg.Repo = testRepo(src)
 	return &cfg
-}
-
-func waitFor(t *testing.T, what string, timeout time.Duration, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
 }
 
 func startDistiller(t *testing.T, pool *pgxpool.Pool, src string) (stop func() error) {
@@ -77,73 +65,6 @@ func startDistiller(t *testing.T, pool *pgxpool.Pool, src string) (stop func() e
 	}
 }
 
-func newPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	pool, err := db.Connect(context.Background(), url)
-	if err != nil {
-		t.Fatalf("connecting to postgres: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
-func newScratchPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	adminURL := os.Getenv("HEARSAY_DATABASE_URL")
-	if adminURL == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	ctx := context.Background()
-	admin, err := db.Open(ctx, adminURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer admin.Close()
-	name := "distiller_none_" + strconv.FormatInt(time.Now().UnixNano(), 36)
-	if _, err := admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		dropper, err := db.Open(ctx, adminURL)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		defer dropper.Close()
-		_, _ = dropper.Exec(ctx, "DROP DATABASE "+name+" WITH (FORCE)")
-	})
-	base, query, hasQuery := strings.Cut(adminURL, "?")
-	url := base[:strings.LastIndex(base, "/")+1] + name
-	if hasQuery {
-		url += "?" + query
-	}
-	m, err := db.NewMigrator(ctx, url, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := m.Up(ctx); err != nil {
-		t.Fatal(err)
-	}
-	_ = m.Close()
-	pool, err := db.Connect(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
-var sources atomic.Int64
-
-func newSource(t *testing.T) string {
-	t.Helper()
-	return "t" + strconv.FormatInt(time.Now().UnixNano(), 36) + "x" + strconv.FormatInt(sources.Add(1), 36)
-}
-
 func ingest(t *testing.T, pool *pgxpool.Pool, events []connector.Event) {
 	t.Helper()
 	store := l0.New(pool)
@@ -168,8 +89,8 @@ func newDistiller(t *testing.T, pool *pgxpool.Pool, src string) *distiller.Disti
 }
 
 func TestDistillingTwiceProducesIdenticalRows(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	ingest(t, pool, fixtureEvents(src))
 	d := newDistiller(t, pool, src)
 	docs := l1.New(pool)
@@ -212,8 +133,8 @@ func TestDistillingTwiceProducesIdenticalRows(t *testing.T) {
 }
 
 func TestHandlingAJobLogsIdsAndNoContentAtInfoLevel(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	ingest(t, pool, fixtureEvents(src))
 	d := newDistiller(t, pool, src)
 	id := l1.DocID(src, repo+"#12")
@@ -243,8 +164,8 @@ func TestHandlingAJobLogsIdsAndNoContentAtInfoLevel(t *testing.T) {
 }
 
 func TestPRMergeRefreshesArtifactClass(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	events := fixtureEvents(src)
 	ingest(t, pool, events)
 	d := newDistiller(t, pool, src)
@@ -283,8 +204,8 @@ func TestPRMergeRefreshesArtifactClass(t *testing.T) {
 }
 
 func TestDistillingEmbedsTheDocumentItWrote(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	ingest(t, pool, fixtureEvents(src))
 	docs := l1.New(pool)
 	id := l1.DocID(src, repo+"#31")
@@ -296,7 +217,7 @@ func TestDistillingEmbedsTheDocumentItWrote(t *testing.T) {
 	if !result.Written || result.Embedded {
 		t.Fatalf("Distill(%s) = %+v, want the document written and not embedded", id, result)
 	}
-	if embedded(t, pool, id) {
+	if l1test.Embedded(t, pool, id) {
 		t.Error("a document was embedded with no embed tier configured")
 	}
 
@@ -313,7 +234,7 @@ func TestDistillingEmbedsTheDocumentItWrote(t *testing.T) {
 	if result.Written || !result.Embedded {
 		t.Fatalf("Distill(%s, with an embed tier) = %+v, want the row untouched and a vector written", id, result)
 	}
-	if !embedded(t, pool, id) {
+	if !l1test.Embedded(t, pool, id) {
 		t.Fatal("the distiller reported an embedding and the row has none")
 	}
 
@@ -327,8 +248,8 @@ func TestDistillingEmbedsTheDocumentItWrote(t *testing.T) {
 }
 
 func TestADistillerRefusesAnEmbedTierOfTheWrongWidth(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	cfg := testConfig(src)
 	cfg.Repo.LLM = withEmbedTier(cfg.Repo.LLM, l1.EmbeddingDimensions/2)
 	registry, err := llm.NewFake(cfg.Repo.LLM, loadFixtures(t))
@@ -367,18 +288,9 @@ func withEmbedTier(cfg llm.Config, dimensions int) llm.Config {
 	return cfg
 }
 
-func embedded(t *testing.T, pool *pgxpool.Pool, id string) bool {
-	t.Helper()
-	var has bool
-	if err := pool.QueryRow(t.Context(), `SELECT embedding IS NOT NULL FROM l1_docs WHERE id = $1`, id).Scan(&has); err != nil {
-		t.Fatalf("reading the embedding of %s: %v", id, err)
-	}
-	return has
-}
-
 func TestEveryDocumentCarriesAnOutcomeKind(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	ingest(t, pool, fixtureEvents(src))
 	d := newDistiller(t, pool, src)
 
@@ -434,8 +346,8 @@ func TestEveryDocumentCarriesAnOutcomeKind(t *testing.T) {
 }
 
 func TestANewEventRedistillsTheDocument(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	ingest(t, pool, fixtureEvents(src))
 	d := newDistiller(t, pool, src)
 	docs := l1.New(pool)
@@ -477,8 +389,8 @@ func TestANewEventRedistillsTheDocument(t *testing.T) {
 }
 
 func TestRedistillingToNoneWithdrawsTheOldStance(t *testing.T) {
-	pool := newScratchPool(t)
-	src := newSource(t)
+	pool := dbtest.Scratch(t, "distiller_none")
+	src := dbtest.UniqueID()
 	ingest(t, pool, fixtureEvents(src))
 	d := newDistiller(t, pool, src)
 	docID := l1.DocID(src, repo+"#12")
@@ -563,8 +475,8 @@ func TestRedistillingToNoneWithdrawsTheOldStance(t *testing.T) {
 }
 
 func TestATombstonedArtifactLosesItsDocument(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	ingest(t, pool, fixtureEvents(src))
 	d := newDistiller(t, pool, src)
 	docs := l1.New(pool)
@@ -610,8 +522,8 @@ func TestATombstonedArtifactLosesItsDocument(t *testing.T) {
 }
 
 func TestATombstoneForACommentRedistillsTheDocumentThatQuotedIt(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	ingest(t, pool, fixtureEvents(src))
 	commentEvent := connector.EventID(src, retractedComment)
 
@@ -627,7 +539,7 @@ func TestATombstoneForACommentRedistillsTheDocumentThatQuotedIt(t *testing.T) {
 	waitForIssue := func(what string, ok func(l1.Stored) bool) l1.Stored {
 		t.Helper()
 		var found l1.Stored
-		waitFor(t, "the issue's document to be "+what, 60*time.Second, func() bool {
+		poll.Within(t, "the issue's document to be "+what, 60*time.Second, func() bool {
 			doc, err := docs.Get(t.Context(), id)
 			found = doc
 			return err == nil && ok(doc)
@@ -716,8 +628,8 @@ func (assertJev) Judge(_ context.Context, req llm.JudgmentRequest) (llm.Judgment
 }
 
 func TestThePumpEnqueuesOneJobPerDocument(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 
 	pump := distiller.NewPump(pool, distiller.PumpOptions{Quiet: 0, Batch: l0.MaxLimit})
 	if _, err := pump.Once(t.Context()); err != nil {
@@ -733,7 +645,7 @@ func TestThePumpEnqueuesOneJobPerDocument(t *testing.T) {
 
 	var targets []string
 	var lastRead distiller.Progress
-	waitFor(t, "the pump to enqueue a job per document", 30*time.Second, func() bool {
+	poll.Within(t, "the pump to enqueue a job per document", 30*time.Second, func() bool {
 		progress, err := pump.Once(t.Context())
 		if err != nil {
 			t.Fatalf("Once() = %v", err)
@@ -762,14 +674,14 @@ func TestThePumpEnqueuesOneJobPerDocument(t *testing.T) {
 }
 
 func TestRunDistillsWhatArrivesAndStopsWhenCancelled(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	ingest(t, pool, fixtureEvents(src))
 
 	stop := startDistiller(t, pool, src)
 
 	docs := l1.New(pool)
-	waitFor(t, "the distiller to write the three documents the fixture repository makes", 60*time.Second, func() bool {
+	poll.Within(t, "the distiller to write the three documents the fixture repository makes", 60*time.Second, func() bool {
 		stored, err := docs.List(t.Context(), l1.ListOptions{Source: src})
 		if err != nil {
 			t.Fatalf("List() = %v", err)
@@ -783,7 +695,7 @@ func TestRunDistillsWhatArrivesAndStopsWhenCancelled(t *testing.T) {
 }
 
 func TestRunWithNoConfigurationIdlesUntilItIsStopped(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	cfg := config.Default()
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -912,8 +824,8 @@ func (c interleavingCompleter) Complete(ctx context.Context, req llm.Request) (l
 }
 
 func TestADistillationBuiltFromAStaleReadIsNotWritten(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	ingest(t, pool, fixtureEvents(src))
 	docs := l1.New(pool)
 	docID := "l1:" + src + ":" + repo + "#31"

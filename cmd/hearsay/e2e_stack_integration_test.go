@@ -4,16 +4,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/kpenfound/hearsay/internal/telemetry/logtest"
 )
 
 const e2ePollEvery = 100 * time.Millisecond
@@ -39,7 +39,7 @@ func waitUntil(t *testing.T, what string, within time.Duration, log interface{ S
 
 func newE2ERun(t *testing.T, tokens map[string]string) *e2eRun {
 	t.Helper()
-	r := &e2eRun{t: t, hooks: freeAddr(t), apiAddr: freeAddr(t), tokens: tokens, stderr: &syncBuffer{}, evidence: os.Getenv("HEARSAY_E2E_EVIDENCE")}
+	r := &e2eRun{t: t, hooks: freeAddr(t), apiAddr: freeAddr(t), tokens: tokens, stderr: &logtest.Buffer{}, evidence: os.Getenv("HEARSAY_E2E_EVIDENCE")}
 	if r.evidence != "" {
 		if err := os.MkdirAll(r.evidence, 0o755); err != nil {
 			t.Fatal(err)
@@ -115,25 +115,53 @@ func e2eLLMSection(stubURL string) string {
 	return "\nllm:\n  tiers:\n" + tier("distill") + tier("assert") + judgments
 }
 
-func createDatabase(t *testing.T, url, prefix string) string {
-	t.Helper()
-	name := prefix + strconv.FormatInt(time.Now().UnixNano(), 36)
-	admin, err := pgx.Connect(t.Context(), swapDatabaseName(url, "postgres"))
-	if err != nil {
-		t.Fatalf("connecting to the server: %v", err)
-	}
-	defer func() { _ = admin.Close(context.WithoutCancel(t.Context())) }()
-	if _, err := admin.Exec(t.Context(), "CREATE DATABASE "+name); err != nil {
-		t.Fatalf("creating %s: %v", name, err)
-	}
-	t.Cleanup(func() {
-		ctx := context.WithoutCancel(t.Context())
-		c, err := pgx.Connect(ctx, swapDatabaseName(url, "postgres"))
-		if err != nil {
+func serveModelStub(w http.ResponseWriter, r *http.Request, structured func(tool, text string, properties map[string]json.RawMessage) (any, bool), judge func(state string, ids []string) map[string]float64) {
+	if r.URL.Path == "/v1/systemone" {
+		var req struct {
+			State     string                     `json:"state"`
+			Questions map[string]json.RawMessage `json:"questions"`
+		}
+		if json.NewDecoder(r.Body).Decode(&req) != nil || len(req.Questions) == 0 {
+			http.Error(w, `{"error":"the stub answers System One calls only"}`, http.StatusBadRequest)
 			return
 		}
-		defer func() { _ = c.Close(ctx) }()
-		_, _ = c.Exec(ctx, "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)")
+		ids := make([]string, 0, len(req.Questions))
+		for id := range req.Questions {
+			ids = append(ids, id)
+		}
+		answers := map[string]any{}
+		for id, p := range judge(req.State, ids) {
+			answers[id] = map[string]any{"type": "noul", "noul": p}
+		}
+		w.Header().Set("content-type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"model": "jev-stub", "answers": answers, "usage": map[string]int{"input_tokens": 1, "output_tokens": 0}})
+		return
+	}
+	var req struct {
+		Messages []struct {
+			Content string `json:"content"`
+		} `json:"messages"`
+		Tools []struct {
+			Name        string `json:"name"`
+			InputSchema struct {
+				Properties map[string]json.RawMessage `json:"properties"`
+			} `json:"input_schema"`
+		} `json:"tools"`
+	}
+	if r.URL.Path != "/v1/messages" || json.NewDecoder(r.Body).Decode(&req) != nil || len(req.Tools) != 1 || len(req.Messages) == 0 {
+		http.Error(w, `{"error":{"type":"invalid_request_error","message":"the stub answers structured Messages calls only"}}`, http.StatusBadRequest)
+		return
+	}
+	tool := req.Tools[0]
+	answer, ok := structured(tool.Name, req.Messages[0].Content, tool.InputSchema.Properties)
+	if !ok {
+		http.Error(w, `{"error":{"type":"invalid_request_error","message":"the stub does not know this schema"}}`, http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("content-type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"id": "msg_stub", "type": "message", "role": "assistant", "model": "stub", "stop_reason": "tool_use",
+		"content": []any{map[string]any{"type": "tool_use", "id": "toolu_stub", "name": tool.Name, "input": answer}},
+		"usage":   map[string]int{"input_tokens": 1, "output_tokens": 1},
 	})
-	return swapDatabaseName(url, name)
 }

@@ -3,14 +3,10 @@
 package l3_test
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"os"
 	"slices"
-	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,32 +15,13 @@ import (
 	"github.com/kpenfound/hearsay/internal/bundle"
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
-	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
+	"github.com/kpenfound/hearsay/internal/l1/l1test"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/l3"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
-
-func newPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	pool, err := db.Connect(context.Background(), url)
-	if err != nil {
-		t.Fatalf("connecting to postgres: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
-var sources atomic.Int64
-
-func newSource() string {
-	return "t" + strconv.FormatInt(time.Now().UnixNano(), 36) + "x" + strconv.FormatInt(sources.Add(1), 36)
-}
 
 var (
 	day     = time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC)
@@ -67,19 +44,11 @@ func docAt(src, artifact string, kind l1.Kind, class config.ArtifactClass, hour 
 	}
 }
 
-func storeDoc(t *testing.T, pool *pgxpool.Pool, doc l1.Document) string {
-	t.Helper()
-	if _, err := l1.New(pool).Put(t.Context(), doc); err != nil {
-		t.Fatalf("Put(%s) = %v", doc.ID, err)
-	}
-	return doc.ID
-}
-
 func putDoc(t *testing.T, pool *pgxpool.Pool, src, artifact string, kind l1.Kind, hour int, scope string, acl connector.ACL, questions ...string) string {
 	t.Helper()
 	doc := docAt(src, artifact, kind, config.ArtifactIssue, hour, scope, acl)
 	doc.Body.OpenQuestions = questions
-	return storeDoc(t, pool, doc)
+	return l1test.Put(t, pool, doc)
 }
 
 func ids(docs []l1.Stored) []string {
@@ -91,9 +60,9 @@ func ids(docs []l1.Stored) []string {
 }
 
 func TestRecentDedupesByKindAndFiltersBeforeItCounts(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	views := l3.New(pool)
-	src := newSource()
+	src := dbtest.UniqueID()
 	scope := "tracker:" + src + ":acme/api#1"
 
 	issue := putDoc(t, pool, src, "acme/api#1", l1.KindIssue, 1, scope, public)
@@ -135,8 +104,8 @@ func TestRecentDedupesByKindAndFiltersBeforeItCounts(t *testing.T) {
 }
 
 func TestOpenQuestionsReadOnlyDocumentsThatLeaveSomethingOpen(t *testing.T) {
-	pool := newPool(t)
-	src := newSource()
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	scope := "tracker:" + src + ":acme/api#1"
 	first := putDoc(t, pool, src, "q1", l1.KindIssue, 1, scope, public, "who runs it?", "when?", " who runs it? ")
 	second := putDoc(t, pool, src, "q2", l1.KindIssue, 2, scope, public, "who runs it?")
@@ -158,10 +127,10 @@ func TestOpenQuestionsReadOnlyDocumentsThatLeaveSomethingOpen(t *testing.T) {
 }
 
 func TestCurrentStancesAreTheHeadsTheReaderMayRead(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	ctx := t.Context()
 	graph := l2.New(pool)
-	src := newSource()
+	src := dbtest.UniqueID()
 	child, parent := "code:"+src+":child", "code:"+src+":parent"
 	for _, e := range []l2.Entity{
 		{ID: child, Type: l2.TypeModule, PartOf: []string{parent}, Origin: l2.OriginConfig},
@@ -264,11 +233,11 @@ func TestCurrentStancesAreTheHeadsTheReaderMayRead(t *testing.T) {
 }
 
 func TestStancesFollowEveryPieceOfTheirEvidenceNow(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	ctx := t.Context()
 	graph := l2.New(pool)
 	docs := l1.New(pool)
-	src := newSource()
+	src := dbtest.UniqueID()
 	entity := "code:" + src + ":api"
 	if err := graph.PutEntity(ctx, l2.Entity{ID: entity, Type: l2.TypeModule, Origin: l2.OriginConfig}); err != nil {
 		t.Fatal(err)
@@ -352,7 +321,7 @@ func TestStancesFollowEveryPieceOfTheirEvidenceNow(t *testing.T) {
 		t.Errorf("kyle's stances = %v with %d withheld, want %v with 2", kyles, withheld, wantKyle)
 	}
 
-	b, report, err := bundle.New(pool).Assemble(ctx, sam, entity)
+	b, report, err := bundle.New(pool).AssembleForEvent(ctx, sam, entity, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,10 +341,10 @@ func TestStancesFollowEveryPieceOfTheirEvidenceNow(t *testing.T) {
 }
 
 func TestAStanceAReaderMayNotReadDoesNotContestForThem(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	ctx := t.Context()
 	graph := l2.New(pool)
-	src := newSource()
+	src := dbtest.UniqueID()
 	entity := "code:" + src + ":api"
 	if err := graph.PutEntity(ctx, l2.Entity{ID: entity, Type: l2.TypeModule, Origin: l2.OriginConfig}); err != nil {
 		t.Fatal(err)
@@ -425,9 +394,9 @@ func TestAStanceAReaderMayNotReadDoesNotContestForThem(t *testing.T) {
 }
 
 func TestTheSubjectIsTheDocumentThatSaysItIsTheEntity(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	views := l3.New(pool)
-	src := newSource()
+	src := dbtest.UniqueID()
 	entity := "tracker:" + src + ":acme/api#1"
 	putDoc(t, pool, src, "acme/api#1", l1.KindIssue, 1, entity, private)
 	putDoc(t, pool, src, "acme/api#2", l1.KindIssue, 1, "tracker:"+src+":elsewhere#2", public)
@@ -454,8 +423,8 @@ func TestTheSubjectIsTheDocumentThatSaysItIsTheEntity(t *testing.T) {
 }
 
 func TestABundleForAScopeNotGrantedIsEmpty(t *testing.T) {
-	pool := newPool(t)
-	src := newSource()
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	scope := "tracker:" + src + ":acme/api#1"
 	issue := putDoc(t, pool, src, "acme/api#1", l1.KindIssue, 1, scope, public, "open?")
 	graph := l2.New(pool)
@@ -479,7 +448,7 @@ func TestABundleForAScopeNotGrantedIsEmpty(t *testing.T) {
 		{"not granted", elsewhere, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			b, _, err := bundle.New(pool).Assemble(t.Context(), tc.reader, scope)
+			b, _, err := bundle.New(pool).AssembleForEvent(t.Context(), tc.reader, scope, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -496,7 +465,7 @@ func anchorDoc(t *testing.T, pool *pgxpool.Pool, src, artifact string, kind l1.K
 	doc := docAt(src, artifact, kind, class, hour, scope, acl)
 	doc.Source.URL = "https://wiki.example/" + src + "/" + artifact
 	doc.References = refs
-	return storeDoc(t, pool, doc)
+	return l1test.Put(t, pool, doc)
 }
 
 func pin(t *testing.T, pool *pgxpool.Pool, scope, doc, by string, hour int) {
@@ -522,7 +491,7 @@ func tracker(id string) l1.Reference { return l1.Reference{Type: l1.RefTrackerIt
 func link(url string) l1.Reference   { return l1.Reference{Type: l1.RefURL, ID: url} }
 
 func TestAnchorsArePinnedThenInferredThenDefaulted(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	views := l3.New(pool)
 
 	tests := []struct {
@@ -597,7 +566,7 @@ func TestAnchorsArePinnedThenInferredThenDefaulted(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			src := newSource()
+			src := dbtest.UniqueID()
 			scope := "code:" + src
 			kyles, sams := tt.build(t, src, scope)
 			for _, r := range []struct {
@@ -625,8 +594,8 @@ func TestAnchorsArePinnedThenInferredThenDefaulted(t *testing.T) {
 }
 
 func TestAnAnchorIsNotRepeatedInRecent(t *testing.T) {
-	pool := newPool(t)
-	src := newSource()
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	scope := "code:" + src
 	var issues []string
 	for i := range 6 {
@@ -635,7 +604,7 @@ func TestAnAnchorIsNotRepeatedInRecent(t *testing.T) {
 	spec := anchorDoc(t, pool, src, "spec.md", l1.KindWikiSection, config.ArtifactSpec, 20, scope, public)
 	pin(t, pool, scope, issues[5], "kyle", 0)
 
-	b, _, err := bundle.New(pool).Assemble(t.Context(), sam, scope)
+	b, _, err := bundle.New(pool).AssembleForEvent(t.Context(), sam, scope, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -661,10 +630,10 @@ func TestAnAnchorIsNotRepeatedInRecent(t *testing.T) {
 }
 
 func TestAStanceIsInheritedThroughADerivedParent(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	ctx := t.Context()
 	graph := l2.New(pool)
-	src := newSource()
+	src := dbtest.UniqueID()
 	engine, server := "code:"+src+":engine", "code:"+src+":engine/server"
 	repo := config.SourceRef{Source: src, Project: src}
 	seeded, err := l2.Seed(ctx, config.Repo{Code: []config.CodeEntity{

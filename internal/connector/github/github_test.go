@@ -26,8 +26,10 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/connector/connectortest"
 	"github.com/kpenfound/hearsay/internal/connector/github"
 	"github.com/kpenfound/hearsay/internal/l1"
+	"github.com/kpenfound/hearsay/internal/poll"
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
@@ -494,17 +496,6 @@ func asJSON(t *testing.T, v any) string {
 		t.Fatal(err)
 	}
 	return string(raw)
-}
-
-func waitFor(t *testing.T, what string, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
 }
 
 func backfilledByID(t *testing.T, c *github.Connector, src connector.SourceConfig) map[string]connector.Event {
@@ -1571,37 +1562,9 @@ func TestWebhookUsesTheConfiguredSpellingOfTheRepository(t *testing.T) {
 
 func runtimeFor(t *testing.T, src connector.SourceConfig, opts connector.RuntimeOptions) (*connector.Runtime, func()) {
 	t.Helper()
-	reg := connector.NewRegistry()
-	if err := reg.Register(github.Type, github.Factory); err != nil {
-		t.Fatal(err)
-	}
-	opts.Sources = []connector.SourceConfig{src}
-	opts.Registry = reg
-	opts.Lookup = func(v string) (string, bool) { return v, true }
-	opts.Cadence = connector.Cadence{MinRefresh: time.Millisecond, Refresh: time.Millisecond, MaxBackoff: 5 * time.Millisecond, Shutdown: time.Second}
-	rt, err := connector.NewRuntime(t.Context(), opts)
-	if err != nil {
-		t.Fatalf("NewRuntime = %v", err)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() { done <- rt.Run(ctx) }()
-	var once sync.Once
-	stop := func() {
-		once.Do(func() {
-			cancel()
-			select {
-			case err := <-done:
-				if err != nil {
-					t.Errorf("Run = %v", err)
-				}
-			case <-time.After(10 * time.Second):
-				t.Error("the runtime did not stop within 10s")
-			}
-		})
-	}
-	t.Cleanup(stop)
-	return rt, stop
+	return connectortest.Run(t, github.Type, github.Factory, src, func(v string) (string, bool) { return v, true }, func(o *connector.RuntimeOptions) {
+		o.Sink, o.Resyncs, o.Exposure = opts.Sink, opts.Resyncs, opts.Exposure
+	})
 }
 
 func requestedSince(gh *fakeGitHub, mark int, path string) func() bool {
@@ -1668,7 +1631,7 @@ func runPrivatizedResync(t *testing.T) privatizedRun {
 	if code := deliver(t, rt.Handler(), "repository", hook(t, "repository.privatized")); code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202", code)
 	}
-	waitFor(t, "the re-sync", resynced(t, resyncs, sourceID, "acme/api"))
+	poll.Until(t, "the re-sync", resynced(t, resyncs, sourceID, "acme/api"))
 	stop()
 	return privatizedRun{public: public.Events(), emitted: rec.Events(), later: gh.seen()[mark:]}
 }
@@ -1715,7 +1678,7 @@ func TestResyncReachesACommitAPushEmittedBeforeTheStartDate(t *testing.T) {
 	if code := deliver(t, rt.Handler(), "repository", hook(t, "repository.privatized")); code != http.StatusAccepted {
 		t.Fatalf("privatized: status = %d, want 202", code)
 	}
-	waitFor(t, "the re-sync", resynced(t, resyncs, sourceID, "acme/api"))
+	poll.Until(t, "the re-sync", resynced(t, resyncs, sourceID, "acme/api"))
 	stop()
 	if want := old + "@perm:private"; !slices.Contains(nativeIDs(rec.Events()), want) {
 		t.Errorf("the re-sync emitted %v, want %s", nativeIDs(rec.Events()), want)
@@ -1739,7 +1702,7 @@ func TestAResyncInterruptedByARestartResumes(t *testing.T) {
 	if code := deliver(t, first.Handler(), "repository", hook(t, "repository.privatized")); code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202", code)
 	}
-	waitFor(t, "the re-sync to reach the commits", requestedSince(gh, begun, commits))
+	poll.Until(t, "the re-sync to reach the commits", requestedSince(gh, begun, commits))
 	stopFirst()
 	release()
 
@@ -1750,7 +1713,7 @@ func TestAResyncInterruptedByARestartResumes(t *testing.T) {
 
 	mark := len(gh.seen())
 	_, stop := runtimeFor(t, src, connector.RuntimeOptions{Sink: l0, Resyncs: resyncs})
-	waitFor(t, "the resumed re-sync", resynced(t, resyncs, sourceID, "acme/api"))
+	poll.Until(t, "the resumed re-sync", resynced(t, resyncs, sourceID, "acme/api"))
 	stop()
 	for _, uri := range gh.seen()[mark:] {
 		if strings.HasPrefix(uri, "/repos/acme/api/issues") || strings.HasPrefix(uri, "/repos/acme/api/pulls") {
@@ -1777,7 +1740,7 @@ func TestAResyncWhoseDeliveryWasNeverHandledRunsAtStartup(t *testing.T) {
 
 	resyncs := connector.NewMemoryResyncs()
 	_, stop := runtimeFor(t, src, connector.RuntimeOptions{Sink: l0, Resyncs: resyncs, Exposure: l0})
-	waitFor(t, "the re-sync nobody asked for", resynced(t, resyncs, sourceID, "acme/api"))
+	poll.Until(t, "the re-sync nobody asked for", resynced(t, resyncs, sourceID, "acme/api"))
 	stop()
 	assertEveryArtifactPrivate(t, public, l0)
 

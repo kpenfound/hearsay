@@ -23,6 +23,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/bundle"
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/work"
 	"github.com/kpenfound/hearsay/internal/db/dbtest"
@@ -95,14 +96,10 @@ func documentedPair(t *testing.T) config.Repo {
 	if m == nil {
 		t.Fatal("docs/config.md has no work-authority example")
 	}
-	file := filepath.Join(t.TempDir(), "hearsay.yaml")
-	if err := os.WriteFile(file, m[1], 0o600); err != nil {
-		t.Fatal(err)
-	}
 	for _, env := range []string{"HEARSAY_OSMIA_TOKEN"} {
 		t.Setenv(env, "work-token-osmia")
 	}
-	repo, err := config.Load(file)
+	repo, err := config.Load(configtest.Write(t, map[string]string{"hearsay.yaml": string(m[1])}))
 	if err != nil {
 		t.Fatalf("the documented pair does not load: %v", err)
 	}
@@ -307,7 +304,7 @@ func (w *decisionWorld) drain(lanes ...jobLane) {
 				w.t.Fatal(err)
 			}
 			moved = moved || p.Events > 0
-			if p.Events < w.pump.Batch() {
+			if p.Events < l0.Limit(distiller.DefaultPumpBatch) {
 				break
 			}
 		}

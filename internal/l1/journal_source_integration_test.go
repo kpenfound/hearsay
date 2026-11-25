@@ -58,10 +58,7 @@ func TestSourceBuiltJournalSurvivesItsOutputAndInvalidatesEvidence(t *testing.T)
 			if err != nil {
 				t.Fatal(err)
 			}
-			found, err := store.LookupJudgment(t.Context(), journalReader(), r.Task, r.QuestionVersion, r.QuestionHash, current)
-			if err != nil {
-				t.Fatal(err)
-			}
+			found := lookupJudgment(t, pool, r, current)
 			if tc.name == "output write" {
 				if found == nil {
 					t.Fatal("committed result was not reusable")

@@ -5,7 +5,6 @@ package queue_test
 import (
 	"context"
 	"errors"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/db/dbtest"
+	"github.com/kpenfound/hearsay/internal/poll"
 	"github.com/kpenfound/hearsay/internal/queue"
 )
 
@@ -339,7 +339,7 @@ func TestADebouncedEnqueueWaitingOnExpediteKeepsTheJobDue(t *testing.T) {
 		cancel()
 		<-finished
 	}()
-	waitFor(t, "debounced enqueue to wait on expedite", func() bool {
+	poll.Until(t, "debounced enqueue to wait on expedite", func() bool {
 		var blocked bool
 		err := pool.QueryRow(t.Context(), "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid)))", blocker).Scan(&blocked)
 		return err == nil && blocked
@@ -780,11 +780,7 @@ func TestTheSerializedClaimTakesTheKindsAdvisoryLock(t *testing.T) {
 
 func repeatableReadPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	cfg, err := pgxpool.ParseConfig(url)
+	cfg, err := pgxpool.ParseConfig(dbtest.URL(t))
 	if err != nil {
 		t.Fatalf("parsing the database url: %v", err)
 	}
@@ -837,7 +833,7 @@ func TestTheSerializedClaimRefusesABusyKeyOnARepeatableReadServer(t *testing.T) 
 		claimed <- claimResult{jobs, err}
 	}()
 
-	waitFor(t, "the serialized claim to block on the kind's advisory lock", func() bool {
+	poll.Until(t, "the serialized claim to block on the kind's advisory lock", func() bool {
 		var waiting bool
 		err := pool.QueryRow(t.Context(), `
 SELECT count(*) > 0 FROM pg_locks
@@ -1613,7 +1609,7 @@ func TestAFailOrReclaimThatLosesARaceToAnEnqueueIsSuperseded(t *testing.T) {
 				state, err := tt.op(t, client, running[0])
 				done <- result{state, err}
 			}()
-			waitFor(t, "the statement to wait on the enqueue", func() bool {
+			poll.Until(t, "the statement to wait on the enqueue", func() bool {
 				var blocked bool
 				err := pool.QueryRow(t.Context(),
 					"SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid)))",

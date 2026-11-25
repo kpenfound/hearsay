@@ -12,6 +12,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/connector/connectortest"
 	"github.com/kpenfound/hearsay/internal/connector/slack"
 )
 
@@ -20,14 +21,14 @@ func publicRoot() connector.Event {
 }
 
 type backfillRun struct {
-	sink  *deduplicating
+	sink  *connectortest.Deduplicating
 	calls []string
 }
 
 func runBackfillWithRestarts(t *testing.T) backfillRun {
 	t.Helper()
 	fake := newFakeSlack(t, func(int, *websocket.Conn) {})
-	run := backfillRun{sink: &deduplicating{seen: map[string]bool{}}}
+	run := backfillRun{sink: connectortest.NewDeduplicating()}
 	fake.history = func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/")
 		cursor := r.FormValue("cursor")
@@ -70,20 +71,20 @@ func runBackfillWithRestarts(t *testing.T) backfillRun {
 }
 
 func TestBackfillStoresRootAndReplyAcrossRestarts(t *testing.T) {
-	if got := len(runBackfillWithRestarts(t).sink.recorder.Events()); got != 2 {
+	if got := len(runBackfillWithRestarts(t).sink.Events()); got != 2 {
 		t.Errorf("stored events = %d, want root and reply", got)
 	}
 }
 
 func TestBackfillReplaysRootRevisionWithTheSameID(t *testing.T) {
-	deliveries := runBackfillWithRestarts(t).sink.delivered()
+	deliveries := runBackfillWithRestarts(t).sink.DeliveredIDs()
 	if len(deliveries) != 3 || deliveries[0] != deliveries[1] {
 		t.Errorf("deliveries = %v, want identical root revision replay", deliveries)
 	}
 }
 
 func TestBackfillReplyBelongsToRootThread(t *testing.T) {
-	events := runBackfillWithRestarts(t).sink.recorder.Events()
+	events := runBackfillWithRestarts(t).sink.Events()
 	if events[1].Payload.Thread != public+"/1758700000.000100" {
 		t.Errorf("reply thread = %q", events[1].Payload.Thread)
 	}

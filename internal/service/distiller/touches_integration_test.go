@@ -9,6 +9,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/llm"
@@ -27,8 +28,8 @@ func TestWorkTouchesSeededRepositoryProject(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pool := newScratchPool(t)
-			src := newSource(t)
+			pool := dbtest.Scratch(t, "distiller_none")
+			src := dbtest.UniqueID()
 			cfg := config.Default()
 			cfg.Repo = config.Repo{
 				Sources: []connector.SourceConfig{{ID: src, Type: "work"}, {ID: "github", Type: "github"}},

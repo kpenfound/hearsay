@@ -1,7 +1,6 @@
 package connectors_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,15 +10,16 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/poll"
 	"github.com/kpenfound/hearsay/internal/service/connectors"
 	"github.com/kpenfound/hearsay/internal/telemetry"
+	"github.com/kpenfound/hearsay/internal/telemetry/logtest"
 )
 
 func source(id string) connector.SourceConfig {
@@ -69,17 +69,6 @@ func run(t *testing.T, cfg *config.Config, deps connectors.Deps) (string, func()
 			t.Fatal("the service did not stop within 10s of cancellation")
 			return nil
 		}
-	}
-}
-
-func waitFor(t *testing.T, what string, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out after 10s waiting for %s", what)
-		}
-		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -158,7 +147,7 @@ func TestTheServiceAnswersHealthz(t *testing.T) {
 
 func TestReadyzReportsTheHostedSource(t *testing.T) {
 	h := hostFake(t)
-	waitFor(t, "the backfill to finish", func() bool {
+	poll.Until(t, "the backfill to finish", func() bool {
 		_, body := get(t, h.addr, "/readyz")
 		return strings.Contains(body, `"backfill_done": true`)
 	})
@@ -197,7 +186,7 @@ func TestTheServiceAcceptsAWebhookDelivery(t *testing.T) {
 
 func TestThePolledBackfilledAndPushedEventsReachTheSink(t *testing.T) {
 	h := hostFake(t)
-	waitFor(t, "the polled and backfilled events", func() bool { return len(h.rec.Events()) >= 2 })
+	poll.Until(t, "the polled and backfilled events", func() bool { return len(h.rec.Events()) >= 2 })
 	h.post(t, h.fake.NewEvent(connector.KindMessage, "p1", "pushed"))
 	if err := h.stop(); err != nil {
 		t.Fatalf("Run() = %v, want nil", err)
@@ -214,7 +203,7 @@ func TestThePolledBackfilledAndPushedEventsReachTheSink(t *testing.T) {
 
 func TestTheBackfillSavesItsPosition(t *testing.T) {
 	h := hostFake(t)
-	waitFor(t, "the backfill to save a position", func() bool { return len(h.cursors.Saves(h.src.ID)) > 0 })
+	poll.Until(t, "the backfill to save a position", func() bool { return len(h.cursors.Saves(h.src.ID)) > 0 })
 	if err := h.stop(); err != nil {
 		t.Fatalf("Run() = %v, want nil", err)
 	}
@@ -286,7 +275,7 @@ func TestALineNamesTheProcessAndItsSourceOnce(t *testing.T) {
 	fake.Queue = []connector.Event{fake.NewEvent(connector.KindMessage, "m1", "polled")}
 	rec := &connector.Recorder{}
 
-	var out syncBuffer
+	var out logtest.Buffer
 	ctx := telemetry.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&out, nil)))
 	ctx, cancel := context.WithCancel(ctx)
 
@@ -306,7 +295,7 @@ func TestALineNamesTheProcessAndItsSourceOnce(t *testing.T) {
 			Cadence:  quick(),
 		})
 	}()
-	waitFor(t, "the connector to be polled", func() bool { return len(rec.Events()) >= 1 })
+	poll.Until(t, "the connector to be polled", func() bool { return len(rec.Events()) >= 1 })
 	cancel()
 	select {
 	case err := <-done:
@@ -417,7 +406,7 @@ func TestAConnectorIsClosedAfterItsDeliveriesFinish(t *testing.T) {
 	stopped := make(chan error, 1)
 	go func() { stopped <- stop() }()
 
-	waitFor(t, "the listener to close", func() bool {
+	poll.Until(t, "the listener to close", func() bool {
 		dialer := net.Dialer{Timeout: time.Second}
 		conn, err := dialer.DialContext(t.Context(), "tcp", addr)
 		if err != nil {
@@ -440,23 +429,6 @@ func TestAConnectorIsClosedAfterItsDeliveriesFinish(t *testing.T) {
 	if got, want := len(rec.Events()), 1; got != want {
 		t.Errorf("the sink received %d events, want the one that was in flight", got)
 	}
-}
-
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
 }
 
 func TestSelect(t *testing.T) {
@@ -527,7 +499,7 @@ func TestTheServiceGivesTheRuntimeItsResyncStores(t *testing.T) {
 		Resyncs:  resyncs,
 		Exposure: exposed{},
 	})
-	waitFor(t, "the re-sync the check owed", func() bool {
+	poll.Until(t, "the re-sync the check owed", func() bool {
 		r := resyncs.Get(src.ID, "C123")
 		return r.Generation > 0 && !r.Owed
 	})
@@ -547,7 +519,7 @@ func TestTheRuntimeNeverResyncsWithoutAResyncStore(t *testing.T) {
 		Sink:     rec,
 		Cursors:  connector.NewMemoryCursors(),
 	})
-	waitFor(t, "the connector to be polled", func() bool { return len(rec.Events()) > 0 })
+	poll.Until(t, "the connector to be polled", func() bool { return len(rec.Events()) > 0 })
 	if err := stop(); err != nil {
 		t.Fatalf("Run() with no re-sync store = %v", err)
 	}

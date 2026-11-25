@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
 )
 
@@ -26,10 +27,7 @@ func conversationExample(t *testing.T) string {
 }
 
 func TestDocumentedConversationSourceValidatesAndBuilds(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "hearsay.yaml"), []byte(conversationExample(t)), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	dir := configtest.Write(t, map[string]string{"hearsay.yaml": conversationExample(t)})
 	var out, errOut bytes.Buffer
 	if err := run(t.Context(), []string{"config", "validate", dir}, &out, &errOut); err != nil {
 		t.Fatalf("hearsay config validate = %v\n%s", err, errOut.String())

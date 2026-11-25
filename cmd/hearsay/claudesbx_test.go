@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/llm/claudesbx/claudesbxtest"
 	"github.com/kpenfound/hearsay/internal/llm/providers"
@@ -16,7 +17,7 @@ import (
 
 func claudeSbxConfig(t *testing.T, tiers string) string {
 	t.Helper()
-	return writeConfig(t, map[string]string{
+	return configtest.Write(t, map[string]string{
 		"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\n",
 		"scopes/api.yaml":     "id: api\nsources: [github]\n",
 		"llm/tiers.yaml":      tiers,

@@ -5,9 +5,7 @@ package l1_test
 import (
 	"errors"
 	"slices"
-	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,13 +14,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 )
-
-var sources atomic.Int64
-
-func newSource(t *testing.T) string {
-	t.Helper()
-	return "t" + strconv.FormatInt(time.Now().UnixNano(), 36) + "x" + strconv.FormatInt(sources.Add(1), 36)
-}
 
 func storedDoc(t *testing.T, src, artifact string, with func(*l1.Document)) l1.Document {
 	t.Helper()
@@ -57,7 +48,7 @@ func storedDoc(t *testing.T, src, artifact string, with func(*l1.Document)) l1.D
 
 func TestChangingArtifactClassUpdatesRow(t *testing.T) {
 	store := l1.New(dbtest.Pool(t))
-	doc := storedDoc(t, newSource(t), "acme/api#class", nil)
+	doc := storedDoc(t, dbtest.UniqueID(), "acme/api#class", nil)
 	seenMerged := false
 	for _, class := range []config.ArtifactClass{config.ArtifactPullRequest, config.ArtifactMergedPR, config.ArtifactMergedPR} {
 		doc.ArtifactClass = class
@@ -80,7 +71,7 @@ func TestChangingArtifactClassUpdatesRow(t *testing.T) {
 
 func TestPutIsIdempotent(t *testing.T) {
 	store := l1.New(dbtest.Pool(t))
-	src := newSource(t)
+	src := dbtest.UniqueID()
 	doc := storedDoc(t, src, "acme/api#31", nil)
 
 	written, err := store.Put(t.Context(), doc)
@@ -135,7 +126,7 @@ func TestPutIsIdempotent(t *testing.T) {
 
 func TestPutAndGetRoundTrip(t *testing.T) {
 	store := l1.New(dbtest.Pool(t))
-	src := newSource(t)
+	src := dbtest.UniqueID()
 	doc := storedDoc(t, src, "acme/api#31", func(d *l1.Document) {
 		d.Time.Updated = day.Add(time.Hour)
 		d.Time.LastActivity = day.Add(2 * time.Hour)
@@ -164,7 +155,7 @@ func TestPutAndGetRoundTrip(t *testing.T) {
 
 func TestPutADocumentWithNothingOptionalOnIt(t *testing.T) {
 	store := l1.New(dbtest.Pool(t))
-	src := newSource(t)
+	src := dbtest.UniqueID()
 	doc := storedDoc(t, src, "acme/api#51", func(d *l1.Document) {
 		d.Participants = nil
 		d.Scope = nil
@@ -192,7 +183,7 @@ func TestPutADocumentWithNothingOptionalOnIt(t *testing.T) {
 
 func TestGetAndDelete(t *testing.T) {
 	store := l1.New(dbtest.Pool(t))
-	src := newSource(t)
+	src := dbtest.UniqueID()
 	doc := storedDoc(t, src, "acme/api#31", nil)
 
 	if _, err := store.Get(t.Context(), doc.ID); !errors.Is(err, l1.ErrNotFound) {
@@ -214,7 +205,7 @@ func TestGetAndDelete(t *testing.T) {
 
 func TestTheTableRefusesWhatTheLayerRefuses(t *testing.T) {
 	pool := dbtest.Pool(t)
-	src := newSource(t)
+	src := dbtest.UniqueID()
 	insert := `INSERT INTO l1_docs (id, kind, artifact_class, source, source_native_id, source_url, l0_refs,
 		created_at, updated_at, last_activity_at, participants, scope, refs, acl,
 		text, raw_text, body, outcome_kind)
@@ -269,8 +260,8 @@ func TestTheTableRefusesWhatTheLayerRefuses(t *testing.T) {
 
 func TestList(t *testing.T) {
 	store := l1.New(dbtest.Pool(t))
-	src := newSource(t)
-	other := newSource(t)
+	src := dbtest.UniqueID()
+	other := dbtest.UniqueID()
 
 	pr := storedDoc(t, src, "acme/api#1", func(d *l1.Document) {
 		d.Kind = l1.KindPR

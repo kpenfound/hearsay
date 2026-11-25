@@ -18,7 +18,9 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/connector/connectortest"
 	"github.com/kpenfound/hearsay/internal/connector/slack"
+	"github.com/kpenfound/hearsay/internal/poll"
 )
 
 const (
@@ -157,68 +159,10 @@ func deliver(t *testing.T, ws *websocket.Conn, fs []map[string]any) bool {
 	return true
 }
 
-type deduplicating struct {
-	mu         sync.Mutex
-	recorder   connector.Recorder
-	seen       map[string]bool
-	deliveries []string
-}
-
-func (s *deduplicating) Emit(ctx context.Context, ev connector.Event) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.deliveries = append(s.deliveries, ev.ID)
-	if s.seen[ev.ID] {
-		return nil
-	}
-	s.seen[ev.ID] = true
-	return s.recorder.Emit(ctx, ev)
-}
-
-func (s *deduplicating) delivered() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return slices.Clone(s.deliveries)
-}
-
 func startRuntime(t *testing.T, src connector.SourceConfig, configure func(*connector.RuntimeOptions)) *connector.Runtime {
 	t.Helper()
-	registry := connector.NewRegistry()
-	if err := registry.Register(slack.Type, slack.Factory); err != nil {
-		t.Fatal(err)
-	}
-	opts := connector.RuntimeOptions{Sources: []connector.SourceConfig{src}, Registry: registry, Sink: &connector.Recorder{}, Lookup: lookup, Cadence: connector.Cadence{MinRefresh: time.Millisecond, Refresh: time.Millisecond, MaxBackoff: 5 * time.Millisecond, Shutdown: time.Second}}
-	configure(&opts)
-	rt, err := connector.NewRuntime(t.Context(), opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() { done <- rt.Run(ctx) }()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Error(err)
-			}
-		case <-time.After(5 * time.Second):
-			t.Error("runtime did not stop")
-		}
-	})
+	rt, _ := connectortest.Run(t, slack.Type, slack.Factory, src, lookup, configure)
 	return rt
-}
-
-func waitFor(t *testing.T, what string, ok func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for !ok() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
 }
 
 type want struct {
@@ -236,7 +180,7 @@ type want struct {
 }
 
 type streamRun struct {
-	sink         *deduplicating
+	sink         *connectortest.Deduplicating
 	reconnecting connector.SourceHealth
 	connected    connector.SourceHealth
 }
@@ -263,7 +207,7 @@ func runStreamScenario(t *testing.T) streamRun {
 		}
 	})
 	t.Cleanup(release)
-	sink := &deduplicating{seen: map[string]bool{}}
+	sink := connectortest.NewDeduplicating()
 	rt := startRuntime(t, fake.source(false), func(o *connector.RuntimeOptions) { o.Sink = sink })
 	select {
 	case <-refreshed:
@@ -277,7 +221,7 @@ func runStreamScenario(t *testing.T) streamRun {
 	}
 	run := streamRun{sink: sink, reconnecting: rt.Health(t.Context()).Sources[0]}
 	release()
-	waitFor(t, "a connected stream", func() bool { return rt.Health(t.Context()).Sources[0].Status == connector.HealthOK })
+	poll.Until(t, "a connected stream", func() bool { return rt.Health(t.Context()).Sources[0].Status == connector.HealthOK })
 	run.connected = rt.Health(t.Context()).Sources[0]
 	return run
 }
@@ -315,7 +259,7 @@ func streamWants() []want {
 
 func TestStreamEmitsPublicChannelEvents(t *testing.T) {
 	wants := streamWants()
-	got := runStreamScenario(t).sink.recorder.Events()
+	got := runStreamScenario(t).sink.Events()
 	if len(got) != len(wants) {
 		for _, ev := range got {
 			t.Logf("emitted %s", ev.NativeID)
@@ -333,7 +277,7 @@ func TestStreamEventTimesFollowSlackTimestamps(t *testing.T) {
 		public + "/1758700000.000100": time.Unix(1758700000, 100000).UTC(),
 		public + "/1758700060.000200": time.Unix(1758700060, 200000).UTC(),
 	}
-	got := runStreamScenario(t).sink.recorder.Events()
+	got := runStreamScenario(t).sink.Events()
 	for i, w := range wants {
 		if at, ok := times[w.artifact]; ok && i < len(got) && !got[i].Time.Equal(at) {
 			t.Errorf("%s time = %v, want %v", got[i].NativeID, got[i].Time, at)
@@ -343,14 +287,14 @@ func TestStreamEventTimesFollowSlackTimestamps(t *testing.T) {
 
 func TestRedeliveredEnvelopesReuseEventIDs(t *testing.T) {
 	sink := runStreamScenario(t).sink
-	deliveries := sink.delivered()
+	deliveries := sink.DeliveredIDs()
 	if len(deliveries) != len(streamWants())+2 || deliveries[2] != deliveries[0] || deliveries[len(deliveries)-1] != deliveries[1] {
 		t.Errorf("deliveries = %v, want the root's and the reply's repeats to reuse their ids", deliveries)
 	}
 }
 
 func TestEditedReplyGetsNewEventID(t *testing.T) {
-	got := runStreamScenario(t).sink.recorder.Events()
+	got := runStreamScenario(t).sink.Events()
 	if got[1].ID == got[2].ID {
 		t.Error("an edited reply kept the id of the reply it revises")
 	}
@@ -472,7 +416,7 @@ func TestStreamReportsAChannelWithoutTheApp(t *testing.T) {
 	defer c.Close(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- c.Stream(t.Context(), &connector.Recorder{}) }()
-	waitFor(t, "hello", func() bool { return c.Health(t.Context()).Detail != "connecting" })
+	poll.Until(t, "hello", func() bool { return c.Health(t.Context()).Detail != "connecting" })
 	if h := c.Health(t.Context()); h.Status != connector.HealthDegraded || !strings.Contains(h.Detail, "not a member of C0PUBLIC") {
 		t.Errorf("health = %+v, want degraded naming the channel without the app", h)
 	}
@@ -535,7 +479,7 @@ func TestCloseStopsStream(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() { done <- c.Stream(t.Context(), &connector.Recorder{}) }()
-	waitFor(t, "hello", func() bool { return c.Health(t.Context()).Status == connector.HealthOK })
+	poll.Until(t, "hello", func() bool { return c.Health(t.Context()).Status == connector.HealthOK })
 	if err := c.Close(t.Context()); err != nil {
 		t.Fatal(err)
 	}

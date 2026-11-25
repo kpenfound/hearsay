@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
 )
 
@@ -45,7 +46,7 @@ func TestRepoReaders(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			repo, err := config.Load(writeConfig(t, with(tt.code)))
+			repo, err := config.Load(configtest.Write(t, with(tt.code)))
 			if err != nil {
 				t.Fatalf("config.Load() = %v", err)
 			}
@@ -103,7 +104,7 @@ func TestCommandRepliers(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			repo, err := config.Load(writeConfig(t, files))
+			repo, err := config.Load(configtest.Write(t, files))
 			if err != nil {
 				t.Fatalf("config.Load() = %v", err)
 			}
@@ -142,7 +143,7 @@ func TestDiscordApps(t *testing.T) {
 			"settings: {guild: \"824100000000000000\"}\nsecrets: {token: APP_PLAIN_TOKEN}\n",
 		"scopes/chat.yaml": "id: chat\nsources: [chat]\n",
 	}
-	repo, err := config.Load(writeConfig(t, files))
+	repo, err := config.Load(configtest.Write(t, files))
 	if err != nil {
 		t.Fatalf("config.Load() = %v", err)
 	}

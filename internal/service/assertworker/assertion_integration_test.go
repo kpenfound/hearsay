@@ -13,10 +13,12 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/llm"
+	"github.com/kpenfound/hearsay/internal/poll"
 	"github.com/kpenfound/hearsay/internal/queue"
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
 )
@@ -63,8 +65,8 @@ func writeAssertion(t *testing.T, pool *pgxpool.Pool, as l2.Assertion, when time
 }
 
 func TestAnAssertionIsAppendedWithNoModelCall(t *testing.T) {
-	pool := scratchPool(t)
-	src := newSource(t)
+	pool := dbtest.Scratch(t, "hearsay_assert")
+	src := dbtest.UniqueID()
 	topic, issueStance := assertedTopic(t, pool, src)
 	f := newFixture(src)
 	as := l2.Assertion{Topic: topic.ID, Position: prPosition, Evidence: l2.SortedEvidence([]string{f.prID, f.issueID}), Agent: "shed", Principal: "kyle"}
@@ -81,7 +83,7 @@ func TestAnAssertionIsAppendedWithNoModelCall(t *testing.T) {
 	}()
 	graph := l2.New(pool)
 	var history []l2.Stance
-	waitFor(t, "the assertion's stance", func() bool {
+	poll.Until(t, "the assertion's stance", func() bool {
 		history, err = graph.StanceHistory(t.Context(), topic.ID)
 		return err == nil && len(history) == 2
 	})
@@ -119,8 +121,8 @@ func TestAnAssertionIsAppendedWithNoModelCall(t *testing.T) {
 }
 
 func TestAppendAssertionRefusesWhatItCannotSerialize(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	topic, _ := assertedTopic(t, pool, src)
 	f := newFixture(src)
 	id := writeAssertion(t, pool, l2.Assertion{Topic: topic.ID, Position: "p", Evidence: []string{f.issueID}, Agent: "shed", Principal: "kyle"}, at(5))
@@ -138,8 +140,8 @@ func TestAppendAssertionRefusesWhatItCannotSerialize(t *testing.T) {
 }
 
 func TestALapsedHoldIsDone(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	a := newAsserter(t, pool, src, llm.NewFixtures())
 	for _, prefix := range []string{l2.OperationTarget, l2.GestureHoldTarget} {
 		job := queue.Job{Kind: l2.AssertKind(), TargetID: prefix + "0123", SerialKey: src, Attempt: 2}

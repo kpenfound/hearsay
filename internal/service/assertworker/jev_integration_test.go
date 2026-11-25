@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
@@ -78,8 +79,8 @@ func TestJevDecidesWhereEachPositionGoes(t *testing.T) {
 		{"a yes to the same answer below the threshold changes", byName(0.96, 0.04), always(0.79), "asked", l2.JudgementChanges},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := newPool(t)
-			src := newSource(t)
+			pool := dbtest.Pool(t)
+			src := dbtest.UniqueID()
 			f, asked, other := twoTopics(t, pool, src)
 			jev := newRuleJev()
 			jev.sameQuestion, jev.sameAnswer = tc.sameQuestion, tc.sameAnswer
@@ -103,8 +104,8 @@ func TestJevDecidesWhereEachPositionGoes(t *testing.T) {
 }
 
 func TestATopicOnePositionTookIsNotOfferedToTheNext(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	f, asked, other := twoTopics(t, pool, src)
 	fx := llm.NewFixtures()
 	if err := fx.Add(llm.CompletionFixture{
@@ -184,8 +185,8 @@ func TestAJudgmentThatCannotBeMadeFailsTheJob(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := newPool(t)
-			src := newSource(t)
+			pool := dbtest.Pool(t)
+			src := dbtest.UniqueID()
 			f := store(t, pool, src)
 			a := tc.build(t, pool, src)
 
@@ -204,8 +205,8 @@ func TestAJudgmentThatCannotBeMadeFailsTheJob(t *testing.T) {
 }
 
 func TestAJournalRefusalFailsTheJob(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	f := store(t, pool, src)
 	assertDoc(t, newAsserter(t, pool, src, loadFixtures(t)), f.issueID, src)
 	a := newAsserter(t, pool, src, loadFixtures(t))
@@ -226,8 +227,8 @@ func TestAJournalRefusalFailsTheJob(t *testing.T) {
 }
 
 func TestCommittedJudgmentsAreReusedAcrossARestart(t *testing.T) {
-	pool := scratchPool(t)
-	src := newSource(t)
+	pool := dbtest.Scratch(t, "hearsay_assert")
+	src := dbtest.UniqueID()
 	f := store(t, pool, src)
 	assertDoc(t, newAsserter(t, pool, src, loadFixtures(t)), f.issueID, src)
 	var topicsBefore []byte
@@ -302,8 +303,8 @@ func TestCommittedJudgmentsAreReusedAcrossARestart(t *testing.T) {
 func TestHumanGesturesDetermineStandingAfterJudgment(t *testing.T) {
 	for _, choice := range []l2.Judgement{l2.JudgementChanges, l2.JudgementRestates} {
 		t.Run(string(choice), func(t *testing.T) {
-			pool := scratchPool(t)
-			src := newSource(t)
+			pool := dbtest.Scratch(t, "hearsay_assert")
+			src := dbtest.UniqueID()
 			f := store(t, pool, src)
 			assertDoc(t, newAsserter(t, pool, src, loadFixtures(t)), f.issueID, src)
 			jev := newRuleJev()
@@ -349,8 +350,8 @@ func TestHumanGesturesDetermineStandingAfterJudgment(t *testing.T) {
 }
 
 func TestAssertHandlerRecordsKnownQueueDelay(t *testing.T) {
-	pool := scratchPool(t)
-	src := newSource(t)
+	pool := dbtest.Scratch(t, "hearsay_assert")
+	src := dbtest.UniqueID()
 	f := store(t, pool, src)
 	a := newAsserter(t, pool, src, loadFixtures(t))
 	job := queue.Job{TargetID: f.issueID, SerialKey: src, EnqueuedAt: at(0), StartedAt: at(0).Add(3 * time.Second)}

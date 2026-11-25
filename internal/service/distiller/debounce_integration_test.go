@@ -11,10 +11,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/deletion"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/llm"
+	"github.com/kpenfound/hearsay/internal/poll"
 	"github.com/kpenfound/hearsay/internal/queue"
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
@@ -41,7 +43,7 @@ func pumpEvents(t *testing.T, p *distiller.Pump, count int) distiller.Progress {
 	t.Helper()
 	total := 0
 	var last distiller.Progress
-	waitFor(t, fmt.Sprintf("the pump to read %d events", count), 30*time.Second, func() bool {
+	poll.Within(t, fmt.Sprintf("the pump to read %d events", count), 30*time.Second, func() bool {
 		got, err := p.Once(t.Context())
 		if err != nil {
 			t.Fatal(err)
@@ -62,7 +64,7 @@ func waitForPumpBatch(t *testing.T, pool *pgxpool.Pool, count int) {
 		t.Fatal(err)
 	}
 	events := l0.New(pool)
-	waitFor(t, fmt.Sprintf("the feed to return %d events in one batch", count), 30*time.Second, func() bool {
+	poll.Within(t, fmt.Sprintf("the feed to return %d events in one batch", count), 30*time.Second, func() bool {
 		changes, err := events.Changes(t.Context(), from, l0.Filter{}, 100)
 		if err != nil {
 			t.Fatal(err)
@@ -78,8 +80,8 @@ func commitRevision(src string, i int) connector.Event {
 func TestThePumpDebouncesBurstsWithinAndAcrossReads(t *testing.T) {
 	for _, batch := range []int{1, 100} {
 		t.Run(fmt.Sprintf("batch-%d", batch), func(t *testing.T) {
-			pool := newScratchPool(t)
-			src := newSource(t)
+			pool := dbtest.Scratch(t, "distiller_none")
+			src := dbtest.UniqueID()
 			opts := distiller.PumpOptions{Quiet: 2 * time.Second, MaxDelay: 5 * time.Second, Batch: batch}
 			p := distiller.NewPump(pool, opts)
 			c := distillQueue(t, pool)
@@ -153,7 +155,7 @@ func TestThePumpDebouncesBurstsWithinAndAcrossReads(t *testing.T) {
 func claimWhenDue(t *testing.T, c *queue.Client) []queue.Job {
 	t.Helper()
 	var jobs []queue.Job
-	waitFor(t, "the job to become claimable", 10*time.Second, func() bool {
+	poll.Within(t, "the job to become claimable", 10*time.Second, func() bool {
 		var err error
 		jobs, err = c.Claim(t.Context())
 		if err != nil {
@@ -165,8 +167,8 @@ func claimWhenDue(t *testing.T, c *queue.Client) []queue.Job {
 }
 
 func TestASteadyStreamBecomesDueAtTheMaximumAndDistils(t *testing.T) {
-	pool := newScratchPool(t)
-	src := newSource(t)
+	pool := dbtest.Scratch(t, "distiller_none")
+	src := dbtest.UniqueID()
 	opts := distiller.PumpOptions{Quiet: 750 * time.Millisecond, MaxDelay: 1500 * time.Millisecond}
 	p := distiller.NewPump(pool, opts)
 	c := distillQueue(t, pool)
@@ -214,15 +216,15 @@ func TestASteadyStreamBecomesDueAtTheMaximumAndDistils(t *testing.T) {
 }
 
 func TestDebouncedJobsRollBackWhenThePumpCannotSaveItsCursor(t *testing.T) {
-	pool := newScratchPool(t)
-	src := newSource(t)
+	pool := dbtest.Scratch(t, "distiller_none")
+	src := dbtest.UniqueID()
 	ingest(t, pool, []connector.Event{commitRevision(src, 0)})
 	if _, err := pool.Exec(t.Context(), `CREATE FUNCTION refuse_cursor() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'cursor refused'; END $$;
  CREATE TRIGGER refuse_cursor BEFORE INSERT ON l0_feed_cursors FOR EACH ROW EXECUTE FUNCTION refuse_cursor()`); err != nil {
 		t.Fatal(err)
 	}
 	p := distiller.NewPump(pool, distiller.PumpOptions{Quiet: time.Minute, MaxDelay: 5 * time.Minute})
-	waitFor(t, "the feed to reach the cursor save", 30*time.Second, func() bool {
+	poll.Within(t, "the feed to reach the cursor save", 30*time.Second, func() bool {
 		_, err := p.Once(t.Context())
 		if err == nil {
 			return false
@@ -247,8 +249,8 @@ func TestDebouncedJobsRollBackWhenThePumpCannotSaveItsCursor(t *testing.T) {
 }
 
 func TestDeletionExpeditesAPendingRebuildDespiteAFurtherPumpRead(t *testing.T) {
-	pool := newScratchPool(t)
-	src := newSource(t)
+	pool := dbtest.Scratch(t, "distiller_none")
+	src := dbtest.UniqueID()
 	ingest(t, pool, fixtureEvents(src)[:3])
 	d := newDistiller(t, pool, src)
 	doc := l1.DocID(src, repo+"#12")

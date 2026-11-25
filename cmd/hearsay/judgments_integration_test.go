@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
@@ -75,7 +76,7 @@ func (j *ruleJev) calls() int { j.mu.Lock(); defer j.mu.Unlock(); return len(j.a
 func newJevWorld(t *testing.T) *jevWorld {
 	t.Helper()
 	_, pool := deleteDatabase(t, "jev_")
-	path := writeConfig(t, map[string]string{
+	path := configtest.Write(t, map[string]string{
 		"sources/s.yaml":    "id: github\ntype: github\ncontainers: [acme/api]\nread_only: false\n",
 		"scopes/s.yaml":     "id: team\nsources: [github]\n",
 		"principals/p.yaml": "- id: pat\n  token_env: JEV_PAT_TOKEN\n  scopes: ['*']\n  identities: [{source: github, native_id: u1}]\n",

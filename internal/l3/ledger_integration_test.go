@@ -5,8 +5,6 @@ package l3_test
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -15,7 +13,9 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/bundle"
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/l3"
@@ -23,20 +23,11 @@ import (
 
 func operator(t *testing.T) config.Repo {
 	t.Helper()
-	dir := t.TempDir()
-	for name, body := range map[string]string{
+	dir := configtest.Write(t, map[string]string{
 		"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\n",
 		"scopes/eng.yaml":     "id: eng\nsources: [github]\n",
 		"principals/p.yaml":   "- id: kyle\n  identities: [{source: github, native_id: u1}]\n",
-	} {
-		full := filepath.Join(dir, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
+	})
 	repo, err := config.Load(dir)
 	if err != nil {
 		t.Fatalf("config.Load() = %v", err)
@@ -57,11 +48,11 @@ func operateOn(t *testing.T, pool *pgxpool.Pool, repo config.Repo, req l2.Operat
 }
 
 func TestCurrentStancesFollowTheTopicLedger(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	ctx := t.Context()
 	graph := l2.New(pool)
 	repo := operator(t)
-	src := newSource()
+	src := dbtest.UniqueID()
 	e, f := "code:"+src+":e", "code:"+src+":f"
 	for _, id := range []string{e, f} {
 		if err := graph.PutEntity(ctx, l2.Entity{ID: id, Type: l2.TypeModule, Origin: l2.OriginConfig}); err != nil {
@@ -142,7 +133,7 @@ func TestCurrentStancesFollowTheTopicLedger(t *testing.T) {
 			t.Errorf("sam's stances on %s = %+v, want %+v", entity, got, sams)
 		}
 	}
-	b0, _, err := bundle.New(pool).Assemble(ctx, sam, f)
+	b0, _, err := bundle.New(pool).AssembleForEvent(ctx, sam, f, "")
 	if err != nil {
 		t.Fatal(err)
 	}

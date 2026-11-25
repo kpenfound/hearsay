@@ -9,8 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -19,7 +17,9 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/principal"
@@ -43,22 +43,13 @@ const decideScopeAuthority = "scope: \"*\"\nratified_by:\n  principals: [kyle]\n
 
 func loadAuthority(t *testing.T, policy string) config.Authority {
 	t.Helper()
-	dir := t.TempDir()
 	files := map[string]string{
 		"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\n",
 		"scopes/eng.yaml":     "id: eng\nsources: [github]\n",
 		"principals/p.yaml":   "- id: kyle\n  identities: [{source: github, native_id: u1}]\n",
 		"authority/a.yaml":    policy,
 	}
-	for name, body := range files {
-		full := filepath.Join(dir, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
+	dir := configtest.Write(t, files)
 	repo, err := config.Load(dir)
 	if err != nil {
 		t.Fatalf("config.Load() = %v", err)
@@ -288,8 +279,8 @@ func TestDecideChangesWhatEveryReadServes(t *testing.T) {
 	want("the demote undone", "inferred")
 
 	for _, other := range []struct{ name, event string }{
-		{"a reaction", connector.EventID("discord", "reaction:"+newSource())},
-		{"the CLI", connector.EventID("hearsay", "cli-gesture-"+newSource())},
+		{"a reaction", connector.EventID("discord", "reaction:"+dbtest.UniqueID())},
+		{"the CLI", connector.EventID("hearsay", "cli-gesture-"+dbtest.UniqueID())},
 	} {
 		g, _, err := l2.RecordGesture(ctx, d.pool, d.repo, l2.GestureRequest{Event: other.event, Principal: "sam", Action: l2.GestureDemote, Documents: []string{d.docSecond}})
 		if err != nil {
@@ -510,7 +501,7 @@ func TestDecideRefusesWhatCannotBeDecided(t *testing.T) {
 	}
 	old := d.second
 	d.append(d.docSecond, "each service team, by quarter", 14)
-	pin, _, err := l2.RecordGesture(ctx, d.pool, d.repo, l2.GestureRequest{Event: connector.EventID("hearsay", "cli-gesture-"+newSource()), Principal: "kyle", Action: l2.GesturePin, Documents: []string{d.docFirst}})
+	pin, _, err := l2.RecordGesture(ctx, d.pool, d.repo, l2.GestureRequest{Event: connector.EventID("hearsay", "cli-gesture-"+dbtest.UniqueID()), Principal: "kyle", Action: l2.GesturePin, Documents: []string{d.docFirst}})
 	if err != nil {
 		t.Fatal(err)
 	}

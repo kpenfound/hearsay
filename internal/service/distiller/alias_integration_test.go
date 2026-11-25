@@ -10,6 +10,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/llm"
@@ -17,8 +18,8 @@ import (
 )
 
 func TestThreadAliasVotesFromTouchedPR(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	cfg := config.Default()
 	cfg.Repo = chatRepo(src)
 	cfg.Repo.Code[0].Repo = config.SourceRef{Source: src, Project: repo}

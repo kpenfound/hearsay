@@ -239,17 +239,14 @@ func (a *Assembler) WithBudget(tokens int) *Assembler {
 	return &c
 }
 
-// Assemble builds the bundle for one entity and one reader. It is a structured
-// lookup and calls no model. A scope outside the reader's reach gets the bundle
-// an unknown scope gets rather than an error: scopes filter for relevance, and
-// a refusal would say something about what is there. Inside it, the bundle
-// holds only the entities, documents and stances in reach ([l1.Reader.InReach]),
-// and the access lists filter what is left.
-func (a *Assembler) Assemble(ctx context.Context, reader l1.Reader, scope string) (Bundle, Report, error) {
-	return a.AssembleForEvent(ctx, reader, scope, "")
-}
-
-// AssembleForEvent adds a directive only from a current, readable event in the scope.
+// AssembleForEvent builds the bundle for one entity and one reader. It is a
+// structured lookup and calls no model. A scope outside the reader's reach gets
+// the bundle an unknown scope gets rather than an error: scopes filter for
+// relevance, and a refusal would say something about what is there. Inside it,
+// the bundle holds only the entities, documents and stances in reach
+// ([l1.Reader.InReach]), and the access lists filter what is left. A directive
+// is added only from a current, readable event in the scope; an empty eventID
+// adds none.
 func (a *Assembler) AssembleForEvent(ctx context.Context, reader l1.Reader, scope, eventID string) (Bundle, Report, error) {
 	hidden, err := a.graph.HiddenWorkEntities(ctx, reader)
 	if err != nil {

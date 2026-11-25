@@ -5,11 +5,8 @@ package l2_test
 import (
 	"context"
 	"errors"
-	"os"
 	"slices"
-	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,67 +15,13 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
-	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
+	"github.com/kpenfound/hearsay/internal/l1/l1test"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/principal"
 	"github.com/kpenfound/hearsay/internal/queue"
 )
-
-func newPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	pool, err := db.Connect(context.Background(), url)
-	if err != nil {
-		t.Fatalf("connecting to postgres: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
-var uniques atomic.Int64
-
-func unique() string {
-	return "t" + strconv.FormatInt(time.Now().UnixNano(), 36) + "x" + strconv.FormatInt(uniques.Add(1), 36)
-}
-
-func scratchPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	admin := newPool(t)
-	name := "hearsay_l2_" + unique()
-	if _, err := admin.Exec(t.Context(), `CREATE DATABASE `+name); err != nil {
-		t.Fatalf("creating the scratch database: %v", err)
-	}
-	t.Cleanup(func() {
-		ctx := context.Background()
-		if _, err := admin.Exec(ctx, `DROP DATABASE `+name+` WITH (FORCE)`); err != nil {
-			t.Errorf("dropping the scratch database: %v", err)
-		}
-	})
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	base, query, hasQuery := strings.Cut(url, "?")
-	url = base[:strings.LastIndex(base, "/")+1] + name
-	if hasQuery {
-		url += "?" + query
-	}
-	migrator, err := db.NewMigrator(t.Context(), url, nil)
-	if err != nil {
-		t.Fatalf("NewMigrator() = %v", err)
-	}
-	if _, err := migrator.Up(t.Context()); err != nil {
-		t.Fatalf("migrating the scratch database: %v", err)
-	}
-	_ = migrator.Close()
-	pool, err := db.Connect(context.Background(), url)
-	if err != nil {
-		t.Fatalf("connecting to the scratch database: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
 
 func awaitRunning(t *testing.T, client *queue.Client, want int) {
 	t.Helper()
@@ -105,7 +48,7 @@ func awaitRunning(t *testing.T, client *queue.Client, want int) {
 var public = connector.ACL{{Kind: connector.ACLPublic}}
 
 func TestEntitiesAreSeededAndCreatedOnReference(t *testing.T) {
-	pool := scratchPool(t)
+	pool := dbtest.Scratch(t, "hearsay_l2")
 	store := l2.New(pool)
 	ctx := t.Context()
 
@@ -202,10 +145,10 @@ func stance(topic l2.Topic, doc, position string, hour int) l2.Stance {
 }
 
 func TestStancesAreSupersededNeverOverwritten(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	ctx := t.Context()
-	topic := openTopic(t, store, unique(), public)
+	topic := openTopic(t, store, dbtest.UniqueID(), public)
 
 	add := func(st l2.Stance) (l2.Stance, bool) {
 		t.Helper()
@@ -276,10 +219,10 @@ func TestStancesAreSupersededNeverOverwritten(t *testing.T) {
 }
 
 func TestANewReadingOfADocumentRetiresItsOwnStance(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	ctx := t.Context()
-	topic := openTopic(t, store, unique(), public)
+	topic := openTopic(t, store, dbtest.UniqueID(), public)
 	add := func(st l2.Stance) l2.Stance {
 		t.Helper()
 		stored, written, err := store.AppendStance(ctx, st, st.StatedAt)
@@ -351,10 +294,10 @@ func TestANewReadingOfADocumentRetiresItsOwnStance(t *testing.T) {
 }
 
 func TestAnAssertedStanceIsNotTheDocumentItCites(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	ctx := t.Context()
-	topic := openTopic(t, store, unique(), public)
+	topic := openTopic(t, store, dbtest.UniqueID(), public)
 	add := func(st l2.Stance) (l2.Stance, bool) {
 		t.Helper()
 		stored, written, err := store.AppendStance(ctx, st, st.StatedAt)
@@ -363,7 +306,7 @@ func TestAnAssertedStanceIsNotTheDocumentItCites(t *testing.T) {
 		}
 		return stored, written
 	}
-	event := connector.EventID(connector.SelfSource, "assertion:"+unique())
+	event := connector.EventID(connector.SelfSource, "assertion:"+dbtest.UniqueID())
 	asserted := func(position string, hour int) l2.Stance {
 		st := stance(topic, "l1:s:issue", position, hour)
 		st.ID, st.Assertion, st.Author = l2.AssertionStanceID(topic.ID, event), event, "shed"
@@ -407,10 +350,10 @@ func TestAnAssertedStanceIsNotTheDocumentItCites(t *testing.T) {
 }
 
 func TestReturningToAnEarlierPositionWritesANewStance(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
-	topic := openTopic(t, store, unique(), public)
-	doc := "l1:s:" + unique()
+	topic := openTopic(t, store, dbtest.UniqueID(), public)
+	doc := "l1:s:" + dbtest.UniqueID()
 	positions := []string{"take X", "take X prime", "take X"}
 	var history []l2.Stance
 	for i, position := range positions {
@@ -438,10 +381,10 @@ func TestReturningToAnEarlierPositionWritesANewStance(t *testing.T) {
 }
 
 func TestTopicsAreOnlyOfferedToDocumentsTheirReadersMayRead(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	ctx := t.Context()
-	scope := unique()
+	scope := dbtest.UniqueID()
 	group := connector.ACLEntry{Kind: connector.ACLGroup, Source: "github-acme", NativeID: "acme/api", Label: "acme/api collaborators"}
 	other := connector.ACLEntry{Kind: connector.ACLGroup, Source: "github-acme", NativeID: "acme/secret"}
 	openTopicFrom(t, pool, scope, "acme/api#12", connector.ACL{group}, "item:acme/api#12")
@@ -459,7 +402,7 @@ func TestTopicsAreOnlyOfferedToDocumentsTheirReadersMayRead(t *testing.T) {
 		{"a document readable more widely than the topic", scope, []string{"item:acme/api#12"}, connector.ACL{group, other}, 0},
 		{"a document with another grant", scope, []string{"item:acme/api#12"}, connector.ACL{other}, 0},
 		{"no shared key", scope, []string{"item:acme/api#13"}, connector.ACL{group}, 0},
-		{"another scope", unique(), []string{"item:acme/api#12"}, connector.ACL{group}, 0},
+		{"another scope", dbtest.UniqueID(), []string{"item:acme/api#12"}, connector.ACL{group}, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -481,7 +424,7 @@ func TestTopicsAreOnlyOfferedToDocumentsTheirReadersMayRead(t *testing.T) {
 }
 
 func TestATopicIsOfferedByItsOpeningDocumentAsItIsNow(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	ctx := t.Context()
 	group := connector.ACL{{Kind: connector.ACLGroup, Source: "github-acme", NativeID: "acme/api"}}
@@ -494,7 +437,7 @@ func TestATopicIsOfferedByItsOpeningDocumentAsItIsNow(t *testing.T) {
 		return len(got)
 	}
 
-	narrowed := unique()
+	narrowed := dbtest.UniqueID()
 	topic := openTopicFrom(t, pool, narrowed, "acme/api#12", public, "item:acme/api#12")
 	if n := offered(narrowed, public); n != 1 {
 		t.Fatalf("a public topic was offered to %d public documents' readers, want 1", n)
@@ -510,7 +453,7 @@ func TestATopicIsOfferedByItsOpeningDocumentAsItIsNow(t *testing.T) {
 		t.Errorf("Topic() = %+v, %v, want the access list it was written with kept as it was", kept, err)
 	}
 
-	retracted := unique()
+	retracted := dbtest.UniqueID()
 	topic = openTopicFrom(t, pool, retracted, "acme/api#12", public, "item:acme/api#12")
 	if _, err := l1.New(pool).Delete(ctx, topic.OpenedBy); err != nil {
 		t.Fatal(err)
@@ -521,10 +464,10 @@ func TestATopicIsOfferedByItsOpeningDocumentAsItIsNow(t *testing.T) {
 }
 
 func TestEvidenceIsReadableOnlyWhenEveryPieceIs(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	ctx := t.Context()
-	src := unique()
+	src := dbtest.UniqueID()
 	group := connector.ACL{{Kind: connector.ACLGroup, Source: "github-acme", NativeID: "acme/api", Label: "collaborators"}}
 	other := connector.ACL{{Kind: connector.ACLGroup, Source: "github-acme", NativeID: "acme/secret"}}
 	open := putDoc(t, pool, src, "open", public, nil)
@@ -559,10 +502,10 @@ func TestEvidenceIsReadableOnlyWhenEveryPieceIs(t *testing.T) {
 }
 
 func TestAccessIsTheEvidenceAsItIsNow(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	ctx := t.Context()
-	src := unique()
+	src := dbtest.UniqueID()
 	kyleOnly := connector.ACL{{Kind: connector.ACLIdentity, Source: "gh", NativeID: "kyle-node"}}
 	kyle := l1.Reader{
 		Effective: principal.Effective{Human: "kyle", Grant: principal.Grant{Scopes: principal.AllScopes()}},
@@ -619,14 +562,6 @@ func issueDoc(src, native string) l1.Document {
 	}
 }
 
-func storeDoc(t *testing.T, pool *pgxpool.Pool, doc l1.Document) string {
-	t.Helper()
-	if _, err := l1.New(pool).Put(t.Context(), doc); err != nil {
-		t.Fatalf("Put(%s) = %v", doc.ID, err)
-	}
-	return doc.ID
-}
-
 func embeddedDoc(t *testing.T, pool *pgxpool.Pool, src, native string, vector []float32) string {
 	t.Helper()
 	return putDoc(t, pool, src, native, public, vector)
@@ -636,7 +571,7 @@ func putDoc(t *testing.T, pool *pgxpool.Pool, src, native string, acl connector.
 	t.Helper()
 	doc := issueDoc(src, native)
 	doc.ACL = acl
-	id := storeDoc(t, pool, doc)
+	id := l1test.Put(t, pool, doc)
 	if vector != nil {
 		if ok, err := l1.New(pool).SetEmbedding(t.Context(), doc.ID, doc.Text, vector); err != nil || !ok {
 			t.Fatalf("SetEmbedding(%s) = %v, %v", doc.ID, ok, err)
@@ -665,10 +600,10 @@ func unit(values ...float32) []float32 {
 }
 
 func TestTopicsBySimilarityReadTheEvidenceVectors(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	ctx := t.Context()
-	src := unique()
+	src := dbtest.UniqueID()
 	scope := src
 
 	evidence := embeddedDoc(t, pool, src, "acme/api#1", unit(1, 0))
@@ -707,9 +642,9 @@ func TestTopicsBySimilarityReadTheEvidenceVectors(t *testing.T) {
 }
 
 func TestTheTablesRefuseWhatTheStoreRefuses(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	ctx := t.Context()
-	scope := unique()
+	scope := dbtest.UniqueID()
 	topicID := "topic:" + scope
 	if _, err := pool.Exec(ctx, `INSERT INTO l2_topics (id, scope, name, acl, opened_by) VALUES ($1, $2, 'n', '[{"kind":"public"}]', 'd')`,
 		topicID, scope); err != nil {
@@ -760,8 +695,8 @@ func TestTheTablesRefuseWhatTheStoreRefuses(t *testing.T) {
 }
 
 func TestPinsPersistInPinOrderAndUnpin(t *testing.T) {
-	pool := newPool(t)
-	scope := "code:" + unique()
+	pool := dbtest.Pool(t)
+	scope := "code:" + dbtest.UniqueID()
 	at := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
 	a := l2.Pin{Scope: scope, L1: "l1:gh:acme/api#1", PinnedBy: "kyle", PinnedAt: at.Add(2 * time.Hour)}
 	b := l2.Pin{Scope: scope, L1: "l1:gh:acme/api#2", PinnedBy: "sam", PinnedAt: at}
@@ -823,10 +758,10 @@ func TestPinsPersistInPinOrderAndUnpin(t *testing.T) {
 }
 
 func TestAliasDecisionAndRejectedVote(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	ctx := t.Context()
-	src := unique()
+	src := dbtest.UniqueID()
 	entity := "code:" + src + ":engine"
 	if err := store.PutEntity(ctx, l2.Entity{ID: entity, Type: l2.TypeModule, Name: src + " core", Origin: l2.OriginConfig}); err != nil {
 		t.Fatal(err)
@@ -895,7 +830,7 @@ func TestAliasDecisionAndRejectedVote(t *testing.T) {
 }
 
 func TestReseedingPreservesSourceEntities(t *testing.T) {
-	pool := scratchPool(t)
+	pool := dbtest.Scratch(t, "hearsay_l2")
 	graph := l2.New(pool)
 	entities := []l2.Entity{
 		{ID: "work:projects:p", Type: l2.TypeProject, Name: "Project", Origin: l2.OriginSource, PartOf: []string{"code:acme/api"}},
@@ -918,7 +853,7 @@ func TestReseedingPreservesSourceEntities(t *testing.T) {
 }
 
 func TestIncrementalPlacementRanksTrackerAboveWork(t *testing.T) {
-	pool := scratchPool(t)
+	pool := dbtest.Scratch(t, "hearsay_l2")
 	graph := l2.New(pool)
 	work := l2.Entity{ID: "work:projects:p#s", Type: l2.TypeTrackerItem, Name: "Stream", Origin: l2.OriginSource}
 	tracker := l2.Entity{ID: "tracker:github:acme/api#1", Type: l2.TypeTrackerItem, Origin: l2.OriginReference}
@@ -948,14 +883,14 @@ func textDoc(t *testing.T, pool *pgxpool.Pool, src, native string, acl connector
 	t.Helper()
 	doc := issueDoc(src, native)
 	doc.ACL, doc.Text = acl, text
-	return storeDoc(t, pool, doc)
+	return l1test.Put(t, pool, doc)
 }
 
 func TestTopicsByTextReadTheEvidenceWords(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	ctx := t.Context()
-	src := unique()
+	src := dbtest.UniqueID()
 	scope := src
 	private := connector.ACL{{Kind: connector.ACLIdentity, Source: src, NativeID: "u1"}}
 	at := time.Date(2026, 9, 9, 1, 0, 0, 0, time.UTC)

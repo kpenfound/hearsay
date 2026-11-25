@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 )
 
 func TestEvalRefusesBeforeOpeningTheDatabase(t *testing.T) {
-	configPath := writeConfig(t, validConfig)
+	configPath := configtest.Write(t, validConfig)
 	common := []string{"--database-url", "postgres://hearsay@nowhere.invalid:1/hearsay", "--config", configPath}
 	with := func(args ...string) []string { return append(append([]string{}, common...), args...) }
 	tests := []struct {

@@ -13,6 +13,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/bundle"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/agent"
+	"github.com/kpenfound/hearsay/internal/connector/push"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
@@ -54,7 +55,7 @@ func (s sessionEndpoint) post(t *testing.T, kind connector.Kind, fields map[stri
 		t.Fatal(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	var accepted agent.Accepted
+	var accepted push.Accepted
 	if err := json.NewDecoder(resp.Body).Decode(&accepted); err != nil || resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("POST %s = %d %+v, %v", kind, resp.StatusCode, accepted, err)
 	}

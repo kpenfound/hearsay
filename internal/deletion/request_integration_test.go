@@ -370,7 +370,7 @@ func TestARequestUnderARecordedIDIsAnsweredWithTheOriginal(t *testing.T) {
 	}
 }
 
-func TestAgentSessionPostsAfterAnOperatorDeletionBehaveAsBefore(t *testing.T) {
+func TestAnAgentSessionStaysRedactedWhenItsTurnsArePostedAgainAfterAnOperatorDeletion(t *testing.T) {
 	t.Setenv("DELETION_SHED_TOKEN", "shed-secret")
 	pool := dbtest.Scratch(t, "deletion")
 	principals := []principal.Principal{

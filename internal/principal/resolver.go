@@ -1,23 +1,13 @@
 package principal
 
 import (
-	"cmp"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 
 	"github.com/kpenfound/hearsay/internal/connector"
 )
-
-// MaxUnresolved is how many distinct unresolved identities one resolver
-// remembers. The record is a queue of work for a person, not a log: once it
-// holds this many, a sighting of an identity that has no entry yet is counted
-// by [Resolver.Overflow] and not kept, because the keys come from sources and
-// an ingest process that ran for a month would otherwise hold every bot that
-// ever posted.
-const MaxUnresolved = 4096
 
 // ErrIdentityClaimed is returned by [NewResolver] when two principals claim the
 // same identity in the same source. Configuration rejects it where it is
@@ -26,18 +16,13 @@ var ErrIdentityClaimed = errors.New("identity claimed by two principals")
 
 // Resolver maps the identity hints a connector emits to Hearsay principals.
 //
-// It is built once from the `principals/` mapping and is then read-only except
-// for the record of what it could not resolve, so it is safe for concurrent use
-// by every connector at once: the mapping is never written after
-// [NewResolver] returns, and the record is behind a mutex.
+// It is built once from the `principals/` mapping and is read-only after
+// [NewResolver] returns, so it is safe for concurrent use by every connector at
+// once.
 type Resolver struct {
 	byKey       map[identityKey]string
 	byID        map[string]Principal
 	workSources []string
-
-	mu         sync.Mutex
-	unresolved map[identityKey]*Unresolved
-	overflow   int
 }
 
 type identityKey struct {
@@ -75,9 +60,8 @@ func handleKey(source, handle string) identityKey {
 // over it.
 func NewResolver(principals []Principal, sources ...connector.SourceConfig) (*Resolver, error) {
 	r := &Resolver{
-		byKey:      make(map[identityKey]string, 2*len(principals)),
-		byID:       make(map[string]Principal, len(principals)),
-		unresolved: make(map[identityKey]*Unresolved),
+		byKey: make(map[identityKey]string, 2*len(principals)),
+		byID:  make(map[string]Principal, len(principals)),
 	}
 	for _, source := range sources {
 		if source.Type == "work" {
@@ -190,17 +174,12 @@ type Resolution struct {
 // behind a rename, and preferring one key would hide that for good instead of
 // putting it in front of a person.
 //
-// Anything that does not resolve is recorded ([Resolver.Unresolved]). The event
-// keeps the hint either way — L0 is append-only — so authorship is recovered by
-// re-distilling once the mapping is fixed, and no placeholder principal is
-// minted that would outlive the gap.
+// An identity that does not resolve is left unresolved: the event keeps the
+// hint — L0 is append-only — so authorship is recovered by re-distilling once
+// the mapping is fixed, and no placeholder principal is minted that would
+// outlive the gap.
 func (r *Resolver) Resolve(hint connector.Identity) Resolution {
-	keys := hintKeys(hint)
-	res := r.lookup(keys)
-	if res.Status != Resolved {
-		r.record(keys, hint, res)
-	}
-	return res
+	return r.lookup(hintKeys(hint))
 }
 
 // ResolveGroup maps a source-native group — an ACL entry's group, a team named
@@ -224,12 +203,7 @@ func (r *Resolver) Resolve(hint connector.Identity) Resolution {
 // it is reported as [Resolved] all the same: the caller knows what it asked
 // for, and this is not the place that decides what an ACL means.
 func (r *Resolver) ResolveGroup(source, group string) Resolution {
-	keys := groupKeys(source, group)
-	res := r.lookup(keys)
-	if res.Status != Resolved {
-		r.record(keys, connector.Identity{Source: source, NativeID: group}, res)
-	}
-	return res
+	return r.lookup(groupKeys(source, group))
 }
 
 func groupKeys(source, group string) []identityKey {
@@ -277,95 +251,6 @@ func (r *Resolver) lookup(keys []identityKey) Resolution {
 	}
 }
 
-// Unresolved is one identity that did not resolve, and how many sightings of it
-// did not. It is the queue of mappings a person has to write: an author nobody
-// can name is not dropped in silence.
-//
-// Sightings of one identity are one entry, filed under the strongest key the
-// first of them carried. Two sightings can fail differently — one carries a
-// handle the other did not — so the entry says how the last one failed, and
-// counts the ones that failed. A sighting that resolves is not counted and does
-// not clear the entry: the identity still has sightings nobody could attribute,
-// and that is the work.
-//
-// The identity it carries is source data — a display name, an email address —
-// so it is subject to the same rule as any payload and is never logged above
-// debug.
-type Unresolved struct {
-	// Identity is the hint, as it was last seen.
-	Identity connector.Identity
-	// Status is [Unknown] or [Ambiguous], from the last sighting.
-	Status Status
-	// Candidates are the principals the last sighting matched, when it was
-	// ambiguous.
-	Candidates []string
-	// Count is how many sightings of this identity did not resolve.
-	Count int
-}
-
-func (r *Resolver) record(keys []identityKey, hint connector.Identity, res Resolution) {
-	if len(keys) == 0 {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if u, ok := r.unresolved[keys[0]]; ok {
-		u.Identity = hint
-		u.Status = res.Status
-		u.Candidates = res.Candidates
-		u.Count++
-		return
-	}
-	if len(r.unresolved) >= MaxUnresolved {
-		r.overflow++
-		return
-	}
-	r.unresolved[keys[0]] = &Unresolved{
-		Identity:   hint,
-		Status:     res.Status,
-		Candidates: res.Candidates,
-		Count:      1,
-	}
-}
-
-// Unresolved returns every identity that has not resolved, sorted by source and
-// then by the key it was filed under. The result is a copy: a caller may hold
-// it while ingest carries on.
-func (r *Resolver) Unresolved() []Unresolved {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := make([]Unresolved, 0, len(r.unresolved))
-	for _, u := range r.unresolved {
-		c := *u
-		c.Candidates = slices.Clone(u.Candidates)
-		out = append(out, c)
-	}
-	slices.SortFunc(out, func(a, b Unresolved) int {
-		return cmp.Or(
-			strings.Compare(a.Identity.Source, b.Identity.Source),
-			strings.Compare(a.Identity.NativeID, b.Identity.NativeID),
-			strings.Compare(FoldHandle(a.Identity.Handle), FoldHandle(b.Identity.Handle)),
-			strings.Compare(FoldHandle(a.Identity.Email), FoldHandle(b.Identity.Email)),
-		)
-	})
-	return out
-}
-
-// Overflow reports how many *sightings* were dropped rather than recorded
-// because the record was already holding [MaxUnresolved] identities. A non-zero
-// count means the mapping is far enough behind that [Resolver.Unresolved] is a
-// sample rather than the list.
-//
-// It counts sightings and not the identities they belong to — one new bot
-// posting three times counts three — because counting identities would mean
-// remembering which ones had been seen, and that memory is exactly what the
-// bound exists to refuse.
-func (r *Resolver) Overflow() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.overflow
-}
-
 // Members returns the principals belonging to a team, in the order the team
 // lists them, skipping any member that is not configured. It is empty for
 // anything that is not a team.
@@ -400,9 +285,6 @@ func (r *Resolver) Members(teamID string) []Principal {
 // False means the spelling names nobody, or names more than one principal. Both
 // are answers a caller reading on somebody's behalf has to treat the same way,
 // which is to grant nothing.
-//
-// Nothing is recorded. This is a question about the mapping, not a sighting of
-// an identity that failed to resolve.
 func (r *Resolver) Claims(source, spelling string) (string, bool) {
 	res := r.lookup([]identityKey{nativeKey(source, spelling), handleKey(source, spelling)})
 	if res.Status != Resolved {

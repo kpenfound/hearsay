@@ -14,17 +14,19 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/llm"
+	"github.com/kpenfound/hearsay/internal/poll"
 	"github.com/kpenfound/hearsay/internal/principal"
 	"github.com/kpenfound/hearsay/internal/queue"
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
 func TestChatBurstReconcilesEditAndTombstone(t *testing.T) {
-	pool := newScratchPool(t)
-	src := newSource(t)
+	pool := dbtest.Scratch(t, "distiller_none")
+	src := dbtest.UniqueID()
 	authors := "AAABCBDE"
 	messages := make([]connector.Event, len(authors))
 	group := connector.ACLEntry{Kind: connector.ACLGroup, Source: src, NativeID: "C1"}
@@ -200,8 +202,8 @@ func TestChatConversationsDistil(t *testing.T) {
 		{"channel window", false, false, "none"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			pool := newPool(t)
-			src := newSource(t)
+			pool := dbtest.Pool(t)
+			src := dbtest.UniqueID()
 			first := chatMessage(src, "m1", "Should we ship this?", day)
 			second := chatMessage(src, "m2", "Let us discuss it.", day.Add(5*time.Minute))
 			var doc l1.Document
@@ -256,8 +258,8 @@ func TestChatConversationsDistil(t *testing.T) {
 }
 
 func TestLateChatMessageKeepsWindowKeyAndDeletionRemovesMember(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	first := chatMessage(src, "m2", "Later message", day.Add(10*time.Minute))
 	late := chatMessage(src, "m1", "Earlier message", day.Add(time.Minute))
 	key := l1.ChatWindowKey(first)
@@ -322,8 +324,8 @@ func TestLateChatMessageKeepsWindowKeyAndDeletionRemovesMember(t *testing.T) {
 }
 
 func TestPrivateChatWindowKeepsACLAndUnresolvedMentionOut(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	first := chatMessage(src, "m1", "Can @unknown review this?", day)
 	second := chatMessage(src, "m2", "I can review.", day.Add(3*time.Minute))
 	group := connector.ACLEntry{Kind: connector.ACLGroup, Source: src, NativeID: "C1"}
@@ -377,7 +379,7 @@ func TestPrivateChatWindowKeepsACLAndUnresolvedMentionOut(t *testing.T) {
 }
 
 func TestChatPumpCollapsesMessagesInOneWindow(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	pump := distiller.NewPump(pool, distiller.PumpOptions{Quiet: 0, Batch: l0.MaxLimit})
 	client, err := queue.New(pool, queue.Config{Kind: distiller.JobKind()})
 	if err != nil {
@@ -393,14 +395,14 @@ func TestChatPumpCollapsesMessagesInOneWindow(t *testing.T) {
 		}
 	}
 	before := pendingTargets(t, client)
-	src := newSource(t)
+	src := dbtest.UniqueID()
 	ingest(t, pool, []connector.Event{
 		chatMessage(src, "m1", "First", day),
 		chatMessage(src, "m2", "Second", day.Add(2*time.Minute)),
 		chatMessage(src, "m3", "Third", day.Add(4*time.Minute)),
 	})
 	var targets []string
-	waitFor(t, "the pump to enqueue the chat window job", 30*time.Second, func() bool {
+	poll.Within(t, "the pump to enqueue the chat window job", 30*time.Second, func() bool {
 		if _, err := pump.Once(t.Context()); err != nil {
 			t.Fatal(err)
 		}
@@ -427,8 +429,8 @@ func chatTombstone(src, target string, when time.Time) connector.Event {
 }
 
 func TestChatRepliesDistilUnderTheMessageTheyAnswer(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	root := chatMessage(src, "C1/1758700000.000100", "Should we ship the retry change?", day)
 	answer := replyTo(root, "C1/1758700060.000200", "Yes, once the tests pass.", day.Add(time.Minute))
 	edited := revised(root, "edit-1", day.Add(2*time.Minute))
@@ -491,7 +493,7 @@ func TestChatRepliesDistilUnderTheMessageTheyAnswer(t *testing.T) {
 }
 
 func TestChatPumpEnqueuesTheConversationAMessageHeads(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	pump := distiller.NewPump(pool, distiller.PumpOptions{Quiet: 0, Batch: l0.MaxLimit})
 	client, err := queue.New(pool, queue.Config{Kind: distiller.JobKind()})
 	if err != nil {
@@ -506,7 +508,7 @@ func TestChatPumpEnqueuesTheConversationAMessageHeads(t *testing.T) {
 			break
 		}
 	}
-	src := newSource(t)
+	src := dbtest.UniqueID()
 	root := chatMessage(src, "C1/1758700000.000100", "Should we ship?", day)
 	lone := chatMessage(src, "C1/1758700030.000300", "Unrelated.", day.Add(30*time.Second))
 	answer := replyTo(root, "C1/1758700060.000200", "Yes.", day.Add(time.Minute))
@@ -531,7 +533,7 @@ func TestChatPumpEnqueuesTheConversationAMessageHeads(t *testing.T) {
 		}
 		ingest(t, pool, step.events)
 		var targets []string
-		waitFor(t, "the pump to enqueue "+step.name, 30*time.Second, func() bool {
+		poll.Within(t, "the pump to enqueue "+step.name, 30*time.Second, func() bool {
 			if _, err := pump.Once(t.Context()); err != nil {
 				t.Fatal(err)
 			}

@@ -353,10 +353,8 @@ func hasNextFields(req Request) bool {
 	return req.Next != "" || req.Scope != "" || req.Action != "" || req.Verdicts != nil
 }
 
-var errBadRequest = push.ErrBadRequest
-
 func badRequest(format string, args ...any) error {
-	return fmt.Errorf("%w: %s", errBadRequest, fmt.Sprintf(format, args...))
+	return fmt.Errorf("%w: %s", push.ErrBadRequest, fmt.Sprintf(format, args...))
 }
 
 func (c *Connector) mayActFor(id string) bool { return c.humans[id] }

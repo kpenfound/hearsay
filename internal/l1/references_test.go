@@ -299,17 +299,6 @@ func TestReferencesMintNoPrincipalForAnUnknownHandle(t *testing.T) {
 			t.Errorf("References() minted %q for an identity nothing maps", ref.ID)
 		}
 	}
-	unresolved := resolver.Unresolved()
-	if len(unresolved) == 0 {
-		t.Fatal("the resolver kept no record of the handle nothing maps")
-	}
-	var handles []string
-	for _, u := range unresolved {
-		handles = append(handles, u.Identity.Handle)
-	}
-	if !contains(handles, "stranger") {
-		t.Errorf("the resolver recorded %v, want the handle it could not map", handles)
-	}
 }
 
 func TestReferencesWithoutAResolverCarryNoPeople(t *testing.T) {
@@ -348,15 +337,6 @@ func assertRefs(t *testing.T, got, want []l1.Reference) {
 			t.Errorf("References()[%d] = %v, want %v", i, got[i], want[i])
 		}
 	}
-}
-
-func contains(all []string, want string) bool {
-	for _, s := range all {
-		if s == want {
-			return true
-		}
-	}
-	return false
 }
 
 func itoa(n int) string {

@@ -2,10 +2,8 @@ package principal_test
 
 import (
 	"errors"
-	"fmt"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/connector"
@@ -173,157 +171,6 @@ func TestResolve(t *testing.T) {
 	}
 }
 
-func TestUnresolvedIsRecorded(t *testing.T) {
-	r := newResolver(t, mapping())
-
-	stranger := connector.Identity{Source: "github", Kind: connector.IdentityUser, NativeID: "MDQ6VXNlcjk5", Handle: "stranger"}
-	for range 3 {
-		r.Resolve(stranger)
-	}
-	r.Resolve(connector.Identity{Source: "discord", NativeID: "302100000000000003", Handle: "robin"})
-	r.Resolve(connector.Identity{Source: "github", Handle: "robinok"})
-	r.Resolve(connector.Identity{Source: "github", Kind: connector.IdentityUser})
-
-	got := r.Unresolved()
-	if len(got) != 2 {
-		t.Fatalf("Unresolved() = %+v, want two entries", got)
-	}
-	if got[0].Identity.Source != "discord" || got[0].Status != principal.Ambiguous {
-		t.Errorf("first entry = %+v, want the ambiguous discord identity", got[0])
-	}
-	if !slices.Equal(got[0].Candidates, []string{"kyle", "robin"}) {
-		t.Errorf("candidates = %v, want kyle and robin", got[0].Candidates)
-	}
-	if got[0].Count != 1 {
-		t.Errorf("count = %d, want 1", got[0].Count)
-	}
-	if got[1].Identity != stranger || got[1].Status != principal.Unknown {
-		t.Errorf("second entry = %+v, want the unknown github identity", got[1])
-	}
-	if got[1].Count != 3 {
-		t.Errorf("count = %d, want the three sightings counted as one entry", got[1].Count)
-	}
-	if len(got[1].Candidates) != 0 {
-		t.Errorf("candidates = %v, want none on an unknown identity", got[1].Candidates)
-	}
-	if n := r.Overflow(); n != 0 {
-		t.Errorf("Overflow() = %d, want 0", n)
-	}
-
-	got[1].Count = 99
-	got[0].Candidates[0] = "nobody"
-	again := r.Unresolved()
-	if again[1].Count != 3 {
-		t.Errorf("count after mutating the result = %d, want 3", again[1].Count)
-	}
-	if !slices.Equal(again[0].Candidates, []string{"kyle", "robin"}) {
-		t.Errorf("candidates after mutating the result = %v, want kyle and robin", again[0].Candidates)
-	}
-
-	renamed := stranger
-	renamed.Handle = "stranger-2"
-	renamed.DisplayName = "A Stranger"
-	r.Resolve(renamed)
-	if got := r.Unresolved(); got[1].Identity != renamed || got[1].Count != 4 {
-		t.Errorf("entry after a rename = %+v, want %+v seen 4 times", got[1], renamed)
-	}
-}
-
-func TestUnresolvedTracksTheLatestOutcome(t *testing.T) {
-	r := newResolver(t, mapping())
-	base := connector.Identity{Source: "discord", Kind: connector.IdentityUser, NativeID: "302199999999999999"}
-
-	r.Resolve(base)
-	entry := func(t *testing.T) principal.Unresolved {
-		t.Helper()
-		got := r.Unresolved()
-		if len(got) != 1 {
-			t.Fatalf("Unresolved() = %+v, want one entry: every sighting is the same native id", got)
-		}
-		return got[0]
-	}
-	if got := entry(t); got.Status != principal.Unknown || len(got.Candidates) != 0 {
-		t.Errorf("first sighting = %+v, want unknown with no candidates", got)
-	}
-
-	ambiguous := base
-	ambiguous.Handle = "kyle"
-	ambiguous.Email = "robin"
-	r.Resolve(ambiguous)
-	if got := entry(t); got.Status != principal.Ambiguous ||
-		!slices.Equal(got.Candidates, []string{"kyle", "robin"}) || got.Count != 2 {
-		t.Errorf("second sighting = %+v, want ambiguous between kyle and robin, seen twice", got)
-	}
-
-	unknown := base
-	unknown.Handle = "nobody"
-	r.Resolve(unknown)
-	if got := entry(t); got.Status != principal.Unknown || len(got.Candidates) != 0 || got.Count != 3 {
-		t.Errorf("third sighting = %+v, want unknown with no candidates, seen three times", got)
-	}
-}
-
-func TestUnresolvedIsBounded(t *testing.T) {
-	r := newResolver(t, mapping())
-	const extra = 5
-	for i := range principal.MaxUnresolved + extra {
-		r.Resolve(connector.Identity{Source: "github", NativeID: fmt.Sprintf("bot-%d", i)})
-	}
-	if n := len(r.Unresolved()); n != principal.MaxUnresolved {
-		t.Errorf("Unresolved() holds %d, want %d", n, principal.MaxUnresolved)
-	}
-	if n := r.Overflow(); n != extra {
-		t.Errorf("Overflow() = %d, want %d", n, extra)
-	}
-	r.Resolve(connector.Identity{Source: "github", NativeID: "bot-0"})
-	for _, u := range r.Unresolved() {
-		if u.Identity.NativeID == "bot-0" && u.Count != 2 {
-			t.Errorf("bot-0 count = %d, want 2", u.Count)
-		}
-	}
-	if n := r.Overflow(); n != extra {
-		t.Errorf("Overflow() = %d after a repeat sighting, want %d", n, extra)
-	}
-
-	for range 3 {
-		r.Resolve(connector.Identity{Source: "github", NativeID: "one-new-bot"})
-	}
-	if n := r.Overflow(); n != extra+3 {
-		t.Errorf("Overflow() = %d after three sightings of one new identity, want %d", n, extra+3)
-	}
-	if n := len(r.Unresolved()); n != principal.MaxUnresolved {
-		t.Errorf("Unresolved() holds %d, want the bound to still be %d", n, principal.MaxUnresolved)
-	}
-}
-
-func TestResolveIsConcurrencySafe(t *testing.T) {
-	r := newResolver(t, mapping())
-	var wg sync.WaitGroup
-	for i := range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := range 50 {
-				r.Resolve(connector.Identity{Source: "github", Handle: "robinok"})
-				r.Resolve(connector.Identity{Source: "github", NativeID: fmt.Sprintf("bot-%d", (i*50+j)%13)})
-				r.Unresolved()
-				r.Overflow()
-			}
-		}()
-	}
-	wg.Wait()
-	if n := len(r.Unresolved()); n != 13 {
-		t.Errorf("Unresolved() holds %d distinct identities, want 13", n)
-	}
-	var total int
-	for _, u := range r.Unresolved() {
-		total += u.Count
-	}
-	if total != 8*50 {
-		t.Errorf("sightings counted = %d, want %d", total, 8*50)
-	}
-}
-
 func TestResolveGroup(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -348,27 +195,9 @@ func TestResolveGroup(t *testing.T) {
 	}
 
 	r := newResolver(t, mapping())
-	r.ResolveGroup("github", "MDQ6VGVhbTk5")
-	r.ResolveGroup("github", "acme/api-team")
 	for _, blank := range [][2]string{{"github", ""}, {"github", "   "}, {"", "acme/eng"}} {
 		if got := r.ResolveGroup(blank[0], blank[1]); got.Status != principal.Unknown {
 			t.Errorf("ResolveGroup(%q, %q) = %+v, want unknown", blank[0], blank[1], got)
-		}
-	}
-	if n := len(r.Unresolved()); n != 1 {
-		t.Errorf("Unresolved() = %+v, want just the unmapped group", r.Unresolved())
-	}
-
-	r2 := newResolver(t, mapping())
-	r2.ResolveGroup("github", "acme/ghost")
-	r2.ResolveGroup("github", "ACME/Ghost")
-	got := r2.Unresolved()
-	if len(got) != 2 {
-		t.Fatalf("Unresolved() = %+v, want the two spellings filed apart", got)
-	}
-	for _, u := range got {
-		if u.Count != 1 {
-			t.Errorf("entry %+v was counted %d times, want 1", u.Identity, u.Count)
 		}
 	}
 }

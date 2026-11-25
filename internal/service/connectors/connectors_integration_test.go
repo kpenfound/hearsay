@@ -6,41 +6,20 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
+	"github.com/kpenfound/hearsay/internal/poll"
 	"github.com/kpenfound/hearsay/internal/service/connectors"
 )
-
-func newPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	pool, err := db.Connect(context.Background(), url)
-	if err != nil {
-		t.Fatalf("connecting to postgres: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
-func newSourceID(t *testing.T) string {
-	t.Helper()
-	return "t" + strconv.FormatInt(time.Now().UnixNano(), 36) + "conn"
-}
 
 type pager struct {
 	*connector.Fake
@@ -63,8 +42,8 @@ func (p *pager) cursors() []connector.Cursor {
 }
 
 func TestTheServiceIngestsIntoL0AndKeepsItsPosition(t *testing.T) {
-	pool := newPool(t)
-	id := newSourceID(t)
+	pool := dbtest.Pool(t)
+	id := dbtest.UniqueID()
 	src := connector.SourceConfig{ID: id, Type: connector.FakeType, Containers: []string{"C123"}, Refresh: time.Millisecond}
 	cfg := &config.Config{Repo: config.Repo{Sources: []connector.SourceConfig{src}}}
 	store := l0.New(pool)
@@ -103,14 +82,14 @@ func TestTheServiceIngestsIntoL0AndKeepsItsPosition(t *testing.T) {
 		t.Fatalf("POST %s = %d, want 202", connector.HookPath(id), resp.StatusCode)
 	}
 
-	waitFor(t, "everything the connector produced to reach L0", func() bool {
+	poll.Until(t, "everything the connector produced to reach L0", func() bool {
 		return len(artifactsIn(t, store, id)) == 4
 	})
 	if got, want := artifactsIn(t, store, id), []string{"h1", "h2", "m1", "p1"}; !slices.Equal(got, want) {
 		t.Errorf("L0 holds %v, want the polled, backfilled and pushed artifacts %v", got, want)
 	}
 
-	waitFor(t, "the backfill to store its final position", func() bool {
+	poll.Until(t, "the backfill to store its final position", func() bool {
 		state, err := cursors.Load(t.Context(), id)
 		return err == nil && state.Done && state.Events == 2
 	})
@@ -132,7 +111,7 @@ func TestTheServiceIngestsIntoL0AndKeepsItsPosition(t *testing.T) {
 		Pool:     pool,
 		Registry: fakeRegistry(t, map[string]connector.Connector{id: second}),
 	})
-	waitFor(t, "the restarted process to read the stored position", func() bool {
+	poll.Until(t, "the restarted process to read the stored position", func() bool {
 		_, body := get(t, addr, "/readyz")
 		return strings.Contains(body, `"backfill_done": true`)
 	})
@@ -148,12 +127,7 @@ func TestTheServiceIngestsIntoL0AndKeepsItsPosition(t *testing.T) {
 }
 
 func TestReadyzFailsWhenTheDatabaseIsUnreachable(t *testing.T) {
-	newPool(t)
-
-	pool, err := db.Connect(t.Context(), os.Getenv("HEARSAY_DATABASE_URL"))
-	if err != nil {
-		t.Fatalf("Connect() = %v, want no error", err)
-	}
+	pool := dbtest.Pool(t)
 	pool.Close()
 
 	addr, stop := run(t, &config.Config{}, connectors.Deps{
@@ -177,9 +151,7 @@ func TestReadyzFailsWhenTheDatabaseIsUnreachable(t *testing.T) {
 }
 
 func TestReadyzFailsWhenTheSchemaIsBehindTheBinary(t *testing.T) {
-	newPool(t)
-
-	pool, err := db.Open(t.Context(), swapDatabaseName(os.Getenv("HEARSAY_DATABASE_URL"), "postgres"))
+	pool, err := db.Open(t.Context(), dbtest.Create(t, "hearsay_behind"))
 	if err != nil {
 		t.Fatalf("Open() = %v, want no error", err)
 	}
@@ -202,15 +174,6 @@ func TestReadyzFailsWhenTheSchemaIsBehindTheBinary(t *testing.T) {
 	}
 }
 
-func swapDatabaseName(url, name string) string {
-	base, query, hasQuery := strings.Cut(url, "?")
-	swapped := base[:strings.LastIndex(base, "/")+1] + name
-	if hasQuery {
-		return swapped + "?" + query
-	}
-	return swapped
-}
-
 func artifactsIn(t *testing.T, store *l0.Store, source string) []string {
 	t.Helper()
 	events, err := store.List(t.Context(), l0.ListOptions{Filter: l0.Filter{Source: source}})
@@ -226,7 +189,7 @@ func artifactsIn(t *testing.T, store *l0.Store, source string) []string {
 }
 
 func TestTheServiceRecordsAndAppliesACommand(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l0.New(pool)
 	tests := []struct {
 		name     string
@@ -240,7 +203,7 @@ func TestTheServiceRecordsAndAppliesACommand(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			id := newSourceID(t)
+			id := dbtest.UniqueID()
 			src := connector.SourceConfig{ID: id, Type: connector.FakeType, Containers: []string{"C123"}, Refresh: time.Hour, ReadOnly: tt.readOnly}
 			cfg := &config.Config{Repo: config.Repo{Sources: []connector.SourceConfig{src}}}
 			fake := connector.NewFake(src)

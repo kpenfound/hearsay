@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/service/api"
+	"github.com/kpenfound/hearsay/internal/service/api/apitest"
 )
 
 type client struct {
@@ -68,41 +69,27 @@ func (c *client) http(t *testing.T, caller api.Caller, call string, args any) []
 
 func (c *client) mcp(t *testing.T, caller api.Caller, call string, args any) ([]byte, bool) {
 	t.Helper()
-	status, got := c.post(t, "/mcp", caller, string(toolCall(t, call, args)))
+	status, got := c.post(t, "/mcp", caller, string(apitest.ToolCall(t, call, args)))
 	if status != http.StatusOK {
 		t.Fatalf("POST /mcp = %d %s", status, got)
 	}
-	var resp struct {
-		Result api.ToolResult `json:"result"`
-		Error  any            `json:"error"`
-	}
-	if err := json.Unmarshal(got, &resp); err != nil || resp.Error != nil || len(resp.Result.Content) != 1 {
+	text, isError, ok := apitest.ToolText(got)
+	if !ok {
 		t.Fatalf("tools/call answered %s", got)
 	}
-	return []byte(resp.Result.Content[0].Text), resp.Result.IsError
+	return []byte(text), isError
 }
 
 func (c *client) both(t *testing.T, caller api.Caller, call string, args any) (overHTTP, overMCP answer) {
 	t.Helper()
 	status, got := c.post(t, "/v1/"+call, caller, string(mustJSON(t, args)))
 	overHTTP = answer{status: status, body: string(got)}
-	status, got = c.post(t, "/mcp", caller, string(toolCall(t, call, args)))
-	var resp struct {
-		Result api.ToolResult `json:"result"`
-	}
-	if err := json.Unmarshal(got, &resp); err != nil || len(resp.Result.Content) != 1 {
+	status, got = c.post(t, "/mcp", caller, string(apitest.ToolCall(t, call, args)))
+	text, isError, ok := apitest.ToolText(got)
+	if !ok {
 		t.Fatalf("tools/call %s answered %d %s", call, status, got)
 	}
-	overMCP = answer{status: status, isError: resp.Result.IsError, body: resp.Result.Content[0].Text}
-	return overHTTP, overMCP
-}
-
-func toolCall(t *testing.T, call string, args any) []byte {
-	t.Helper()
-	return mustJSON(t, map[string]any{
-		"jsonrpc": "2.0", "id": 7, "method": "tools/call",
-		"params": map[string]any{"name": call, "arguments": args},
-	})
+	return overHTTP, answer{status: status, isError: isError, body: text}
 }
 
 type who struct {
@@ -119,7 +106,7 @@ func invoke(t *testing.T, base string, credentials map[string]string, mcp bool, 
 	path := "/v1/" + name
 	if mcp {
 		path = "/mcp"
-		body = toolCall(t, name, json.RawMessage(body))
+		body = apitest.ToolCall(t, name, json.RawMessage(body))
 	}
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, base+path, strings.NewReader(string(body)))
 	if err != nil {
@@ -154,14 +141,12 @@ func invoke(t *testing.T, base string, credentials map[string]string, mcp bool, 
 	if !mcp {
 		return resp.StatusCode, got, nil
 	}
-	var rpc struct {
-		Result api.ToolResult `json:"result"`
-	}
-	if resp.StatusCode != http.StatusOK || json.Unmarshal(got, &rpc) != nil || len(rpc.Result.Content) != 1 {
+	text, isError, ok := apitest.ToolText(got)
+	if resp.StatusCode != http.StatusOK || !ok {
 		return resp.StatusCode, got, nil
 	}
-	if rpc.Result.IsError {
-		return -1, []byte(rpc.Result.Content[0].Text), nil
+	if isError {
+		return -1, []byte(text), nil
 	}
-	return http.StatusOK, []byte(rpc.Result.Content[0].Text), nil
+	return http.StatusOK, []byte(text), nil
 }

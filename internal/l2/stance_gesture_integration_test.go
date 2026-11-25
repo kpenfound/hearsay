@@ -10,6 +10,8 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
+	"github.com/kpenfound/hearsay/internal/l1/l1test"
 	"github.com/kpenfound/hearsay/internal/l2"
 )
 
@@ -21,7 +23,7 @@ type stanceFixture struct {
 
 func newStanceFixture(t *testing.T, store *l2.Store) stanceFixture {
 	t.Helper()
-	f := stanceFixture{scope: unique(), thread: "l1:discord:" + unique()}
+	f := stanceFixture{scope: dbtest.UniqueID(), thread: "l1:discord:" + dbtest.UniqueID()}
 	f.lock = namedTopic(t, store, f.scope, "the lock")
 	f.queue = namedTopic(t, store, f.scope, "the queue")
 	f.onLock = addStance(t, store, f.lock, f.thread, "the queue keeps the lock", 1)
@@ -34,7 +36,7 @@ func stanceGesture(event, who string, action l2.GestureAction, stance string) l2
 }
 
 func TestAStanceGestureAppliesToTheNamedStanceAlone(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	repo := loadRepo(t, ratifiers)
 	f := newStanceFixture(t, store)
@@ -85,11 +87,11 @@ func TestAStanceGestureAppliesToTheNamedStanceAlone(t *testing.T) {
 }
 
 func TestAStanceGestureMayNameAnAssertedStance(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	repo := loadRepo(t, ratifiers)
 	f := newStanceFixture(t, store)
-	event := connector.EventID(connector.SelfSource, "assertion:"+unique())
+	event := connector.EventID(connector.SelfSource, "assertion:"+dbtest.UniqueID())
 	asserted := stance(f.lock, f.thread, "the agent takes the lock", 4)
 	asserted.ID, asserted.Assertion, asserted.Author = l2.AssertionStanceID(f.lock.ID, event), event, "shed"
 	if _, _, err := store.AppendStance(t.Context(), asserted, asserted.StatedAt); err != nil {
@@ -105,14 +107,14 @@ func TestAStanceGestureMayNameAnAssertedStance(t *testing.T) {
 }
 
 func TestAStanceGestureRefusesWhatIsNotLive(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	repo := loadRepo(t, ratifiers)
 	ctx := t.Context()
 	f := newStanceFixture(t, store)
 	retired := f.onLock
 	f.onLock = addStance(t, store, f.lock, f.thread, "the lock moves to the broker", 3)
-	withdrawn := addStance(t, store, f.queue, "l1:github:"+unique(), "a queue per team", 4)
+	withdrawn := addStance(t, store, f.queue, "l1:github:"+dbtest.UniqueID(), "a queue per team", 4)
 	if _, err := pool.Exec(ctx, `UPDATE l2_stances SET withdrawn = true WHERE id = $1`, withdrawn.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +164,7 @@ func withCarrier(r l2.GestureRequest) l2.GestureRequest {
 }
 
 func TestAStanceGestureIsIdempotentOnItsEvent(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	repo := loadRepo(t, ratifiers)
 	ctx := t.Context()
@@ -226,7 +228,7 @@ func TestAStanceGestureIsIdempotentOnItsEvent(t *testing.T) {
 }
 
 func TestIdenticalStanceGesturesRecordOnce(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	repo := loadRepo(t, ratifiers)
 	f := newStanceFixture(t, store)
@@ -264,16 +266,16 @@ func TestIdenticalStanceGesturesRecordOnce(t *testing.T) {
 }
 
 func TestUndoRefusesWhatCannotBeUndone(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	repo := loadRepo(t, ratifiers)
 	ctx := t.Context()
 	f := newStanceFixture(t, store)
-	src := "s" + unique()
+	src := "s" + dbtest.UniqueID()
 	doc := issueDoc(src, "n")
 	doc.Scope, doc.L0Refs = []string{"code:acme/" + src}, []string{connector.EventID(src, "n")}
 	doc.Text, doc.RawText = "t", "r"
-	storeDoc(t, pool, doc)
+	l1test.Put(t, pool, doc)
 
 	ratify := gesture(t, pool, repo, stanceGesture(gestureEvent(), "kyle", l2.GestureRatify, f.onLock.ID))
 	undo := gesture(t, pool, repo, l2.GestureRequest{Event: gestureEvent(), Principal: "kyle", Action: l2.GestureUndo, Undoes: ratify.Event, DecisionsOnly: true})

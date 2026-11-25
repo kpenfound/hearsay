@@ -8,12 +8,14 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
+	"github.com/kpenfound/hearsay/internal/l1/l1test"
 	"github.com/kpenfound/hearsay/internal/l2"
 )
 
 func TestRatificationsReplayStandingOverTheRecordedTimes(t *testing.T) {
-	pool := scratchPool(t)
+	pool := dbtest.Scratch(t, "hearsay_l2")
 	store := l2.New(pool)
 	repo := loadRepo(t, ratifiers)
 	ctx := t.Context()
@@ -25,7 +27,7 @@ func TestRatificationsReplayStandingOverTheRecordedTimes(t *testing.T) {
 		doc := issueDoc("github", native)
 		doc.Kind, doc.ArtifactClass = l1.KindPR, class
 		doc.Time = l1.Times{Created: base, Updated: base, LastActivity: base}
-		return storeDoc(t, pool, doc)
+		return l1test.Put(t, pool, doc)
 	}
 	written := func(topic l2.Topic, doc, position string, stated, h int) l2.Stance {
 		t.Helper()
@@ -62,7 +64,7 @@ func TestRatificationsReplayStandingOverTheRecordedTimes(t *testing.T) {
 	undo := func(event string, h int) {
 		gestured(l2.GestureRequest{Action: l2.GestureUndo, Undoes: event}, h)
 	}
-	chat := func() string { return "l1:discord:" + unique() }
+	chat := func() string { return "l1:discord:" + dbtest.UniqueID() }
 
 	byHand := namedTopic(t, store, "eng", "by hand")
 	byHandDoc := chat()

@@ -11,16 +11,18 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/deletion"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
+	"github.com/kpenfound/hearsay/internal/poll"
 	"github.com/kpenfound/hearsay/internal/principal"
 	"github.com/kpenfound/hearsay/internal/service/api"
 )
 
 func TestAnOperatorDeletionTakesAPastedSecretOutOfEveryRead(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	ctx := t.Context()
 	ingest(t, pool, append(fixtureEvents(src), secretComment(src)))
 	secretEvent := connector.EventID(src, secretCommentID)
@@ -37,7 +39,7 @@ func TestAnOperatorDeletionTakesAPastedSecretOutOfEveryRead(t *testing.T) {
 	waitForIssue := func(what string, ok func(l1.Stored) bool) l1.Stored {
 		t.Helper()
 		var found l1.Stored
-		waitFor(t, "the issue's document to have "+what, 60*time.Second, func() bool {
+		poll.Within(t, "the issue's document to have "+what, 60*time.Second, func() bool {
 			doc, err := docs.Get(ctx, id)
 			found = doc
 			return err == nil && ok(doc)

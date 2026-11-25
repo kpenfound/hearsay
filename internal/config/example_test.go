@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/principal"
@@ -18,8 +19,8 @@ const docsPath = "../../docs/config.md"
 
 func TestDocsExampleLoadsBothWays(t *testing.T) {
 	examples := docExamples(t)
-	single := writeFiles(t, filesUnder(t, examples, "single"))
-	dir := writeFiles(t, filesUnder(t, examples, "dir"))
+	single := configtest.Write(t, filesUnder(t, examples, "single"))
+	dir := configtest.Write(t, filesUnder(t, examples, "dir"))
 
 	fromFile, err := config.Load(filepath.Join(single, "hearsay.yaml"))
 	if err != nil {
@@ -53,7 +54,7 @@ func TestDocsExampleLoadsBothWays(t *testing.T) {
 }
 
 func TestDocsClaudeSbxExampleLoads(t *testing.T) {
-	root := writeFiles(t, filesUnder(t, docExamples(t), "claude-sbx"))
+	root := configtest.Write(t, filesUnder(t, docExamples(t), "claude-sbx"))
 	repo, err := config.Load(filepath.Join(root, "hearsay.yaml"))
 	if err != nil {
 		t.Fatalf("Load(the claude-sbx example) = %v, want no error", err)
@@ -126,21 +127,6 @@ func filesUnder(t *testing.T, files map[string]string, prefix string) map[string
 		t.Fatalf("%s holds no examples under %s/", docsPath, prefix)
 	}
 	return out
-}
-
-func writeFiles(t *testing.T, files map[string]string) string {
-	t.Helper()
-	root := t.TempDir()
-	for name, body := range files {
-		full := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatalf("creating %s: %v", filepath.Dir(full), err)
-		}
-		if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
-			t.Fatalf("writing %s: %v", full, err)
-		}
-	}
-	return root
 }
 
 func normalize(r config.Repo) config.Repo {

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/work"
 	"github.com/kpenfound/hearsay/internal/db/dbtest"
@@ -66,11 +67,7 @@ func newPostedWork(t *testing.T) *postedWork {
 		}
 	}
 
-	file := filepath.Join(t.TempDir(), "hearsay.yaml")
-	if err := os.WriteFile(file, []byte("sources:\n  - id: projects\n    type: work\n    containers: [\"*\"]\nscopes:\n  - id: api\n    sources: [projects]\nprincipals:\n  - id: kyle\n    kind: human\nauthority:\n  - scope: '*'\n    ratified_by:\n      principals: [kyle]\n      sources: []\n      artifacts: []\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	loaded, err := config.Load(file)
+	loaded, err := config.Load(configtest.Write(t, map[string]string{"hearsay.yaml": "sources:\n  - id: projects\n    type: work\n    containers: [\"*\"]\nscopes:\n  - id: api\n    sources: [projects]\nprincipals:\n  - id: kyle\n    kind: human\nauthority:\n  - scope: '*'\n    ratified_by:\n      principals: [kyle]\n      sources: []\n      artifacts: []\n"}))
 	if err != nil {
 		t.Fatal(err)
 	}

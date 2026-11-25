@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/connector/connectortest"
 	"github.com/kpenfound/hearsay/internal/connector/tracker"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
@@ -54,39 +54,19 @@ func server(t *testing.T, src connector.SourceConfig) (*httptest.Server, *connec
 	if err != nil {
 		t.Fatalf("New() = %v", err)
 	}
-	rec := &connector.Recorder{}
-	gate := connector.NewGate(rec, src.ID, c.Describe(), connector.NewAllowlist(src))
-	srv := httptest.NewServer(c.Handler(gate))
-	t.Cleanup(srv.Close)
+	srv, rec := connectortest.Serve(t, src, c)
 	return srv, rec, c
 }
 
-func post(t *testing.T, url string, header http.Header, body string) (int, string) {
-	t.Helper()
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, strings.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header = header
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	out, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return resp.StatusCode, string(out)
-}
-
 func bearer(tok string) http.Header {
-	return http.Header{"Authorization": {"Bearer " + tok}, "Content-Type": {"application/json"}}
+	h := connectortest.Bearer(tok)
+	h.Set("Content-Type", "application/json")
+	return h
 }
 
 func send(t *testing.T, url, body string, want int) string {
 	t.Helper()
-	code, out := post(t, url, bearer(token), body)
+	code, out := connectortest.Post(t, url, bearer(token), body)
 	if code != want {
 		t.Fatalf("POST %s = %d %s, want %d", body, code, out, want)
 	}
@@ -180,7 +160,7 @@ func TestOnlyTheSendersTokenIsAccepted(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			before := len(rec.Events())
-			code, body := post(t, srv.URL, tt.header, ticket)
+			code, body := connectortest.Post(t, srv.URL, tt.header, ticket)
 			if code != tt.want {
 				t.Fatalf("POST = %d %s, want %d", code, body, tt.want)
 			}
@@ -257,7 +237,7 @@ func TestRequestsAreValidated(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			code, body := post(t, srv.URL, bearer(token), tt.body)
+			code, body := connectortest.Post(t, srv.URL, bearer(token), tt.body)
 			if code != tt.want || !strings.Contains(body, tt.says) {
 				t.Fatalf("POST = %d %q, want %d saying %q", code, body, tt.want, tt.says)
 			}

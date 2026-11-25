@@ -2,12 +2,9 @@ package conversation_test
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -15,12 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/connector/connectortest"
 	"github.com/kpenfound/hearsay/internal/connector/conversation"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/principal"
-	"github.com/kpenfound/hearsay/internal/service/connectors"
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
@@ -32,10 +28,7 @@ var env = map[string]string{
 	"KYLE_TOKEN":  "kyle-secret",
 }
 
-func lookup(name string) (string, bool) {
-	v, ok := env[name]
-	return v, ok
-}
+var lookup = connectortest.Lookup(env)
 
 func identity(id string) []principal.Identity {
 	return []principal.Identity{{Source: sourceID, NativeID: id}}
@@ -62,32 +55,7 @@ func server(t *testing.T, src connector.SourceConfig) (*httptest.Server, *connec
 	if err != nil {
 		t.Fatalf("New() = %v", err)
 	}
-	rec := &connector.Recorder{}
-	gate := connector.NewGate(rec, src.ID, c.Describe(), connector.NewAllowlist(src))
-	srv := httptest.NewServer(c.Handler(gate))
-	t.Cleanup(srv.Close)
-	return srv, rec
-}
-
-func post(t *testing.T, url, token, body string) (int, string) {
-	t.Helper()
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, strings.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	out, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return resp.StatusCode, string(out)
+	return connectortest.Serve(t, src, c)
 }
 
 const (
@@ -99,7 +67,7 @@ const (
 
 func accepted(t *testing.T, srv *httptest.Server, token, body string) conversation.Accepted {
 	t.Helper()
-	code, out := post(t, srv.URL, token, body)
+	code, out := connectortest.PostWithToken(t, srv.URL, token, body)
 	if code != http.StatusAccepted {
 		t.Fatalf("POST = %d %s, want 202", code, out)
 	}
@@ -339,7 +307,7 @@ func TestARequestIsRefused(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			srv, rec := server(t, source())
-			code, body := post(t, srv.URL, tt.token, tt.body)
+			code, body := connectortest.PostWithToken(t, srv.URL, tt.token, tt.body)
 			if code != tt.want {
 				t.Errorf("POST = %d %s, want %d", code, body, tt.want)
 			}
@@ -384,7 +352,7 @@ func TestARepostOfADeletedMessageIsAnswered410AndWritesNothing(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			srv, rec := server(t, source())
 			rec.MarkDeleted(sourceID, "c-1/x-1:owner")
-			code, body := post(t, srv.URL, env["KERN_TOKEN"], tt.body)
+			code, body := connectortest.PostWithToken(t, srv.URL, env["KERN_TOKEN"], tt.body)
 			if code != http.StatusGone || !strings.Contains(body, `"code":"deleted","status":"deleted"`) {
 				t.Errorf("POST = %d %s, want 410 with code and status deleted", code, body)
 			}
@@ -398,7 +366,7 @@ func TestARepostOfADeletedMessageIsAnswered410AndWritesNothing(t *testing.T) {
 func TestAFailingStoreIsAnswered500WithoutItsCauseAndWritesNothing(t *testing.T) {
 	srv, rec := server(t, source())
 	rec.Err = errors.New("connection refused at 10.0.0.9")
-	code, body := post(t, srv.URL, env["KERN_TOKEN"], ownerWords)
+	code, body := connectortest.PostWithToken(t, srv.URL, env["KERN_TOKEN"], ownerWords)
 	if code != http.StatusInternalServerError || !strings.Contains(body, `"code":"internal"`) || strings.Contains(body, "10.0.0.9") {
 		t.Errorf("POST = %d %s, want 500 with code internal and no cause", code, body)
 	}
@@ -410,7 +378,7 @@ func TestAFailingStoreIsAnswered500WithoutItsCauseAndWritesNothing(t *testing.T)
 func TestADeletedMessageClosesOnlyItself(t *testing.T) {
 	srv, rec := server(t, source())
 	rec.MarkDeleted(sourceID, "c-1/x-1:owner")
-	if code, body := post(t, srv.URL, env["KERN_TOKEN"], answer); code != http.StatusAccepted {
+	if code, body := connectortest.PostWithToken(t, srv.URL, env["KERN_TOKEN"], answer); code != http.StatusAccepted {
 		t.Errorf("POST of the answer = %d %s, want 202: only the owner's words were deleted", code, body)
 	}
 }
@@ -481,59 +449,7 @@ func TestNewRefusesASourceItCannotServe(t *testing.T) {
 }
 
 func TestTheServiceHostsAndReportsTheSource(t *testing.T) {
-	src := source()
-	registry := connector.NewRegistry()
-	if err := registry.Register(conversation.Type, conversation.NewFactory(principals, lookup)); err != nil {
-		t.Fatal(err)
-	}
-	var lc net.ListenConfig
-	listener, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := "http://" + listener.Addr().String()
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() {
-		done <- connectors.Run(ctx, &config.Config{Repo: config.Repo{Sources: []connector.SourceConfig{src}}}, connectors.Deps{
-			Registry: registry,
-			Sink:     &connector.Recorder{},
-			Cursors:  connector.NewMemoryCursors(),
-			Listener: listener,
-		})
-	}()
-	defer func() {
-		cancel()
-		if err := <-done; err != nil {
-			t.Errorf("Run() = %v", err)
-		}
-	}()
-
-	if code, body := post(t, addr+connector.HookPath(sourceID), env["KERN_TOKEN"], ownerWords); code != http.StatusAccepted {
-		t.Fatalf("POST %s = %d %s, want 202", connector.HookPath(sourceID), code, body)
-	}
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, addr+"/readyz", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	var ready connectors.Readiness
-	if err := json.NewDecoder(resp.Body).Decode(&ready); err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != http.StatusOK || ready.Status != connector.HealthOK {
-		t.Errorf("GET /readyz = %d %+v, want 200 and ok", resp.StatusCode, ready)
-	}
-	if len(ready.Sources) != 1 || ready.Sources[0].Source != sourceID || ready.Sources[0].Type != conversation.Type {
-		t.Fatalf("readiness lists %+v, want the conversation source", ready.Sources)
-	}
-	if ready.Sources[0].LastEventAt.IsZero() {
-		t.Error("readiness has no last event time after a message was taken")
-	}
+	connectortest.HostedSource(t, source(), conversation.Type, conversation.NewFactory(principals, lookup), env["KERN_TOKEN"], ownerWords)
 }
 
 func logOf(t *testing.T, level slog.Level) string {

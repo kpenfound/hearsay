@@ -15,7 +15,7 @@ import (
 func TestResyncsRoundTrip(t *testing.T) {
 	pool := dbtest.Pool(t)
 	store := l0.NewResyncs(pool)
-	source := newSourceID(t)
+	source := dbtest.UniqueID()
 	get := func(container string) connector.Resync {
 		t.Helper()
 		records, err := store.Resyncs(t.Context(), source)

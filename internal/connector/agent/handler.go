@@ -11,9 +11,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
 
-// Accepted is the response to an event that was written or already held.
-type Accepted = push.Accepted
-
 // Handler implements [connector.Pusher]: one session event per POST, from the
 // agent the bearer token authenticates. Authentication precedes body parsing;
 // the entire request is validated before anything is emitted.

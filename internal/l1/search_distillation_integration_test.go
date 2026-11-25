@@ -24,7 +24,7 @@ func distilled(t *testing.T, src, artifact, summary, outcome string) l1.Document
 
 func TestSearchFindsDistilledSummaryAndOutcomeWithoutEmbeddings(t *testing.T) {
 	store := l1.New(dbtest.Pool(t))
-	src := newSource(t)
+	src := dbtest.UniqueID()
 
 	inSummary := distilled(t, src, "conv#1", "The owner settled on the zephyrine migration path.", "")
 	inOutcome := distilled(t, src, "conv#2", "A short exchange.", "Agreed to adopt the quillfeather schema.")
@@ -62,7 +62,7 @@ func TestSearchFindsDistilledSummaryAndOutcomeWithoutEmbeddings(t *testing.T) {
 
 func TestSearchWindow(t *testing.T) {
 	store := l1.New(dbtest.Pool(t))
-	src := newSource(t)
+	src := dbtest.UniqueID()
 	at := func(day int) time.Time { return time.Date(2026, 3, day, 12, 0, 0, 0, time.UTC) }
 	span := func(artifact string, created, last int) l1.Document {
 		doc := searchDoc(t, src, artifact, "the windowed topic", nil)
@@ -113,7 +113,7 @@ func TestSearchWindow(t *testing.T) {
 
 func TestSearchRefusesABadWindow(t *testing.T) {
 	store := l1.New(dbtest.Pool(t))
-	src := newSource(t)
+	src := dbtest.UniqueID()
 	for _, tc := range []struct{ name, since, until string }{
 		{name: "malformed since", since: "yesterday"},
 		{name: "malformed until", until: "2026-03-01"},
@@ -132,7 +132,7 @@ func TestSearchRefusesABadWindow(t *testing.T) {
 
 func TestSearchReportsTruncation(t *testing.T) {
 	store := l1.New(dbtest.Pool(t))
-	src := newSource(t)
+	src := dbtest.UniqueID()
 	for i := range l1.SearchCandidates + 1 {
 		put(t, store, searchDoc(t, src, fmt.Sprintf("many#%03d", i), "the sprawling topic", nil))
 	}
@@ -170,7 +170,7 @@ func TestSearchReportsTruncation(t *testing.T) {
 
 func TestSearchTruncationIgnoresWhatTheReaderMayNotRead(t *testing.T) {
 	store := l1.New(dbtest.Pool(t))
-	src := newSource(t)
+	src := dbtest.UniqueID()
 	group := connector.ACLEntry{Kind: connector.ACLGroup, Source: src, NativeID: "t1"}
 	for i := range 3 {
 		put(t, store, searchDoc(t, src, fmt.Sprintf("open#%d", i), "the shared topic", nil))

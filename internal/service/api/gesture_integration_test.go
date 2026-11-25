@@ -9,6 +9,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 )
@@ -40,7 +41,7 @@ func TestGesturesAreServedByEveryRead(t *testing.T) {
 		t.Helper()
 		held, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		req := l2.GestureRequest{Event: connector.EventID("discord", "reaction:"+newSource()), Principal: by, Action: action, Undoes: undoes}
+		req := l2.GestureRequest{Event: connector.EventID("discord", "reaction:"+dbtest.UniqueID()), Principal: by, Action: action, Undoes: undoes}
 		if action != l2.GestureUndo {
 			req.Documents = []string{second}
 		}

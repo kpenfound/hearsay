@@ -6,11 +6,12 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/llm"
 )
 
 func TestLLMDefaultsWithoutTheSection(t *testing.T) {
-	repo, err := config.Load(writeFiles(t, base))
+	repo, err := config.Load(configtest.Write(t, base))
 	if err != nil {
 		t.Fatalf("Load() = %v", err)
 	}
@@ -27,7 +28,7 @@ func TestLLMDefaultsWithoutTheSection(t *testing.T) {
 }
 
 func TestLLMMergesOverTheDefaults(t *testing.T) {
-	repo, err := config.Load(writeFiles(t, with(map[string]string{
+	repo, err := config.Load(configtest.Write(t, with(map[string]string{
 		"llm/tiers.yaml": "" +
 			"tiers:\n" +
 			"  distill:\n    max_tokens: 4096\n    timeout: 90s\n" +
@@ -59,13 +60,13 @@ func TestLLMMergesOverTheDefaults(t *testing.T) {
 }
 
 func TestLLMSingleFileFormIsTheSame(t *testing.T) {
-	dir, err := config.Load(writeFiles(t, with(map[string]string{
+	dir, err := config.Load(configtest.Write(t, with(map[string]string{
 		"llm/tiers.yaml": "tiers:\n  assert:\n    model: claude-opus-5\n",
 	})))
 	if err != nil {
 		t.Fatalf("Load(the directory form) = %v", err)
 	}
-	single := writeFiles(t, map[string]string{"hearsay.yaml": "" +
+	single := configtest.Write(t, map[string]string{"hearsay.yaml": "" +
 		"sources:\n  - id: github\n    type: github\n    containers: [acme/api]\n" +
 		"scopes:\n  - id: api\n    sources: [github]\n" +
 		"llm:\n  tiers:\n    assert:\n      model: claude-opus-5\n"})
@@ -159,7 +160,7 @@ func TestLLMProblems(t *testing.T) {
 }
 
 func TestLLMTierConfiguredTwice(t *testing.T) {
-	_, err := config.Load(writeFiles(t, with(map[string]string{
+	_, err := config.Load(configtest.Write(t, with(map[string]string{
 		"llm/a.yaml": "tiers:\n  distill:\n    max_tokens: 1024\n",
 		"llm/b.yaml": "tiers:\n  distill:\n    max_tokens: 2048\n",
 	})))
@@ -172,7 +173,7 @@ func TestLLMTierConfiguredTwice(t *testing.T) {
 }
 
 func TestLoadedConfigurationBuildsARegistry(t *testing.T) {
-	repo, err := config.Load(writeFiles(t, with(map[string]string{
+	repo, err := config.Load(configtest.Write(t, with(map[string]string{
 		"llm/tiers.yaml": "tiers:\n  distill:\n    max_tokens: 512\n",
 	})))
 	if err != nil {

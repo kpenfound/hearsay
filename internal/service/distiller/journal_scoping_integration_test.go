@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/llm"
@@ -32,8 +33,8 @@ func (p outcomeIngestionProvider) Judge(ctx context.Context, req llm.JudgmentReq
 }
 
 func TestOutcomeJournalReusedAcrossConcurrentUnrelatedIngestion(t *testing.T) {
-	pool := newScratchPool(t)
-	src := newSource(t)
+	pool := dbtest.Scratch(t, "distiller_none")
+	src := dbtest.UniqueID()
 	ingest(t, pool, fixtureEvents(src))
 	entered, ingested := make(chan struct{}), make(chan error, 1)
 

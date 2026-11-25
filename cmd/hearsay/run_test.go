@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/db"
 )
 
@@ -498,28 +499,13 @@ func TestSubcommandsThatNeedADatabaseSaySoWhenTheyHaveNone(t *testing.T) {
 	}
 }
 
-func writeConfig(t *testing.T, files map[string]string) string {
-	t.Helper()
-	root := t.TempDir()
-	for name, body := range files {
-		full := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatalf("creating %s: %v", filepath.Dir(full), err)
-		}
-		if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
-			t.Fatalf("writing %s: %v", full, err)
-		}
-	}
-	return root
-}
-
 var validConfig = map[string]string{
 	"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\n",
 	"scopes/api.yaml":     "id: api\nsources: [github]\n",
 }
 
 func TestConfigValidateSummarisesAValidConfiguration(t *testing.T) {
-	valid := writeConfig(t, validConfig)
+	valid := configtest.Write(t, validConfig)
 	var stdout, stderr bytes.Buffer
 	if err := run(t.Context(), []string{"config", "validate", valid}, &stdout, &stderr); err != nil {
 		t.Fatalf("config validate = %v", err)
@@ -533,7 +519,7 @@ func TestConfigValidateSummarisesAValidConfiguration(t *testing.T) {
 
 func TestConfigValidateTakesThePathFromTheFlag(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	if err := run(t.Context(), []string{"config", "validate", "--config", writeConfig(t, validConfig)}, &stdout, &stderr); err != nil {
+	if err := run(t.Context(), []string{"config", "validate", "--config", configtest.Write(t, validConfig)}, &stdout, &stderr); err != nil {
 		t.Fatalf("config validate = %v", err)
 	}
 	if !strings.Contains(stdout.String(), "is valid") {
@@ -542,8 +528,8 @@ func TestConfigValidateTakesThePathFromTheFlag(t *testing.T) {
 }
 
 func TestConfigValidateRefusals(t *testing.T) {
-	valid := writeConfig(t, validConfig)
-	broken := writeConfig(t, map[string]string{
+	valid := configtest.Write(t, validConfig)
+	broken := configtest.Write(t, map[string]string{
 		"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\n",
 		"scopes/api.yaml":     "id: api\nsources: [github, discord]\n",
 	})
@@ -580,7 +566,7 @@ func TestServicesRejectAnAgentWithoutScopes(t *testing.T) {
 	noDatabase(t)
 	agentWithoutScopes := maps.Clone(validConfig)
 	agentWithoutScopes["principals/agent.yaml"] = "id: shed\nkind: agent\nclass: worker\nidentities: [{source: github, handle: shed}]\n"
-	missingAgentGrant := writeConfig(t, agentWithoutScopes)
+	missingAgentGrant := configtest.Write(t, agentWithoutScopes)
 	for _, service := range []string{"api", "connectors", "distiller", "assert-worker"} {
 		t.Run(service, func(t *testing.T) {
 			_, _, err := runCancelled(t, service, "--config", missingAgentGrant)
@@ -593,7 +579,7 @@ func TestServicesRejectAnAgentWithoutScopes(t *testing.T) {
 
 func TestServiceLogsTheLoadedConfigurationWithItsDigest(t *testing.T) {
 	noDatabase(t)
-	_, stderr, err := runCancelled(t, "api", "--config", writeConfig(t, validConfig), "--log-format", "json")
+	_, stderr, err := runCancelled(t, "api", "--config", configtest.Write(t, validConfig), "--log-format", "json")
 	if err != nil {
 		t.Fatalf("run(api --config <valid>) = %v, want no error", err)
 	}
@@ -606,7 +592,7 @@ func TestServiceLogsTheLoadedConfigurationWithItsDigest(t *testing.T) {
 
 func TestServiceReadsTheConfigurationPathFromTheEnvironment(t *testing.T) {
 	noDatabase(t)
-	t.Setenv("HEARSAY_CONFIG", writeConfig(t, validConfig))
+	t.Setenv("HEARSAY_CONFIG", configtest.Write(t, validConfig))
 	_, stderr, err := runCancelled(t, "api", "--log-format", "json")
 	if err != nil {
 		t.Fatalf("run(api) = %v, want no error", err)

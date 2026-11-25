@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/db/dbtest"
+	"github.com/kpenfound/hearsay/internal/poll"
 	"github.com/kpenfound/hearsay/internal/queue"
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
@@ -52,17 +53,6 @@ func run(t *testing.T, cfg queue.Config, handler queue.Handler) func() {
 	}
 	t.Cleanup(stop)
 	return stop
-}
-
-func waitFor(t *testing.T, what string, cond func() bool) {
-	t.Helper()
-	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); {
-		if cond() {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
 }
 
 func TestABusyWorkerStillReclaimsExpiredLeases(t *testing.T) {
@@ -105,7 +95,7 @@ func TestABusyWorkerStillReclaimsExpiredLeases(t *testing.T) {
 		return nil
 	})
 
-	waitFor(t, "the abandoned job to be reclaimed and re-run while the worker is busy", func() bool {
+	poll.Until(t, "the abandoned job to be reclaimed and re-run while the worker is busy", func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return slices.Contains(ran, "evt-abandoned")
@@ -151,7 +141,7 @@ func TestAnIdleWorkerReclaimsAnExpiredLease(t *testing.T) {
 		return nil
 	})
 
-	waitFor(t, "the idle worker to reclaim the abandoned job and run it", func() bool {
+	poll.Until(t, "the idle worker to reclaim the abandoned job and run it", func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return slices.Contains(ran, "evt-abandoned")
@@ -170,7 +160,7 @@ func TestAWorkerStartsAJobItIsNotifiedOfWithoutWaitingForThePoll(t *testing.T) {
 	})
 
 	pool := dbtest.Pool(t)
-	waitFor(t, "the worker to listen on its kind's channel", func() bool {
+	poll.Until(t, "the worker to listen on its kind's channel", func() bool {
 		var listening bool
 		err := pool.QueryRow(t.Context(),
 			`SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE query ILIKE 'LISTEN %' AND strpos(query, $1) > 0)`,
@@ -190,7 +180,7 @@ func TestAWorkerStartsAJobItIsNotifiedOfWithoutWaitingForThePoll(t *testing.T) {
 
 	stop()
 	client := newClient(t, queue.Config{Kind: kind})
-	waitFor(t, "the job to be recorded as done", func() bool { return stats(t, client).Done == 1 })
+	poll.Until(t, "the job to be recorded as done", func() bool { return stats(t, client).Done == 1 })
 }
 
 func TestAWorkerRetriesAFailingHandlerAndThenGivesUp(t *testing.T) {
@@ -206,7 +196,7 @@ func TestAWorkerRetriesAFailingHandlerAndThenGivesUp(t *testing.T) {
 
 	enqueue(t, dbtest.Pool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
 	client := newClient(t, queue.Config{Kind: kind})
-	waitFor(t, "the job to run out of attempts", func() bool { return stats(t, client).Failed == 1 })
+	poll.Until(t, "the job to run out of attempts", func() bool { return stats(t, client).Failed == 1 })
 
 	if got := attempts.Load(); got != 3 {
 		t.Errorf("the handler ran %d times, want the 3 attempts it was given", got)
@@ -266,10 +256,10 @@ func TestAWorkerStopsRunningAJobWhoseLeaseWasReclaimed(t *testing.T) {
 	})
 
 	enqueue(t, dbtest.Pool(t), queue.Request{Kind: kind, TargetID: "evt-1"})
-	waitFor(t, "the worker to start the job", func() bool { return running.Load() })
+	poll.Until(t, "the worker to start the job", func() bool { return running.Load() })
 
 	reclaimer := newClient(t, queue.Config{Kind: kind, Lease: 20 * time.Millisecond, MaxAttempts: 10})
-	waitFor(t, "the expired lease to be reclaimed", func() bool {
+	poll.Until(t, "the expired lease to be reclaimed", func() bool {
 		reclaimed, err := reclaimer.Reclaim(t.Context())
 		if err != nil {
 			t.Fatalf("Reclaim = %v, want no error", err)

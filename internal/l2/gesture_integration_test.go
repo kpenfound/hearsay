@@ -14,14 +14,16 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
+	"github.com/kpenfound/hearsay/internal/l1/l1test"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/queue"
 )
 
 const ratifiers = "scope: \"*\"\nratified_by:\n  principals: [kyle, sam]\n"
 
-func gestureEvent() string { return connector.EventID("discord", "reaction:"+unique()) }
+func gestureEvent() string { return connector.EventID("discord", "reaction:"+dbtest.UniqueID()) }
 
 func gesture(t *testing.T, pool *pgxpool.Pool, repo config.Repo, req l2.GestureRequest) l2.Gesture {
 	t.Helper()
@@ -56,25 +58,25 @@ func standsAt(t *testing.T, store *l2.Store, topic l2.Topic) string {
 }
 
 func TestAGestureAppliesToTheLiveStancesDrawnFromItsDocuments(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	repo := loadRepo(t, ratifiers)
 	ctx := t.Context()
-	scope, elsewhere := unique(), unique()
+	scope, elsewhere := dbtest.UniqueID(), dbtest.UniqueID()
 	lock := namedTopic(t, store, scope, "the lock")
 	queueTopic := namedTopic(t, store, scope, "the queue")
-	thread, issue := "l1:discord:"+unique(), "l1:github:"+unique()
+	thread, issue := "l1:discord:"+dbtest.UniqueID(), "l1:github:"+dbtest.UniqueID()
 	retired := addStance(t, store, lock, thread, "the queue takes the lock", 1)
 	reread := addStance(t, store, lock, thread, "the queue keeps the lock", 2)
 	onQueue := addStance(t, store, queueTopic, issue, "one queue per service", 3)
-	event := connector.EventID(connector.SelfSource, "assertion:"+unique())
+	event := connector.EventID(connector.SelfSource, "assertion:"+dbtest.UniqueID())
 	asserted := stance(lock, thread, "the agent takes the lock", 4)
 	asserted.ID, asserted.Assertion, asserted.Author = l2.AssertionStanceID(lock.ID, event), event, "shed"
 	if _, _, err := store.AppendStance(ctx, asserted, asserted.StatedAt); err != nil {
 		t.Fatal(err)
 	}
 	other := namedTopic(t, store, elsewhere, "the lock")
-	otherDoc := "l1:discord:" + unique()
+	otherDoc := "l1:discord:" + dbtest.UniqueID()
 	addStance(t, store, other, otherDoc, "the lock is global", 1)
 
 	req := l2.GestureRequest{Event: gestureEvent(), Principal: "kyle", Action: l2.GestureRatify, Documents: []string{issue, thread}}
@@ -103,7 +105,7 @@ func TestAGestureAppliesToTheLiveStancesDrawnFromItsDocuments(t *testing.T) {
 		{"an agent", l2.GestureRequest{Principal: "bot", Action: l2.GestureDemote, Documents: []string{thread}}, l2.ErrNotAllowed},
 		{"nobody", l2.GestureRequest{Action: l2.GestureDemote, Documents: []string{thread}}, l2.ErrNotAllowed},
 		{"documents in two scopes", l2.GestureRequest{Principal: "kyle", Action: l2.GestureDemote, Documents: []string{thread, otherDoc}}, l2.ErrInvalid},
-		{"a document no live stance is drawn from", l2.GestureRequest{Principal: "kyle", Action: l2.GestureDemote, Documents: []string{"l1:discord:" + unique()}}, l2.ErrNotFound},
+		{"a document no live stance is drawn from", l2.GestureRequest{Principal: "kyle", Action: l2.GestureDemote, Documents: []string{"l1:discord:" + dbtest.UniqueID()}}, l2.ErrNotFound},
 		{"an undo of an event no gesture came from", l2.GestureRequest{Principal: "kyle", Action: l2.GestureUndo, Undoes: gestureEvent()}, l2.ErrNotFound},
 	}
 	for _, tt := range refused {
@@ -133,13 +135,13 @@ func TestAGestureAppliesToTheLiveStancesDrawnFromItsDocuments(t *testing.T) {
 }
 
 func TestGesturesDecideWhereATopicStands(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	repo := loadRepo(t, ratifiers)
 	ctx := t.Context()
-	scope := unique()
+	scope := dbtest.UniqueID()
 	topic := namedTopic(t, store, scope, "the lock")
-	first, second := "l1:discord:"+unique(), "l1:discord:"+unique()
+	first, second := "l1:discord:"+dbtest.UniqueID(), "l1:discord:"+dbtest.UniqueID()
 	addStance(t, store, topic, first, "the queue takes the lock", 1)
 	current := stance(topic, second, "the queue keeps the lock", 2)
 	current.Judgement = l2.JudgementRestates
@@ -205,7 +207,7 @@ func TestGesturesDecideWhereATopicStands(t *testing.T) {
 	if got := standsAt(t, store, topic); got != "the queue keeps the lock @ contested" {
 		t.Errorf("demoted again, the topic stands at %q, want contested", got)
 	}
-	third := "l1:discord:" + unique()
+	third := "l1:discord:" + dbtest.UniqueID()
 	addStance(t, store, topic, third, "the worker keeps the lock", 3)
 	if got := standsAt(t, store, topic); got != "the worker keeps the lock @ inferred" {
 		t.Errorf("with a newer stance, the topic stands at %q, want it inferred", got)
@@ -213,17 +215,17 @@ func TestGesturesDecideWhereATopicStands(t *testing.T) {
 }
 
 func TestPinGesturesPinAndUnpin(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	store := l2.New(pool)
 	repo := loadRepo(t, ratifiers)
 	ctx := t.Context()
-	src := "s" + unique()
+	src := "s" + dbtest.UniqueID()
 	entity, other := "code:acme/"+src, "tracker:"+src+":acme/api#1"
 	put := func(native string, scope ...string) string {
 		t.Helper()
 		doc := issueDoc(src, native)
 		doc.Scope, doc.L0Refs = scope, []string{connector.EventID(src, native)}
-		return storeDoc(t, pool, doc)
+		return l1test.Put(t, pool, doc)
 	}
 	pinsOn := func(scope string) []l2.Pin {
 		t.Helper()
@@ -283,14 +285,14 @@ func TestPinGesturesPinAndUnpin(t *testing.T) {
 }
 
 func TestGesturesSerializeWithAssertJobs(t *testing.T) {
-	pool := scratchPool(t)
+	pool := dbtest.Scratch(t, "hearsay_l2")
 	store := l2.New(pool)
 	repo := loadRepo(t, ratifiers)
 	ctx := t.Context()
-	scope := unique()
+	scope := dbtest.UniqueID()
 	lock := namedTopic(t, store, scope, "the lock")
 	queueTopic := namedTopic(t, store, scope, "the queue")
-	thread := "l1:discord:" + unique()
+	thread := "l1:discord:" + dbtest.UniqueID()
 	first := addStance(t, store, lock, thread, "the queue takes the lock", 1)
 
 	client, err := queue.New(pool, queue.Config{Kind: l2.AssertKind(), Lease: 30 * time.Second})

@@ -16,6 +16,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/discord"
+	"github.com/kpenfound/hearsay/internal/poll"
 )
 
 const (
@@ -311,7 +312,7 @@ func TestPermissionResyncUsesDurableRuntimeStore(t *testing.T) {
 		o.Exposure = rec
 	})
 	var changed connector.Event
-	eventually(t, "the startup check to settle the re-sync", func() bool {
+	poll.Until(t, "the startup check to settle the re-sync", func() bool {
 		record := store.Get(src.ID, testChannel)
 		for _, ev := range rec.Events() {
 			if ev.Payload.Artifact == original.Payload.Artifact && ev.NativeID != original.NativeID {
@@ -333,7 +334,7 @@ func TestGatewayChannelUpdateRequestsResync(t *testing.T) {
 	src := discordSource(server.URL)
 	store := connector.NewMemoryResyncs()
 	startRuntime(t, src, func(o *connector.RuntimeOptions) { o.Resyncs = store })
-	eventually(t, "the gateway update to record a re-sync", func() bool { return store.Get(src.ID, testChannel).Generation >= 2 })
+	poll.Until(t, "the gateway update to record a re-sync", func() bool { return store.Get(src.ID, testChannel).Generation >= 2 })
 }
 
 func TestFreshGatewaySessionWalksOutageGap(t *testing.T) {
@@ -351,7 +352,7 @@ func TestFreshGatewaySessionWalksOutageGap(t *testing.T) {
 		o.Cursors = cursors
 		o.Resyncs = store
 	})
-	eventually(t, "the restart gap to be ingested", func() bool {
+	poll.Until(t, "the restart gap to be ingested", func() bool {
 		record := store.Get(src.ID, testChannel)
 		return record.Generation > 0 && !record.Owed && len(rec.Events()) > 0
 	})

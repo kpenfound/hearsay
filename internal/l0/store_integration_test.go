@@ -6,7 +6,6 @@ import (
 	"errors"
 	"slices"
 	"strconv"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,19 +14,13 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
+	"github.com/kpenfound/hearsay/internal/poll"
 )
-
-var sources atomic.Int64
 
 func newFake(t *testing.T) (*connector.Fake, string) {
 	t.Helper()
-	id := newSourceID(t)
+	id := dbtest.UniqueID()
 	return connector.NewFake(connector.SourceConfig{ID: id, Type: connector.FakeType}), id
-}
-
-func newSourceID(t *testing.T) string {
-	t.Helper()
-	return "t" + strconv.FormatInt(time.Now().UnixNano(), 36) + "x" + strconv.FormatInt(sources.Add(1), 36)
 }
 
 func newStore(t *testing.T) (*l0.Store, *connector.Fake, string) {
@@ -566,18 +559,16 @@ func feed(t *testing.T, store *l0.Store, from l0.Cursor, source string, want []s
 
 func feedWhere(t *testing.T, store *l0.Store, from l0.Cursor, filter l0.Filter, want []string) []string {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	var got []string
+	poll.Check(10*time.Second, func() bool {
 		changes, err := store.Changes(t.Context(), from, filter, l0.MaxLimit)
 		if err != nil {
 			t.Fatalf("Changes(%+v) = %v, want no error", filter, err)
 		}
-		got := nativeIDs(eventsOf(changes))
-		if slices.Equal(got, want) || time.Now().After(deadline) {
-			return got
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		got = nativeIDs(eventsOf(changes))
+		return slices.Equal(got, want)
+	})
+	return got
 }
 
 func nativeIDs(events []connector.Event) []string {

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
@@ -509,7 +510,7 @@ func TestLoadReportsEveryProblem(t *testing.T) {
 
 func assertProblems(t *testing.T, files map[string]string, want []string) {
 	t.Helper()
-	_, err := config.Load(writeFiles(t, files))
+	_, err := config.Load(configtest.Write(t, files))
 	var invalid *config.InvalidError
 	if !errors.As(err, &invalid) {
 		t.Fatalf("Load() = %v, want an *InvalidError", err)
@@ -546,7 +547,7 @@ const principalFiles = "" +
 
 func loadPrincipals(t *testing.T) config.Repo {
 	t.Helper()
-	repo, err := config.Load(writeFiles(t, with(map[string]string{"principals/p.yaml": principalFiles})))
+	repo, err := config.Load(configtest.Write(t, with(map[string]string{"principals/p.yaml": principalFiles})))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -594,7 +595,7 @@ func TestRepoResolverResolvesConfiguredIdentities(t *testing.T) {
 }
 
 func TestInvalidErrorUnwrapsToProblems(t *testing.T) {
-	root := writeFiles(t, with(map[string]string{"scopes/api.yaml": "id: api\nsources: [github, discord]\n"}))
+	root := configtest.Write(t, with(map[string]string{"scopes/api.yaml": "id: api\nsources: [github, discord]\n"}))
 	_, err := config.Load(root)
 
 	var problem *config.Problem
@@ -612,7 +613,7 @@ func TestInvalidErrorUnwrapsToProblems(t *testing.T) {
 
 func TestLoadRejectsBothFormsAtOnce(t *testing.T) {
 	files := with(map[string]string{"hearsay.yaml": "sources: []\n"})
-	if _, err := config.Load(writeFiles(t, files)); err == nil ||
+	if _, err := config.Load(configtest.Write(t, files)); err == nil ||
 		!strings.Contains(err.Error(), "holds both configuration forms") {
 		t.Errorf("Load() = %v, want it to refuse a directory holding both forms", err)
 	}
@@ -622,7 +623,7 @@ func TestLoadRejectsTwoSingleFiles(t *testing.T) {
 	const one = "sources:\n  - id: github\n    type: github\n    containers: [acme/api]\nscopes:\n  - id: api\n    sources: [github]\n"
 	const two = "sources:\n  - id: discord\n    type: discord\n    containers: [\"1\"]\nscopes:\n  - id: chat\n    sources: [discord]\n"
 
-	root := writeFiles(t, map[string]string{"hearsay.yaml": one, "hearsay.yml": two})
+	root := configtest.Write(t, map[string]string{"hearsay.yaml": one, "hearsay.yml": two})
 	repo, err := config.Load(root)
 	if err == nil {
 		t.Fatalf("Load() loaded %d sources and %d scopes, want an error naming both files",
@@ -633,7 +634,7 @@ func TestLoadRejectsTwoSingleFiles(t *testing.T) {
 			t.Errorf("Load() = %v, want the error to name %s", err, want)
 		}
 	}
-	if _, err := config.Load(writeFiles(t, map[string]string{"hearsay.yml": one})); err != nil {
+	if _, err := config.Load(configtest.Write(t, map[string]string{"hearsay.yml": one})); err != nil {
 		t.Errorf("Load(a directory holding hearsay.yml) = %v, want no error", err)
 	}
 }
@@ -652,13 +653,13 @@ func TestLoadIgnoresWhatIsNotConfiguration(t *testing.T) {
 		".gitignore":       "*.tmp\n",
 		"sources/notes.md": "not configuration\n",
 	})
-	if _, err := config.Load(writeFiles(t, files)); err != nil {
+	if _, err := config.Load(configtest.Write(t, files)); err != nil {
 		t.Errorf("Load() = %v, want no error", err)
 	}
 }
 
 func TestLoadAcceptsAFileOfOneObjectOrMany(t *testing.T) {
-	one, err := config.Load(writeFiles(t, map[string]string{
+	one, err := config.Load(configtest.Write(t, map[string]string{
 		"sources/github.yaml":  "id: github\ntype: github\ncontainers: [acme/api]\n",
 		"sources/discord.yaml": "id: discord\ntype: discord\ncontainers: [\"1\"]\n",
 		"scopes/api.yaml":      "id: api\nsources: [github, discord]\n",
@@ -666,7 +667,7 @@ func TestLoadAcceptsAFileOfOneObjectOrMany(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(a file per source) = %v, want no error", err)
 	}
-	many, err := config.Load(writeFiles(t, map[string]string{
+	many, err := config.Load(configtest.Write(t, map[string]string{
 		"sources/all.yaml": "- id: discord\n  type: discord\n  containers: [\"1\"]\n- id: github\n  type: github\n  containers: [acme/api]\n",
 		"scopes/api.yaml":  "id: api\nsources: [github, discord]\n",
 	}))
@@ -686,11 +687,11 @@ func TestLoadAcceptsAFileOfOneObjectOrMany(t *testing.T) {
 }
 
 func TestScopeSourceShorthandMatchesTheLongForm(t *testing.T) {
-	short, err := config.Load(writeFiles(t, base))
+	short, err := config.Load(configtest.Write(t, base))
 	if err != nil {
 		t.Fatalf("Load(short form) = %v, want no error", err)
 	}
-	long, err := config.Load(writeFiles(t, with(map[string]string{
+	long, err := config.Load(configtest.Write(t, with(map[string]string{
 		"scopes/api.yaml": "id: api\nsources:\n  - source: github\n    containers: [\"*\"]\n",
 	})))
 	if err != nil {
@@ -724,7 +725,7 @@ func TestSourceReadOnly(t *testing.T) {
 			for _, typ := range types {
 				files["sources/"+typ+".yaml"] = "id: " + typ + "\ntype: " + typ + "\ncontainers: [x]\n" + tt.line
 			}
-			repo, err := config.Load(writeFiles(t, files))
+			repo, err := config.Load(configtest.Write(t, files))
 			if err != nil {
 				t.Fatalf("Load() = %v, want no error", err)
 			}
@@ -743,7 +744,7 @@ func TestSourceReadOnly(t *testing.T) {
 func TestDigestIdentifiesTheBytes(t *testing.T) {
 	load := func(t *testing.T, files map[string]string) config.Repo {
 		t.Helper()
-		repo, err := config.Load(writeFiles(t, files))
+		repo, err := config.Load(configtest.Write(t, files))
 		if err != nil {
 			t.Fatalf("Load() = %v, want no error", err)
 		}
@@ -816,7 +817,7 @@ func TestSingleFileFormMustBeAMapping(t *testing.T) {
 }
 
 func TestProblemsAreOrderedByFileAndLine(t *testing.T) {
-	root := writeFiles(t, map[string]string{
+	root := configtest.Write(t, map[string]string{
 		"sources/github.yaml": "" +
 			"- id: github\n  type: github\n  containers: [acme/api]\n  refresh: soon\n" +
 			"- id: github\n  type: github\n  containers: [\"*\", acme/api]\n",

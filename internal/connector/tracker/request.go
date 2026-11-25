@@ -123,13 +123,12 @@ func CommentArtifact(project, ticket, comment string) string {
 }
 
 var (
-	errBadRequest = push.ErrBadRequest
-	errForbidden  = push.ErrForbidden
-	errNoTicket   = push.Refuse(push.ErrConflict, "the ticket is not held")
+	errForbidden = push.ErrForbidden
+	errNoTicket  = push.Refuse(push.ErrConflict, "the ticket is not held")
 )
 
 func badRequest(format string, args ...any) error {
-	return fmt.Errorf("%w: %s", errBadRequest, fmt.Sprintf(format, args...))
+	return fmt.Errorf("%w: %s", push.ErrBadRequest, fmt.Sprintf(format, args...))
 }
 
 func (c *Connector) artifact(req Request) (string, error) {

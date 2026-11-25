@@ -13,8 +13,10 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l2"
+	"github.com/kpenfound/hearsay/internal/poll"
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
@@ -22,7 +24,7 @@ import (
 func TestWorkEntitiesAtStartupAndWhileFollowing(t *testing.T) {
 	for _, mode := range []string{"startup", "follower"} {
 		t.Run(mode, func(t *testing.T) {
-			pool := scratchPool(t)
+			pool := dbtest.Scratch(t, "hearsay_assert")
 			repo := config.Repo{Sources: []connector.SourceConfig{{ID: "projects", Type: "work"}, {ID: "other-projects", Type: "work"}}, Code: []config.CodeEntity{{ID: "code:acme/api", Type: config.TypeProject}, {ID: "code:acme/web", Type: config.TypeProject}}}
 			var logs bytes.Buffer
 			ctx := telemetry.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&logs, nil)))
@@ -35,7 +37,7 @@ func TestWorkEntitiesAtStartupAndWhileFollowing(t *testing.T) {
 					}
 				} else {
 					f := assertworker.NewFollower(pool, repo, time.Millisecond, l0.MaxLimit)
-					waitFor(t, "the follower to process every appended event", func() bool {
+					poll.Until(t, "the follower to process every appended event", func() bool {
 						n, err := f.Once(ctx)
 						if err != nil {
 							t.Fatal(err)

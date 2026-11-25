@@ -346,34 +346,12 @@ func deletedInputs(in JudgmentInputs) bool {
 	return json.Unmarshal(in.State, &state) != nil || state.Deleted
 }
 
-// BeginJudgment records a durable attempt on the store's connection. Use an
-// autocommit store before calling the provider so a crash leaves an attempt.
-// Its ID is supplied to CommitJudgments, which completes that same attempt.
-func (s *Store) BeginJudgment(ctx context.Context, r JudgmentRecord) (string, error) {
-	current, err := s.CaptureJudgmentInputs(ctx, r.Inputs.Spec)
-	if err != nil {
-		return "", journalRefusal(err)
-	}
-	if current.Hash != r.Inputs.Hash || deletedInputs(current) {
-		return "", JournalInputsChanged
-	}
-	r.Inputs = current
-	if r.ID == "" {
-		var b [16]byte
-		if _, err := rand.Read(b[:]); err != nil {
-			return "", fmt.Errorf("minting judgment id: %w", err)
-		}
-		r.ID = "jud_" + hex.EncodeToString(b[:])
-	}
-	if err := s.writeJudgment(ctx, r, false); err != nil {
-		return "", JournalStorageFailure
-	}
-	return r.ID, nil
-}
-
-// BeginJudgments records attempts for a batch of questions that share one
-// input snapshot, capturing it once and writing every attempt in one round trip
-// where the store's connection can batch. It returns the ids in record order.
+// BeginJudgments records durable attempts for a batch of questions that share
+// one input snapshot, capturing it once and writing every attempt in one round
+// trip where the store's connection can batch. Use an autocommit store before
+// calling the provider so a crash leaves an attempt. It returns the ids in
+// record order, and each id is supplied to CommitJudgments, which completes
+// that same attempt.
 func (s *Store) BeginJudgments(ctx context.Context, records []JudgmentRecord) ([]string, error) {
 	if len(records) == 0 {
 		return nil, nil
@@ -437,15 +415,6 @@ func sendJudgments(ctx context.Context, db db.Querier, batch *pgx.Batch) error {
 		}
 	}
 	return nil
-}
-
-func (s *Store) writeJudgment(ctx context.Context, r JudgmentRecord, committed bool) error {
-	args, err := judgmentArgs(r, committed)
-	if err != nil {
-		return err
-	}
-	var id string
-	return s.db.QueryRow(ctx, writeJudgmentSQL, args...).Scan(&id)
 }
 
 func writeJudgmentsBatch(ctx context.Context, tx pgx.Tx, records []JudgmentRecord) error {
@@ -519,42 +488,15 @@ const writeJudgmentSQL = `INSERT INTO judgment_journal
             excluded.probabilities,excluded.confidence,excluded.attempts,excluded.input_tokens,excluded.output_tokens,excluded.cost_usd)))
       RETURNING id`
 
-// LookupJudgment returns only committed results for exactly matching current
-// inputs and question identity. Model configuration is deliberately not a key:
-// a restart or model upgrade must not reinterpret a consumed decision.
-func (s *Store) LookupJudgment(ctx context.Context, reader Reader, task, version, questionHash string, inputs JudgmentInputs) (*JudgmentRecord, error) {
-	spec, err := json.Marshal(inputs.Spec)
-	if err != nil {
-		return nil, JournalStorageFailure
-	}
-	q := &query{args: []any{inputs.Spec.DocumentID, orEmpty(inputs.Spec.EventIDs), orEmpty(inputs.Spec.CandidateTopicIDs), orEmpty(inputs.Spec.ComparedStanceIDs), judgmentMembership(inputs.Spec), spec, inputs.Hash, task, version, questionHash}}
-	filter, ok := reader.predicate(q, "")
-	if !ok {
-		return nil, nil
-	}
-	q.sql = `WITH current_inputs AS (` + judgmentInputQuery(inputs.Spec) + `) SELECT ` + judgmentColumns + ` FROM judgment_journal WHERE ` + filter + `
-      AND state='committed' AND inputs->'spec'=$6::jsonb AND input_hash=$7
-      AND task=$8 AND question_version=$9 AND question_hash=$10
-      AND inputs->'state'=(SELECT state FROM current_inputs)
-      AND NOT (SELECT (state->>'deleted')::boolean FROM current_inputs)
-      ORDER BY started_at DESC,id DESC`
-	records, err := s.readJudgments(ctx, reader, q)
-	if err != nil {
-		return nil, err
-	}
-	if len(records) == 0 {
-		return nil, nil
-	}
-	return &records[0], nil
-}
-
 // JudgmentKey names one question of a batch: its task, question version and
 // question hash.
 type JudgmentKey struct{ Task, Version, QuestionHash string }
 
-// LookupJudgments is [Store.LookupJudgment] for a batch of questions over the
-// same inputs, in one query and one snapshot. The result maps each key that
-// has a reusable committed record to the newest one.
+// LookupJudgments returns only committed results for exactly matching current
+// inputs and question identity, for a batch of questions over the same inputs,
+// in one query and one snapshot. Model configuration is deliberately not a key:
+// a restart or model upgrade must not reinterpret a consumed decision. The
+// result maps each key that has a reusable committed record to the newest one.
 func (s *Store) LookupJudgments(ctx context.Context, reader Reader, keys []JudgmentKey, inputs JudgmentInputs) (map[JudgmentKey]JudgmentRecord, error) {
 	out := map[JudgmentKey]JudgmentRecord{}
 	if len(keys) == 0 {

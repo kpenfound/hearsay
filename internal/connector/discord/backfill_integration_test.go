@@ -6,27 +6,19 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strconv"
 	"testing"
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/discord"
-	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
+	"github.com/kpenfound/hearsay/internal/poll"
 )
 
 func TestDiscordResyncResumesThroughSQLStore(t *testing.T) {
-	database := os.Getenv("HEARSAY_DATABASE_URL")
-	if database == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	pool, err := db.Connect(t.Context(), database)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
+	pool := dbtest.Pool(t)
 	f := &restFixture{gatewaySilent: true}
 	for i := 0; i < 101; i++ {
 		f.messages = append(f.messages, f.message(testChannel, fmt.Sprint(1551744840499200200-i)))
@@ -77,7 +69,7 @@ func TestDiscordResyncResumesThroughSQLStore(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("second page was not requested")
 	}
-	eventually(t, "the first page cursor to be stored", func() bool { return state().Cursor != "" })
+	poll.Until(t, "the first page cursor to be stored", func() bool { return state().Cursor != "" })
 	stop()
 	if r := state(); !r.Owed || r.Cursor == "" {
 		t.Fatalf("interrupted re-sync = %+v", r)
@@ -87,7 +79,7 @@ func TestDiscordResyncResumesThroughSQLStore(t *testing.T) {
 	f.mu.Unlock()
 	stop = start()
 	close(hold)
-	eventually(t, "the resumed re-sync to finish", func() bool { return !state().Owed })
+	poll.Until(t, "the resumed re-sync to finish", func() bool { return !state().Owed })
 	stop()
 	f.mu.Lock()
 	resumed := append([]string(nil), f.pages[calls:]...)

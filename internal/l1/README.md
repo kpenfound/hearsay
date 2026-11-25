@@ -140,10 +140,10 @@ Capture **before** reading the state used in a question, while holding the
 worker's existing scope key where applicable. If a later read sees another
 revision, discard the judgment or capture and judge again.
 
-`BeginJudgment` on an autocommit store records an attempt before the provider
-call. Use its returned id for the final `JudgmentRecord`. An attempt remains
+`BeginJudgments` on an autocommit store records attempts before the provider
+call. Use each returned id for the final `JudgmentRecord`. An attempt remains
 an attempt through a crash or refused commit; only a `committed` record may
-be reused. `LookupJudgment` checks the current state and exact question/hash
+be reused. `LookupJudgments` checks the current state and exact question/hash
 identity in the same SQL snapshot. A requested model version is deliberately
 absent from the lookup key: reuse returns the original resolved version,
 policy, label and accounting without reinterpreting the result. A committed
@@ -210,7 +210,7 @@ storage. Observations use the same commit operation, including runs with no
 judgment records; their evidence snapshots are validated too.
 Summaries and reports over these tables belong to `internal/eval`.
 
-`JudgmentsFor`, `LookupJudgment` and `ObservationsFor` filter both scope and
+`JudgmentsFor`, `LookupJudgments` and `ObservationsFor` filter both scope and
 stored ACL, then check current evidence access, including the newest visible
 source revisions while L1 is waiting for its ACL rebuild. An operator deletion removes
 attempts, committed records and observations referencing any covered source

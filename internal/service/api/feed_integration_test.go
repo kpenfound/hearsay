@@ -7,23 +7,18 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kpenfound/hearsay/internal/poll"
 )
 
 func awaitFeed(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Minute)
-	for {
+	poll.Within(t, "the change feed to catch up", 2*time.Minute, func() bool {
 		var behind int
 		if err := pool.QueryRow(t.Context(),
 			`SELECT count(*) FROM l0_events WHERE xact_id >= pg_snapshot_xmin(pg_current_snapshot())`).Scan(&behind); err != nil {
 			t.Fatal(err)
 		}
-		if behind == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the feed is still %d events behind after 2m", behind)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return behind == 0
+	})
 }

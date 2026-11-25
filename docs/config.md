@@ -508,7 +508,7 @@ small sender that the team runs posts tickets and comments to the connectors
 service's `/hooks/<source id>`. Hearsay never calls the tracker, and backfill
 means the sender posts everything again. The request shapes, a worked curl
 request and a sender sketch are in
-[the connector contract](connector-contract.md#generic-tracker-issue-213).
+[the connector contract](connector-contract.md#generic-tracker).
 
 ```yaml
 sources:
@@ -588,7 +588,7 @@ places it in the hierarchy:
 Agents post their own session events to this source: the session starting and
 ending, its turns and its tool calls. Hearsay does not fetch anything for it.
 Each event is one `POST /hooks/<source id>` on the connectors service.
-[The connector contract](connector-contract.md#agent-sessions-issue-149) has one
+[The connector contract](connector-contract.md#agent-sessions) has one
 example request per kind.
 
 ```yaml
@@ -689,7 +689,7 @@ posting agent reads them only as an agent acting for the owner.
 Factories and agents post projects, workstreams and updates to this source.
 Hearsay distils them as ordinary issues and messages; projects and workstreams
 also declare runtime entities. New projects and repositories need no config
-change. [The connector contract](connector-contract.md#work-updates-issue-237)
+change. [The connector contract](connector-contract.md#work-updates)
 has the request examples and L0 mapping.
 
 <!-- example: work/hearsay.yaml -->

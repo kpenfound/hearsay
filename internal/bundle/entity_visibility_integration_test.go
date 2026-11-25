@@ -4,7 +4,6 @@ package bundle_test
 
 import (
 	"bytes"
-	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,22 +12,14 @@ import (
 	"github.com/kpenfound/hearsay/internal/bundle"
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
-	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
 func TestAssemblerHidesWorkEntitiesBeforeBudgeting(t *testing.T) {
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	pool, err := db.Connect(t.Context(), url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
+	pool := dbtest.Pool(t)
 	source := "bundle" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	hidden := "work:" + source + ":private"
 	subject := "tracker:" + source + ":public"
@@ -53,7 +44,7 @@ func TestAssemblerHidesWorkEntitiesBeforeBudgeting(t *testing.T) {
 			if _, err := docs.Put(t.Context(), doc); err != nil {
 				t.Fatal(err)
 			}
-			baseline, report, err := assemble.Assemble(t.Context(), reader, subject)
+			baseline, report, err := assemble.AssembleForEvent(t.Context(), reader, subject, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -61,7 +52,7 @@ func TestAssemblerHidesWorkEntitiesBeforeBudgeting(t *testing.T) {
 			if _, err := docs.Put(t.Context(), doc); err != nil {
 				t.Fatal(err)
 			}
-			actual, actualReport, err := assemble.Assemble(t.Context(), reader, subject)
+			actual, actualReport, err := assemble.AssembleForEvent(t.Context(), reader, subject, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -70,11 +61,11 @@ func TestAssemblerHidesWorkEntitiesBeforeBudgeting(t *testing.T) {
 			if !bytes.Equal(before, after) || report != actualReport {
 				t.Fatalf("budget %d: hidden related entity changed bundle/report: %s %+v; %s %+v", budget, before, report, after, actualReport)
 			}
-			missing, _, err := assemble.Assemble(t.Context(), reader, "work:"+source+":absent")
+			missing, _, err := assemble.AssembleForEvent(t.Context(), reader, "work:"+source+":absent", "")
 			if err != nil {
 				t.Fatal(err)
 			}
-			private, _, err := assemble.Assemble(t.Context(), reader, hidden)
+			private, _, err := assemble.AssembleForEvent(t.Context(), reader, hidden, "")
 			if err != nil {
 				t.Fatal(err)
 			}

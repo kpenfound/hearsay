@@ -4,8 +4,6 @@ package l2_test
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -14,8 +12,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
+	"github.com/kpenfound/hearsay/internal/l1/l1test"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
@@ -31,13 +32,12 @@ type commandWorld struct {
 
 func newCommandWorld(t *testing.T) *commandWorld {
 	t.Helper()
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	ctx := t.Context()
-	w := &commandWorld{src: unique(), pool: pool}
+	w := &commandWorld{src: dbtest.UniqueID(), pool: pool}
 	w.scope = "d" + w.src
-	w.thread, w.private = "C1/"+unique(), "C1/"+unique()
+	w.thread, w.private = "C1/"+dbtest.UniqueID(), "C1/"+dbtest.UniqueID()
 
-	root := t.TempDir()
 	files := map[string]string{
 		"sources/chat.yaml": fmt.Sprintf("id: %s\ntype: chat\ncontainers: [C1]\n", w.src),
 		"scopes/s.yaml":     fmt.Sprintf("id: %s\nsources: [%s]\n", w.scope, w.src),
@@ -49,15 +49,7 @@ func newCommandWorld(t *testing.T) *commandWorld {
 			"- id: bea\n  identities: [{source: %[1]s, handle: bea}]\n", w.src),
 		"authority/a.yaml": ratifiers,
 	}
-	for name, body := range files {
-		full := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
+	root := configtest.Write(t, files)
 	repo, err := config.Load(root)
 	if err != nil {
 		t.Fatal(err)
@@ -77,13 +69,13 @@ func newCommandWorld(t *testing.T) *commandWorld {
 		doc.L0Refs, doc.Scope = []string{connector.EventID(w.src, native)}, []string{entity}
 		doc.Time = l1.Times{Created: when, Updated: when, LastActivity: when}
 		doc.Text, doc.RawText, doc.Body.Summary = native, native, native
-		return storeDoc(t, pool, doc)
+		return l1test.Put(t, pool, doc)
 	}
 	put(w.thread, l1.KindChatThread, config.ArtifactChatThread, public)
 	put(w.private, l1.KindChatThread, config.ArtifactChatThread, kyleOnly)
 	open := func(scope, name string, acl connector.ACL) string {
 		t.Helper()
-		doc := put(strings.ReplaceAll(name, " ", "-")+"-"+unique(), l1.KindIssue, config.ArtifactIssue, acl)
+		doc := put(strings.ReplaceAll(name, " ", "-")+"-"+dbtest.UniqueID(), l1.KindIssue, config.ArtifactIssue, acl)
 		topic := l2.Topic{ID: l2.TopicID(scope, doc, 0, name), Scope: scope, Name: name, ACL: acl, OpenedBy: doc}
 		if _, err := graph.OpenTopic(ctx, topic); err != nil {
 			t.Fatal(err)
@@ -112,7 +104,7 @@ func (w *commandWorld) user(id string) connector.Identity {
 }
 
 func (w *commandWorld) request(user, verb string) connector.CommandRequest {
-	return connector.CommandRequest{Source: w.src, Event: connector.EventID(w.src, "interaction:"+unique()), Invoker: w.user(user), Verb: verb}
+	return connector.CommandRequest{Source: w.src, Event: connector.EventID(w.src, "interaction:"+dbtest.UniqueID()), Invoker: w.user(user), Verb: verb}
 }
 
 func TestCommandsRefuseWithAReason(t *testing.T) {
@@ -140,7 +132,7 @@ func TestCommandsRefuseWithAReason(t *testing.T) {
 		{"an invoker two principals claim", ambiguous, connector.CommandResult{Outcome: connector.CommandAmbiguous, Candidates: []string{"amy", "bea"}}},
 		{"an agent's account", pin("14", w.thread), connector.CommandResult{Outcome: connector.CommandNotHuman, Principal: "shed", Kind: "agent"}},
 		{"a pin outside a thread", pin("11", ""), connector.CommandResult{Outcome: connector.CommandNoTarget, Principal: "kyle", Kind: "human"}},
-		{"a pin of a thread not distilled", pin("11", "C1/"+unique()), connector.CommandResult{Outcome: connector.CommandUndistilled, Principal: "kyle", Kind: "human"}},
+		{"a pin of a thread not distilled", pin("11", "C1/"+dbtest.UniqueID()), connector.CommandResult{Outcome: connector.CommandUndistilled, Principal: "kyle", Kind: "human"}},
 		{"a pin of a thread the person may not read", pin("12", w.private), connector.CommandResult{Outcome: connector.CommandUndistilled, Principal: "sam", Kind: "human"}},
 		{"a merge of a topic into itself", merge("12", w.lock, w.lock), connector.CommandResult{Outcome: connector.CommandSameTopic, Principal: "sam", Kind: "human"}},
 		{"a merge of a topic the person may not read", merge("12", w.vault, w.lock), connector.CommandResult{Outcome: connector.CommandNoSuchTopic, Principal: "sam", Kind: "human", Topic: w.vault}},

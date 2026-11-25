@@ -43,7 +43,7 @@ func newDeleteWorld(t *testing.T) *deleteWorld {
 		t.Setenv("HEARSAY_TEST_"+strings.ToUpper(name)+"_TOKEN", token)
 	}
 	pool := dbtest.Pool(t)
-	w := &deleteWorld{src: newSource() + "k", other: newSource() + "s", pool: pool, hooks: map[string]*httptest.Server{}, tokens: tokens}
+	w := &deleteWorld{src: dbtest.UniqueID() + "k", other: dbtest.UniqueID() + "s", pool: pool, hooks: map[string]*httptest.Server{}, tokens: tokens}
 	ids := func(id string) []principal.Identity {
 		return []principal.Identity{{Source: w.src, NativeID: id}, {Source: w.other, NativeID: id}}
 	}

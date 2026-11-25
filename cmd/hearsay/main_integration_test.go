@@ -7,25 +7,23 @@ import (
 	"context"
 	"errors"
 	"io"
-	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
+	"github.com/kpenfound/hearsay/internal/telemetry/logtest"
 )
 
 func TestAllMigratesTheDatabaseItIsPointedAt(t *testing.T) {
-	if os.Getenv("HEARSAY_DATABASE_URL") == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
+	dbtest.URL(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	stderr := &syncBuffer{}
+	stderr := &logtest.Buffer{}
 	done := make(chan error, 1)
 	go func() {
 		done <- run(ctx, []string{"all", "--listen", "127.0.0.1:0", "--api-listen", "127.0.0.1:0", "--distiller-listen", "127.0.0.1:0", "--assert-worker-listen", "127.0.0.1:0", "--log-format", "json"}, io.Discard, stderr)
@@ -35,7 +33,7 @@ func TestAllMigratesTheDatabaseItIsPointedAt(t *testing.T) {
 		return strings.Contains(out, "schema is current") && strings.Contains(out, "connectors started") &&
 			strings.Contains(out, "api started") && strings.Contains(out, `"service":"distiller"`) && strings.Contains(out, `"service":"assert-worker"`) && strings.Count(out, "health probes started") >= 2
 	}
-	if !stderr.waitFor(10*time.Second, started) {
+	if !stderr.WaitFor(10*time.Second, started) {
 		cancel()
 		t.Fatalf("`hearsay all` never reported the schema and its services:\n%s", stderr.String())
 	}
@@ -57,18 +55,16 @@ func TestAllMigratesTheDatabaseItIsPointedAt(t *testing.T) {
 }
 
 func TestConnectorsRunsAndStops(t *testing.T) {
-	if os.Getenv("HEARSAY_DATABASE_URL") == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
+	dbtest.URL(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	stderr := &syncBuffer{}
+	stderr := &logtest.Buffer{}
 	done := make(chan error, 1)
 	go func() {
 		done <- run(ctx, []string{"connectors", "--listen", "127.0.0.1:0", "--log-format", "json"}, io.Discard, stderr)
 	}()
 
-	if !stderr.waitFor(10*time.Second, func(out string) bool { return strings.Contains(out, "connectors started") }) {
+	if !stderr.WaitFor(10*time.Second, func(out string) bool { return strings.Contains(out, "connectors started") }) {
 		cancel()
 		t.Fatalf("`hearsay connectors` never started:\n%s", stderr.String())
 	}
@@ -82,9 +78,7 @@ func TestConnectorsRunsAndStops(t *testing.T) {
 }
 
 func TestConnectorsRefusesASourceNobodyConfigured(t *testing.T) {
-	if os.Getenv("HEARSAY_DATABASE_URL") == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
+	dbtest.URL(t)
 	var stdout, stderr bytes.Buffer
 	err := run(t.Context(), []string{"connectors", "--source", "githbu", "--listen", "127.0.0.1:0"}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "githbu") {
@@ -93,11 +87,7 @@ func TestConnectorsRefusesASourceNobodyConfigured(t *testing.T) {
 }
 
 func TestL0RefusesADatabaseBehindTheBinary(t *testing.T) {
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	t.Setenv("HEARSAY_DATABASE_URL", swapDatabaseName(url, "postgres"))
+	t.Setenv("HEARSAY_DATABASE_URL", dbtest.Create(t, "behind"))
 
 	var stdout, stderr bytes.Buffer
 	err := run(t.Context(), []string{"l0", "count"}, &stdout, &stderr)
@@ -109,72 +99,13 @@ func TestL0RefusesADatabaseBehindTheBinary(t *testing.T) {
 	}
 }
 
-func swapDatabaseName(url, name string) string {
-	base, query, hasQuery := strings.Cut(url, "?")
-	swapped := base[:strings.LastIndex(base, "/")+1] + name
-	if hasQuery {
-		return swapped + "?" + query
-	}
-	return swapped
-}
-
-type syncBuffer struct {
-	mu      sync.Mutex
-	buf     bytes.Buffer
-	written chan struct{}
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.written != nil {
-		close(b.written)
-		b.written = nil
-	}
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) waitFor(within time.Duration, holds func(string) bool) bool {
-	timeout := time.NewTimer(within)
-	defer timeout.Stop()
-	for {
-		b.mu.Lock()
-		if holds(b.buf.String()) {
-			b.mu.Unlock()
-			return true
-		}
-		if b.written == nil {
-			b.written = make(chan struct{})
-		}
-		written := b.written
-		b.mu.Unlock()
-		select {
-		case <-written:
-		case <-timeout.C:
-			return false
-		}
-	}
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
 func TestL0AndMigrateAgainstARealDatabase(t *testing.T) {
-	if os.Getenv("HEARSAY_DATABASE_URL") == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
+	dbtest.URL(t)
 	source := "t" + strconv.FormatInt(time.Now().UnixNano(), 36) + "cli"
 	fake := connector.NewFake(connector.SourceConfig{ID: source, Type: connector.FakeType})
 	event := fake.NewEvent(connector.KindMessage, "m1", "hello from the cli")
 
-	pool, err := db.Connect(t.Context(), os.Getenv("HEARSAY_DATABASE_URL"))
-	if err != nil {
-		t.Fatalf("connecting to postgres: %v", err)
-	}
-	defer pool.Close()
+	pool := dbtest.Pool(t)
 	appended, err := l0.New(pool).Append(t.Context(), event)
 	if err != nil {
 		t.Fatalf("Append() = %v, want no error", err)
@@ -243,13 +174,13 @@ func TestL0AndMigrateAgainstARealDatabase(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
-		var stdout, stderr syncBuffer
+		var stdout, stderr logtest.Buffer
 		done := make(chan error, 1)
 		go func() {
 			done <- run(ctx, []string{"l0", "tail", "--source", source, "--interval", "50ms"}, &stdout, &stderr)
 		}()
 		waitFor := func(id string) bool {
-			return stdout.waitFor(10*time.Second, func(out string) bool { return strings.Contains(out, id) })
+			return stdout.WaitFor(10*time.Second, func(out string) bool { return strings.Contains(out, id) })
 		}
 		if !waitFor(appended.ID) {
 			t.Errorf("l0 tail did not print the event within 10s:\nstdout: %s\nstderr: %s", stdout.String(), stderr.String())

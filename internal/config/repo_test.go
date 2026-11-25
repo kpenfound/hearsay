@@ -4,10 +4,11 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 )
 
 func TestScopeCovers(t *testing.T) {
-	repo, err := config.Load(writeFiles(t, map[string]string{
+	repo, err := config.Load(configtest.Write(t, map[string]string{
 		"sources/all.yaml": "" +
 			"- id: github\n  type: github\n  containers: [acme/api, acme/infra]\n" +
 			"- id: discord\n  type: discord\n  containers: [\"*\"]\n",
@@ -44,7 +45,7 @@ func TestScopeCovers(t *testing.T) {
 }
 
 func TestTrackerItemID(t *testing.T) {
-	repo, err := config.Load(writeFiles(t, map[string]string{
+	repo, err := config.Load(configtest.Write(t, map[string]string{
 		"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\n",
 		"scopes/all.yaml": "" +
 			"- id: api\n  sources: [github]\n  tracker: {source: github, project: acme/api}\n" +

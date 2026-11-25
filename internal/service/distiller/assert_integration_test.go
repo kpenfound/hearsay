@@ -3,14 +3,14 @@
 package distiller_test
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
@@ -50,30 +50,21 @@ func TestChatWindowTouchesScopeIsTheSameAfterRecovery(t *testing.T) {
 		{"artifact order", []string{"a", "b"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			pool := newScratchPool(t)
-			src := newSource(t)
+			pool := dbtest.Scratch(t, "distiller_none")
+			src := dbtest.UniqueID()
 			cfg := testConfig(src)
 			cfg.Repo.Sources = []connector.SourceConfig{{ID: src, Type: "slack"}, {ID: "github", Type: "github"}}
 			cfg.Repo.Scopes = []config.Scope{
 				{ID: "scope-a", Sources: []config.ScopeSource{{Source: "github", Containers: []string{"acme/a"}}}},
 				{ID: "scope-b", Sources: []config.ScopeSource{{Source: "github", Containers: []string{"acme/b"}}}},
 			}
-			dir := t.TempDir()
-			for name, body := range map[string]string{
+			dir := configtest.Write(t, map[string]string{
 				"sources/github.yaml":    "id: github\ntype: github\ncontainers: [acme/a, acme/b]\n",
 				"scopes/scope-a.yaml":    "id: scope-a\nsources: [github]\n",
 				"scopes/scope-b.yaml":    "id: scope-b\nsources: [github]\n",
 				"authority/default.yaml": "scope: '*'\nratified_by:\n  principals: []\n  sources: []\n  artifacts: []\n",
 				"authority/scope-a.yaml": "scope: scope-a\nratified_by:\n  sources: ['*']\n  artifacts: [chat_thread]\n",
-			} {
-				full := filepath.Join(dir, name)
-				if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
+			})
 			loaded, err := config.Load(dir)
 			if err != nil {
 				t.Fatal(err)
@@ -141,8 +132,8 @@ func TestChatWindowTouchesScopeIsTheSameAfterRecovery(t *testing.T) {
 }
 
 func TestADocumentThatAssertsIsWrittenWithItsAssertJob(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	ingest(t, pool, fixtureEvents(src))
 	d := newDistiller(t, pool, src)
 	id := l1.DocID(src, repo+"#12")
@@ -172,8 +163,8 @@ func TestADocumentThatAssertsIsWrittenWithItsAssertJob(t *testing.T) {
 }
 
 func TestWorkTouchesScopeIsTheSameAfterRecovery(t *testing.T) {
-	pool := newScratchPool(t)
-	src := newSource(t)
+	pool := dbtest.Scratch(t, "distiller_none")
+	src := dbtest.UniqueID()
 	events := fixtureEvents(src)[:3]
 	for i := range events {
 		events[i].Payload.Container = connector.Container{Kind: "project", NativeID: "work-project"}
@@ -187,22 +178,13 @@ func TestWorkTouchesScopeIsTheSameAfterRecovery(t *testing.T) {
 	cfg.Repo.Scopes[0].Sources = []config.ScopeSource{{Source: "github", Containers: []string{repo}}}
 	cfg.Repo.Scopes[0].Tracker = config.SourceRef{}
 
-	dir := t.TempDir()
-	for name, body := range map[string]string{
+	dir := configtest.Write(t, map[string]string{
 		"sources/github.yaml":    "id: github\ntype: github\ncontainers: [acme/api]\n",
 		"principals/kyle.yaml":   "id: kyle\nidentities: [{source: github, native_id: u1}]\n",
 		"scopes/api.yaml":        "id: api\nsources: [github]\n",
 		"authority/default.yaml": "scope: '*'\nratified_by:\n  principals: []\n  sources: []\n  artifacts: []\n",
 		"authority/api.yaml":     "scope: api\nratified_by:\n  principals: [kyle]\n  sources: ['*']\n  artifacts: [issue]\n",
-	} {
-		full := filepath.Join(dir, name)
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
+	})
 	loaded, err := config.Load(dir)
 	if err != nil {
 		t.Fatal(err)

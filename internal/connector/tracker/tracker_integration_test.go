@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"reflect"
 	"slices"
 	"strconv"
@@ -18,21 +17,13 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/push"
 	"github.com/kpenfound/hearsay/internal/connector/tracker"
-	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 )
 
 func through(t *testing.T, settings map[string]any) (*httptest.Server, *pgxpool.Pool, string) {
 	t.Helper()
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	pool, err := db.Connect(t.Context(), url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
+	pool := dbtest.Pool(t)
 	src := source(settings)
 	src.ID = "tracker" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	c, err := tracker.New(src)

@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/service/api"
+	"github.com/kpenfound/hearsay/internal/service/api/apitest"
 )
 
 func (r *e2eRun) callAs(who, agent string, mcp bool, call string, args any) (int, []byte) {
@@ -23,7 +25,7 @@ func (r *e2eRun) callAs(who, agent string, mcp bool, call string, args any) (int
 	path := "/v1/" + call
 	if mcp {
 		path = "/mcp"
-		body, _ = json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": call, "arguments": json.RawMessage(body)}})
+		body = apitest.ToolCall(r.t, call, json.RawMessage(body))
 	}
 	req, err := http.NewRequestWithContext(r.t.Context(), http.MethodPost, "http://"+r.apiAddr+path, bytes.NewReader(body))
 	if err != nil {
@@ -40,23 +42,17 @@ func (r *e2eRun) callAs(who, agent string, mcp bool, call string, args any) (int
 	if !mcp || code != http.StatusOK {
 		return code, []byte(got)
 	}
-	var rpc struct {
-		Result api.ToolResult `json:"result"`
-	}
-	if err := json.Unmarshal([]byte(got), &rpc); err != nil || len(rpc.Result.Content) != 1 {
+	text, isError, ok := apitest.ToolText([]byte(got))
+	if !ok {
 		r.t.Fatalf("POST /mcp %s answered %s", call, got)
 	}
-	if rpc.Result.IsError {
-		return -1, []byte(rpc.Result.Content[0].Text)
+	if isError {
+		return -1, []byte(text)
 	}
-	return http.StatusOK, []byte(rpc.Result.Content[0].Text)
+	return http.StatusOK, []byte(text)
 }
 
 func TestDecideEndToEnd(t *testing.T) {
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
 	stub := &modelStub{}
 	stubServer := httptest.NewServer(stub)
 	t.Cleanup(stubServer.Close)
@@ -69,7 +65,7 @@ func TestDecideEndToEnd(t *testing.T) {
 	config = strings.Replace(config, annToken, annToken+"  - id: kern\n    kind: agent\n    class: worker\n    token_env: HEARSAY_E2E_KERN_TOKEN\n    scopes: [\"*\"]\n", 1)
 	dir := writeStackConfig(t, config)
 	tokens := map[string]string{"osmia": "e2e-osmia-token", "kyle": "e2e-kyle-token", "ann": "e2e-ann-token", "kern": "e2e-kern-token"}
-	database := createDatabase(t, url, "e2e_work_")
+	database := dbtest.Create(t, "e2e")
 	t.Setenv("HEARSAY_DATABASE_URL", database)
 	t.Setenv("HEARSAY_OSMIA_TOKEN", tokens["osmia"])
 	t.Setenv("HEARSAY_E2E_KYLE_TOKEN", tokens["kyle"])

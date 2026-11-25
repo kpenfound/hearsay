@@ -5,7 +5,6 @@ package work_test
 import (
 	"encoding/json"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,20 +12,12 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/work"
-	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 )
 
 func TestRecordsInL0(t *testing.T) {
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	pool, err := db.Connect(t.Context(), url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
+	pool := dbtest.Pool(t)
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
 	workSrc, ownerSrc := "projects-"+suffix, "owner-"+suffix
 	workCfg := connector.SourceConfig{ID: workSrc, Type: work.Type, Containers: []string{"*"}, Settings: json.RawMessage(`{"attributors":["factory"]}`)}

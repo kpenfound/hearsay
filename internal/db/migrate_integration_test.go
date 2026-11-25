@@ -3,65 +3,17 @@
 package db_test
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"os"
-	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 )
 
-func scratchDatabase(t *testing.T) string {
-	t.Helper()
-	adminURL := os.Getenv("HEARSAY_DATABASE_URL")
-	if adminURL == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-
-	name := "hearsay_scratch_" + strconv.FormatInt(time.Now().UnixNano(), 36) + "_" + strconv.FormatInt(scratches.Add(1), 36)
-	ctx := context.Background()
-	admin, err := db.Open(ctx, adminURL)
-	if err != nil {
-		t.Fatalf("connecting to postgres: %v", err)
-	}
-	defer admin.Close()
-
-	if _, err := admin.Exec(ctx, `CREATE DATABASE `+name); err != nil {
-		t.Fatalf("creating the scratch database: %v", err)
-	}
-	t.Cleanup(func() {
-		dropper, err := db.Open(ctx, adminURL)
-		if err != nil {
-			t.Errorf("connecting to drop the scratch database: %v", err)
-			return
-		}
-		defer dropper.Close()
-		if _, err := dropper.Exec(ctx, `DROP DATABASE `+name+` WITH (FORCE)`); err != nil {
-			t.Errorf("dropping the scratch database: %v", err)
-		}
-	})
-	return swapDatabaseName(adminURL, name)
-}
-
-var scratches atomic.Int64
-
-func swapDatabaseName(url, name string) string {
-	base, query, hasQuery := strings.Cut(url, "?")
-	slash := strings.LastIndex(base, "/")
-	swapped := base[:slash+1] + name
-	if hasQuery {
-		return swapped + "?" + query
-	}
-	return swapped
-}
-
 func TestMigrateUpFromAnEmptyDatabase(t *testing.T) {
-	url := scratchDatabase(t)
+	url := dbtest.Create(t, "hearsay_scratch")
 	migrator, err := db.NewMigrator(t.Context(), url, nil)
 	if err != nil {
 		t.Fatalf("NewMigrator() = %v, want no error", err)
@@ -145,7 +97,7 @@ func TestMigrateUpFromAnEmptyDatabase(t *testing.T) {
 
 func TestReversibleMigrationHistory(t *testing.T) {
 	const newest int64 = 35
-	url := scratchDatabase(t)
+	url := dbtest.Create(t, "hearsay_scratch")
 	migrator, err := db.NewMigrator(t.Context(), url, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -253,7 +205,7 @@ func TestReversibleMigrationHistory(t *testing.T) {
 }
 
 func TestTheVectorExtensionRefusesToBeRolledBack(t *testing.T) {
-	url := scratchDatabase(t)
+	url := dbtest.Create(t, "hearsay_scratch")
 	migrator, err := db.NewMigrator(t.Context(), url, nil)
 	if err != nil {
 		t.Fatalf("NewMigrator() = %v, want no error", err)
@@ -273,7 +225,7 @@ func TestTheVectorExtensionRefusesToBeRolledBack(t *testing.T) {
 }
 
 func TestMigrateUpTo(t *testing.T) {
-	url := scratchDatabase(t)
+	url := dbtest.Create(t, "hearsay_scratch")
 	migrator, err := db.NewMigrator(t.Context(), url, nil)
 	if err != nil {
 		t.Fatalf("NewMigrator() = %v, want no error", err)
@@ -299,7 +251,7 @@ func TestMigrateUpTo(t *testing.T) {
 }
 
 func TestADatabaseAheadOfTheBinaryIsAllowed(t *testing.T) {
-	url := scratchDatabase(t)
+	url := dbtest.Create(t, "hearsay_scratch")
 	migrator, err := db.NewMigrator(t.Context(), url, nil)
 	if err != nil {
 		t.Fatalf("NewMigrator() = %v, want no error", err)
@@ -338,7 +290,7 @@ func format(statuses []db.Status) string {
 }
 
 func TestArtifactClassBackfill(t *testing.T) {
-	url := scratchDatabase(t)
+	url := dbtest.Create(t, "hearsay_scratch")
 	migrator, err := db.NewMigrator(t.Context(), url, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -407,7 +359,7 @@ func TestArtifactClassBackfill(t *testing.T) {
 }
 
 func TestScopedJudgmentHistoryRefusesRollback(t *testing.T) {
-	url := scratchDatabase(t)
+	url := dbtest.Create(t, "hearsay_scratch")
 	migrator, err := db.NewMigrator(t.Context(), url, nil)
 	if err != nil {
 		t.Fatal(err)

@@ -6,11 +6,12 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector/conversation"
 )
 
 func TestDocsConversationSourceLoads(t *testing.T) {
-	root := writeFiles(t, filesUnder(t, docExamples(t), "conversation"))
+	root := configtest.Write(t, filesUnder(t, docExamples(t), "conversation"))
 	repo, err := config.Load(filepath.Join(root, "hearsay.yaml"))
 	if err != nil {
 		t.Fatalf("Load(the conversation source example) = %v, want no error", err)

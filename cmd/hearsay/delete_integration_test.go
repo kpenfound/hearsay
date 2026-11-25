@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -14,8 +13,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
-	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/deletion"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/queue"
@@ -24,32 +24,14 @@ import (
 
 func deleteDatabase(t *testing.T, prefix string) (string, *pgxpool.Pool) {
 	t.Helper()
-	adminURL := os.Getenv("HEARSAY_DATABASE_URL")
-	if adminURL == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	ctx := t.Context()
-	url := createDatabase(t, adminURL, prefix)
-	m, err := db.NewMigrator(ctx, url, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := m.Up(ctx); err != nil {
-		t.Fatal(err)
-	}
-	_ = m.Close()
-	pool, err := db.Connect(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	return url, pool
+	pool := dbtest.Scratch(t, prefix)
+	return pool.Config().ConnString(), pool
 }
 
 func TestDeletePreviewSelectorsAndNoWrites(t *testing.T) {
 	url, pool := deleteDatabase(t, "delete_preview_")
 	ctx := t.Context()
-	configPath := writeConfig(t, map[string]string{
+	configPath := configtest.Write(t, map[string]string{
 		"sources/chat.yaml":   "id: chat\ntype: discord\ncontainers: [team]\n",
 		"sources/code.yaml":   "id: code\ntype: github\ncontainers: [acme/api]\n",
 		"scopes/all.yaml":     "id: all\nsources: [chat, code]\n",
@@ -175,7 +157,7 @@ func TestDeletePreviewSelectorsAndNoWrites(t *testing.T) {
 func TestDeleteApplyNamesAConfiguredHumanOperator(t *testing.T) {
 	url, pool := deleteDatabase(t, "delete_apply_")
 	ctx := t.Context()
-	configPath := writeConfig(t, map[string]string{
+	configPath := configtest.Write(t, map[string]string{
 		"sources/chat.yaml":   "id: chat\ntype: discord\ncontainers: [team]\n",
 		"scopes/all.yaml":     "id: all\nsources: [chat]\n",
 		"principals/pat.yaml": "id: pat\nidentities: [{source: chat, native_id: u1}]\n",

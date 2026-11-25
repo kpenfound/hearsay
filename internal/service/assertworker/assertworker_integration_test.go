@@ -7,11 +7,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"os"
 	"slices"
-	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,70 +16,16 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
-	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/llm"
+	"github.com/kpenfound/hearsay/internal/poll"
 	"github.com/kpenfound/hearsay/internal/queue"
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
-
-func newPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	pool, err := db.Connect(context.Background(), url)
-	if err != nil {
-		t.Fatalf("connecting to postgres: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
-func scratchPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	admin := newPool(t)
-	name := "hearsay_assert_" + newSource(t)
-	if _, err := admin.Exec(t.Context(), `CREATE DATABASE `+name); err != nil {
-		t.Fatalf("creating the scratch database: %v", err)
-	}
-	t.Cleanup(func() {
-		if _, err := admin.Exec(context.Background(), `DROP DATABASE `+name+` WITH (FORCE)`); err != nil {
-			t.Errorf("dropping the scratch database: %v", err)
-		}
-	})
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	base, query, hasQuery := strings.Cut(url, "?")
-	url = base[:strings.LastIndex(base, "/")+1] + name
-	if hasQuery {
-		url += "?" + query
-	}
-	migrator, err := db.NewMigrator(t.Context(), url, nil)
-	if err != nil {
-		t.Fatalf("NewMigrator() = %v", err)
-	}
-	if _, err := migrator.Up(t.Context()); err != nil {
-		t.Fatalf("migrating the scratch database: %v", err)
-	}
-	_ = migrator.Close()
-	pool, err := db.Connect(context.Background(), url)
-	if err != nil {
-		t.Fatalf("connecting to the scratch database: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
-var sources atomic.Int64
-
-func newSource(t *testing.T) string {
-	t.Helper()
-	return "t" + strconv.FormatInt(time.Now().UnixNano(), 36) + "x" + strconv.FormatInt(sources.Add(1), 36)
-}
 
 func testConfig(src string) *config.Config {
 	cfg := config.Default()
@@ -123,8 +66,8 @@ func assertDoc(t *testing.T, a *assertworker.Asserter, docID, scope string) asse
 }
 
 func TestAnIssueThenAMergedPullRequestIsOneTopicWithTwoStances(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	f := store(t, pool, src)
 	scope := l2.ScopeKey(testRepo(src), src, repo, nil)
 	if scope != src {
@@ -194,8 +137,8 @@ func TestAnIssueThenAMergedPullRequestIsOneTopicWithTwoStances(t *testing.T) {
 }
 
 func TestHandlingAJobLogsIdsAndNoContentAtInfoLevel(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	f := store(t, pool, src)
 	scope := l2.ScopeKey(testRepo(src), src, repo, nil)
 	a := newAsserter(t, pool, src, loadFixtures(t))
@@ -276,8 +219,8 @@ func TestTheWorkerOffersOnlyWhatTheDocumentsReadersMayReadNow(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pool := newPool(t)
-			src := newSource(t)
+			pool := dbtest.Pool(t)
+			src := dbtest.UniqueID()
 			f := store(t, pool, src)
 			scope := l2.ScopeKey(testRepo(src), src, repo, nil)
 			jev := newRuleJev()
@@ -314,8 +257,8 @@ func TestTheWorkerOffersOnlyWhatTheDocumentsReadersMayReadNow(t *testing.T) {
 }
 
 func TestAProposedPullRequestBecomesRatifiedWithTheSamePosition(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	f := store(t, pool, src)
 	merged := prDoc(t, src)
 	proposal := prBody
@@ -375,8 +318,8 @@ func TestAProposedPullRequestBecomesRatifiedWithTheSamePosition(t *testing.T) {
 }
 
 func TestTheWorkerIsIdempotentAcrossRestarts(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	f := store(t, pool, src)
 	scope := l2.ScopeKey(testRepo(src), src, repo, nil)
 	first := newAsserter(t, pool, src, loadFixtures(t))
@@ -403,8 +346,8 @@ func TestTheWorkerIsIdempotentAcrossRestarts(t *testing.T) {
 }
 
 func TestRetryingTheSameVersionWritesNothingTwice(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	f := store(t, pool, src)
 	scope := l2.ScopeKey(testRepo(src), src, repo, nil)
 	a := newAsserter(t, pool, src, loadFixtures(t))
@@ -446,8 +389,8 @@ func TestRetryingTheSameVersionWritesNothingTwice(t *testing.T) {
 }
 
 func TestARedistilledDocumentReplacesItsOwnStance(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	f := store(t, pool, src)
 	scope := l2.ScopeKey(testRepo(src), src, repo, nil)
 	a := newAsserter(t, pool, src, loadFixtures(t))
@@ -548,8 +491,8 @@ func TestARedistilledDocumentReplacesItsOwnStance(t *testing.T) {
 }
 
 func TestWhatTheModelWroteIsCleanedBeforeItIsStored(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	doc := commitDocument(t, src)
 	if _, err := l1.New(pool).Put(t.Context(), doc); err != nil {
 		t.Fatalf("Put() = %v", err)
@@ -571,8 +514,8 @@ func TestWhatTheModelWroteIsCleanedBeforeItIsStored(t *testing.T) {
 }
 
 func TestDocumentsOutsideThePipelineAreSkipped(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	store(t, pool, src)
 	issue, _ := documents(t, src)
 	open, _, err := issue.WithBody(l1.Body{Summary: "Still being worked out.", OutcomeKind: l1.OutcomeOpen})
@@ -591,8 +534,8 @@ func TestDocumentsOutsideThePipelineAreSkipped(t *testing.T) {
 }
 
 func TestRunReadsWhatIsEnqueuedAndWhatWasMissed(t *testing.T) {
-	pool := scratchPool(t)
-	src := newSource(t)
+	pool := dbtest.Scratch(t, "hearsay_assert")
+	src := dbtest.UniqueID()
 	store(t, pool, src)
 	issue, _ := documents(t, src)
 
@@ -610,7 +553,7 @@ func TestRunReadsWhatIsEnqueuedAndWhatWasMissed(t *testing.T) {
 		done <- assertworker.Run(ctx, testConfig(src), assertworker.Deps{Pool: pool, LLM: registry, Judgments: newRuleJev().judgments(t)})
 	}()
 
-	waitFor(t, "both documents to be read", func() bool {
+	poll.Until(t, "both documents to be read", func() bool {
 		topics, err := l2.New(pool).Topics(t.Context(), src)
 		if err != nil || len(topics) != 1 {
 			return false
@@ -631,20 +574,20 @@ func TestRunReadsWhatIsEnqueuedAndWhatWasMissed(t *testing.T) {
 }
 
 func TestRunRefusesWithoutJev(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	registry, err := llm.NewFake(llm.Default(), llm.NewFixtures())
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = assertworker.Run(t.Context(), testConfig(newSource(t)), assertworker.Deps{Pool: pool, LLM: registry})
+	err = assertworker.Run(t.Context(), testConfig(dbtest.UniqueID()), assertworker.Deps{Pool: pool, LLM: registry})
 	if err == nil || !strings.Contains(err.Error(), "needs Jev") {
 		t.Fatalf("Run() without Jev = %v, want a refusal", err)
 	}
 }
 
 func TestEnqueueAssertionOnlyForOutcomesThatAssert(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	issue, _ := documents(t, src)
 	open, _, err := issue.WithBody(l1.Body{Summary: "Open.", OutcomeKind: l1.OutcomeOpen})
 	if err != nil {
@@ -669,16 +612,4 @@ func assertOneTopicTwoStances(t *testing.T, pool *pgxpool.Pool, scope string) {
 	if history[1].Supersedes != history[0].ID {
 		t.Errorf("the second stance supersedes %q, want %q", history[1].Supersedes, history[0].ID)
 	}
-}
-
-func waitFor(t *testing.T, what string, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
 }

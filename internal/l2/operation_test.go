@@ -3,13 +3,12 @@ package l2_test
 import (
 	"errors"
 	"maps"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/l2"
 )
 
@@ -297,7 +296,6 @@ func TestSplitTopicIDIgnoresTheOrderOfStances(t *testing.T) {
 
 func loadRepo(t *testing.T, authority string) config.Repo {
 	t.Helper()
-	dir := t.TempDir()
 	files := map[string]string{
 		"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\n",
 		"scopes/eng.yaml":     "id: eng\nsources: [github]\n",
@@ -308,15 +306,7 @@ func loadRepo(t *testing.T, authority string) config.Repo {
 	if authority != "" {
 		files["authority/a.yaml"] = authority
 	}
-	for name, body := range files {
-		full := filepath.Join(dir, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
+	dir := configtest.Write(t, files)
 	repo, err := config.Load(dir)
 	if err != nil {
 		t.Fatalf("config.Load() = %v", err)

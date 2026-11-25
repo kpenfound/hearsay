@@ -14,7 +14,7 @@ import (
 func TestBackfillCursorsRoundTrip(t *testing.T) {
 	pool := dbtest.Pool(t)
 	cursors := l0.NewBackfillCursors(pool)
-	source := newSourceID(t)
+	source := dbtest.UniqueID()
 
 	state, err := cursors.Load(t.Context(), source)
 	if err != nil {
@@ -41,7 +41,7 @@ func TestBackfillCursorsRoundTrip(t *testing.T) {
 		}
 	}
 
-	other := newSourceID(t)
+	other := dbtest.UniqueID()
 	if err := cursors.Save(t.Context(), other, connector.BackfillState{Cursor: "elsewhere"}); err != nil {
 		t.Fatalf("Save(other source) = %v, want no error", err)
 	}
@@ -57,7 +57,7 @@ func TestBackfillCursorsRoundTrip(t *testing.T) {
 func TestBackfillCursorsRefuseWhatTheColumnCannotHold(t *testing.T) {
 	pool := dbtest.Pool(t)
 	cursors := l0.NewBackfillCursors(pool)
-	source := newSourceID(t)
+	source := dbtest.UniqueID()
 
 	tests := []struct {
 		name   string
@@ -106,7 +106,7 @@ func TestBackfillCursorsRefuseWhatTheColumnCannotHold(t *testing.T) {
 
 func TestTheTableRefusesWhatTheStoreRefuses(t *testing.T) {
 	pool := dbtest.Pool(t)
-	source := newSourceID(t)
+	source := dbtest.UniqueID()
 
 	tests := []struct {
 		name   string

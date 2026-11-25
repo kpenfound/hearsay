@@ -6,13 +6,14 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
 func TestResolveForHidesWorkEntitiesBeforeAliasMatching(t *testing.T) {
-	pool := scratchPool(t)
+	pool := dbtest.Scratch(t, "hearsay_l2")
 	graph := l2.New(pool)
 	reader := l1.Reader{Effective: principal.Effective{Human: "reader", Grant: principal.Grant{Scopes: principal.AllScopes()}}}
 	private := connector.ACL{{Kind: connector.ACLIdentity, Source: "projects", NativeID: "owner"}}

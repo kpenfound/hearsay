@@ -7,14 +7,15 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/l3"
 )
 
 func TestTraverseDeterministicOrder(t *testing.T) {
-	pool := newPool(t)
+	pool := dbtest.Pool(t)
 	graph := l2.New(pool)
-	src := newSource()
+	src := dbtest.UniqueID()
 	root := "code:" + src
 	id := func(kind, name string) string { return root + ":" + kind + "-" + name }
 	order := []string{"z", "b", "a"}

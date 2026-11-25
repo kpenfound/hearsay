@@ -203,9 +203,8 @@ Jev requests and retries, with unknown usage and cost kept unknown.
 
 ## L3: derived views
 
-Rebuilt from L1/L2 on demand. Never written directly. Current stances, recent
-activity, open questions and anchors ship; ownership discovery and "who knows X"
-remain planned views.
+Rebuilt from L1/L2 on demand. Never written directly. The views are current
+stances, recent activity, open questions and anchors.
 
 - Current stances for an entity, including stances inherited from ancestor entities, tagged as inherited.
 - Recent L1 activity on a scope.

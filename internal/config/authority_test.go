@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 )
 
 func rankOf(p config.Policy, c config.ArtifactClass) int {
@@ -209,7 +210,7 @@ func TestAuthorityComposition(t *testing.T) {
 			if tt.authority != "" {
 				files["authority/a.yaml"] = tt.authority
 			}
-			repo, err := config.Load(writeFiles(t, files))
+			repo, err := config.Load(configtest.Write(t, files))
 			if err != nil {
 				t.Fatalf("Load() = %v, want no error", err)
 			}
@@ -235,7 +236,7 @@ func TestAuthorityComposition(t *testing.T) {
 }
 
 func TestEmptyRatifierListLocksRatificationOut(t *testing.T) {
-	repo, err := config.Load(writeFiles(t, with(map[string]string{
+	repo, err := config.Load(configtest.Write(t, with(map[string]string{
 		"principals/p.yaml": "id: kyle\nidentities: [{source: github, handle: kpenfound}]\n",
 		"authority/a.yaml": "- scope: \"*\"\n  ratified_by:\n    principals: [kyle]\n" +
 			"- scope: api\n  ratified_by:\n    principals: []\n    artifacts: []\n",

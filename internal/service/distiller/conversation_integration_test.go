@@ -21,6 +21,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/conversation"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/deletion"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
@@ -303,8 +304,8 @@ func storedDocuments(t *testing.T, pool *pgxpool.Pool, src string) map[string]l1
 }
 
 func TestInterleavedTopicsAreOneConversationDocumentEach(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	scenario := loadScenario(t, "queue")
 	base := scenario.state(t, "base")
 	rec := newRecording(t)
@@ -393,8 +394,8 @@ func TestInterleavedTopicsAreOneConversationDocumentEach(t *testing.T) {
 }
 
 func TestRedistillingAConversationWritesOnlyWhatChanged(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	scenario := loadScenario(t, "queue")
 	base, reworded, gone := scenario.state(t, "base"), scenario.state(t, "reworded"), scenario.state(t, "retry-gone")
 	rec := newRecording(t)
@@ -475,8 +476,8 @@ func TestRedistillingAConversationWritesOnlyWhatChanged(t *testing.T) {
 }
 
 func TestAConversationThatSelectsNothingStillLeavesARecord(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	scenario := loadScenario(t, "queue")
 	nothing := scenario.state(t, "nothing")
 	rec := newRecording(t)
@@ -496,8 +497,8 @@ func TestAConversationThatSelectsNothingStillLeavesARecord(t *testing.T) {
 }
 
 func TestAFailedOrStoppedConversationAttemptRecordsNothing(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	scenario := loadScenario(t, "queue")
 	base := scenario.state(t, "base")
 	rec := newRecording(t)
@@ -589,8 +590,8 @@ func TestAConversationThatMovesWhileItIsDistilledIsNotPublishedFromTheOldRead(t 
 		{"a message arrives", "arrived", func(r resolved, src string) string { return r.eventID(src, "x-5", "owner") }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := newPool(t)
-			src := newSource(t)
+			pool := dbtest.Pool(t)
+			src := dbtest.UniqueID()
 			scenario := loadScenario(t, "queue")
 			base, next := scenario.state(t, "base"), scenario.state(t, tc.state)
 			rec := newRecording(t)
@@ -638,11 +639,12 @@ func TestAConversationThatMovesWhileItIsDistilledIsNotPublishedFromTheOldRead(t 
 }
 
 func TestTheChangeFeedEnqueuesOneJobPerConversation(t *testing.T) {
-	pool := newScratchPool(t)
-	src := newSource(t)
+	pool := dbtest.Scratch(t, "distiller_none")
+	src := dbtest.UniqueID()
 	scenario := loadScenario(t, "queue")
 	base := scenario.state(t, "base")
 	ingest(t, pool, base.events(src))
+	waitForPumpBatch(t, pool, len(base.messages))
 	pump := distiller.NewPump(pool, distiller.PumpOptions{Quiet: time.Minute, MaxDelay: 5 * time.Minute, Batch: l0.MaxLimit})
 	progress, err := pump.Once(t.Context())
 	if err != nil || progress.Events != len(base.messages) {
@@ -677,8 +679,8 @@ func TestOnlyTheOwnersWordsBecomeTheOwnersStance(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.state, func(t *testing.T) {
-			pool := newScratchPool(t)
-			src := newSource(t)
+			pool := dbtest.Scratch(t, "distiller_none")
+			src := dbtest.UniqueID()
 			scenario := loadScenario(t, "cache")
 			st := scenario.state(t, tc.state)
 			rec := newRecording(t)
@@ -755,8 +757,8 @@ func stancesFromOwner(t *testing.T, pool *pgxpool.Pool, src string, stored l1.St
 }
 
 func TestADeletionRebuildsTheConversationDocumentsThatQuotedIt(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	ctx := t.Context()
 	scenario := loadScenario(t, "queue")
 	base, after := scenario.state(t, "base"), scenario.state(t, "after-deleting-the-answer")

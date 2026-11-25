@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 )
 
 func TestOwnerSourceSetting(t *testing.T) {
@@ -45,7 +46,7 @@ func TestOwnerSourceSetting(t *testing.T) {
 			for name, body := range tt.files {
 				files[name] = body
 			}
-			_, err := config.Load(writeFiles(t, files))
+			_, err := config.Load(configtest.Write(t, files))
 			switch {
 			case tt.want == "" && err != nil:
 				t.Fatalf("Load = %v, want no error", err)

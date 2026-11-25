@@ -7,12 +7,13 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector/work"
 )
 
 func TestDocsWorkSourceLoads(t *testing.T) {
 	examples := docExamples(t)
-	root := writeFiles(t, filesUnder(t, examples, "work"))
+	root := configtest.Write(t, filesUnder(t, examples, "work"))
 	repo, err := config.Load(filepath.Join(root, "hearsay.yaml"))
 	if err != nil {
 		t.Fatalf("Load(work source example) = %v", err)
@@ -23,7 +24,7 @@ func TestDocsWorkSourceLoads(t *testing.T) {
 }
 
 func TestDocsWorkOwnerSourceLoads(t *testing.T) {
-	root := writeFiles(t, filesUnder(t, docExamples(t), "work-owner"))
+	root := configtest.Write(t, filesUnder(t, docExamples(t), "work-owner"))
 	repo, err := config.Load(filepath.Join(root, "hearsay.yaml"))
 	if err != nil {
 		t.Fatalf("Load(owner source example) = %v", err)
@@ -54,7 +55,7 @@ func TestWorkImplicitPrincipalIdentities(t *testing.T) {
 			if tt.work {
 				files["sources/projects.yaml"] = "id: projects\ntype: work\ncontainers: ['*']\n"
 			}
-			_, err := config.Load(writeFiles(t, files))
+			_, err := config.Load(configtest.Write(t, files))
 			if tt.want != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.want) {
 					t.Fatalf("Load = %v, want %s", err, tt.want)
@@ -69,7 +70,7 @@ func TestWorkImplicitPrincipalIdentities(t *testing.T) {
 }
 
 func TestDocsWorkAuthorityRatifiesByTheSourceAlone(t *testing.T) {
-	root := writeFiles(t, filesUnder(t, docExamples(t), "work-authority"))
+	root := configtest.Write(t, filesUnder(t, docExamples(t), "work-authority"))
 	repo, err := config.Load(filepath.Join(root, "hearsay.yaml"))
 	if err != nil {
 		t.Fatalf("Load(work authority example) = %v", err)

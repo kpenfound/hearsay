@@ -18,7 +18,7 @@ import (
 func TestStateRoundTripsAndMovesWatermark(t *testing.T) {
 	pool := dbtest.Pool(t)
 	store := l1.New(pool)
-	doc := storedDoc(t, newSource(t), "acme/api#state", nil)
+	doc := storedDoc(t, dbtest.UniqueID(), "acme/api#state", nil)
 	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +104,7 @@ func TestStateRoundTripsAndMovesWatermark(t *testing.T) {
 
 func TestListForStatesAppliesReachAndACL(t *testing.T) {
 	store := l1.New(dbtest.Pool(t))
-	src := newSource(t)
+	src := dbtest.UniqueID()
 	scope := "state:" + src
 	private := connector.ACLEntry{Kind: connector.ACLGroup, Source: src, NativeID: "team"}
 	for _, tt := range []struct {
@@ -163,7 +163,7 @@ func TestListForStatesAppliesReachAndACL(t *testing.T) {
 
 func TestStateOnlyChangesRewriteDistilledAt(t *testing.T) {
 	store := l1.New(dbtest.Pool(t))
-	doc := storedDoc(t, newSource(t), "state-time", nil)
+	doc := storedDoc(t, dbtest.UniqueID(), "state-time", nil)
 	put(t, store, doc)
 	previous, err := store.Get(t.Context(), doc.ID)
 	if err != nil {

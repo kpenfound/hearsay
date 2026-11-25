@@ -73,21 +73,38 @@ func journalCommit(t *testing.T, pool *pgxpool.Pool, rs []l1.JudgmentRecord, obs
 		t.Fatal(err)
 	}
 }
-func lookupJournal(t *testing.T, pool *pgxpool.Pool, r l1.JudgmentRecord) *l1.JudgmentRecord {
+func lookupJudgment(t *testing.T, pool *pgxpool.Pool, r l1.JudgmentRecord, inputs l1.JudgmentInputs) *l1.JudgmentRecord {
 	t.Helper()
-	got, err := l1.New(pool).LookupJudgment(t.Context(), journalReader(), r.Task, r.QuestionVersion, r.QuestionHash, r.Inputs)
+	key := l1.JudgmentKey{Task: r.Task, Version: r.QuestionVersion, QuestionHash: r.QuestionHash}
+	found, err := l1.New(pool).LookupJudgments(t.Context(), journalReader(), []l1.JudgmentKey{key}, inputs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return got
+	got, ok := found[key]
+	if !ok {
+		return nil
+	}
+	return &got
+}
+
+func lookupJournal(t *testing.T, pool *pgxpool.Pool, r l1.JudgmentRecord) *l1.JudgmentRecord {
+	t.Helper()
+	return lookupJudgment(t, pool, r, r.Inputs)
+}
+
+func beginJudgment(t *testing.T, pool *pgxpool.Pool, r l1.JudgmentRecord) string {
+	t.Helper()
+	ids, err := l1.New(pool).BeginJudgments(t.Context(), []l1.JudgmentRecord{r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ids[0]
 }
 
 func TestJournalAttemptsAndRestart(t *testing.T) {
 	pool := journalDB(t)
 	r := journalRecord(t, pool, "attempt")
-	if _, err := l1.New(pool).BeginJudgment(t.Context(), r); err != nil {
-		t.Fatal(err)
-	}
+	beginJudgment(t, pool, r)
 	if got := lookupJournal(t, pool, r); got != nil {
 		t.Fatal("interrupted attempt was reusable")
 	}
@@ -174,9 +191,7 @@ func TestJournalRefusalsPreserveBaselineTransaction(t *testing.T) {
 			pool := journalDB(t)
 			first := journalRecord(t, pool, "first")
 			second := journalRecord(t, pool, "second")
-			if _, err := l1.New(pool).BeginJudgment(t.Context(), first); err != nil {
-				t.Fatal(err)
-			}
+			beginJudgment(t, pool, first)
 			want := l1.JournalStorageFailure
 			opts := l1.JournalCommitOptions{StatementTimeout: 200 * time.Millisecond, LockTimeout: 25 * time.Millisecond}
 			var holder pgx.Tx
@@ -438,10 +453,7 @@ func TestJournalAttemptBeforeFirstDocument(t *testing.T) {
 		t.Fatal("unwritten document had a revision")
 	}
 	r := l1.JudgmentRecord{Task: "outcome.binding_agreement", QuestionVersion: "v1", QuestionHash: "hash-of-question", Mode: "shadow", Inputs: inputs}
-	id, err := l1.New(pool).BeginJudgment(t.Context(), r)
-	if err != nil {
-		t.Fatal(err)
-	}
+	id := beginJudgment(t, pool, r)
 	records, err := l1.New(pool).JudgmentsFor(t.Context(), journalReader(), r.Task)
 	if err != nil || len(records) != 1 || records[0].ID != id || records[0].State != "attempt" {
 		t.Fatalf("pending attempt = %+v, %v", records, err)

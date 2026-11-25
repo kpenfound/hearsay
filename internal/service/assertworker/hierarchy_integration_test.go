@@ -23,9 +23,11 @@ import (
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/github"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/l2"
+	"github.com/kpenfound/hearsay/internal/poll"
 	"github.com/kpenfound/hearsay/internal/principal"
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
 )
@@ -126,9 +128,9 @@ func stanceOn(t *testing.T, pool *pgxpool.Pool, n, position string) {
 func inherited(t *testing.T, pool *pgxpool.Pool, entity string) []string {
 	t.Helper()
 	reader := l1.Reader{Effective: principal.Effective{Human: "kyle", Grant: principal.Grant{Scopes: principal.AllScopes()}}}
-	b, _, err := bundle.New(pool).Assemble(t.Context(), reader, entity)
+	b, _, err := bundle.New(pool).AssembleForEvent(t.Context(), reader, entity, "")
 	if err != nil {
-		t.Fatalf("Assemble(%s) = %v", entity, err)
+		t.Fatalf("AssembleForEvent(%s) = %v", entity, err)
 	}
 	out := []string{}
 	for _, s := range b.Stances {
@@ -141,7 +143,7 @@ func inherited(t *testing.T, pool *pgxpool.Pool, entity string) []string {
 }
 
 func TestASubIssueInheritsItsParentsStances(t *testing.T) {
-	pool := scratchPool(t)
+	pool := dbtest.Scratch(t, "hearsay_assert")
 	repo := hierarchyConfig(true)
 	gh := newHooks(t, pool)
 	stanceOn(t, pool, "10", "health checks ship before the launch")
@@ -197,7 +199,7 @@ func TestASubIssueInheritsItsParentsStances(t *testing.T) {
 			}
 		}
 
-		waitFor(t, step.name, func() bool {
+		poll.Until(t, step.name, func() bool {
 			if _, err := f.Once(t.Context()); err != nil {
 				t.Fatalf("Once() = %v", err)
 			}
@@ -214,7 +216,7 @@ func TestASubIssueInheritsItsParentsStances(t *testing.T) {
 }
 
 func TestNoTrackerItemForARepositoryNoScopeMaps(t *testing.T) {
-	pool := scratchPool(t)
+	pool := dbtest.Scratch(t, "hearsay_assert")
 	repo := hierarchyConfig(false)
 	gh := newHooks(t, pool)
 	gh.deliver("issues", "issues.edited.sub_issue")
@@ -233,7 +235,7 @@ func TestNoTrackerItemForARepositoryNoScopeMaps(t *testing.T) {
 }
 
 func TestStartupSeedsTheTrackerHierarchyFromL0(t *testing.T) {
-	pool := scratchPool(t)
+	pool := dbtest.Scratch(t, "hearsay_assert")
 	gh := newHooks(t, pool)
 	gh.deliver("issues", "issues.edited.sub_issue")
 	gh.deliver("sub_issues", "sub_issues.parent_issue_added")

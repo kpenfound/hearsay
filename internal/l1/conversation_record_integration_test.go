@@ -13,7 +13,7 @@ import (
 func TestAConversationDistillationRecordIsExactAndReplaced(t *testing.T) {
 	pool := dbtest.Pool(t)
 	store := l1.New(pool)
-	src, thread, other := newSource(t), "c-1", "c-2"
+	src, thread, other := dbtest.UniqueID(), "c-1", "c-2"
 	first := l1.ConversationDistillation{Source: src, Thread: thread, Inputs: []string{"evt:b", "evt:a"}, Documents: []string{"l1:z", "l1:y"}}
 
 	if _, ok, err := store.ConversationDistillationOf(t.Context(), src, thread); err != nil || ok {

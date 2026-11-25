@@ -11,8 +11,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/discord"
 	"github.com/kpenfound/hearsay/internal/db/dbtest"
@@ -59,7 +58,7 @@ func newDiscordWorld(t *testing.T) *discordWorld {
 	t.Helper()
 	pool := dbtest.Pool(t)
 	ctx := t.Context()
-	w := &discordWorld{src: newSource(), edits: make(chan string, 4)}
+	w := &discordWorld{src: dbtest.UniqueID(), edits: make(chan string, 4)}
 	w.scope = "d" + w.src
 	w.thread, w.bare = strconv.FormatInt(time.Now().UnixNano(), 10), strconv.FormatInt(time.Now().UnixNano()+1, 10)
 	pub, priv, err := ed25519.GenerateKey(nil)
@@ -78,7 +77,6 @@ func newDiscordWorld(t *testing.T) *discordWorld {
 	}))
 	t.Cleanup(rest.Close)
 
-	root := t.TempDir()
 	files := map[string]string{
 		"sources/discord.yaml": fmt.Sprintf("id: %s\ntype: discord\ncontainers: [\"%s\"]\nsettings:\n  guild: \"%s\"\n  application_id: \"%s\"\n  public_key: \"%s\"\n  api_url: %s\nsecrets:\n  token: HEARSAY_TEST_DISCORD_TOKEN\n",
 			w.src, discordChannel, discordGuild, discordApp, hex.EncodeToString(pub), rest.URL),
@@ -89,15 +87,7 @@ func newDiscordWorld(t *testing.T) *discordWorld {
 			"- id: shed\n  kind: agent\n  class: worker\n  scopes: [code:%[1]s]\n  identities: [{source: %[1]s, native_id: \"14\"}]\n", w.src),
 		"authority/a.yaml": "scope: \"*\"\nratified_by:\n  principals: [kyle, sam]\n",
 	}
-	for name, body := range files {
-		full := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
+	root := configtest.Write(t, files)
 	repo, err := config.Load(root)
 	if err != nil {
 		t.Fatal(err)

@@ -4,7 +4,6 @@ package github_test
 
 import (
 	"net/http"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -12,20 +11,13 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/connector"
-	"github.com/kpenfound/hearsay/internal/db"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
+	"github.com/kpenfound/hearsay/internal/poll"
 )
 
 func TestBackfillAndWebhooksLandInL0Once(t *testing.T) {
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	pool, err := db.Connect(t.Context(), url)
-	if err != nil {
-		t.Fatalf("connecting to postgres: %v", err)
-	}
-	t.Cleanup(pool.Close)
+	pool := dbtest.Pool(t)
 	store := l0.New(pool)
 
 	id := "gh" + strconv.FormatInt(time.Now().UnixNano(), 36)
@@ -73,7 +65,7 @@ func TestBackfillAndWebhooksLandInL0Once(t *testing.T) {
 	release := gh.hold(commits)
 	begun := len(gh.seen())
 	_, stopFirst := runtimeFor(t, src, connector.RuntimeOptions{Sink: store, Resyncs: resyncs, Exposure: store})
-	waitFor(t, "the re-sync to reach the commits", requestedSince(gh, begun, commits))
+	poll.Until(t, "the re-sync to reach the commits", requestedSince(gh, begun, commits))
 	stopFirst()
 	release()
 	if resynced(t, resyncs, id, "acme/api")() {
@@ -81,7 +73,7 @@ func TestBackfillAndWebhooksLandInL0Once(t *testing.T) {
 	}
 
 	_, stop := runtimeFor(t, src, connector.RuntimeOptions{Sink: store, Resyncs: resyncs, Exposure: store})
-	waitFor(t, "the resumed re-sync", resynced(t, resyncs, id, "acme/api"))
+	poll.Until(t, "the resumed re-sync", resynced(t, resyncs, id, "acme/api"))
 	stop()
 	if n := len(stored()); n != 2*len(wantBackfill) {
 		t.Errorf("after the re-sync L0 holds %d events, want %d", n, 2*len(wantBackfill))
@@ -105,15 +97,7 @@ func TestBackfillAndWebhooksLandInL0Once(t *testing.T) {
 }
 
 func TestABackfillOverAnEditedReviewLandsANewRevision(t *testing.T) {
-	url := os.Getenv("HEARSAY_DATABASE_URL")
-	if url == "" {
-		t.Skip("HEARSAY_DATABASE_URL is not set")
-	}
-	pool, err := db.Connect(t.Context(), url)
-	if err != nil {
-		t.Fatalf("connecting to postgres: %v", err)
-	}
-	t.Cleanup(pool.Close)
+	pool := dbtest.Pool(t)
 	store := l0.New(pool)
 	id := "gh" + strconv.FormatInt(time.Now().UnixNano(), 36)
 

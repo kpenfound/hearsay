@@ -2,12 +2,9 @@ package agent_test
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -15,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/agent"
+	"github.com/kpenfound/hearsay/internal/connector/connectortest"
+	"github.com/kpenfound/hearsay/internal/connector/push"
 	"github.com/kpenfound/hearsay/internal/principal"
-	"github.com/kpenfound/hearsay/internal/service/connectors"
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 	"github.com/kpenfound/hearsay/internal/telemetry"
 )
@@ -32,10 +29,7 @@ var env = map[string]string{
 	"KYLE_TOKEN":  "kyle-secret",
 }
 
-func lookup(name string) (string, bool) {
-	v, ok := env[name]
-	return v, ok
-}
+var lookup = connectortest.Lookup(env)
 
 var principals = []principal.Principal{
 	{ID: "kyle", Kind: principal.KindHuman, TokenEnv: "KYLE_TOKEN"},
@@ -59,32 +53,7 @@ func server(t *testing.T, src connector.SourceConfig) (*httptest.Server, *connec
 	if err != nil {
 		t.Fatalf("New() = %v", err)
 	}
-	rec := &connector.Recorder{}
-	gate := connector.NewGate(rec, src.ID, c.Describe(), connector.NewAllowlist(src))
-	srv := httptest.NewServer(c.Handler(gate))
-	t.Cleanup(srv.Close)
-	return srv, rec
-}
-
-func post(t *testing.T, url, token, body string) (int, string) {
-	t.Helper()
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, strings.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	out, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return resp.StatusCode, string(out)
+	return connectortest.Serve(t, src, c)
 }
 
 const (
@@ -122,11 +91,11 @@ func TestASessionIsIngested(t *testing.T) {
 	}
 	for i, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			code, body := post(t, srv.URL, env["SHED_TOKEN"], tt.body)
+			code, body := connectortest.PostWithToken(t, srv.URL, env["SHED_TOKEN"], tt.body)
 			if code != http.StatusAccepted {
 				t.Fatalf("POST = %d %s, want 202", code, body)
 			}
-			var accepted agent.Accepted
+			var accepted push.Accepted
 			if err := json.Unmarshal([]byte(body), &accepted); err != nil {
 				t.Fatalf("response %q is not JSON: %v", body, err)
 			}
@@ -172,7 +141,7 @@ func ingestSession(t *testing.T) []connector.Event {
 	t.Helper()
 	srv, rec := server(t, source())
 	for _, body := range []string{start, turn, call, next, end} {
-		if code, out := post(t, srv.URL, env["SHED_TOKEN"], body); code != http.StatusAccepted {
+		if code, out := connectortest.PostWithToken(t, srv.URL, env["SHED_TOKEN"], body); code != http.StatusAccepted {
 			t.Fatalf("POST = %d %s, want 202", code, out)
 		}
 	}
@@ -203,7 +172,7 @@ func TestAReplayIsTheSameEvent(t *testing.T) {
 	for _, body := range []string{start, turn, call, next, end} {
 		srv, rec := server(t, source())
 		for range 2 {
-			if code, out := post(t, srv.URL, env["SHED_TOKEN"], body); code != http.StatusAccepted {
+			if code, out := connectortest.PostWithToken(t, srv.URL, env["SHED_TOKEN"], body); code != http.StatusAccepted {
 				t.Fatalf("POST = %d %s, want 202", code, out)
 			}
 		}
@@ -223,7 +192,7 @@ func TestNextActionVariants(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			srv, rec := server(t, source())
-			if code, body := post(t, srv.URL, env["SHED_TOKEN"], tt.body); code != http.StatusAccepted {
+			if code, body := connectortest.PostWithToken(t, srv.URL, env["SHED_TOKEN"], tt.body); code != http.StatusAccepted {
 				t.Fatalf("POST = %d %s, want 202", code, body)
 			}
 			if events := rec.Events(); len(events) != 1 || events[0].Kind != connector.KindNextAction {
@@ -282,7 +251,7 @@ func TestARequestIsRefused(t *testing.T) {
 				src = source()
 			}
 			srv, rec := server(t, src)
-			if code, body := post(t, srv.URL, tt.token, tt.body); code != tt.want {
+			if code, body := connectortest.PostWithToken(t, srv.URL, tt.token, tt.body); code != tt.want {
 				t.Errorf("POST = %d %s, want %d", code, body, tt.want)
 			}
 			if n := len(rec.Events()); n != 0 {
@@ -337,59 +306,7 @@ func TestNewRefusesASourceItCannotServe(t *testing.T) {
 }
 
 func TestTheServiceHostsAndReportsTheSource(t *testing.T) {
-	src := source()
-	registry := connector.NewRegistry()
-	if err := registry.Register(agent.Type, agent.NewFactory(principals, lookup)); err != nil {
-		t.Fatal(err)
-	}
-	var lc net.ListenConfig
-	listener, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := "http://" + listener.Addr().String()
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() {
-		done <- connectors.Run(ctx, &config.Config{Repo: config.Repo{Sources: []connector.SourceConfig{src}}}, connectors.Deps{
-			Registry: registry,
-			Sink:     &connector.Recorder{},
-			Cursors:  connector.NewMemoryCursors(),
-			Listener: listener,
-		})
-	}()
-	defer func() {
-		cancel()
-		if err := <-done; err != nil {
-			t.Errorf("Run() = %v", err)
-		}
-	}()
-
-	if code, body := post(t, addr+connector.HookPath(sourceID), env["SHED_TOKEN"], start); code != http.StatusAccepted {
-		t.Fatalf("POST %s = %d %s, want 202", connector.HookPath(sourceID), code, body)
-	}
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, addr+"/readyz", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	var ready connectors.Readiness
-	if err := json.NewDecoder(resp.Body).Decode(&ready); err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != http.StatusOK || ready.Status != connector.HealthOK {
-		t.Errorf("GET /readyz = %d %+v, want 200 and ok", resp.StatusCode, ready)
-	}
-	if len(ready.Sources) != 1 || ready.Sources[0].Source != sourceID || ready.Sources[0].Type != agent.Type {
-		t.Fatalf("readiness lists %+v, want the agent source", ready.Sources)
-	}
-	if ready.Sources[0].LastEventAt.IsZero() {
-		t.Error("readiness has no last event time after an event was taken")
-	}
+	connectortest.HostedSource(t, source(), agent.Type, agent.NewFactory(principals, lookup), env["SHED_TOKEN"], start)
 }
 
 func logOf(t *testing.T, level slog.Level) string {

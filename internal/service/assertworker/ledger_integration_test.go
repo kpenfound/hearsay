@@ -9,14 +9,15 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
 )
 
 func TestMatchingReusesTheTopicAMergeKept(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	f := store(t, pool, src)
 	scope := l2.ScopeKey(testRepo(src), src, repo, nil)
 	issue, pr := issueDoc(t, src), prDoc(t, src)
@@ -100,8 +101,8 @@ func TestMatchingReusesTheTopicAMergeKept(t *testing.T) {
 }
 
 func TestAReadingThatReopensAMergedTopicWritesWhereItWent(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	f := store(t, pool, src)
 	scope := l2.ScopeKey(testRepo(src), src, repo, nil)
 	issue := issueDoc(t, src)

@@ -20,6 +20,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/config"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/connector/github"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l2"
 	"github.com/kpenfound/hearsay/internal/principal"
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
@@ -135,7 +136,7 @@ func logged(t *testing.T) (context.Context, *bytes.Buffer) {
 const noReaderWarning = "no repository reader"
 
 func TestStartupSeedsFromGitHub(t *testing.T) {
-	pool := scratchPool(t)
+	pool := dbtest.Scratch(t, "hearsay_assert")
 	gh := newRecordedGitHub(t)
 	ctx, log := logged(t)
 
@@ -170,7 +171,7 @@ func TestStartupSeedsFromGitHub(t *testing.T) {
 }
 
 func TestStartupSeedingFromGitHubFailures(t *testing.T) {
-	pool := scratchPool(t)
+	pool := dbtest.Scratch(t, "hearsay_assert")
 
 	t.Run("without a reader the worker says so", func(t *testing.T) {
 		ctx, log := logged(t)
@@ -218,7 +219,7 @@ func TestStartupSeedingFromGitHubFailures(t *testing.T) {
 }
 
 func TestStartupStoresTheDerivedHierarchy(t *testing.T) {
-	pool := scratchPool(t)
+	pool := dbtest.Scratch(t, "hearsay_assert")
 	gh := newRecordedGitHub(t)
 	cfg := seedConfig()
 	cfg.Code = append(cfg.Code, config.CodeEntity{

@@ -15,62 +15,10 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/connector/connectortest"
 	"github.com/kpenfound/hearsay/internal/connector/discord"
+	"github.com/kpenfound/hearsay/internal/poll"
 )
-
-type uniqueSink struct {
-	mu         sync.Mutex
-	recorder   connector.Recorder
-	seen       map[string]bool
-	deliveries []connector.Event
-	changed    chan struct{}
-}
-
-func newUniqueSink() *uniqueSink {
-	return &uniqueSink{seen: map[string]bool{}, changed: make(chan struct{})}
-}
-
-func (s *uniqueSink) Emit(ctx context.Context, ev connector.Event) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	defer func() {
-		close(s.changed)
-		s.changed = make(chan struct{})
-	}()
-	s.deliveries = append(s.deliveries, ev)
-	if s.seen[ev.ID] {
-		return nil
-	}
-	if err := s.recorder.Emit(ctx, ev); err != nil {
-		return err
-	}
-	s.seen[ev.ID] = true
-	return nil
-}
-func (s *uniqueSink) events() []connector.Event { return s.recorder.Events() }
-func (s *uniqueSink) allDeliveries() []connector.Event {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]connector.Event(nil), s.deliveries...)
-}
-
-func (s *uniqueSink) await(t *testing.T, what string, cond func() bool) {
-	t.Helper()
-	timeout := time.After(5 * time.Second)
-	for {
-		s.mu.Lock()
-		changed := s.changed
-		s.mu.Unlock()
-		if cond() {
-			return
-		}
-		select {
-		case <-changed:
-		case <-timeout:
-			t.Fatalf("timed out waiting for %s", what)
-		}
-	}
-}
 
 func fixture(t *testing.T, name string) []map[string]any {
 	t.Helper()
@@ -177,7 +125,7 @@ func replayGateway(t *testing.T, containers ...string) replayResult {
 	t.Cleanup(server.Close)
 	gatewayURL = "ws" + strings.TrimPrefix(server.URL, "http")
 	src := connector.SourceConfig{ID: "chat", Type: discord.Type, Containers: containers, Settings: json.RawMessage(fmt.Sprintf(`{"guild":%q,"gateway_url":%q}`, replayGuild, gatewayURL)), Secrets: map[string]string{"token": "BOT_TOKEN_ENV"}}
-	sink := newUniqueSink()
+	sink := connectortest.NewDeduplicating()
 	rt := startRuntime(t, src, func(o *connector.RuntimeOptions) { o.Sink = sink })
 	select {
 	case <-resumeStarted:
@@ -186,8 +134,8 @@ func replayGateway(t *testing.T, containers ...string) replayResult {
 	}
 	result := replayResult{reconnected: rt.Health(t.Context()).Sources[0]}
 	release()
-	sink.await(t, "the replayed gateway to finish", func() bool {
-		for _, ev := range sink.events() {
+	sink.Await(t, "the replayed gateway to finish", func() bool {
+		for _, ev := range sink.Events() {
 			if strings.HasPrefix(ev.NativeID, replayFinal) {
 				return true
 			}
@@ -196,11 +144,11 @@ func replayGateway(t *testing.T, containers ...string) replayResult {
 	})
 	result.final = rt.Health(t.Context()).Sources[0]
 	result.byID = map[string]connector.Event{}
-	for _, ev := range sink.events() {
+	for _, ev := range sink.Events() {
 		result.byID[ev.NativeID] = ev
 	}
 	result.deliveries = map[string]int{}
-	for _, ev := range sink.allDeliveries() {
+	for _, ev := range sink.Deliveries() {
 		result.deliveries[ev.NativeID]++
 	}
 	mu.Lock()
@@ -491,7 +439,7 @@ func TestPermanentRejectionStopsRuntimeRetry(t *testing.T) {
 	t.Cleanup(server.Close)
 	src := connector.SourceConfig{ID: "chat", Type: discord.Type, Containers: []string{"1551744840499200001"}, Settings: json.RawMessage(fmt.Sprintf(`{"guild":"1551744840499200000","gateway_url":%q}`, "ws"+strings.TrimPrefix(server.URL, "http"))), Secrets: map[string]string{"token": "BOT_TOKEN_ENV"}}
 	rt := startRuntime(t, src, func(*connector.RuntimeOptions) {})
-	eventually(t, "failed health", func() bool { return rt.Health(t.Context()).Sources[0].Status == connector.HealthFailed })
+	poll.Until(t, "failed health", func() bool { return rt.Health(t.Context()).Sources[0].Status == connector.HealthFailed })
 	time.Sleep(30 * time.Millisecond)
 	mu.Lock()
 	got := connections
@@ -518,41 +466,5 @@ func startRuntime(t *testing.T, src connector.SourceConfig, configure func(*conn
 
 func runRuntime(t *testing.T, src connector.SourceConfig, configure func(*connector.RuntimeOptions)) (*connector.Runtime, func()) {
 	t.Helper()
-	registry := connector.NewRegistry()
-	if err := registry.Register(discord.Type, discord.Factory); err != nil {
-		t.Fatal(err)
-	}
-	opts := connector.RuntimeOptions{Sources: []connector.SourceConfig{src}, Registry: registry, Sink: &connector.Recorder{}, Lookup: func(string) (string, bool) { return "bot-token", true }, Cadence: connector.Cadence{MinRefresh: time.Millisecond, Refresh: time.Millisecond, MaxBackoff: 5 * time.Millisecond, Shutdown: time.Second}}
-	configure(&opts)
-	rt, err := connector.NewRuntime(t.Context(), opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() { done <- rt.Run(ctx) }()
-	stop := sync.OnceFunc(func() {
-		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Error(err)
-			}
-		case <-time.After(5 * time.Second):
-			t.Error("runtime did not stop")
-		}
-	})
-	t.Cleanup(stop)
-	return rt, stop
-}
-
-func eventually(t *testing.T, what string, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
-		time.Sleep(time.Millisecond)
-	}
+	return connectortest.Run(t, discord.Type, discord.Factory, src, func(string) (string, bool) { return "bot-token", true }, configure)
 }

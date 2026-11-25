@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/principal"
@@ -70,8 +71,8 @@ func TestJevDecidesTheOutcome(t *testing.T) {
 		{"uncertain", l1.OutcomeNone, "", false},
 	} {
 		t.Run(tc.label, func(t *testing.T) {
-			pool := newScratchPool(t)
-			src := newSource(t)
+			pool := dbtest.Scratch(t, "distiller_none")
+			src := dbtest.UniqueID()
 			ingest(t, pool, fixtureEvents(src))
 			id := l1.DocID(src, repo+"#12")
 			jev := fixtureJev(t)
@@ -129,8 +130,8 @@ func TestAFailedJudgmentFailsTheJob(t *testing.T) {
 		{name: "invalid", step: llm.JudgmentStep{}, want: llm.JudgmentInvalidResponse},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := newScratchPool(t)
-			src := newSource(t)
+			pool := dbtest.Scratch(t, "distiller_none")
+			src := dbtest.UniqueID()
 			ingest(t, pool, fixtureEvents(src))
 			id := l1.DocID(src, repo+"#12")
 			fake := llm.NewFakeJudgmentProvider(tc.step)
@@ -173,8 +174,8 @@ func (p afterJudgment) Judge(ctx context.Context, req llm.JudgmentRequest) (llm.
 func TestAJournalRefusalFailsTheJob(t *testing.T) {
 	for _, kind := range []string{"write failure", "inputs changed", "statement timeout", "observation failure"} {
 		t.Run(kind, func(t *testing.T) {
-			pool := newScratchPool(t)
-			src := newSource(t)
+			pool := dbtest.Scratch(t, "distiller_none")
+			src := dbtest.UniqueID()
 			ingest(t, pool, fixtureEvents(src))
 			id := l1.DocID(src, repo+"#12")
 			jev := fixtureJev(t)
@@ -231,8 +232,8 @@ func TestAJournalRefusalFailsTheJob(t *testing.T) {
 }
 
 func TestOutcomeJudgmentDoesNotWriteSupersededAnswer(t *testing.T) {
-	pool := newScratchPool(t)
-	src := newSource(t)
+	pool := dbtest.Scratch(t, "distiller_none")
+	src := dbtest.UniqueID()
 	ingest(t, pool, fixtureEvents(src))
 	id := l1.DocID(src, repo+"#12")
 	provider := afterJudgment{fixtureJev(t), func() {
@@ -251,8 +252,8 @@ func TestOutcomeJudgmentDoesNotWriteSupersededAnswer(t *testing.T) {
 }
 
 func TestOutcomeControlTrafficNeverReachesJudgments(t *testing.T) {
-	pool := newScratchPool(t)
-	src := newSource(t)
+	pool := dbtest.Scratch(t, "distiller_none")
+	src := dbtest.UniqueID()
 	jev := fixtureJev(t)
 	d := jevDistiller(t, pool, src, jev.judgments())
 	for _, kind := range []connector.Kind{connector.KindCommand, "github.reply"} {

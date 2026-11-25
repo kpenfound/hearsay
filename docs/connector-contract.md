@@ -21,7 +21,7 @@ A connector turns one source into L0 events. That is all it does.
   L3, never calls a model, and never decides what an event means.
 - It **describes**, it does not **interpret**. It reports the identities a source
   gave it; it does not decide that a GitHub login and a Discord user are the same
-  person (that is the identity mapping, issue #6).
+  person (that is the identity mapping).
 - It reports the source's access list as it found it. It does not compute who may
   read anything.
 - It emits everything it is allowed to and nothing it is not. What may be
@@ -315,7 +315,7 @@ hints for whoever writes the mapping; they are never the key.
 
 A connector emits identity **hints** and stops there. It does not mint Hearsay
 principal ids, does not decide that two sources mean the same person, and does
-not drop an event whose author it cannot place. The resolver (issue #6) maps
+not drop an event whose author it cannot place. The resolver maps
 hints to principals and records the ones it cannot, so that a person can map them
 later.
 
@@ -528,8 +528,8 @@ choice:
   consistent with the source's permissions, and it is more permissive than the
   source in the window between the change and the re-sync. A source whose
   permissions must be enforced at read time in real time is not served by ACL
-  inheritance at all; that is a read-path decision and belongs to access control
-  (issue #21), not to a connector.
+  inheritance at all; that is a read-path decision and belongs to access control,
+  not to a connector.
 
 **A deletion at the source is a tombstone event**: a new event of kind
 `tombstone` whose `payload.target` is the artifact id it retracts. It uses the
@@ -537,8 +537,7 @@ source's deletion time when available; Discord and Slack use the target message'
 creation time when deletion notifications carry no timestamp, while Drive,
 tracker and work retractions retain the current artifact's time. The connector does not re-emit the artifact and does not
 delete anything. The tombstone is a fact about the source, and the forward
-provenance walk that re-distills what depended on the artifact is Hearsay's
-(issue #23).
+provenance walk that re-distills what depended on the artifact is Hearsay's.
 
 A tombstone is **its own artifact**, not a revision of what it retracts:
 `payload.artifact` is `<target>:tombstone` by convention, and validation rejects
@@ -854,14 +853,11 @@ production, and assert on what the recorder received.
 
 ## Connector examples
 
-Written before the connectors, and checked on paper against the GitHub (v0.2.0),
-Discord (v0.3.0), Drive (v0.4.0) and Obsidian (v0.4.0) work. Slack and the
-generic tracker (v0.10.0) were written with their connectors, which is the check
-of source-to-L0 mapping. Agent sessions, the conversation source and work updates also ship. A new source
-needs its factory registered in the binary, with any optional gesture capability;
-third-party event shapes must follow the shared contract above.
+Each source maps to L0 as below. A new source needs its factory registered in
+the binary, with any optional gesture capability; third-party event shapes must
+follow the shared contract above.
 
-### GitHub (issue #8)
+### GitHub
 
 | Artifact | kind | artifact id | native_id | container |
 |---|---|---|---|---|
@@ -946,7 +942,7 @@ acceptable — a revision that changes nothing is a row in L0, and the distiller
 regenerates from the latest — but a connector that wants to avoid it hashes the
 content into the revision token instead of using `updated_at`.
 
-### Discord (issue #13)
+### Discord
 
 Discord registers `ReactionGestureConfig`; it reads `ratify_emoji` and
 `demote_emoji` from Discord settings, defaulting to `✅` and `👎`.
@@ -1026,7 +1022,7 @@ reconnects replay. Hanging the tombstone off a fixed artifact id,
 `<message id>:tombstone`, makes a replayed deletion idempotent like everything
 else.
 
-### Slack (issue #210)
+### Slack
 
 Slack registers `ReactionGestureConfig`; it reads `ratify_emoji` and
 `demote_emoji` from Slack settings, defaulting to `white_check_mark` and `-1`.
@@ -1103,7 +1099,7 @@ envelope's `response_url` with `response_type: ephemeral`. It uses no channel
 posting API. A read-only source acknowledges the envelope without recording,
 applying or answering it; reactions remain ordinary L0 observations.
 
-### Google Drive (issue #15)
+### Google Drive
 
 | Artifact | kind | artifact id | native_id | container |
 |---|---|---|---|---|
@@ -1132,7 +1128,7 @@ share to `identity`. A transcript's author is often the meeting bot rather than 
 person, which is why `transcript` does not require one; attendees go in
 `participants` with role `attendee`.
 
-The backfill uses the content head revision ID exactly, as issue #98 requires.
+The backfill uses the content head revision ID exactly.
 Ongoing sync consumes Drive's changes feed with a separate durable cursor.
 Every change re-fetches the file, its direct labels and current permissions.
 The live observation version hashes the normalized ACL, folder, metadata,
@@ -1157,7 +1153,7 @@ revision under the stable file id using current content and ACL. Until that
 revision is observed, the file stays retracted; unreadable, absent or wrong
 labels and out-of-folder files cannot restore it.
 
-### Obsidian (issue #102)
+### Obsidian
 
 | Artifact | kind | artifact id | native_id | container |
 |---|---|---|---|---|
@@ -1189,7 +1185,7 @@ or newly disallowed notes receive a tombstone using their previous ACL. A
 rename creates a new path artifact. The gate admits these retraction events
 even when the old folder has left the allowlist; they contain no note text.
 
-### Agent sessions (issue #149)
+### Agent sessions
 
 | Artifact | kind | artifact id | native_id | container |
 |---|---|---|---|---|
@@ -1302,7 +1298,7 @@ The turn above is written as:
 }
 ```
 
-### Generic tracker (issue #213)
+### Generic tracker
 
 | Artifact | kind | artifact id | native_id | container |
 |---|---|---|---|---|
@@ -1543,7 +1539,7 @@ def backfill(issues):
 
 Times are RFC 3339. A `null` is read as an absent field.
 
-### Work updates (issue #237)
+### Work updates
 
 | Artifact | kind | artifact id | native_id | container |
 |---|---|---|---|---|

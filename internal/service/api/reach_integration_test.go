@@ -47,7 +47,7 @@ func newReachWorld(t *testing.T) *reachWorld {
 	t.Helper()
 	pool := dbtest.Pool(t)
 	ctx := t.Context()
-	w := &reachWorld{src: newSource(), events: l0.New(pool), client: client{credential: reachCredential}}
+	w := &reachWorld{src: dbtest.UniqueID(), events: l0.New(pool), client: client{credential: reachCredential}}
 	w.project = "acme/" + w.src
 	w.repo, w.engine, w.web = "code:"+w.project, "code:"+w.project+":engine", "code:"+w.project+":web"
 	w.item = "tracker:" + w.src + ":" + w.project + "#20"

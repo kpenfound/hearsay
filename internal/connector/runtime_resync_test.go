@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/poll"
 )
 
 type walker struct {
@@ -132,7 +133,7 @@ func TestAnOwedResyncResumesFromItsStoredCursor(t *testing.T) {
 		Sources: []connector.SourceConfig{src}, Registry: registryOf(t, map[string]connector.Connector{src.ID: w}),
 		Sink: &connector.Recorder{}, Resyncs: resyncs,
 	})
-	waitFor(t, "the re-sync to finish", settled(resyncs, src.ID, "C123"))
+	poll.Until(t, "the re-sync to finish", settled(resyncs, src.ID, "C123"))
 	if err := stop(); err != nil {
 		t.Fatalf("Run() = %v", err)
 	}
@@ -161,7 +162,7 @@ func TestARequestedResyncIsRecordedAndRun(t *testing.T) {
 	if err := w.requester(t).RequestResync(t.Context(), "C123"); err != nil {
 		t.Fatalf("RequestResync(C123) = %v", err)
 	}
-	waitFor(t, "the re-sync to finish", settled(resyncs, src.ID, "C123"))
+	poll.Until(t, "the re-sync to finish", settled(resyncs, src.ID, "C123"))
 	if err := stop(); err != nil {
 		t.Fatalf("Run() = %v", err)
 	}
@@ -226,7 +227,7 @@ func TestARequestDuringAWalkStartsItOver(t *testing.T) {
 		Sources: []connector.SourceConfig{src}, Registry: registryOf(t, map[string]connector.Connector{src.ID: w}),
 		Sink: &connector.Recorder{}, Resyncs: resyncs,
 	})
-	waitFor(t, "the re-sync to finish", settled(resyncs, src.ID, "C123"))
+	poll.Until(t, "the re-sync to finish", settled(resyncs, src.ID, "C123"))
 	if err := stop(); err != nil {
 		t.Fatalf("Run() = %v", err)
 	}
@@ -245,7 +246,7 @@ func TestAnOwedResyncOfAContainerConfigDroppedIsNotWalked(t *testing.T) {
 		Sources: []connector.SourceConfig{src}, Registry: registryOf(t, map[string]connector.Connector{src.ID: w}),
 		Sink: &connector.Recorder{}, Resyncs: resyncs,
 	})
-	waitFor(t, "the re-sync of C123", settled(resyncs, src.ID, "C123"))
+	poll.Until(t, "the re-sync of C123", settled(resyncs, src.ID, "C123"))
 	if err := stop(); err != nil {
 		t.Fatalf("Run() = %v", err)
 	}
@@ -286,9 +287,9 @@ func TestTheStartupCheckOwesAResyncForAContainerNoLongerPublic(t *testing.T) {
 				Sink: &connector.Recorder{}, Resyncs: resyncs,
 				Exposure: exposure{{Container: tt.container, LastPublic: now}, {Container: "Z999", LastPublic: now}},
 			})
-			waitFor(t, "the sentinel's re-sync", settled(resyncs, src.ID, "Z999"))
+			poll.Until(t, "the sentinel's re-sync", settled(resyncs, src.ID, "Z999"))
 			if tt.wantOwed {
-				waitFor(t, "the re-sync of "+tt.container, func() bool {
+				poll.Until(t, "the re-sync of "+tt.container, func() bool {
 					r := resyncs.Get(src.ID, tt.container)
 					return r.Generation > 0 && !r.Owed && r.ResyncedAt.After(now)
 				})
@@ -326,10 +327,10 @@ func TestAFailingResyncIsCountedAndRetried(t *testing.T) {
 				Sources: []connector.SourceConfig{src}, Registry: registryOf(t, map[string]connector.Connector{src.ID: w}),
 				Sink: &connector.Recorder{}, Resyncs: resyncs, Exposure: exposure{{Container: "C123", LastPublic: time.Now()}},
 			})
-			waitFor(t, "failures in health", func() bool { return rt.Health(t.Context()).Sources[0].ResyncFailures > 1 })
+			poll.Until(t, "failures in health", func() bool { return rt.Health(t.Context()).Sources[0].ResyncFailures > 1 })
 			tt.fail(w, resyncs, nil)
-			waitFor(t, "the re-sync", settled(resyncs, src.ID, "C123"))
-			waitFor(t, "the count to clear", func() bool { return rt.Health(t.Context()).Sources[0].ResyncFailures == 0 })
+			poll.Until(t, "the re-sync", settled(resyncs, src.ID, "C123"))
+			poll.Until(t, "the count to clear", func() bool { return rt.Health(t.Context()).Sources[0].ResyncFailures == 0 })
 			if err := stop(); err != nil {
 				t.Fatalf("Run() = %v", err)
 			}
@@ -359,8 +360,8 @@ func TestAResyncThatMakesNoProgressIsNotProgress(t *testing.T) {
 		Sources: []connector.SourceConfig{src}, Registry: registryOf(t, map[string]connector.Connector{src.ID: w}),
 		Sink: &connector.Recorder{}, Resyncs: resyncs,
 	})
-	waitFor(t, "the re-sync to be tried again", func() bool { return w.callsTo("C123") >= 2 })
-	waitFor(t, "the failure in health", func() bool { return rt.Health(t.Context()).Sources[0].ResyncFailures >= 1 })
+	poll.Until(t, "the re-sync to be tried again", func() bool { return w.callsTo("C123") >= 2 })
+	poll.Until(t, "the failure in health", func() bool { return rt.Health(t.Context()).Sources[0].ResyncFailures >= 1 })
 	if err := stop(); err != nil {
 		t.Fatalf("Run() = %v", err)
 	}
@@ -382,9 +383,9 @@ func TestAFailingResyncHoldsUpNothingElse(t *testing.T) {
 		Sources: []connector.SourceConfig{src}, Registry: registryOf(t, map[string]connector.Connector{src.ID: w}),
 		Sink: &connector.Recorder{}, Resyncs: resyncs, Exposure: exposure{{Container: "D456", LastPublic: time.Now()}},
 	})
-	waitFor(t, "the re-sync of C123", settled(resyncs, src.ID, "C123"))
-	waitFor(t, "the re-sync the check found", settled(resyncs, src.ID, "D456"))
-	waitFor(t, "A000's failures in health", func() bool { return rt.Health(t.Context()).Sources[0].ResyncFailures >= 1 })
+	poll.Until(t, "the re-sync of C123", settled(resyncs, src.ID, "C123"))
+	poll.Until(t, "the re-sync the check found", settled(resyncs, src.ID, "D456"))
+	poll.Until(t, "A000's failures in health", func() bool { return rt.Health(t.Context()).Sources[0].ResyncFailures >= 1 })
 	if err := stop(); err != nil {
 		t.Fatalf("Run() = %v", err)
 	}
@@ -407,12 +408,12 @@ func TestARequestDuringABackoffIsNotKeptWaiting(t *testing.T) {
 		Sink: &connector.Recorder{}, Resyncs: resyncs, Exposure: exposure{{Container: "D456", LastPublic: time.Now()}},
 		Cadence: connector.Cadence{MinRefresh: time.Millisecond, MaxBackoff: time.Hour, Shutdown: time.Second},
 	})
-	waitFor(t, "the re-sync the check found", settled(resyncs, src.ID, "D456"))
-	waitFor(t, "the runtime to back off", func() bool { return rt.Health(t.Context()).Sources[0].ResyncFailures >= 1 })
+	poll.Until(t, "the re-sync the check found", settled(resyncs, src.ID, "D456"))
+	poll.Until(t, "the runtime to back off", func() bool { return rt.Health(t.Context()).Sources[0].ResyncFailures >= 1 })
 	if err := w.requester(t).RequestResync(t.Context(), "C123"); err != nil {
 		t.Fatalf("RequestResync(C123) = %v", err)
 	}
-	waitFor(t, "the requested re-sync", settled(resyncs, src.ID, "C123"))
+	poll.Until(t, "the requested re-sync", settled(resyncs, src.ID, "C123"))
 	if err := stop(); err != nil {
 		t.Fatalf("Run() = %v", err)
 	}

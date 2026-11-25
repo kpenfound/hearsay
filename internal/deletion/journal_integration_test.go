@@ -76,7 +76,13 @@ func testJournalDeletion(t *testing.T, topology string) {
 	record := l1.JudgmentRecord{ID: "committed", Task: "stance.same_answer", QuestionVersion: "v1", QuestionHash: "question-hash", Inputs: inputs, ModelVersion: "version", Mode: "accepted", Policy: "policy", Outcome: "answer", Label: "yes"}
 	attempt := record
 	attempt.ID = "interrupted"
-	if _, err = store.BeginJudgment(ctx, attempt); err != nil {
+	key := l1.JudgmentKey{Task: record.Task, Version: record.QuestionVersion, QuestionHash: record.QuestionHash}
+	lookup := func(reader l1.Reader) (bool, error) {
+		found, err := store.LookupJudgments(ctx, reader, []l1.JudgmentKey{key}, inputs)
+		_, ok := found[key]
+		return ok, err
+	}
+	if _, err = store.BeginJudgments(ctx, []l1.JudgmentRecord{attempt}); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := pool.Begin(ctx)
@@ -152,9 +158,9 @@ func testJournalDeletion(t *testing.T, topology string) {
 			if err != nil || len(obs) != reader.want/2 {
 				t.Fatalf("observations = %d, %v", len(obs), err)
 			}
-			got, err := store.LookupJudgment(ctx, reader.r, record.Task, record.QuestionVersion, record.QuestionHash, inputs)
-			if err != nil || (got != nil) != (reader.want > 0) {
-				t.Fatalf("lookup = %+v, %v", got, err)
+			found, err := lookup(reader.r)
+			if err != nil || found != (reader.want > 0) {
+				t.Fatalf("lookup found = %v, %v", found, err)
 			}
 		})
 	}
@@ -177,10 +183,10 @@ func testJournalDeletion(t *testing.T, topology string) {
 			t.Fatalf("%s retained %d rows: %v", table, n, err)
 		}
 	}
-	if got, err := store.LookupJudgment(ctx, inside, record.Task, record.QuestionVersion, record.QuestionHash, inputs); err != nil || got != nil {
-		t.Fatalf("deleted lookup = %+v, %v", got, err)
+	if found, err := lookup(inside); err != nil || found {
+		t.Fatalf("deleted lookup found = %v, %v", found, err)
 	}
-	if _, err = store.BeginJudgment(ctx, attempt); !errors.Is(err, l1.JournalInputsChanged) {
+	if _, err = store.BeginJudgments(ctx, []l1.JudgmentRecord{attempt}); !errors.Is(err, l1.JournalInputsChanged) {
 		t.Fatalf("deleted attempt recreated = %v", err)
 	}
 }

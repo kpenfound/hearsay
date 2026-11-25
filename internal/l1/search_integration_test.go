@@ -7,11 +7,10 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
+	"github.com/kpenfound/hearsay/internal/l1/l1test"
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/principal"
 )
@@ -77,7 +76,7 @@ func ids(hits []l1.Hit) []string {
 func TestSearchFusesWhatEachHalfFinds(t *testing.T) {
 	pool := dbtest.Pool(t)
 	store := l1.New(pool)
-	src := newSource(t)
+	src := dbtest.UniqueID()
 	query := "the flyway cutover"
 
 	lexical := searchDoc(t, src, "acme/api#1", "we agreed the flyway cutover happens on Friday", nil)
@@ -153,7 +152,7 @@ func scores(hits []l1.Hit) map[string]float64 {
 func TestSearchNeverReturnsADocumentTheReaderMayNotRead(t *testing.T) {
 	pool := dbtest.Pool(t)
 	store := l1.New(pool)
-	src := newSource(t)
+	src := dbtest.UniqueID()
 	query := "the flyway cutover"
 	group := connector.ACLEntry{Kind: connector.ACLGroup, Source: src, NativeID: "t1"}
 
@@ -190,7 +189,7 @@ func TestSearchNeverReturnsADocumentTheReaderMayNotRead(t *testing.T) {
 func TestSearchMatchesTheGrantsTheMappingGives(t *testing.T) {
 	pool := dbtest.Pool(t)
 	store := l1.New(pool)
-	src := newSource(t)
+	src := dbtest.UniqueID()
 	res, err := principal.NewResolver([]principal.Principal{{
 		ID:         "kyle",
 		Kind:       principal.KindHuman,
@@ -255,7 +254,7 @@ func mustPrincipal(t *testing.T, res *principal.Resolver, id string) principal.P
 func TestSearchFiltersByScope(t *testing.T) {
 	pool := dbtest.Pool(t)
 	store := l1.New(pool)
-	src := newSource(t)
+	src := dbtest.UniqueID()
 	here := searchDoc(t, src, "acme/api#1", "the flyway cutover, here", nil)
 	elsewhere := storedDoc(t, src, "acme/api#2", func(d *l1.Document) {
 		d.Scope = []string{"code:" + src + ":other"}
@@ -301,53 +300,44 @@ func TestSearchFiltersByScope(t *testing.T) {
 func TestPutClearsTheEmbeddingWhenTextChanges(t *testing.T) {
 	pool := dbtest.Pool(t)
 	store := l1.New(pool)
-	src := newSource(t)
+	src := dbtest.UniqueID()
 	doc := searchDoc(t, src, "acme/api#1", "the flyway cutover", nil)
 	put(t, store, doc)
-	if embedded(t, pool, doc.ID) {
+	if l1test.Embedded(t, pool, doc.ID) {
 		t.Fatal("a new document arrived with an embedding")
 	}
 	embed(t, store, doc, unitVector(0))
 
 	put(t, store, doc)
-	if !embedded(t, pool, doc.ID) {
+	if !l1test.Embedded(t, pool, doc.ID) {
 		t.Error("re-distilling a document that had not changed threw its embedding away")
 	}
 
 	changed := doc
 	changed.RawText = "the flyway cutover, and a comment on it"
 	put(t, store, changed)
-	if !embedded(t, pool, doc.ID) {
+	if !l1test.Embedded(t, pool, doc.ID) {
 		t.Error("a change to raw_text threw the embedding of text away")
 	}
 
 	changed.Text = "a different distillation"
 	put(t, store, changed)
-	if embedded(t, pool, doc.ID) {
+	if l1test.Embedded(t, pool, doc.ID) {
 		t.Error("the text changed and the embedding of the old text is still there")
 	}
-}
-
-func embedded(t *testing.T, pool *pgxpool.Pool, id string) bool {
-	t.Helper()
-	var has bool
-	if err := pool.QueryRow(t.Context(), `SELECT embedding IS NOT NULL FROM l1_docs WHERE id = $1`, id).Scan(&has); err != nil {
-		t.Fatalf("reading the embedding of %s: %v", id, err)
-	}
-	return has
 }
 
 func TestSetEmbeddingHoldsTheTextItWasMadeFrom(t *testing.T) {
 	pool := dbtest.Pool(t)
 	store := l1.New(pool)
-	src := newSource(t)
+	src := dbtest.UniqueID()
 	doc := searchDoc(t, src, "acme/api#1", "the flyway cutover", nil)
 	put(t, store, doc)
 
 	if written, err := store.SetEmbedding(t.Context(), doc.ID, "some other distillation", unitVector(0)); written || err != nil {
 		t.Errorf("SetEmbedding(text that is not there) = %v, %v, want it refused", written, err)
 	}
-	if embedded(t, pool, doc.ID) {
+	if l1test.Embedded(t, pool, doc.ID) {
 		t.Error("a vector made from text the document does not hold was stored anyway")
 	}
 	if written, err := store.SetEmbedding(t.Context(), l1.DocID(src, "acme/api#404"), doc.Text, unitVector(0)); written || err != nil {
@@ -363,7 +353,7 @@ func TestSetEmbeddingHoldsTheTextItWasMadeFrom(t *testing.T) {
 func TestEmbedFillsInWhatHasNoVector(t *testing.T) {
 	pool := dbtest.Pool(t)
 	store := l1.New(pool)
-	src := newSource(t)
+	src := dbtest.UniqueID()
 	doc := searchDoc(t, src, "acme/api#1", "the flyway cutover", nil)
 	put(t, store, doc)
 

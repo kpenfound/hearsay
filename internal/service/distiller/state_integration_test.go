@@ -9,14 +9,15 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
 func TestWikiStateOnlyEditsRefreshSectionEnvelopes(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	base := event(src, connector.KindDocument, "file-state", at(0), who(src, "u1", "kpenfound"), "Notes", "# A\nFirst.\n# B\nSecond.")
 	first := revised(base, "r1", at(1))
 	first.Payload.State = &connector.State{Core: connector.CoreStateProposed}

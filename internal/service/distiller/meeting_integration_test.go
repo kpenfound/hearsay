@@ -11,14 +11,15 @@ import (
 	"testing"
 
 	"github.com/kpenfound/hearsay/internal/connector"
+	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l1"
 	"github.com/kpenfound/hearsay/internal/llm"
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
 func TestMeetingSegmentsTrackEditsAndDeletion(t *testing.T) {
-	pool := newPool(t)
-	src := newSource(t)
+	pool := dbtest.Pool(t)
+	src := dbtest.UniqueID()
 	transcript, err := os.ReadFile("testdata/meetings/planning.txt")
 	if err != nil {
 		t.Fatal(err)

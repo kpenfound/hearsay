@@ -10,11 +10,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +19,7 @@ import (
 
 	"github.com/kpenfound/hearsay/internal/bundle"
 	"github.com/kpenfound/hearsay/internal/config"
+	"github.com/kpenfound/hearsay/internal/config/configtest"
 	"github.com/kpenfound/hearsay/internal/connector"
 	"github.com/kpenfound/hearsay/internal/db/dbtest"
 	"github.com/kpenfound/hearsay/internal/l0"
@@ -31,12 +29,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/principal"
 	"github.com/kpenfound/hearsay/internal/service/api"
 )
-
-var sources atomic.Int64
-
-func newSource() string {
-	return "t" + strconv.FormatInt(time.Now().UnixNano(), 36) + "x" + strconv.FormatInt(sources.Add(1), 36)
-}
 
 var day = time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
 
@@ -72,7 +64,7 @@ func newWorld(t *testing.T) *world {
 	t.Setenv("HEARSAY_TEST_SHED_TOKEN", "test-shed-api-credential")
 	t.Setenv("HEARSAY_TEST_PEEK_TOKEN", "test-peek-api-credential")
 	pool := dbtest.Pool(t)
-	w := &world{src: newSource(), pool: pool, client: client{credential: testCredential}}
+	w := &world{src: dbtest.UniqueID(), pool: pool, client: client{credential: testCredential}}
 	w.project = "acme/" + w.src
 	w.scope = "tracker:" + w.src + ":" + w.project + "#12"
 	ctx := t.Context()
@@ -875,20 +867,11 @@ func TestATopicIsContestedUntilAMergedPullRequestSettlesIt(t *testing.T) {
 	stance(merged, "each service team", 12, l2.TierRatified, l2.JudgementRestates)
 	same("a merged pull request lands", "each service team @ ratified")
 
-	dir := t.TempDir()
-	for name, body := range map[string]string{
+	dir := configtest.Write(t, map[string]string{
 		"sources/github.yaml": "id: " + w.src + "\ntype: github\ncontainers: [" + w.project + "]\n",
 		"scopes/scope.yaml":   "id: " + w.src + "\nsources: [" + w.src + "]\n",
 		"authority/a.yaml":    "scope: " + w.src + "\nratified_by:\n  artifacts: []\n",
-	} {
-		full := filepath.Join(dir, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
+	})
 	loaded, err := config.Load(dir)
 	if err != nil {
 		t.Fatalf("Load() = %v", err)
