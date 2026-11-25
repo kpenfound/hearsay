@@ -2,59 +2,14 @@
 
 package main
 
-// Kern's conversation as memory, end to end, in a running Hearsay.
-//
-// Like TestWorkRecordsEndToEnd and TestDecideEndToEnd, this runs the shipped
-// command, `hearsay all` — connectors, distiller, assertion worker and API —
-// against a database of its own in the Postgres HEARSAY_DATABASE_URL names, with
-// the configuration docs/config.md documents for a conversation source (its
-// owner, the agent that posts, the scope that holds it) plus a second human, an
-// agent that acts for that human, and a tracker source whose public ticket is
-// evidence in the same scope and topic. Nothing but the model provider and Jev
-// is replaced, by a local stub (conversationStub) that answers the Anthropic
-// Messages API and Jev's System One API with fixed answers chosen by what it is
-// shown, and calls no real model.
-//
-// The run does what Kern does, through the real listeners:
-//
-//  1. posts a public ticket to the tracker's hook, which opens a topic ("who
-//     owns the shared cache") with a stance by the second human, ann;
-//  2. posts a conversation to /hooks/kern as the agent kern, one message per
-//     request: a greeting, a trip, a decision by the owner on that same topic,
-//     the trip again, and an interrupted line;
-//  3. polls `coverage` from pending to covered, and reads which document cites
-//     each message (the trip is one document though it resumes; the greeting
-//     is cited by none);
-//  4. finds the conversation through `search` with since/until by a word that
-//     only its distilled summary holds, and not outside the window;
-//  5. reads the owner's stance on the shared topic through get_bundle, traverse
-//     and stance_history, and the conversation's events, documents and stance
-//     through get_l0 and get_l1;
-//  6. reads everything the second human could read, directly and through an
-//     agent acting for them: search, get_l0, get_l1, get_bundle, traverse,
-//     stance_history, coverage and watch show them the ticket and none of the
-//     conversation;
-//  7. deletes the decision's exchange with `delete`, sees it excluded, and,
-//     once the distiller has rebuilt, finds its words in none of search, get_l0,
-//     get_l1 or get_bundle and in no stance's position;
-//  8. posts it again, as it was and rewritten, and sees nothing written.
-//
-//	HEARSAY_DATABASE_URL=postgres://... go test -tags=integration -count=1 -v \
-//	    -run TestConversationMemoryEndToEnd ./cmd/hearsay
-//
-// `deploy/smoke/conversation-memory-e2e.sh` runs it in Docker alone. Set
-// HEARSAY_E2E_EVIDENCE to a directory to write each read's raw output there.
-
 import (
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -70,23 +25,12 @@ import (
 )
 
 const (
-	// memoryScope is the entity the conversation and the ticket are both about.
 	memoryScope = "code:kern-memory"
-	// sharedTopic is the question the ticket's stance and the owner's decision
-	// both answer.
 	sharedTopic = "Who owns the shared cache?"
-	// deletedWord is in the owner's decision and in the stance position drawn
-	// from it, and in nothing else; it is what a deletion must take out of every
-	// read.
 	deletedWord = "ORCHID"
-	// summaryWord is in the decision's distilled summary and in no message.
 	summaryWord = "crew"
 )
 
-// conversationStub answers the two model APIs the running Hearsay calls, with
-// fixed answers chosen by what it is shown: segmentation by the words of a line,
-// a distillation by the words of its document, and Jev's judgments by the
-// owner's words alone. It remembers what it was called for.
 type conversationStub struct {
 	mu    sync.Mutex
 	calls map[string]int
@@ -160,8 +104,6 @@ func (s *conversationStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// stubTopicOf is the topic a line of the conversation is about, and "" for a
-// greeting or an aside, which no topic takes.
 func stubTopicOf(line string) string {
 	switch lower := strings.ToLower(line); {
 	case strings.Contains(lower, "cache"):
@@ -172,8 +114,6 @@ func stubTopicOf(line string) string {
 	return ""
 }
 
-// stubSegments is the segmentation of numbered lines ("N: Owner: ...") into the
-// contiguous ranges each topic holds.
 func stubSegments(text string) any {
 	segments := []any{}
 	var topic string
@@ -195,9 +135,6 @@ func stubSegments(text string) any {
 	return map[string]any{"segments": segments}
 }
 
-// stubSegmentBody is the distillation of one topic's document, numbered lines
-// ("N. Owner: ..."). The decision's outcome rests on the Owner line that holds
-// it, which is how the distiller tells the owner's words from Kern's.
 func stubSegmentBody(text string) any {
 	for _, line := range strings.Split(text, "\n") {
 		if !strings.Contains(line, deletedWord) {
@@ -221,9 +158,6 @@ func stubSegmentBody(text string) any {
 	return map[string]any{"summary": "The shared cache came up."}
 }
 
-// judge answers Jev's yes/no questions from the words the state holds: an
-// outcome of "decided" only for what the owner's own lines say, "proposed" for
-// the ticket, and every topic a candidate for the owner's decision.
 func (s *conversationStub) judge(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		State     string                     `json:"state"`
@@ -256,19 +190,13 @@ func (s *conversationStub) judge(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"model": "jev-stub", "answers": answers, "usage": map[string]int{"input_tokens": 1, "output_tokens": 0}})
 }
 
-// conversationConfig is the documented conversation source, with what a running
-// Hearsay also needs: tokens for the people who read, a second human and an
-// agent that acts for them, a tracker whose tickets that human may read in the
-// same scope, a policy that ranks the conversation first (so the owner's stance
-// is the topic's current one, the case that must stay the owner's alone), and
-// the model stub in place of the provider.
 func conversationConfig(t *testing.T, stubURL string) string {
 	t.Helper()
 	text := conversationExample(t)
 	replace := func(old, new string) {
 		t.Helper()
 		if !strings.Contains(text, old) {
-			t.Fatalf("the documented conversation example no longer has %q:\n%s", old, text)
+			t.Fatalf("the documented conversation example does not have %q:\n%s", old, text)
 		}
 		text = strings.Replace(text, old, new, 1)
 	}
@@ -313,11 +241,7 @@ authority:
   - scope: "*"
     ranking: [dm, merged_pr, issue]
 `)
-	tier := func(name string) string {
-		return fmt.Sprintf("    %s:\n      provider: anthropic\n      model: model-stub\n      base_url: %s\n      api_key_env: HEARSAY_E2E_MODEL_KEY\n      max_retries: -1\n", name, stubURL)
-	}
-	judgments := fmt.Sprintf("  judgments:\n    model: jev-stub\n    base_url: %s\n    api_key_env: HEARSAY_E2E_MODEL_KEY\n    max_retries: -1\n", stubURL)
-	return text + "\nllm:\n  tiers:\n" + tier("distill") + tier("assert") + judgments
+	return text + e2eLLMSection(stubURL)
 }
 
 func TestConversationMemoryEndToEnd(t *testing.T) {
@@ -329,12 +253,9 @@ func TestConversationMemoryEndToEnd(t *testing.T) {
 	stubServer := httptest.NewServer(stub)
 	t.Cleanup(stubServer.Close)
 
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "hearsay.yaml"), []byte(conversationConfig(t, stubServer.URL)), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	dir := writeStackConfig(t, conversationConfig(t, stubServer.URL))
 	tokens := map[string]string{"kyle": "e2e-kyle-token", "ann": "e2e-ann-token", "kern": "e2e-kern-token", "scout": "e2e-scout-token", "tracker": "e2e-tracker-token"}
-	database := scratchDatabase(t, url)
+	database := createDatabase(t, url, "e2e_work_")
 	t.Setenv("HEARSAY_DATABASE_URL", database)
 	t.Setenv("HEARSAY_E2E_KYLE_TOKEN", tokens["kyle"])
 	t.Setenv("HEARSAY_E2E_ANN_TOKEN", tokens["ann"])
@@ -342,71 +263,18 @@ func TestConversationMemoryEndToEnd(t *testing.T) {
 	t.Setenv("HEARSAY_E2E_SCOUT_TOKEN", tokens["scout"])
 	t.Setenv("HEARSAY_E2E_TRACKER_TOKEN", tokens["tracker"])
 	t.Setenv("HEARSAY_E2E_MODEL_KEY", "model-stub-key")
-	// A debounce that is short, and long enough that the run sees a message
-	// held (pending) before the distiller has taken it.
 	t.Setenv("HEARSAY_DISTILL_QUIET", "3s")
 
-	// The documented configuration is accepted by `hearsay config validate`.
 	var validated, validatedErr bytes.Buffer
 	if err := run(t.Context(), []string{"config", "validate", dir}, &validated, &validatedErr); err != nil {
 		t.Fatalf("hearsay config validate = %v\n%s", err, validatedErr.String())
 	}
 	t.Logf("EVIDENCE: hearsay config validate accepts the documented conversation source:\n%s", validated.String())
 
-	r := &e2eRun{t: t, hooks: freeAddr(t), apiAddr: freeAddr(t), tokens: tokens, stderr: &syncBuffer{}, evidence: os.Getenv("HEARSAY_E2E_EVIDENCE")}
-	if r.evidence != "" {
-		if err := os.MkdirAll(r.evidence, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	distillerAddr, assertAddr := freeAddr(t), freeAddr(t)
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() {
-		done <- run(ctx, []string{"all", "--config", dir, "--listen", r.hooks, "--api-listen", r.apiAddr,
-			"--distiller-listen", distillerAddr, "--assert-worker-listen", assertAddr, "--log-format", "json"}, io.Discard, r.stderr)
-	}()
-	stopped := false
-	stop := func() {
-		if stopped {
-			return
-		}
-		stopped = true
-		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Errorf("hearsay all stopped with %v\n%s", err, r.stderr.String())
-			}
-		case <-time.After(30 * time.Second):
-			t.Error("hearsay all did not stop")
-		}
-	}
-	t.Cleanup(stop)
+	r := newE2ERun(t, tokens)
+	stop, distillerAddr, assertAddr := r.startAll(dir, "/healthz", "/readyz")
 	t.Logf("EVIDENCE: `hearsay all` (connectors %s, API %s, distiller %s, assertion worker %s), run in-process by cmd/hearsay's run() against Postgres, scratch database; model provider and Jev replaced by a local stub at %s", r.hooks, r.apiAddr, distillerAddr, assertAddr, stubServer.URL)
 
-	// Every service is up, and ready: the database, its schema and the sources.
-	for _, addr := range []string{r.hooks, r.apiAddr, distillerAddr, assertAddr} {
-		for _, probe := range []string{"/healthz", "/readyz"} {
-			deadline := time.Now().Add(60 * time.Second)
-			for {
-				resp, err := http.Get("http://" + addr + probe)
-				if err == nil {
-					_ = resp.Body.Close()
-					if resp.StatusCode == http.StatusOK {
-						break
-					}
-				}
-				if time.Now().After(deadline) {
-					t.Fatalf("%s never answered %s with 200:\n%s", addr, probe, r.stderr.String())
-				}
-				time.Sleep(50 * time.Millisecond)
-			}
-		}
-	}
-
-	// ---- helpers ----
-	// as calls an API tool as a person, with an agent carrying it when named.
 	as := func(who, agent, call string, args any) (int, []byte) {
 		t.Helper()
 		return r.callAs(who, agent, false, call, args)
@@ -424,20 +292,9 @@ func TestConversationMemoryEndToEnd(t *testing.T) {
 		}
 		return raw
 	}
-	// eventually polls a check, which returns what is still wrong, until nothing is.
 	eventually := func(what string, within time.Duration, check func() string) {
 		t.Helper()
-		deadline := time.Now().Add(within)
-		for {
-			why := check()
-			if why == "" {
-				return
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("%s did not happen within %s: %s\n%s", what, within, why, r.stderr.String())
-			}
-			time.Sleep(250 * time.Millisecond)
-		}
+		waitUntil(t, what, within, r.stderr, check)
 	}
 	postTo := func(source, token string, body map[string]any) (int, string) {
 		t.Helper()
@@ -537,8 +394,6 @@ func TestConversationMemoryEndToEnd(t *testing.T) {
 		out  api.Watched
 		raw  []byte
 	}
-	// watch starts a watch of the scope in the background, from the cursor
-	// given or from now, and returns what it will have answered.
 	watch := func(who, agent, after string) <-chan watched {
 		ch := make(chan watched, 1)
 		go func() {
@@ -554,9 +409,6 @@ func TestConversationMemoryEndToEnd(t *testing.T) {
 		return ch
 	}
 
-	// ---- 1. the readable evidence: a public ticket by ann ----
-	// The owner and ann each watch the scope from now, before anything is
-	// posted; the ticket reaches both.
 	ownerWatch, annWatch := watch("kyle", "", ""), watch("ann", "", "")
 	time.Sleep(time.Second)
 	code, body := postTo("tracker", tokens["tracker"], map[string]any{
@@ -594,7 +446,6 @@ func TestConversationMemoryEndToEnd(t *testing.T) {
 		t.Fatal("the owner's watch returned no cursor")
 	}
 
-	// ---- 2. the conversation, through the hook, one message per request ----
 	type say struct {
 		exchange, role, text string
 		minute               int
@@ -611,7 +462,7 @@ func TestConversationMemoryEndToEnd(t *testing.T) {
 		{"x3", "assistant", "Booked the earlier Lisbon flight.", 15, false},
 		{"x4", "owner", "Also the Lisbon hotel, near the river, and then I was cut off", 20, true},
 	}
-	ids := map[string]string{} // "x2:owner" -> event id
+	ids := map[string]string{}
 	var all []string
 	for _, m := range script {
 		code, raw := hook(message(m.exchange, m.role, m.text, m.minute, m.interrupted))
@@ -627,8 +478,6 @@ func TestConversationMemoryEndToEnd(t *testing.T) {
 	greeting := []string{ids["x0:owner"], ids["x0:assistant"]}
 	lisbon := []string{ids["x1:owner"], ids["x1:assistant"], ids["x3:owner"], ids["x3:assistant"], ids["x4:owner"]}
 
-	// A refused post writes nothing: a body naming another owner, an agent that
-	// is not allowed, and no credential.
 	before := eventCount("kern")
 	if code, raw := hook(map[string]any{"owner": "ann", "conversation": "conv-1", "exchange": "x9", "role": "owner", "time": "2026-11-20T10:00:00Z", "text": "not the owner's"}); code != http.StatusForbidden {
 		t.Errorf("a post naming another owner = %d %s, want 403", code, raw)
@@ -643,7 +492,6 @@ func TestConversationMemoryEndToEnd(t *testing.T) {
 		t.Errorf("refused posts changed the conversation's events from %d to %d", before, after)
 	}
 
-	// ---- 3. coverage: pending, then covered ----
 	first, raw := coverage("kyle", "kern", all)
 	r.keep("coverage-pending", raw)
 	for _, res := range first.Results {
@@ -693,13 +541,11 @@ func TestConversationMemoryEndToEnd(t *testing.T) {
 	if cacheDoc == lisbonDoc {
 		t.Errorf("the decision and the trip are one document, %s", cacheDoc)
 	}
-	// MCP serves the same bytes.
 	if code, over := r.callAs("kyle", "kern", true, "coverage", map[string]any{"event_ids": all}); code != http.StatusOK || string(over) != string(raw) {
 		t.Errorf("coverage over MCP = %d %s, want the HTTP answer %s", code, over, raw)
 	}
 	t.Logf("EVIDENCE: coverage went pending -> covered; the trip (resumed) is one document %s, the decision %s, the greeting is excluded", lisbonDoc, cacheDoc)
 
-	// A message posted again as it was writes nothing and answers the same event.
 	before = eventCount("kern")
 	if code, raw := hook(message("x1", "owner", "Please look at flights for the Lisbon trip in March.", 5, false)); code != http.StatusAccepted || !strings.Contains(raw, ids["x1:owner"]) || !strings.Contains(raw, `"unchanged"`) {
 		t.Errorf("an identical re-post = %d %s, want 202 unchanged naming %s", code, raw, ids["x1:owner"])
@@ -708,7 +554,6 @@ func TestConversationMemoryEndToEnd(t *testing.T) {
 		t.Errorf("an identical re-post wrote %d events", after-before)
 	}
 
-	// ---- 4. search finds the conversation by a word only its summary holds ----
 	window := map[string]any{"since": "2026-11-20T00:00:00Z", "until": "2026-11-21T00:00:00Z"}
 	query := func(q string, extra map[string]any) map[string]any {
 		args := map[string]any{"query": q}
@@ -740,7 +585,6 @@ func TestConversationMemoryEndToEnd(t *testing.T) {
 		t.Errorf("search %q (a word of the messages themselves) did not find %s", deletedWord, cacheDoc)
 	}
 
-	// ---- 5. the owner's stance, through get_bundle, traverse and stance_history ----
 	var ownerStance api.StanceRecord
 	eventually("the owner's decision becomes a stance on the shared topic", 3*time.Minute, func() string {
 		code, h, raw := history("kyle", "kern", topicID)
@@ -802,8 +646,6 @@ func TestConversationMemoryEndToEnd(t *testing.T) {
 		t.Errorf("the owner's watch after the ticket = %d %s, want the conversation's events", ownerWatch.code, ownerWatch.raw)
 	}
 
-	// ---- 6. a second human, and an agent acting for them, read none of it ----
-	// Their watches wait out the long poll, so they run while the reads do.
 	annsWatch, scoutsWatch := watch("ann", "", cursor), watch("ann", "scout", cursor)
 	conversationWords := []string{deletedWord, cacheDoc, lisbonDoc, ownerStance.ID, "conv-1", "evt:kern:", summaryWord, "Lisbon", "flights"}
 	for _, reader := range []struct{ name, agent string }{{"ann", ""}, {"ann acting through scout", "scout"}} {
@@ -816,7 +658,6 @@ func TestConversationMemoryEndToEnd(t *testing.T) {
 				}
 			}
 		}
-		// search: the ticket is found, the conversation is not, by any word.
 		if got := search(who, agent, query("cache", nil)); !found(got, ticketDoc) {
 			t.Errorf("%s: search %q does not find the readable ticket %s: %+v", reader.name, "cache", ticketDoc, got)
 		}
@@ -833,7 +674,6 @@ func TestConversationMemoryEndToEnd(t *testing.T) {
 				}
 			}
 		}
-		// get_l0 and get_l1: not there.
 		for _, id := range all {
 			if code, raw := as(who, agent, "get_l0", map[string]string{"id": id}); code != http.StatusNotFound || strings.Contains(string(raw), deletedWord) {
 				t.Errorf("%s: get_l0(%s) = %d %s, want 404", reader.name, id, code, raw)
@@ -847,7 +687,6 @@ func TestConversationMemoryEndToEnd(t *testing.T) {
 		if code, raw := as(who, agent, "get_l1", map[string]string{"id": ticketDoc}); code != http.StatusOK {
 			t.Errorf("%s: get_l1(%s) = %d %s, want the readable ticket", reader.name, ticketDoc, code, raw)
 		}
-		// get_bundle, traverse and stance_history: the ticket's side of the topic.
 		_, raw := bundleOf(who, agent)
 		leaks("get_bundle", string(raw))
 		for _, steps := range [][]string{{"topics", "stances"}, {"documents"}} {
@@ -868,7 +707,6 @@ func TestConversationMemoryEndToEnd(t *testing.T) {
 		if theirs.Current == ownerStance.ID {
 			t.Errorf("%s: the topic's current stance is the owner's: %s", reader.name, raw)
 		}
-		// coverage: every message is exactly what an id that does not exist is.
 		missing := make([]string, len(all))
 		for i := range missing {
 			missing[i] = fmt.Sprintf("evt:kern:no-such-message-%d", i)
@@ -904,7 +742,6 @@ func TestConversationMemoryEndToEnd(t *testing.T) {
 	}
 	t.Logf("EVIDENCE: ann, and scout acting for ann, saw the ticket %s on the shared topic %s and nothing of the conversation through search, get_l0, get_l1, get_bundle, traverse, stance_history, coverage and watch", ticketDoc, topicID)
 
-	// ---- 7. delete the decision's exchange ----
 	request := map[string]any{"event_ids": exchange2, "idempotency_id": "forget-x2"}
 	var deleted api.Deleted
 	raw = mustAs("kyle", "kern", "delete", request, &deleted)
@@ -912,7 +749,6 @@ func TestConversationMemoryEndToEnd(t *testing.T) {
 	if deleted.DeletionID == "" || !slices.Equal(sortedCopy(deleted.Deleted), sortedCopy(exchange2)) || !slices.Equal(deleted.Kept, []string{"ids", "times", "kinds"}) {
 		t.Errorf("delete answered %s, want a deletion of both messages that keeps ids, times and kinds", raw)
 	}
-	// The same request, over MCP, answers the original deletion.
 	var replayed api.Deleted
 	code, again := r.callAs("kyle", "kern", true, "delete", request)
 	if code != http.StatusOK || json.Unmarshal(again, &replayed) != nil || replayed.DeletionID != deleted.DeletionID ||
@@ -931,8 +767,6 @@ func TestConversationMemoryEndToEnd(t *testing.T) {
 			t.Errorf("get_l0 of the deleted %s = %d %s, want 404", id, code, raw)
 		}
 	}
-	// Once the distiller has rebuilt, its words are in none of the reads, and in
-	// no stance's position.
 	eventually("the deleted words leave every read", 3*time.Minute, func() string {
 		if code, raw := as("kyle", "kern", "get_l1", map[string]string{"id": cacheDoc}); code != http.StatusNotFound {
 			return fmt.Sprintf("get_l1(%s) = %d %s", cacheDoc, code, raw)
@@ -961,7 +795,6 @@ func TestConversationMemoryEndToEnd(t *testing.T) {
 	_, h, raw = history("kyle", "kern", topicID)
 	r.keep("stance_history-after-delete", raw)
 	t.Logf("EVIDENCE: after the deletion's rebuild %q is in none of search, get_l0, get_l1, get_bundle or stance_history; the shared topic stands at %q", deletedWord, h.Current)
-	// What the deletion did not name is still there, covered by the same document.
 	stillThere, _ := coverage("kyle", "kern", lisbon)
 	for _, res := range stillThere.Results {
 		if res.State != "covered" || !slices.Equal(res.Documents, []string{lisbonDoc}) {
@@ -972,7 +805,6 @@ func TestConversationMemoryEndToEnd(t *testing.T) {
 		t.Errorf("get_l1 of the trip after the deletion = %d %s", code, raw)
 	}
 
-	// ---- 8. a re-post of what was deleted writes nothing ----
 	before = eventCount("kern")
 	for _, c := range []struct {
 		name string
@@ -1003,7 +835,6 @@ func TestConversationMemoryEndToEnd(t *testing.T) {
 	}
 	t.Logf("EVIDENCE: re-posts of the deleted exchange answered 410 deleted and wrote no event (%d events in the source)", before)
 
-	// Recorded answers only: the stub answered every model call and judgment.
 	t.Logf("EVIDENCE: the stub answered %v; no real model or Jev is reachable from this test", stub.counts())
 	for _, name := range []string{"conversation_topics", "l1_conversation_segment", "l1_issue", "l2_assertions", "judgment"} {
 		if stub.counts()[name] == 0 {
@@ -1016,7 +847,6 @@ func TestConversationMemoryEndToEnd(t *testing.T) {
 	}
 }
 
-// sortedCopy is a list in order, without changing the one it was given.
 func sortedCopy(in []string) []string {
 	out := slices.Clone(in)
 	slices.Sort(out)

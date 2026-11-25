@@ -7,12 +7,6 @@ import (
 	"sync"
 )
 
-// Values injected at build time with -ldflags:
-//
-//	-X github.com/kpenfound/hearsay/internal/version.version=v0.1.0
-//
-// When they are not set, [Info] falls back to the module's build information, so
-// a binary from `go build` or `go run` still reports something truthful.
 var (
 	version = ""
 	commit  = ""
@@ -46,8 +40,6 @@ var info = sync.OnceValue(func() BuildInfo {
 				}
 			}
 		}
-		// "(devel)" is what the toolchain reports for an unreleased build; the
-		// parentheses read as punctuation inside the version line.
 		if b.Version == "" && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
 			b.Version = bi.Main.Version
 		}

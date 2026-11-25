@@ -25,9 +25,7 @@ import (
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
-// The ids of the sources a generated configuration configures. A source id is
-// chosen once, because it is in every event id, so these are the names the
-// documentation's example uses rather than anything derived.
+// The ids of the sources a generated configuration configures.
 const (
 	SourceGitHub  = "github"
 	SourceDiscord = "discord"
@@ -36,8 +34,7 @@ const (
 )
 
 // The environment variables the generated configuration names for source and
-// model credentials. The env file carries each one empty, for the person to
-// fill in.
+// model credentials.
 const (
 	EnvGitHubToken         = "HEARSAY_GITHUB_TOKEN"
 	EnvGitHubWebhookSecret = "HEARSAY_GITHUB_WEBHOOK_SECRET"
@@ -291,8 +288,6 @@ func (in Input) Check() error {
 	return errors.Join(errs...)
 }
 
-// duplicate returns the first value listed twice, compared through fold when
-// it is not nil.
 func duplicate(values []string, fold func(string) string) string {
 	seen := make(map[string]bool, len(values))
 	for _, v := range values {
@@ -308,8 +303,6 @@ func duplicate(values []string, fold func(string) string) string {
 	return ""
 }
 
-// source is one source the generated file configures, with its settings and
-// secrets in the order the file writes them.
 type source struct {
 	id, typ    string
 	containers []string
@@ -317,11 +310,8 @@ type source struct {
 	secrets    []pair
 }
 
-// pair is one key of a mapping that is written in a fixed order.
 type pair struct{ key, value string }
 
-// sources are the sources the input asks for, in the order the generated file
-// writes them.
 func (in Input) sources() []source {
 	var out []source
 	if in.HasGitHub() {
@@ -380,7 +370,6 @@ func (in Input) Sources() []connector.SourceConfig {
 			for _, p := range s.settings {
 				settings[p.key] = p.value
 			}
-			// A map of strings always encodes.
 			src.Settings, _ = json.Marshal(settings)
 		}
 		for _, p := range s.secrets {

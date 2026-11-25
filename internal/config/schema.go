@@ -6,28 +6,16 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// The types in this file are the on-disk schema: what a configuration file is
-// allowed to say, one struct per kind of object, decoded with unknown fields
-// rejected. They are deliberately separate from the types in repo.go, which are
-// what the rest of Hearsay consumes: a duration is text here and a
-// [time.Duration] there, and every check that turns one into the other is in
-// validate.go, where it can report where in the file the problem is.
-
-// sourceDoc is one entry of `sources/`.
 type sourceDoc struct {
-	ID         string   `yaml:"id"`
-	Type       string   `yaml:"type"`
-	Containers []string `yaml:"containers"`
-	Refresh    string   `yaml:"refresh"`
-	// ReadOnly is decoded as whatever the file wrote rather than as a bool,
-	// because the YAML library would read `yes`, `on` and `y` into a bool
-	// field, and the format promises that only true and false are booleans.
-	ReadOnly any               `yaml:"read_only"`
-	Settings map[string]any    `yaml:"settings"`
-	Secrets  map[string]string `yaml:"secrets"`
+	ID         string            `yaml:"id"`
+	Type       string            `yaml:"type"`
+	Containers []string          `yaml:"containers"`
+	Refresh    string            `yaml:"refresh"`
+	ReadOnly   any               `yaml:"read_only"`
+	Settings   map[string]any    `yaml:"settings"`
+	Secrets    map[string]string `yaml:"secrets"`
 }
 
-// scopeDoc is one entry of `scopes/`.
 type scopeDoc struct {
 	ID       string           `yaml:"id"`
 	Name     string           `yaml:"name"`
@@ -36,21 +24,11 @@ type scopeDoc struct {
 	Entities []string         `yaml:"entities"`
 }
 
-// scopeSourceDoc is one source a scope draws on. It is written either as the
-// source id on its own, which takes every container that source ingests, or as
-// a mapping naming the containers.
 type scopeSourceDoc struct {
 	Source     string   `yaml:"source"`
 	Containers []string `yaml:"containers"`
 }
 
-// UnmarshalYAML accepts both forms.
-//
-// The decoder's own strictness does not reach a type that unmarshals itself, so
-// the mapping's keys are checked here; without that, `containars:` in a scope
-// would be dropped in silence, which is the one thing this format promises not
-// to do. The error carries its own line number because yaml does not add one to
-// what an unmarshaler returns.
 func (s *scopeSourceDoc) UnmarshalYAML(n *yaml.Node) error {
 	if n.Kind == yaml.ScalarNode {
 		return n.Decode(&s.Source)
@@ -74,14 +52,11 @@ func (s *scopeSourceDoc) UnmarshalYAML(n *yaml.Node) error {
 	return nil
 }
 
-// sourceRefDoc points at a project inside a source: a scope's tracker, a code
-// entity's repository.
 type sourceRefDoc struct {
 	Source  string `yaml:"source"`
 	Project string `yaml:"project"`
 }
 
-// principalDoc is one entry of `principals/`.
 type principalDoc struct {
 	ID         string        `yaml:"id"`
 	Name       string        `yaml:"name"`
@@ -93,14 +68,12 @@ type principalDoc struct {
 	Members    []string      `yaml:"members"`
 }
 
-// identityDoc is one principal in one source.
 type identityDoc struct {
 	Source   string `yaml:"source"`
 	NativeID string `yaml:"native_id"`
 	Handle   string `yaml:"handle"`
 }
 
-// codeDoc is one entry of `code/`.
 type codeDoc struct {
 	ID           string        `yaml:"id"`
 	Type         string        `yaml:"type"`
@@ -113,37 +86,24 @@ type codeDoc struct {
 	CodeOwners   string        `yaml:"codeowners"`
 }
 
-// authorityDoc is one entry of `authority/`: the policy for one scope, or for
-// every scope that has none of its own.
 type authorityDoc struct {
-	Scope      string        `yaml:"scope"`
-	Ranking    []string      `yaml:"ranking"`
-	RatifiedBy *ratifiersDoc `yaml:"ratified_by"`
-	// ContestedWindow is a duration, such as 336h; absent inherits.
-	ContestedWindow string `yaml:"contested_window"`
+	Scope           string        `yaml:"scope"`
+	Ranking         []string      `yaml:"ranking"`
+	RatifiedBy      *ratifiersDoc `yaml:"ratified_by"`
+	ContestedWindow string        `yaml:"contested_window"`
 }
 
-// ratifiersDoc is what may ratify a stance. A list that is absent inherits from
-// the default policy; a list that is present but empty inherits nothing, which
-// is how a scope says that nobody may ratify by hand.
 type ratifiersDoc struct {
 	Principals []string `yaml:"principals"`
 	Sources    []string `yaml:"sources"`
 	Artifacts  []string `yaml:"artifacts"`
 }
 
-// llmDoc is `llm/`, or the `llm:` key of the single file: which provider and
-// which model backs each of the three model tiers. A tier the file
-// does not name keeps the shipped default, so this section is what a team
-// changes rather than what it has to write.
 type llmDoc struct {
 	Judgments *judgmentsDoc         `yaml:"judgments"`
 	Tiers     map[string]llmTierDoc `yaml:"tiers"`
 }
 
-// llmTierDoc is one tier's entry. It is the on-disk form of an
-// [llm.TierConfig]: durations are text here, and a field the file leaves out
-// takes the default rather than the zero value.
 type llmTierDoc struct {
 	Provider    string   `yaml:"provider"`
 	Model       string   `yaml:"model"`
@@ -156,17 +116,9 @@ type llmTierDoc struct {
 	MaxRetries  int      `yaml:"max_retries"`
 	Backoff     string   `yaml:"backoff"`
 
-	// line is where this tier is written, so that a problem with it is
-	// reported against the tier rather than against the section.
 	line int
 }
 
-// UnmarshalYAML decodes one tier and remembers its line.
-//
-// The decoder's own strictness does not reach a type that unmarshals itself, so
-// the keys are checked here: without that, `max_tokens:` misspelled inside a
-// tier would be dropped in silence and the tier would quietly run on the
-// default budget.
 func (t *llmTierDoc) UnmarshalYAML(n *yaml.Node) error {
 	if n.Kind != yaml.MappingNode {
 		return fmt.Errorf("line %d: want a mapping of provider, model and the tier's parameters, found %s", n.Line, nodeKind(n))
@@ -189,8 +141,6 @@ func (t *llmTierDoc) UnmarshalYAML(n *yaml.Node) error {
 	return nil
 }
 
-// judgmentsDoc is `llm.judgments`: Jev, which decides what the distiller's
-// and the assertion worker's yes/no questions answer.
 type judgmentsDoc struct {
 	Model                  string   `yaml:"model"`
 	BaseURL                string   `yaml:"base_url"`

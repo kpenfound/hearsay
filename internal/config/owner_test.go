@@ -7,16 +7,13 @@ import (
 	"github.com/kpenfound/hearsay/internal/config"
 )
 
-// An owner source is a second work source whose owner_of names the work source
-// it holds documents and decisions for. Validation refuses the pairings that
-// would make no sense, whichever file declares which source first.
 func TestOwnerSourceSetting(t *testing.T) {
 	work := "id: projects\ntype: work\ncontainers: ['*']\n"
 	owner := "id: owner\ntype: work\ncontainers: ['*']\nsettings:\n  owner_of: projects\n"
 	tests := []struct {
 		name  string
 		files map[string]string
-		want  string // "" is accepted; otherwise a substring of the one problem
+		want  string
 	}{
 		{name: "a pair", files: map[string]string{"sources/projects.yaml": work, "sources/owner.yaml": owner}},
 		{name: "declared in the other order", files: map[string]string{"sources/a-owner.yaml": owner, "sources/z-projects.yaml": work}},

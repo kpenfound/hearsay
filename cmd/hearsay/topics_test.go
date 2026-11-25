@@ -6,9 +6,6 @@ import (
 	"testing"
 )
 
-// Everything `hearsay topics` refuses on its command line or its principal is
-// refused before the database is opened: an unreachable one does not change
-// the answer, and nothing is printed.
 func TestTopicsRefusesBeforeOpeningTheDatabase(t *testing.T) {
 	configPath := writeConfig(t, map[string]string{
 		"sources/github.yaml":  "id: github\ntype: github\ncontainers: [acme/api]\n",

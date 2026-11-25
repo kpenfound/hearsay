@@ -163,7 +163,6 @@ func (n *Node) Run(ctx context.Context, log *slog.Logger, handler http.Handler) 
 	}
 }
 
-// reason is an error as a state's reason: what failed, with no secret.
 func reason(err error) string {
 	if err == nil {
 		return "the tailnet listener stopped"
@@ -171,7 +170,6 @@ func reason(err error) string {
 	return err.Error()
 }
 
-// serve joins once and serves until the listener fails or ctx ends.
 func (n *Node) serve(ctx context.Context, log *slog.Logger, handler http.Handler) error {
 	n.set(State{State: StateStarting})
 	backend, err := n.cfg.Join(n.cfg.Hostname, n.cfg.Dir)
@@ -211,8 +209,6 @@ func (n *Node) serve(ctx context.Context, log *slog.Logger, handler http.Handler
 	}
 }
 
-// await waits for the node to be running and returns its MagicDNS name, without
-// the trailing dot. While it waits for approval the login URL is logged once.
 func (n *Node) await(ctx context.Context, log *slog.Logger, backend Backend) (string, error) {
 	loggedURL := ""
 	for {
@@ -238,8 +234,6 @@ func (n *Node) await(ctx context.Context, log *slog.Logger, backend Backend) (st
 	}
 }
 
-// listen opens HTTPS on 443 with the node's certificate, or HTTP on 80 when the
-// configuration asks for it or the certificate cannot be had.
 func (n *Node) listen(ctx context.Context, log *slog.Logger, backend Backend, dnsName string) (net.Listener, string, error) {
 	if !n.cfg.HTTP {
 		cfg, err := backend.TLSConfig(ctx, dnsName)

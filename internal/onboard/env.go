@@ -9,12 +9,6 @@ import (
 // tokens, so only its owner reads it.
 const EnvMode = 0o600
 
-// renderEnv writes the env file: a generated token for every principal, then
-// every source and model credential the configuration names, empty, each
-// under a note saying where to get it. It returns the empty variables too.
-//
-// The format is KEY=value lines, which both a shell (`set -a; . ./hearsay.env`)
-// and a compose file's env_file read.
 func renderEnv(sources []source, tokens []pair) ([]byte, []string) {
 	var b bytes.Buffer
 	var empty []string

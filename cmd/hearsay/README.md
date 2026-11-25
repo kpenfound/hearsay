@@ -90,7 +90,7 @@ active pins on the document and prints each undo record id. Missing and unreadab
 are reported alike. `list [--scope <scope>] [--since <RFC3339>] [--json]`
 shows the ledger oldest first, within the person's current reach and evidence
 access. Stance ids the person cannot read are omitted from the listing.
-Topic merge remains in `hearsay topics merge`.
+Topic merge is `hearsay topics merge`.
 
 `hearsay eval` requires `--config`, because a topic's standing is computed
 under the configured authority, and takes no principal: it prints only counts,

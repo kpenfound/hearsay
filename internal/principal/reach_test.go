@@ -9,7 +9,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
-// graph is a hierarchy and the code links of its pull requests, in memory.
 type graph struct {
 	parents map[string][]string
 	links   map[string][]string
@@ -39,8 +38,6 @@ func (g graph) LinkedCode(ctx context.Context, ids []string) ([]string, error) {
 	return g.Descendants(ctx, code)
 }
 
-// The repository has two directories; tracker item 12 has a sub-issue 13, and
-// a pull request about 12 touched the engine.
 var world = graph{
 	parents: map[string][]string{
 		"code:api:engine":        {"code:api"},
@@ -55,8 +52,7 @@ func TestReach(t *testing.T) {
 	item := principal.SomeScopes("tracker:gh:api#12")
 	repo := principal.SomeScopes("code:api")
 	tests := []struct {
-		name string
-		// class is the agent's, and empty for a person reading directly.
+		name         string
 		class        principal.Class
 		human, scope principal.Scopes
 		want         principal.Scopes
@@ -84,15 +80,11 @@ func TestReach(t *testing.T) {
 		human: principal.AllScopes(), scope: item,
 		want: principal.SomeScopes("code:api:engine", "code:api:engine/server", "tracker:gh:api#12", "tracker:gh:api#13"),
 	}, {
-		// Granted the repository and one directory of it, the two meet at the
-		// directory, which intersecting the ids as written would not find.
 		name:  "a person and an agent meet under both their scopes",
 		class: principal.ClassObserver,
 		human: repo, scope: principal.SomeScopes("code:api:engine", "code:web"),
 		want: principal.SomeScopes("code:api:engine", "code:api:engine/server"),
 	}, {
-		// The worker is granted item 12, but the two meet at its sub-issue, and
-		// only what both reach links to code.
 		name:  "a worker links from what both reach, not from its own scopes",
 		class: principal.ClassWorker,
 		human: principal.SomeScopes("tracker:gh:api#13"), scope: item,
@@ -137,8 +129,6 @@ func TestReach(t *testing.T) {
 	}
 }
 
-// A class that is not one of the four reaches nothing, and a graph that cannot
-// be read is an error rather than a reach.
 func TestReachFailsClosed(t *testing.T) {
 	eff := principal.Effective{Human: "kyle", Agent: "bot", Class: "admin"}
 	got, err := principal.Reach(t.Context(), world, eff, principal.AllScopes(), principal.AllScopes())

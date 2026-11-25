@@ -1,7 +1,6 @@
 package config_test
 
 import (
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -10,9 +9,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/llm"
 )
 
-// A configuration that says nothing about models still has the two completion
-// tiers: the shipped default lives in the config defaults, so bumping a model
-// is one line and running without the section is normal.
 func TestLLMDefaultsWithoutTheSection(t *testing.T) {
 	repo, err := config.Load(writeFiles(t, base))
 	if err != nil {
@@ -30,8 +26,6 @@ func TestLLMDefaultsWithoutTheSection(t *testing.T) {
 	}
 }
 
-// What the file says is merged over the defaults, field by field: a tier that
-// names a model keeps the provider it did not name.
 func TestLLMMergesOverTheDefaults(t *testing.T) {
 	repo, err := config.Load(writeFiles(t, with(map[string]string{
 		"llm/tiers.yaml": "" +
@@ -64,7 +58,6 @@ func TestLLMMergesOverTheDefaults(t *testing.T) {
 	}
 }
 
-// The two forms are the same configuration here too.
 func TestLLMSingleFileFormIsTheSame(t *testing.T) {
 	dir, err := config.Load(writeFiles(t, with(map[string]string{
 		"llm/tiers.yaml": "tiers:\n  assert:\n    model: claude-opus-5\n",
@@ -96,8 +89,6 @@ func TestLLMProblems(t *testing.T) {
 		{
 			name: "a tier that is not one of the three",
 			file: "tiers:\n  summarize:\n    model: m\n",
-			// The line is the tier's first field, which is where an object in
-			// a list is located too.
 			want: []string{`llm/tiers.yaml:3: model tier "summarize": no such model tier "summarize"`},
 		},
 		{
@@ -162,29 +153,11 @@ func TestLLMProblems(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := config.Load(writeFiles(t, with(map[string]string{"llm/tiers.yaml": tt.file})))
-			var invalid *config.InvalidError
-			if !errors.As(err, &invalid) {
-				t.Fatalf("Load() = %v, want an *InvalidError", err)
-			}
-			got := make([]string, len(invalid.Problems))
-			for i, p := range invalid.Problems {
-				got[i] = p.Error()
-			}
-			if len(got) != len(tt.want) {
-				t.Fatalf("Load() reported %d problems, want %d:\n%s", len(got), len(tt.want), strings.Join(got, "\n"))
-			}
-			for _, want := range tt.want {
-				if !containsSubstring(got, want) {
-					t.Errorf("no problem contains %q; got:\n%s", want, strings.Join(got, "\n"))
-				}
-			}
+			assertProblems(t, with(map[string]string{"llm/tiers.yaml": tt.file}), tt.want)
 		})
 	}
 }
 
-// One tier configured in two files is a collision, the way two objects sharing
-// an id are: nothing says which of them wins.
 func TestLLMTierConfiguredTwice(t *testing.T) {
 	_, err := config.Load(writeFiles(t, with(map[string]string{
 		"llm/a.yaml": "tiers:\n  distill:\n    max_tokens: 1024\n",
@@ -198,8 +171,6 @@ func TestLLMTierConfiguredTwice(t *testing.T) {
 	}
 }
 
-// The configuration the loader produces is what the registry builds from: the
-// two cannot disagree about what a valid tier is.
 func TestLoadedConfigurationBuildsARegistry(t *testing.T) {
 	repo, err := config.Load(writeFiles(t, with(map[string]string{
 		"llm/tiers.yaml": "tiers:\n  distill:\n    max_tokens: 512\n",

@@ -6,9 +6,6 @@ import (
 	"testing"
 )
 
-// Everything `hearsay eval` refuses on its command line is refused before the
-// database is opened: an unreachable one does not change the answer, and
-// nothing is printed.
 func TestEvalRefusesBeforeOpeningTheDatabase(t *testing.T) {
 	configPath := writeConfig(t, validConfig)
 	common := []string{"--database-url", "postgres://hearsay@nowhere.invalid:1/hearsay", "--config", configPath}

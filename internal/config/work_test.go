@@ -10,9 +10,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector/work"
 )
 
-// The source-specific example deliberately has no identities mapping: work
-// identity native ids are principal ids, including for a factory that speaks
-// through no other source.
 func TestDocsWorkSourceLoads(t *testing.T) {
 	examples := docExamples(t)
 	root := writeFiles(t, filesUnder(t, examples, "work"))
@@ -25,9 +22,6 @@ func TestDocsWorkSourceLoads(t *testing.T) {
 	}
 }
 
-// The owner-source example is a pair: a work source and the source that records
-// documents and decisions for its projects, with one publisher an attributor on
-// both and the person it names as a human principal.
 func TestDocsWorkOwnerSourceLoads(t *testing.T) {
 	root := writeFiles(t, filesUnder(t, docExamples(t), "work-owner"))
 	repo, err := config.Load(filepath.Join(root, "hearsay.yaml"))
@@ -74,10 +68,6 @@ func TestWorkImplicitPrincipalIdentities(t *testing.T) {
 	}
 }
 
-// The authority-by-source example: a policy for the scope that covers a work
-// source and its owner source ratifies documents and decisions the owner source
-// posted, and nothing the work source did; the default beside it still
-// ratifies a merged pull request from anywhere.
 func TestDocsWorkAuthorityRatifiesByTheSourceAlone(t *testing.T) {
 	root := writeFiles(t, filesUnder(t, docExamples(t), "work-authority"))
 	repo, err := config.Load(filepath.Join(root, "hearsay.yaml"))
@@ -101,8 +91,6 @@ func TestDocsWorkAuthorityRatifiesByTheSourceAlone(t *testing.T) {
 			t.Errorf("work scope: %s from %s ratifies = %v, want %v", tt.class, tt.source, got, tt.want)
 		}
 	}
-	// Under the built-in default nothing a work source records ratifies, and a
-	// merged pull request still does.
 	def := config.DefaultPolicy()
 	for _, source := range []string{"projects", "projects-owner"} {
 		for _, class := range []config.ArtifactClass{config.ArtifactSpec, config.ArtifactDecision} {
@@ -116,16 +104,20 @@ func TestDocsWorkAuthorityRatifiesByTheSourceAlone(t *testing.T) {
 	}
 }
 
-// decision is a class of its own, directly after spec in the built-in ranking,
-// so that a ranking written out in full lists every class.
-func TestDecisionClassRanksAfterSpec(t *testing.T) {
+func TestDecisionClassFollowsSpecInTheClassOrder(t *testing.T) {
 	classes := config.ArtifactClasses()
 	spec := slices.Index(classes, config.ArtifactSpec)
 	if spec < 0 || classes[spec+1] != config.ArtifactDecision || !config.ArtifactDecision.Valid() {
 		t.Fatalf("classes = %v, want decision directly after spec", classes)
 	}
+}
+
+func TestDefaultRankingPlacesDecisionBetweenSpecAndMeeting(t *testing.T) {
 	p := config.DefaultPolicy()
-	if !p.Outranks(config.ArtifactSpec, config.ArtifactDecision) || !p.Outranks(config.ArtifactDecision, config.ArtifactMeeting) {
+	specRank, _ := p.Rank(config.ArtifactSpec)
+	decisionRank, _ := p.Rank(config.ArtifactDecision)
+	meetingRank, _ := p.Rank(config.ArtifactMeeting)
+	if specRank <= decisionRank || decisionRank <= meetingRank {
 		t.Error("the default ranking does not put decision between spec and meeting")
 	}
 }

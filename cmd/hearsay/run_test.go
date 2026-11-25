@@ -8,7 +8,6 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,14 +15,44 @@ import (
 	"github.com/kpenfound/hearsay/internal/db"
 )
 
-func TestRun(t *testing.T) {
-	tests := []struct {
-		name       string
-		args       []string
-		wantErr    string // substring; empty means no error
-		wantStdout string // substring
-		wantStderr string // substring
-	}{
+type runCase struct {
+	name       string
+	args       []string
+	wantErr    string
+	wantStdout string
+	wantStderr string
+}
+
+func assertRunCases(t *testing.T, tests []runCase) {
+	t.Helper()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+
+			err := run(ctx, tt.args, &stdout, &stderr)
+
+			switch {
+			case tt.wantErr == "" && err != nil:
+				t.Fatalf("run(%q) = %v, want no error", tt.args, err)
+			case tt.wantErr != "" && err == nil:
+				t.Fatalf("run(%q) = nil, want an error containing %q", tt.args, tt.wantErr)
+			case tt.wantErr != "" && !strings.Contains(err.Error(), tt.wantErr):
+				t.Fatalf("run(%q) = %v, want an error containing %q", tt.args, err, tt.wantErr)
+			}
+			if tt.wantStdout != "" && !strings.Contains(stdout.String(), tt.wantStdout) {
+				t.Errorf("stdout = %q, want it to contain %q", stdout.String(), tt.wantStdout)
+			}
+			if tt.wantStderr != "" && !strings.Contains(stderr.String(), tt.wantStderr) {
+				t.Errorf("stderr = %q, want it to contain %q", stderr.String(), tt.wantStderr)
+			}
+		})
+	}
+}
+
+func TestRunUsageAndVersion(t *testing.T) {
+	assertRunCases(t, []runCase{
 		{
 			name:       "no arguments prints usage and fails",
 			args:       nil,
@@ -62,21 +91,6 @@ func TestRun(t *testing.T) {
 			wantStdout: "hearsay ",
 		},
 		{
-			name:    "migrate down refuses without --i-know",
-			args:    []string{"migrate", "down"},
-			wantErr: "--i-know",
-		},
-		{
-			name:    "migrate up-to needs a version",
-			args:    []string{"migrate", "up-to"},
-			wantErr: "one argument",
-		},
-		{
-			name:    "migrate up-to rejects a version that is not a number",
-			args:    []string{"migrate", "up-to", "latest"},
-			wantErr: `"latest" is not a migration version`,
-		},
-		{
 			name:    "version rejects a stray argument",
 			args:    []string{"version", "extra"},
 			wantErr: `unexpected argument "extra"`,
@@ -92,10 +106,75 @@ func TestRun(t *testing.T) {
 			wantErr: `unexpected argument "connectors"`,
 		},
 		{
+			name:       "all help names worker probe flags",
+			args:       []string{"all", "--help"},
+			wantStderr: "-assert-worker-listen",
+		},
+		{
+			name:       "a subcommand's --help is not an error",
+			args:       []string{"connectors", "--help"},
+			wantStderr: "-source",
+		},
+	})
+}
+
+func TestRunMigrateArguments(t *testing.T) {
+	assertRunCases(t, []runCase{
+		{
+			name:    "migrate down refuses without --i-know",
+			args:    []string{"migrate", "down"},
+			wantErr: "--i-know",
+		},
+		{
+			name:    "migrate up-to needs a version",
+			args:    []string{"migrate", "up-to"},
+			wantErr: "one argument",
+		},
+		{
+			name:    "migrate up-to rejects a version that is not a number",
+			args:    []string{"migrate", "up-to", "latest"},
+			wantErr: `"latest" is not a migration version`,
+		},
+		{
 			name:    "migrate rejects an unknown action",
 			args:    []string{"migrate", "sideways"},
 			wantErr: `unknown action "sideways"`,
 		},
+		{
+			name:    "migrate up does not take the flag down needs",
+			args:    []string{"migrate", "up", "--i-know"},
+			wantErr: "up does not read --i-know",
+		},
+		{
+			name:    "migrate does not read a configuration repository",
+			args:    []string{"migrate", "status", "--config", "./config"},
+			wantErr: "status does not read --config",
+		},
+		{
+			name:    "migrate down takes --i-know and nothing else",
+			args:    []string{"migrate", "down", "--i-know", "--config", "./config"},
+			wantErr: "down does not read --config",
+		},
+		{
+			name:    "migrate up-to takes a flag after the version",
+			args:    []string{"migrate", "up-to", "1", "--i-know"},
+			wantErr: "up-to does not read --i-know",
+		},
+		{
+			name:    "migrate up-to still rejects a second argument",
+			args:    []string{"migrate", "up-to", "1", "2"},
+			wantErr: "up-to takes one argument",
+		},
+		{
+			name:    "migrate status rejects a stray argument",
+			args:    []string{"migrate", "status", "now"},
+			wantErr: `unexpected argument "now": status takes none`,
+		},
+	})
+}
+
+func TestRunL0Arguments(t *testing.T) {
+	assertRunCases(t, []runCase{
 		{
 			name:    "l0 rejects an unknown action",
 			args:    []string{"l0", "grep"},
@@ -152,34 +231,9 @@ func TestRun(t *testing.T) {
 			wantErr: "list does not read --cursor, --interval",
 		},
 		{
-			name:    "migrate up does not take the flag down needs",
-			args:    []string{"migrate", "up", "--i-know"},
-			wantErr: "up does not read --i-know",
-		},
-		{
-			name:    "migrate does not read a configuration repository",
-			args:    []string{"migrate", "status", "--config", "./config"},
-			wantErr: "status does not read --config",
-		},
-		{
-			// down is the only action with a flag of its own, so this pins its
-			// list from both sides: --i-know passes the gate, --config does not.
-			name:    "migrate down takes --i-know and nothing else",
-			args:    []string{"migrate", "down", "--i-know", "--config", "./config"},
-			wantErr: "down does not read --config",
-		},
-		{
-			// A flag behind the argument is a flag, not a second argument: the
-			// two actions that take one would otherwise report "takes one
-			// argument" about a command line that gave exactly one.
 			name:    "l0 get takes a flag after the event id",
 			args:    []string{"l0", "get", "evt:a:b", "--kind", "message"},
 			wantErr: "get does not read --kind",
-		},
-		{
-			name:    "migrate up-to takes a flag after the version",
-			args:    []string{"migrate", "up-to", "1", "--i-know"},
-			wantErr: "up-to does not read --i-know",
 		},
 		{
 			name:    "l0 get still rejects a second argument",
@@ -187,51 +241,40 @@ func TestRun(t *testing.T) {
 			wantErr: "get takes one argument",
 		},
 		{
-			name:    "migrate up-to still rejects a second argument",
-			args:    []string{"migrate", "up-to", "1", "2"},
-			wantErr: "up-to takes one argument",
+			name:    "l0 count rejects a stray argument",
+			args:    []string{"l0", "count", "everything"},
+			wantErr: `unexpected argument "everything": count takes none`,
 		},
+	})
+}
+
+func TestRunFlagsMayFollowWordsAndDashDashEndsThem(t *testing.T) {
+	assertRunCases(t, []runCase{
 		{
 			name:    "config validate takes a flag after the path",
 			args:    []string{"config", "validate", "testdata/does-not-exist", "--log-level", "debug"},
 			wantErr: "testdata/does-not-exist",
 		},
 		{
-			// Looping past the words must not undo what `--` means. Port 1 is
-			// reserved and nothing listens on it, so the id being taken as an
-			// id rather than as a flag is what gets this to the connection.
 			name:    "-- ends the flags, so an argument may look like one",
 			args:    []string{"l0", "get", "--database-url", "postgres://h@127.0.0.1:1/d", "--", "-looks-like-a-flag"},
 			wantErr: "connecting to postgres",
 		},
 		{
-			// And it stays ended for the words behind the first: without that,
-			// going round again would parse the second as a flag and report
-			// "flag provided but not defined" for a command line whose real
-			// problem is a second argument.
 			name:    "-- keeps its meaning for every word behind it",
 			args:    []string{"l0", "get", "--", "-one", "-two"},
 			wantErr: "get takes one argument",
 		},
 		{
-			// And the same when a flag precedes `--` in the same round: `fs.Parse`
-			// consumes the terminator itself, so without splitting on it up
-			// front the loop would go round again and report the second word
-			// as an unknown flag instead of an unexpected argument.
 			name:    "-- keeps its meaning behind a preceding flag too",
 			args:    []string{"l0", "list", "--source", "s", "--", "-one", "-two"},
 			wantErr: `unexpected argument "-one": list takes none`,
 		},
-		{
-			name:    "l0 count rejects a stray argument",
-			args:    []string{"l0", "count", "everything"},
-			wantErr: `unexpected argument "everything": count takes none`,
-		},
-		{
-			name:    "migrate status rejects a stray argument",
-			args:    []string{"migrate", "status", "now"},
-			wantErr: `unexpected argument "now": status takes none`,
-		},
+	})
+}
+
+func TestRunServiceFlags(t *testing.T) {
+	assertRunCases(t, []runCase{
 		{
 			name:    "a service rejects an unknown flag",
 			args:    []string{"api", "--verbose"},
@@ -267,199 +310,132 @@ func TestRun(t *testing.T) {
 			args:    []string{"assert-worker", "--listen", ""},
 			wantErr: "--listen is empty",
 		},
-		{
-			name:       "all help names worker probe flags",
-			args:       []string{"all", "--help"},
-			wantStderr: "-assert-worker-listen",
-		},
-		{
-			name:       "a subcommand's --help is not an error",
-			args:       []string{"connectors", "--help"},
-			wantStderr: "-source",
-		},
-	}
+	})
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var stdout, stderr bytes.Buffer
-			// Cancelled up front: the service subcommands block until their
-			// context is done, and these cases must not depend on that.
-			ctx, cancel := context.WithCancel(t.Context())
-			cancel()
+func runCancelled(t *testing.T, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	err = run(ctx, args, &out, &errOut)
+	return out.String(), errOut.String(), err
+}
 
-			err := run(ctx, tt.args, &stdout, &stderr)
+func noDatabase(t *testing.T) {
+	t.Helper()
+	t.Setenv("HEARSAY_DATABASE_URL", "postgres://hearsay@127.0.0.1:1/unreachable")
+}
 
-			switch {
-			case tt.wantErr == "" && err != nil:
-				t.Fatalf("run(%q) = %v, want no error", tt.args, err)
-			case tt.wantErr != "" && err == nil:
-				t.Fatalf("run(%q) = nil, want an error containing %q", tt.args, tt.wantErr)
-			case tt.wantErr != "" && !strings.Contains(err.Error(), tt.wantErr):
-				t.Fatalf("run(%q) = %v, want an error containing %q", tt.args, err, tt.wantErr)
-			}
-			if tt.wantStdout != "" && !strings.Contains(stdout.String(), tt.wantStdout) {
-				t.Errorf("stdout = %q, want it to contain %q", stdout.String(), tt.wantStdout)
-			}
-			if tt.wantStderr != "" && !strings.Contains(stderr.String(), tt.wantStderr) {
-				t.Errorf("stderr = %q, want it to contain %q", stderr.String(), tt.wantStderr)
-			}
-		})
+func TestServiceReturnsNilWhenTheContextIsCancelled(t *testing.T) {
+	noDatabase(t)
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := runCancelled(t, "api", "--log-format", "json")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run(api) = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run(api) did not return within 5s of cancellation")
 	}
 }
 
-// Every long-running subcommand has to come back when the process is signalled,
-// which is what main's signal context does to it. Each one also has to carry the
-// three fields a process attaches at startup — service, version,
-// instance — on every line, once each rather than once per wrapper the line
-// passed through.
-func TestServiceSubcommandsReturnWhenTheContextIsCancelled(t *testing.T) {
+func TestServiceLogLinesCarryServiceVersionAndInstanceOnce(t *testing.T) {
 	t.Setenv("HEARSAY_INSTANCE", "replica-7")
-	// Every service needs Postgres, and refuses without a URL (the test
-	// below). These cases are about the service coming back and about its log
-	// fields, so they name a database nothing listens on: a service asked to
-	// stop while it is still connecting has not failed.
-	//
-	// `connectors`, `distiller`, `assert-worker` and `all` are not here; their
-	// cancellation is covered against a real database in cmd/hearsay's
-	// integration test.
 	noDatabase(t)
-	tests := []struct {
-		args     []string
-		services []string // the values the service field must take
-	}{
-		{args: []string{"api"}, services: []string{"api"}},
+	_, stderr, err := runCancelled(t, "api", "--log-format", "json")
+	if err != nil {
+		t.Fatalf("run(api) = %v, want nil", err)
 	}
-	for _, tt := range tests {
-		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
-			var stdout, stderr bytes.Buffer
-			args := append(slices.Clone(tt.args), "--log-format", "json")
-			ctx, cancel := context.WithCancel(t.Context())
-
-			// Cancelled before the service starts, so that a connection refused
-			// before the cancellation lands cannot race it.
-			cancel()
-			done := make(chan error, 1)
-			go func() { done <- run(ctx, args, &stdout, &stderr) }()
-
-			select {
-			case err := <-done:
-				if err != nil {
-					t.Fatalf("run(%q) = %v, want nil", args, err)
-				}
-			case <-time.After(5 * time.Second):
-				t.Fatalf("run(%q) did not return within 5s of cancellation", args)
+	seen := false
+	for line := range strings.Lines(strings.TrimSpace(stderr)) {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		for _, field := range []string{"service", "version", "instance"} {
+			if n := strings.Count(line, `"`+field+`":`); n != 1 {
+				t.Errorf("log line has the %s field %d times, want once: %s", field, n, line)
 			}
-
-			seen := map[string]bool{}
-			for line := range strings.Lines(strings.TrimSpace(stderr.String())) {
-				line = strings.TrimSpace(line)
-				if line == "" {
-					continue
-				}
-				// json.Unmarshal keeps the last of a repeated key, so count the
-				// occurrences rather than trusting the decoded value.
-				for _, field := range []string{"service", "version", "instance"} {
-					if n := strings.Count(line, `"`+field+`":`); n != 1 {
-						t.Errorf("log line has the %s field %d times, want once: %s", field, n, line)
-					}
-				}
-				var rec struct {
-					Service  string `json:"service"`
-					Version  string `json:"version"`
-					Instance string `json:"instance"`
-				}
-				if err := json.Unmarshal([]byte(line), &rec); err != nil {
-					t.Fatalf("log line is not JSON: %v (%s)", err, line)
-				}
-				if rec.Version == "" {
-					t.Errorf("log line has no version: %s", line)
-				}
-				if rec.Instance != "replica-7" {
-					t.Errorf("instance = %q, want the value of HEARSAY_INSTANCE: %s", rec.Instance, line)
-				}
-				seen[rec.Service] = true
-			}
-			for _, want := range tt.services {
-				if !seen[want] {
-					t.Errorf("no log line from service %q; saw %v", want, slices.Sorted(maps.Keys(seen)))
-				}
-			}
-		})
+		}
+		var rec struct {
+			Service  string `json:"service"`
+			Version  string `json:"version"`
+			Instance string `json:"instance"`
+		}
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("log line is not JSON: %v (%s)", err, line)
+		}
+		if rec.Version == "" {
+			t.Errorf("log line has no version: %s", line)
+		}
+		if rec.Instance != "replica-7" {
+			t.Errorf("instance = %q, want the value of HEARSAY_INSTANCE: %s", rec.Instance, line)
+		}
+		seen = seen || rec.Service == "api"
+	}
+	if !seen {
+		t.Errorf("no log line from service api:\n%s", stderr)
 	}
 }
 
 func TestInstanceDefaultsToTheHostname(t *testing.T) {
 	host, err := os.Hostname()
 	if err != nil || host == "" {
-		t.Skipf("no hostname available: %v", err)
+		host = "unknown"
 	}
 	t.Setenv("HEARSAY_INSTANCE", "")
 	noDatabase(t)
 
-	var stdout, stderr bytes.Buffer
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	if err := run(ctx, []string{"api", "--log-format", "json"}, &stdout, &stderr); err != nil {
+	_, stderr, err := runCancelled(t, "api", "--log-format", "json")
+	if err != nil {
 		t.Fatalf("run(api) = %v, want nil", err)
 	}
-	if want := `"instance":"` + host + `"`; !strings.Contains(stderr.String(), want) {
-		t.Errorf("stderr = %q, want it to contain %s", stderr.String(), want)
+	if want := `"instance":"` + host + `"`; !strings.Contains(stderr, want) {
+		t.Errorf("stderr = %q, want it to contain %s", stderr, want)
 	}
 }
 
-// noDatabase points the process at a database nothing listens on. The cases
-// that use it run a service with its context already cancelled, so it gets as
-// far as configuration and logging, stops at the connection, and returns nil.
-func noDatabase(t *testing.T) {
-	t.Helper()
-	t.Setenv("HEARSAY_DATABASE_URL", "postgres://hearsay@127.0.0.1:1/unreachable")
-}
-
-func TestLogFlagsAndEnvironment(t *testing.T) {
+func TestLogFormatFromTheEnvironment(t *testing.T) {
 	noDatabase(t)
-	t.Run("HEARSAY_LOG_FORMAT is honoured", func(t *testing.T) {
-		t.Setenv("HEARSAY_LOG_FORMAT", "text")
-		var stdout, stderr bytes.Buffer
-		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
-		if err := run(ctx, []string{"api"}, &stdout, &stderr); err != nil {
-			t.Fatalf("run(api) = %v, want nil", err)
-		}
-		if !strings.Contains(stderr.String(), "service=api") {
-			t.Errorf("stderr = %q, want text-format output", stderr.String())
-		}
-	})
-
-	t.Run("the flag beats the environment", func(t *testing.T) {
-		t.Setenv("HEARSAY_LOG_FORMAT", "text")
-		var stdout, stderr bytes.Buffer
-		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
-		if err := run(ctx, []string{"api", "--log-format", "json"}, &stdout, &stderr); err != nil {
-			t.Fatalf("run(api) = %v, want nil", err)
-		}
-		if !strings.Contains(stderr.String(), `"service":"api"`) {
-			t.Errorf("stderr = %q, want JSON-format output", stderr.String())
-		}
-	})
-
-	t.Run("HEARSAY_LOG_LEVEL is honoured", func(t *testing.T) {
-		t.Setenv("HEARSAY_LOG_LEVEL", "error")
-		var stdout, stderr bytes.Buffer
-		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
-		if err := run(ctx, []string{"api"}, &stdout, &stderr); err != nil {
-			t.Fatalf("run(api) = %v, want nil", err)
-		}
-		if stderr.Len() != 0 {
-			t.Errorf("stderr = %q, want nothing below error level", stderr.String())
-		}
-	})
+	t.Setenv("HEARSAY_LOG_FORMAT", "text")
+	_, stderr, err := runCancelled(t, "api")
+	if err != nil {
+		t.Fatalf("run(api) = %v, want nil", err)
+	}
+	if !strings.Contains(stderr, "service=api") {
+		t.Errorf("stderr = %q, want text-format output", stderr)
+	}
 }
 
-// A connection URL carries a password, and `--help` goes to a terminal, a CI
-// transcript or a screen share. The environment variable must not be the flag's
-// default, because flag.PrintDefaults prints defaults.
+func TestLogFormatFlagBeatsTheEnvironment(t *testing.T) {
+	noDatabase(t)
+	t.Setenv("HEARSAY_LOG_FORMAT", "text")
+	_, stderr, err := runCancelled(t, "api", "--log-format", "json")
+	if err != nil {
+		t.Fatalf("run(api) = %v, want nil", err)
+	}
+	if !strings.Contains(stderr, `"service":"api"`) {
+		t.Errorf("stderr = %q, want JSON-format output", stderr)
+	}
+}
+
+func TestLogLevelFromTheEnvironment(t *testing.T) {
+	noDatabase(t)
+	t.Setenv("HEARSAY_LOG_LEVEL", "error")
+	_, stderr, err := runCancelled(t, "api")
+	if err != nil {
+		t.Fatalf("run(api) = %v, want nil", err)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want nothing below error level", stderr)
+	}
+}
+
 func TestHelpDoesNotPrintTheDatabasePassword(t *testing.T) {
 	const password = "correct-horse-battery-staple"
 	t.Setenv("HEARSAY_DATABASE_URL", "postgres://hearsay:"+password+"@localhost:5432/hearsay")
@@ -485,12 +461,9 @@ func TestHelpDoesNotPrintTheDatabasePassword(t *testing.T) {
 	}
 }
 
-// The flag still works, and still beats the environment.
 func TestDatabaseURLFlagBeatsTheEnvironment(t *testing.T) {
 	t.Setenv("HEARSAY_DATABASE_URL", "postgres://hearsay@localhost:5432/from-the-environment")
 	var stdout, stderr bytes.Buffer
-	// Port 1 is reserved and nothing listens on it, so this gets as far as the
-	// connection and no further.
 	err := run(t.Context(), []string{"l0", "count", "--database-url", "postgres://hearsay@127.0.0.1:1/from-the-flag"}, &stdout, &stderr)
 	if err == nil {
 		t.Fatal("run(l0 count) against a port nothing listens on = nil, want an error")
@@ -500,8 +473,6 @@ func TestDatabaseURLFlagBeatsTheEnvironment(t *testing.T) {
 	}
 }
 
-// Every subcommand that needs Postgres says so rather than failing on a
-// connection to nowhere, and says it before doing anything else.
 func TestSubcommandsThatNeedADatabaseSaySoWhenTheyHaveNone(t *testing.T) {
 	for _, args := range [][]string{
 		{"migrate", "status"},
@@ -513,8 +484,6 @@ func TestSubcommandsThatNeedADatabaseSaySoWhenTheyHaveNone(t *testing.T) {
 		{"all"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
-			// The integration-test check sets this for the whole run; these
-			// cases are about the process that was given no database at all.
 			t.Setenv("HEARSAY_DATABASE_URL", "")
 
 			var stdout, stderr bytes.Buffer
@@ -522,7 +491,6 @@ func TestSubcommandsThatNeedADatabaseSaySoWhenTheyHaveNone(t *testing.T) {
 			if !errors.Is(err, db.ErrNoDatabaseURL) {
 				t.Fatalf("run(%q) = %v, want it to carry db.ErrNoDatabaseURL", args, err)
 			}
-			// run already wraps with the subcommand name, so the handler must not.
 			if n := strings.Count(err.Error(), args[0]); n != 1 {
 				t.Errorf("error names the subcommand %d times, want once: %v", n, err)
 			}
@@ -530,8 +498,6 @@ func TestSubcommandsThatNeedADatabaseSaySoWhenTheyHaveNone(t *testing.T) {
 	}
 }
 
-// writeConfig writes a configuration repository into a temporary directory and
-// returns its path.
 func writeConfig(t *testing.T, files map[string]string) string {
 	t.Helper()
 	root := t.TempDir()
@@ -547,53 +513,41 @@ func writeConfig(t *testing.T, files map[string]string) string {
 	return root
 }
 
-// validConfig is the smallest configuration that loads.
 var validConfig = map[string]string{
 	"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\n",
 	"scopes/api.yaml":     "id: api\nsources: [github]\n",
 }
 
-func TestConfigValidate(t *testing.T) {
+func TestConfigValidateSummarisesAValidConfiguration(t *testing.T) {
+	valid := writeConfig(t, validConfig)
+	var stdout, stderr bytes.Buffer
+	if err := run(t.Context(), []string{"config", "validate", valid}, &stdout, &stderr); err != nil {
+		t.Fatalf("config validate = %v", err)
+	}
+	for _, want := range []string{"is valid", "sha256:", "model tiers", "distill=anthropic/"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("stdout = %q, want it to contain %q", stdout.String(), want)
+		}
+	}
+}
+
+func TestConfigValidateTakesThePathFromTheFlag(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := run(t.Context(), []string{"config", "validate", "--config", writeConfig(t, validConfig)}, &stdout, &stderr); err != nil {
+		t.Fatalf("config validate = %v", err)
+	}
+	if !strings.Contains(stdout.String(), "is valid") {
+		t.Errorf("stdout = %q, want it to say the configuration is valid", stdout.String())
+	}
+}
+
+func TestConfigValidateRefusals(t *testing.T) {
 	valid := writeConfig(t, validConfig)
 	broken := writeConfig(t, map[string]string{
 		"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\n",
 		"scopes/api.yaml":     "id: api\nsources: [github, discord]\n",
 	})
-
-	tests := []struct {
-		name       string
-		args       []string
-		wantErr    string
-		wantStdout string
-	}{
-		{
-			name:       "a valid configuration is summarised",
-			args:       []string{"config", "validate", valid},
-			wantStdout: "is valid",
-		},
-		{
-			name:       "the summary carries the digest a running process logs",
-			args:       []string{"config", "validate", valid},
-			wantStdout: "sha256:",
-		},
-		{
-			// Most of what backs a model tier is usually a default that is
-			// nowhere in the files, so the summary says what each one
-			// resolved to.
-			name:       "the summary says which model answers each tier",
-			args:       []string{"config", "validate", valid},
-			wantStdout: "model tiers",
-		},
-		{
-			name:       "and names the provider and model it resolved to",
-			args:       []string{"config", "validate", valid},
-			wantStdout: "distill=anthropic/",
-		},
-		{
-			name:       "the path may come from the flag instead",
-			args:       []string{"config", "validate", "--config", valid},
-			wantStdout: "is valid",
-		},
+	assertRunCases(t, []runCase{
 		{
 			name:    "an invalid configuration names the file, the line and the field",
 			args:    []string{"config", "validate", broken},
@@ -619,84 +573,57 @@ func TestConfigValidate(t *testing.T) {
 			args:    []string{"config", "validate", filepath.Join(valid, "nowhere")},
 			wantErr: "reading configuration at",
 		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var stdout, stderr bytes.Buffer
-			err := run(t.Context(), tt.args, &stdout, &stderr)
-			switch {
-			case tt.wantErr == "" && err != nil:
-				t.Fatalf("run(%q) = %v, want no error", tt.args, err)
-			case tt.wantErr != "" && err == nil:
-				t.Fatalf("run(%q) = nil, want an error containing %q", tt.args, tt.wantErr)
-			case tt.wantErr != "" && !strings.Contains(err.Error(), tt.wantErr):
-				t.Fatalf("run(%q) = %v, want an error containing %q", tt.args, err, tt.wantErr)
-			}
-			if tt.wantStdout != "" && !strings.Contains(stdout.String(), tt.wantStdout) {
-				t.Errorf("stdout = %q, want it to contain %q", stdout.String(), tt.wantStdout)
-			}
-		})
-	}
+	})
 }
 
-// A service reads its configuration before it starts, so a mistake in it stops
-// the process rather than showing up on the first request.
-func TestServicesLoadTheirConfiguration(t *testing.T) {
+func TestServicesRejectAnAgentWithoutScopes(t *testing.T) {
 	noDatabase(t)
-	valid := writeConfig(t, validConfig)
 	agentWithoutScopes := maps.Clone(validConfig)
 	agentWithoutScopes["principals/agent.yaml"] = "id: shed\nkind: agent\nclass: worker\nidentities: [{source: github, handle: shed}]\n"
 	missingAgentGrant := writeConfig(t, agentWithoutScopes)
 	for _, service := range []string{"api", "connectors", "distiller", "assert-worker"} {
-		t.Run(service+" rejects an agent without scopes", func(t *testing.T) {
-			var stdout, stderr bytes.Buffer
-			ctx, cancel := context.WithCancel(t.Context())
-			cancel()
-			err := run(ctx, []string{service, "--config", missingAgentGrant}, &stdout, &stderr)
+		t.Run(service, func(t *testing.T) {
+			_, _, err := runCancelled(t, service, "--config", missingAgentGrant)
 			if err == nil || !strings.Contains(err.Error(), `principal "shed": scopes: is required`) {
 				t.Fatalf("run(%s --config <agent without scopes>) = %v", service, err)
 			}
 		})
 	}
+}
 
-	t.Run("a loaded configuration is logged with its digest", func(t *testing.T) {
-		var stdout, stderr bytes.Buffer
-		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
-		if err := run(ctx, []string{"api", "--config", valid, "--log-format", "json"}, &stdout, &stderr); err != nil {
-			t.Fatalf("run(api --config <valid>) = %v, want no error", err)
+func TestServiceLogsTheLoadedConfigurationWithItsDigest(t *testing.T) {
+	noDatabase(t)
+	_, stderr, err := runCancelled(t, "api", "--config", writeConfig(t, validConfig), "--log-format", "json")
+	if err != nil {
+		t.Fatalf("run(api --config <valid>) = %v, want no error", err)
+	}
+	for _, want := range []string{`"msg":"configuration loaded"`, `"config_digest":"sha256:`, `"sources":1`} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr = %q, want it to contain %s", stderr, want)
 		}
-		for _, want := range []string{`"msg":"configuration loaded"`, `"config_digest":"sha256:`, `"sources":1`} {
-			if !strings.Contains(stderr.String(), want) {
-				t.Errorf("stderr = %q, want it to contain %s", stderr.String(), want)
-			}
-		}
-	})
+	}
+}
 
-	t.Run("HEARSAY_CONFIG is honoured", func(t *testing.T) {
-		t.Setenv("HEARSAY_CONFIG", valid)
-		var stdout, stderr bytes.Buffer
-		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
-		if err := run(ctx, []string{"api", "--log-format", "json"}, &stdout, &stderr); err != nil {
-			t.Fatalf("run(api) = %v, want no error", err)
-		}
-		if !strings.Contains(stderr.String(), `"msg":"configuration loaded"`) {
-			t.Errorf("stderr = %q, want the configuration to have been loaded", stderr.String())
-		}
-	})
+func TestServiceReadsTheConfigurationPathFromTheEnvironment(t *testing.T) {
+	noDatabase(t)
+	t.Setenv("HEARSAY_CONFIG", writeConfig(t, validConfig))
+	_, stderr, err := runCancelled(t, "api", "--log-format", "json")
+	if err != nil {
+		t.Fatalf("run(api) = %v, want no error", err)
+	}
+	if !strings.Contains(stderr, `"msg":"configuration loaded"`) {
+		t.Errorf("stderr = %q, want the configuration to have been loaded", stderr)
+	}
+}
 
-	t.Run("no configuration is a warning, not a refusal", func(t *testing.T) {
-		t.Setenv("HEARSAY_CONFIG", "")
-		var stdout, stderr bytes.Buffer
-		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
-		if err := run(ctx, []string{"api", "--log-format", "json"}, &stdout, &stderr); err != nil {
-			t.Fatalf("run(api) = %v, want no error", err)
-		}
-		if !strings.Contains(stderr.String(), `"level":"WARN"`) || !strings.Contains(stderr.String(), "no configuration") {
-			t.Errorf("stderr = %q, want a warning that there is no configuration", stderr.String())
-		}
-	})
+func TestServiceWarnsRatherThanRefusesWithoutAConfiguration(t *testing.T) {
+	noDatabase(t)
+	t.Setenv("HEARSAY_CONFIG", "")
+	_, stderr, err := runCancelled(t, "api", "--log-format", "json")
+	if err != nil {
+		t.Fatalf("run(api) = %v, want no error", err)
+	}
+	if !strings.Contains(stderr, `"level":"WARN"`) || !strings.Contains(stderr, "no configuration") {
+		t.Errorf("stderr = %q, want a warning that there is no configuration", stderr)
+	}
 }

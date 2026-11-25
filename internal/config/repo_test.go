@@ -6,8 +6,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/config"
 )
 
-// A scope covers a container or it does not; there is no "probably", because
-// what a scope covers decides what a bundle is built from.
 func TestScopeCovers(t *testing.T) {
 	repo, err := config.Load(writeFiles(t, map[string]string{
 		"sources/all.yaml": "" +
@@ -31,11 +29,9 @@ func TestScopeCovers(t *testing.T) {
 		want              bool
 	}{
 		{"github", "acme/api", true},
-		{"github", "acme/infra", false}, // ingested, but not in this scope
+		{"github", "acme/infra", false},
 		{"discord", "824100000000000001", true},
 		{"drive", "anything", false},
-		// A scope that takes every container of a source still does not cover
-		// an artifact with no container, the way the ingest allowlist does not.
 		{"discord", "", false},
 		{"github", "", false},
 		{"", "", false},

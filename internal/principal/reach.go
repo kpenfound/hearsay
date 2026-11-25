@@ -72,8 +72,6 @@ func Reach(ctx context.Context, g Graph, eff Effective, human, agent Scopes) (Ef
 	if err != nil {
 		return Effective{}, err
 	}
-	// What the person reaches with the code their scopes link to. It bounds
-	// every agent acting for them, and is a steward's whole reach.
 	personReach := func() (Scopes, error) {
 		code, err := linked(ctx, g, persons)
 		if err != nil {
@@ -111,7 +109,6 @@ func Reach(ctx context.Context, g Graph, eff Effective, human, agent Scopes) (Ef
 	return eff, nil
 }
 
-// expand is a grant with everything under each of its scopes.
 func expand(ctx context.Context, g Graph, s Scopes) (Scopes, error) {
 	if s.All || len(s.IDs) == 0 {
 		return s, nil
@@ -123,7 +120,6 @@ func expand(ctx context.Context, g Graph, s Scopes) (Scopes, error) {
 	return normalize(ids), nil
 }
 
-// linked is the code entities a set of scopes links to.
 func linked(ctx context.Context, g Graph, s Scopes) (Scopes, error) {
 	if s.All || len(s.IDs) == 0 {
 		return s, nil

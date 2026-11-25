@@ -11,10 +11,7 @@ import (
 // code entity's owner and an authority policy all name.
 //
 // It is the parsed form of one entry of the configuration repository's
-// `principals/` (docs/config.md), and it lives here rather than in
-// internal/config because the identity model is what the rest of Hearsay
-// consumes, the same way sources come out of configuration as
-// [connector.SourceConfig] values.
+// `principals/` (docs/config.md).
 type Principal struct {
 	// ID is the Hearsay principal id, minted by hand in configuration: 1 to 64
 	// bytes of lowercase letters, digits, `-` and `_`, starting with a letter
@@ -74,7 +71,6 @@ type Identity struct {
 // Kind is what sort of principal an entry is.
 type Kind string
 
-// The principal kinds.
 const (
 	// KindHuman is a person. It is the default, because most principals are
 	// people.
@@ -88,8 +84,6 @@ const (
 	KindTeam Kind = "team"
 )
 
-// kinds is every value [Kind] may take, in the order an error message lists
-// them.
 var kinds = []Kind{KindHuman, KindAgent, KindTeam}
 
 // Kinds returns every principal kind.
@@ -109,10 +103,7 @@ func (k Kind) Valid() bool { return slices.Contains(kinds, k) }
 // rather than becoming an ambiguity at ingest.
 func FoldHandle(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 
-// MaxIDLen is the longest principal id configuration may mint.
-const MaxIDLen = connector.MaxSourceIDLen
-
-// ValidID reports whether s is a well-formed principal id: 1 to [MaxIDLen]
+// ValidID reports whether s is a well-formed principal id: 1 to 64
 // bytes of lowercase letters, digits, `-` and `_`, starting with a letter or a
 // digit.
 //

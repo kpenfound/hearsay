@@ -31,12 +31,8 @@ var ErrIdentityClaimed = errors.New("identity claimed by two principals")
 // by every connector at once: the mapping is never written after
 // [NewResolver] returns, and the record is behind a mutex.
 type Resolver struct {
-	// byKey maps a source-scoped identity key to a principal id. It is written
-	// only by NewResolver.
-	byKey map[identityKey]string
-	// byID maps a principal id to the principal. Written only by NewResolver.
-	byID map[string]Principal
-	// workSources use configured principal ids as native identities.
+	byKey       map[identityKey]string
+	byID        map[string]Principal
 	workSources []string
 
 	mu         sync.Mutex
@@ -44,19 +40,12 @@ type Resolver struct {
 	overflow   int
 }
 
-// identityKey is one way of naming an identity inside one source. Matching is
-// source-scoped: a handle in one source is no evidence about a handle in
-// another, and the mapping lists a principal's identity in each source it
-// appears in.
 type identityKey struct {
 	source string
 	kind   keyKind
 	value  string
 }
 
-// keyKind separates the stable id from the typed name, because they live in
-// different namespaces: a GitHub node id and a GitHub login could collide as
-// bare strings and mean two different people.
 type keyKind uint8
 
 const (
@@ -68,8 +57,6 @@ func nativeKey(source, id string) identityKey {
 	return identityKey{source: source, kind: keyNative, value: id}
 }
 
-// handleKey folds, because handles are case-insensitive to the people who type
-// them ([FoldHandle]).
 func handleKey(source, handle string) identityKey {
 	return identityKey{source: source, kind: keyHandle, value: FoldHandle(handle)}
 }
@@ -108,8 +95,6 @@ func NewResolver(principals []Principal, sources ...connector.SourceConfig) (*Re
 			r.byKey[nativeKey(source, p.ID)] = p.ID
 		}
 	}
-	// The claims are taken in a second pass so that the error names both
-	// principals whatever order they were configured in.
 	for _, p := range principals {
 		for _, id := range p.Identities {
 			if id.Source == "" {
@@ -131,7 +116,6 @@ func NewResolver(principals []Principal, sources ...connector.SourceConfig) (*Re
 // principal ids. Agent session sources retain their explicit identity mapping.
 func (r *Resolver) WorkSources() []string { return slices.Clone(r.workSources) }
 
-// identityKeys is every key a configured identity is matched by.
 func identityKeys(id Identity) []identityKey {
 	keys := make([]identityKey, 0, 2)
 	if id.NativeID != "" {
@@ -159,8 +143,6 @@ func (r *Resolver) Principal(id string) (Principal, bool) {
 // Status is the outcome of resolving one identity.
 type Status uint8
 
-// The resolution outcomes. Callers handle all three: an unknown or ambiguous
-// author is recorded for a person to map, never guessed at.
 const (
 	// Unknown means no configured identity matched.
 	Unknown Status = iota
@@ -250,17 +232,6 @@ func (r *Resolver) ResolveGroup(source, group string) Resolution {
 	return res
 }
 
-// groupKeys is every key a source-native group is matched by.
-//
-// The native key comes first, so that is what an unresolved group is filed
-// under, and the filing key therefore never folds. That is the safe way round:
-// folding it would file two node ids differing only in case as one group, and a
-// node id is base64. The price is that a source spelling one slug two ways
-// leaves two entries in the queue, which is noise rather than a wrong answer.
-//
-// A group with no source, or with nothing but blank space for a name, gets no
-// keys at all, so it matches nothing and is not recorded: it names nobody, and
-// there is nothing there for a person to map.
 func groupKeys(source, group string) []identityKey {
 	if source == "" || FoldHandle(group) == "" {
 		return nil
@@ -268,9 +239,6 @@ func groupKeys(source, group string) []identityKey {
 	return []identityKey{nativeKey(source, group), handleKey(source, group)}
 }
 
-// hintKeys is every key an identity hint is matched by. The email is a handle
-// key: docs/config.md writes an email address in an identity's `handle`,
-// because it is what a person types.
 func hintKeys(hint connector.Identity) []identityKey {
 	if hint.Source == "" {
 		return nil
@@ -291,7 +259,6 @@ func hintKeys(hint connector.Identity) []identityKey {
 	return keys
 }
 
-// lookup matches keys against the mapping without recording anything.
 func (r *Resolver) lookup(keys []identityKey) Resolution {
 	var ids []string
 	for _, k := range keys {
@@ -336,13 +303,8 @@ type Unresolved struct {
 	Count int
 }
 
-// record notes an identity that did not resolve. The first key is the identity
-// it is filed under, so that one identity seen a thousand times is one entry.
 func (r *Resolver) record(keys []identityKey, hint connector.Identity, res Resolution) {
 	if len(keys) == 0 {
-		// A hint with no keys at all names nobody. It is an invalid event
-		// (connector validation requires an author to have a native id), and
-		// there is nothing here for a person to map.
 		return
 	}
 	r.mu.Lock()
@@ -442,8 +404,6 @@ func (r *Resolver) Members(teamID string) []Principal {
 // Nothing is recorded. This is a question about the mapping, not a sighting of
 // an identity that failed to resolve.
 func (r *Resolver) Claims(source, spelling string) (string, bool) {
-	// An empty source or an empty spelling needs no guard of its own: the
-	// mapping indexes neither, so the keys they build match nothing.
 	res := r.lookup([]identityKey{nativeKey(source, spelling), handleKey(source, spelling)})
 	if res.Status != Resolved {
 		return "", false
@@ -466,41 +426,6 @@ func (r *Resolver) Teams(id string) []Principal {
 		}
 		out = append(out, p)
 	}
-	// Map iteration order is not an order, and what this feeds — the set of
-	// grants a caller satisfies — is compared and cached by callers.
 	slices.SortFunc(out, func(a, b Principal) int { return strings.Compare(a.ID, b.ID) })
-	return out
-}
-
-// Expand turns a list of principal ids — a code entity's owners, an authority
-// policy's ratifiers — into the individual principals they stand for, replacing
-// each team with its members. The result is deduplicated and keeps the order
-// the ids were given in, so an owners list reads the way it was written.
-//
-// A team may not contain a team, so this is one level of expansion and not a
-// walk.
-func (r *Resolver) Expand(ids []string) []Principal {
-	out := make([]Principal, 0, len(ids))
-	seen := make(map[string]bool, len(ids))
-	add := func(p Principal) {
-		if seen[p.ID] {
-			return
-		}
-		seen[p.ID] = true
-		out = append(out, p)
-	}
-	for _, id := range ids {
-		p, ok := r.byID[id]
-		if !ok {
-			continue
-		}
-		if p.Kind == KindTeam {
-			for _, m := range r.Members(id) {
-				add(m)
-			}
-			continue
-		}
-		add(p)
-	}
 	return out
 }

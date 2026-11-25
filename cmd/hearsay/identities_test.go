@@ -25,29 +25,37 @@ func (h hints) IdentityHints(_ context.Context, visit func(connector.Identity) e
 	return nil
 }
 
-func TestIdentityGroupingAndFormats(t *testing.T) {
-	people := []principal.Principal{
-		{ID: "alice", Name: "Alice Smith", Identities: []principal.Identity{{Source: "github", NativeID: "a", Handle: "alice"}}},
-		{ID: "bob", Name: "Bob Jones", Identities: []principal.Identity{{Source: "discord", NativeID: "b", Handle: "bob"}, {Source: "github", NativeID: "b-gh", Handle: "bob"}}},
-	}
-	r, err := principal.NewResolver(people)
+var identityPeople = []principal.Principal{
+	{ID: "alice", Name: "Alice Smith", Identities: []principal.Identity{{Source: "github", NativeID: "a", Handle: "alice"}}},
+	{ID: "bob", Name: "Bob Jones", Identities: []principal.Identity{{Source: "discord", NativeID: "b", Handle: "bob"}, {Source: "github", NativeID: "b-gh", Handle: "bob"}}},
+}
+
+var identityHints = hints{
+	{Source: "discord", Kind: connector.IdentityUser, NativeID: "u2", Handle: "nobody"},
+	{Source: "github", Kind: connector.IdentityUser, NativeID: "u1", Handle: "a-new"},
+	{Source: "github", Kind: connector.IdentityUser, NativeID: "u3", Handle: "z"},
+	{Source: "github", Kind: connector.IdentityUser, NativeID: "u1", Handle: "a-new", DisplayName: "Alice Smith"},
+	{Source: "github", Kind: connector.IdentityUser, NativeID: "u4", Handle: "bob", Email: "alice"},
+	{Source: "github", Kind: connector.IdentityBot, NativeID: "bot", Handle: "bot"},
+	{Source: "hearsay", Kind: connector.IdentityUser, NativeID: "self"},
+	{Source: "discord", Kind: connector.IdentityUser, NativeID: "b", Handle: "bob"},
+}
+
+func collectFixtureIdentities(t *testing.T) []identitySource {
+	t.Helper()
+	r, err := principal.NewResolver(identityPeople)
 	if err != nil {
 		t.Fatal(err)
 	}
-	seen := hints{
-		{Source: "discord", Kind: connector.IdentityUser, NativeID: "u2", Handle: "nobody"},
-		{Source: "github", Kind: connector.IdentityUser, NativeID: "u1", Handle: "a-new"},
-		{Source: "github", Kind: connector.IdentityUser, NativeID: "u3", Handle: "z"},
-		{Source: "github", Kind: connector.IdentityUser, NativeID: "u1", Handle: "a-new", DisplayName: "Alice Smith"},
-		{Source: "github", Kind: connector.IdentityUser, NativeID: "u4", Handle: "bob", Email: "alice"},
-		{Source: "github", Kind: connector.IdentityBot, NativeID: "bot", Handle: "bot"},
-		{Source: "hearsay", Kind: connector.IdentityUser, NativeID: "self"},
-		{Source: "discord", Kind: connector.IdentityUser, NativeID: "b", Handle: "bob"},
-	}
-	groups, err := collectIdentities(t.Context(), seen, r, people)
+	groups, err := collectIdentities(t.Context(), identityHints, r, identityPeople)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return groups
+}
+
+func TestIdentitiesAreGroupedBySourceAndOrderedByCount(t *testing.T) {
+	groups := collectFixtureIdentities(t)
 	if len(groups) != 2 || groups[0].Source != "discord" || groups[1].Source != "github" {
 		t.Fatalf("groups: %+v", groups)
 	}
@@ -55,12 +63,20 @@ func TestIdentityGroupingAndFormats(t *testing.T) {
 	if len(got) != 3 || got[0].NativeID != "u1" || got[0].Count != 2 || got[1].NativeID != "u3" || got[2].NativeID != "u4" {
 		t.Fatalf("order and counts: %+v", got)
 	}
+}
+
+func TestIdentitiesSuggestAndFlagAmbiguity(t *testing.T) {
+	got := collectFixtureIdentities(t)[1].Identities
 	if got[0].Status != "unknown" || !reflect.DeepEqual(got[0].Suggestions, []string{"alice"}) {
 		t.Errorf("suggestion: %+v", got[0])
 	}
 	if got[2].Status != "ambiguous" || !reflect.DeepEqual(got[2].Candidates, []string{"alice", "bob"}) {
 		t.Errorf("ambiguity: %+v", got[2])
 	}
+}
+
+func TestIdentitiesOmitBotsAndHearsayItself(t *testing.T) {
+	groups := collectFixtureIdentities(t)
 	var j, y bytes.Buffer
 	enc := json.NewEncoder(&j)
 	enc.SetIndent("", "  ")
@@ -68,6 +84,20 @@ func TestIdentityGroupingAndFormats(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := printIdentityYAML(&y, groups); err != nil {
+		t.Fatal(err)
+	}
+	for _, output := range []string{j.String(), y.String()} {
+		for _, excluded := range []string{"bot", "self"} {
+			if strings.Contains(output, `native_id: `+excluded) || strings.Contains(output, `"native_id": "`+excluded+`"`) {
+				t.Errorf("excluded %s in %s", excluded, output)
+			}
+		}
+	}
+}
+
+func TestIdentitiesYAMLIsAPrincipalsDocument(t *testing.T) {
+	var y bytes.Buffer
+	if err := printIdentityYAML(&y, collectFixtureIdentities(t)); err != nil {
 		t.Fatal(err)
 	}
 	var doc struct {
@@ -85,25 +115,21 @@ func TestIdentityGroupingAndFormats(t *testing.T) {
 	if len(doc.Principals) != 4 || doc.Principals[0].ID != "alice" || doc.Principals[0].Identities[0].NativeID != "u1" {
 		t.Fatalf("YAML shape: %s", y.String())
 	}
-	for _, output := range []string{j.String(), y.String()} {
-		for _, excluded := range []string{"bot", "self"} {
-			if strings.Contains(output, `native_id: `+excluded) || strings.Contains(output, `"native_id": "`+excluded+`"`) {
-				t.Errorf("excluded %s in %s", excluded, output)
-			}
-		}
-	}
-	again, err := collectIdentities(t.Context(), seen, r, people)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(groups, again) {
+}
+
+func TestIdentitiesAreStableAcrossRuns(t *testing.T) {
+	first, second := collectFixtureIdentities(t), collectFixtureIdentities(t)
+	if !reflect.DeepEqual(first, second) {
 		t.Fatal("unstable groups")
 	}
-	var repeat bytes.Buffer
-	if err := printIdentityYAML(&repeat, again); err != nil {
+	var a, b bytes.Buffer
+	if err := printIdentityYAML(&a, first); err != nil {
 		t.Fatal(err)
 	}
-	if repeat.String() != y.String() {
+	if err := printIdentityYAML(&b, second); err != nil {
+		t.Fatal(err)
+	}
+	if a.String() != b.String() {
 		t.Fatal("unstable YAML")
 	}
 }

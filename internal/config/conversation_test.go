@@ -9,10 +9,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/connector/conversation"
 )
 
-// The conversation source's example in docs/config.md is a whole configuration:
-// the source, its owner and the agent allowed to post, each with the identity
-// that resolves their events, and a scope that holds it. It loads the way a
-// service loads it, and the source reads back as the one the example names.
 func TestDocsConversationSourceLoads(t *testing.T) {
 	root := writeFiles(t, filesUnder(t, docExamples(t), "conversation"))
 	repo, err := config.Load(filepath.Join(root, "hearsay.yaml"))

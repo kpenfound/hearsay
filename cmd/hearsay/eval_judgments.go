@@ -9,7 +9,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/eval"
 )
 
-// runJudgmentEval consumes operator exports only; it has no provider dependency.
 func runJudgmentEval(_ context.Context, args []string, stdout, stderr io.Writer) error {
 	fs, _, _ := newFlagSet("eval judgments", stderr)
 	corpusPath := fs.String("corpus", "", "source-backed, human-adjudicated corpus JSON")
@@ -45,8 +44,6 @@ func runJudgmentEval(_ context.Context, args []string, stdout, stderr io.Writer)
 	if err != nil {
 		return err
 	}
-	// Keep the stable eval fields even in offline reports; unknown window stays
-	// at its zero value and database-only metrics remain empty.
 	report := eval.Report{Judgments: comparisons, Pipelines: eval.SummarizePipelines(nil)}
 	return report.WriteJSON(stdout)
 }

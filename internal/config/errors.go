@@ -77,28 +77,18 @@ func (e *InvalidError) Unwrap() []error {
 	return errs
 }
 
-// problems collects problems as loading and validation go, so that one pass
-// reports everything rather than stopping at the first mistake.
 type problems struct {
 	list []*Problem
 }
 
-// add records a problem. The message is formatted here rather than by the
-// caller so that every call site reads as one sentence.
 func (p *problems) add(file string, line int, where, format string, args ...any) {
 	p.list = append(p.list, &Problem{File: file, Line: line, Where: where, Msg: fmt.Sprintf(format, args...)})
 }
 
-// addProblem records an already-built problem, from YAML decoding.
 func (p *problems) addProblem(pr *Problem) { p.list = append(p.list, pr) }
 
-// any reports whether anything has been recorded.
 func (p *problems) any() bool { return len(p.list) > 0 }
 
-// err returns the accumulated problems as an error, ordered by file and line so
-// that the output is the same on every run and a test can pin it. Problems on
-// the same line keep the order they were found in, which is the order the
-// fields appear in.
 func (p *problems) err(path string) error {
 	if !p.any() {
 		return nil

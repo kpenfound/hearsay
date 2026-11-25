@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -20,8 +21,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/tailnet"
 )
 
-// fakeBackend is a node that listens on loopback for whatever port it is
-// asked for, and reports the states it is scripted with.
 type fakeBackend struct {
 	mu       sync.Mutex
 	states   []tailnet.Status
@@ -97,18 +96,40 @@ func selfSigned(t *testing.T) *tls.Config {
 
 var hello = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "hello") })
 
-// await polls until the node reports want, failing after a few seconds.
-func await(t *testing.T, n *tailnet.Node, want string) tailnet.State {
+type logEvents struct{ messages chan string }
+
+func (logEvents) Enabled(context.Context, slog.Level) bool { return true }
+
+func (l logEvents) Handle(_ context.Context, r slog.Record) error {
+	select {
+	case l.messages <- r.Message:
+	default:
+	}
+	return nil
+}
+
+func (l logEvents) WithAttrs([]slog.Attr) slog.Handler { return l }
+
+func (l logEvents) WithGroup(string) slog.Handler { return l }
+
+const (
+	loggedServing  = "serving on the tailnet"
+	loggedApproval = "the tailnet node needs approving"
+	loggedDegraded = "tailnet listener degraded"
+)
+
+func await(t *testing.T, events logEvents, logged string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	timeout := time.After(5 * time.Second)
 	for {
-		if st := n.State(); st.State == want {
-			return st
+		select {
+		case msg := <-events.messages:
+			if strings.HasPrefix(msg, logged) {
+				return
+			}
+		case <-timeout:
+			t.Fatalf("the node never logged %q", logged)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("state = %+v, want %s", n.State(), want)
-		}
-		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -128,13 +149,14 @@ func get(t *testing.T, scheme string, l net.Listener) string {
 	return string(body)
 }
 
-func run(t *testing.T, cfg tailnet.Config) (*tailnet.Node, func()) {
+func run(t *testing.T, cfg tailnet.Config) (*tailnet.Node, logEvents, func()) {
 	t.Helper()
 	n := tailnet.New(cfg)
+	events := logEvents{messages: make(chan string, 64)}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
-	go func() { n.Run(ctx, slog.New(slog.DiscardHandler), hello); close(done) }()
-	return n, func() { cancel(); <-done }
+	go func() { n.Run(ctx, slog.New(events), hello); close(done) }()
+	return n, events, func() { cancel(); <-done }
 }
 
 func TestServesOnTheTailnet(t *testing.T) {
@@ -156,12 +178,13 @@ func TestServesOnTheTailnet(t *testing.T) {
 				b.tls = selfSigned(t)
 			}
 			var joined string
-			n, stop := run(t, tailnet.Config{Hostname: "hearsay", Dir: t.TempDir(), HTTP: tc.http, Join: func(hostname, _ string) (tailnet.Backend, error) {
+			n, events, stop := run(t, tailnet.Config{Hostname: "hearsay", Dir: t.TempDir(), HTTP: tc.http, Join: func(hostname, _ string) (tailnet.Backend, error) {
 				joined = hostname
 				return b, nil
 			}})
-			st := await(t, n, tailnet.StateServing)
-			if st.URL != tc.url || joined != "hearsay" {
+			await(t, events, loggedServing)
+			st := n.State()
+			if st.State != tailnet.StateServing || st.URL != tc.url || joined != "hearsay" {
 				t.Fatalf("state=%+v joined=%q", st, joined)
 			}
 			if body := get(t, tc.scheme, b.listener(tc.addr)); body != "hello" {
@@ -179,7 +202,7 @@ func TestWaitsForApprovalAndRetriesAfterFailure(t *testing.T) {
 	b := &fakeBackend{states: []tailnet.Status{{Backend: "NeedsLogin", AuthURL: "https://login.tailscale.com/a/abc"}, {Backend: "NeedsLogin", AuthURL: "https://login.tailscale.com/a/abc"}, running}, opened: map[string]net.Listener{}}
 	var mu sync.Mutex
 	joins := 0
-	n, stop := run(t, tailnet.Config{Hostname: "hearsay", HTTP: true, RetryInterval: 10 * time.Millisecond, PollInterval: 20 * time.Millisecond,
+	n, events, stop := run(t, tailnet.Config{Hostname: "hearsay", HTTP: true, RetryInterval: 10 * time.Millisecond, PollInterval: 20 * time.Millisecond,
 		Join: func(string, string) (tailnet.Backend, error) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -190,8 +213,11 @@ func TestWaitsForApprovalAndRetriesAfterFailure(t *testing.T) {
 			return b, nil
 		}})
 	defer stop()
-	await(t, n, tailnet.StateLogin)
-	await(t, n, tailnet.StateServing)
+	await(t, events, loggedApproval)
+	await(t, events, loggedServing)
+	if n.State().State != tailnet.StateServing {
+		t.Fatalf("state=%+v", n.State())
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	if joins != 2 {
@@ -201,9 +227,10 @@ func TestWaitsForApprovalAndRetriesAfterFailure(t *testing.T) {
 
 func TestAListenerFailureIsDegradedNotFatal(t *testing.T) {
 	b := &fakeBackend{states: []tailnet.Status{running}, opened: map[string]net.Listener{}, listenOn: func(string) error { return errors.New("port in use") }}
-	n, stop := run(t, tailnet.Config{Hostname: "hearsay", HTTP: true, RetryInterval: time.Hour, Join: func(string, string) (tailnet.Backend, error) { return b, nil }})
-	st := await(t, n, tailnet.StateDegraded)
-	if st.Reason == "" {
+	n, events, stop := run(t, tailnet.Config{Hostname: "hearsay", HTTP: true, RetryInterval: time.Hour, Join: func(string, string) (tailnet.Backend, error) { return b, nil }})
+	await(t, events, loggedDegraded)
+	st := n.State()
+	if st.State != tailnet.StateDegraded || st.Reason == "" {
 		t.Fatalf("state=%+v", st)
 	}
 	stop()

@@ -12,9 +12,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/principal"
 )
 
-// TestConnectorRegistry pins what this binary can ingest: a type registered
-// here builds (or fails on its own configuration), and anything else is an
-// unknown type.
 func TestConnectorRegistry(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -69,8 +66,6 @@ func TestConnectorRegistry(t *testing.T) {
 			wantUnknown: true,
 		},
 	}
-	// The agent session and conversation connectors read their agents' tokens
-	// from the environment when they are built.
 	t.Setenv("HEARSAY_TEST_SHED_TOKEN", "shed-token")
 	principals := []principal.Principal{
 		{ID: "kyle", Kind: principal.KindHuman, Identities: []principal.Identity{{Source: "kern", NativeID: "kyle"}}},

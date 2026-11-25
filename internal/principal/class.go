@@ -14,7 +14,6 @@ import (
 // ([Rights.Intersect]).
 type Class string
 
-// The agent classes.
 const (
 	// ClassObserver reads the scopes it is granted and writes nothing.
 	ClassObserver Class = "observer"
@@ -23,15 +22,12 @@ const (
 	ClassWorker Class = "worker"
 	// ClassOrchestrator reads several scopes, may assert and may subscribe.
 	ClassOrchestrator Class = "orchestrator"
-	// ClassSteward may read everything ingested, ratify and merge topics. The
-	// class exists so the door is there, closed: ratification is a human
-	// action by default, and [AgentRead] takes those two rights away from
-	// every agent, whatever its class.
+	// ClassSteward may read everything ingested, ratify and merge topics.
+	// [AgentRead] takes those two rights away from every agent, whatever its
+	// class.
 	ClassSteward Class = "steward"
 )
 
-// classes is every value [Class] may take, in the order of the table in
-// docs/design.md#access-control, which is also least to most.
 var classes = []Class{ClassObserver, ClassWorker, ClassOrchestrator, ClassSteward}
 
 // Classes returns every agent class, least privileged first.
@@ -86,7 +82,6 @@ func (r Rights) Intersect(other Rights) Rights {
 // its scopes.
 type Read uint8
 
-// The read reaches.
 const (
 	// ReadNone reads nothing.
 	ReadNone Read = iota
@@ -120,7 +115,6 @@ func (r Read) String() string {
 // principals' writes intersect with an AND.
 type Write uint8
 
-// The writes.
 const (
 	// WriteAssert proposes a stance through the assert API.
 	WriteAssert Write = 1 << iota
@@ -132,7 +126,6 @@ const (
 	WriteMerge
 )
 
-// writeNames names each bit, lowest first, for [Write.String].
 var writeNames = []struct {
 	bit  Write
 	name string
@@ -164,5 +157,4 @@ func (w Write) String() string {
 	return strings.Join(names, ",")
 }
 
-// allWrites is every write this version defines.
 const allWrites = WriteAssert | WriteSubscribe | WriteRatify | WriteMerge

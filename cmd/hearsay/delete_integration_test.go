@@ -4,12 +4,10 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -24,9 +22,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/distiller"
 )
 
-// deleteDatabase is a migrated scratch database: the preview test compares the
-// whole of every table before and after, which only a database of its own
-// allows.
 func deleteDatabase(t *testing.T, prefix string) (string, *pgxpool.Pool) {
 	t.Helper()
 	adminURL := os.Getenv("HEARSAY_DATABASE_URL")
@@ -34,25 +29,7 @@ func deleteDatabase(t *testing.T, prefix string) (string, *pgxpool.Pool) {
 		t.Skip("HEARSAY_DATABASE_URL is not set")
 	}
 	ctx := t.Context()
-	admin, err := db.Open(ctx, adminURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer admin.Close()
-	name := prefix + strconv.FormatInt(time.Now().UnixNano(), 36)
-	if _, err := admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		dropper, err := db.Open(context.Background(), adminURL)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		defer dropper.Close()
-		_, _ = dropper.Exec(context.Background(), "DROP DATABASE "+name+" WITH (FORCE)")
-	})
-	url := swapDatabaseName(adminURL, name)
+	url := createDatabase(t, adminURL, prefix)
 	m, err := db.NewMigrator(ctx, url, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -195,10 +172,6 @@ func TestDeletePreviewSelectorsAndNoWrites(t *testing.T) {
 	}
 }
 
-// Applying a deletion needs a configured human as its operator,
-// named with --principal, and anything else is refused before a write — before
-// the database is even opened. The preview needs none. `l0 get` names an
-// operator deletion and returns no content, and a tombstone keeps its source.
 func TestDeleteApplyNamesAConfiguredHumanOperator(t *testing.T) {
 	url, pool := deleteDatabase(t, "delete_apply_")
 	ctx := t.Context()
@@ -249,8 +222,6 @@ func TestDeleteApplyNamesAConfiguredHumanOperator(t *testing.T) {
 		{"unknown principal", []string{"--database-url", url, "--config", configPath, "--apply", "--principal", "nobody"}, "unknown principal"},
 		{"agent principal", []string{"--database-url", url, "--config", configPath, "--apply", "--principal", "bot"}, "must be a configured human"},
 		{"principal without apply", []string{"--database-url", url, "--config", configPath, "--principal", "pat"}, "only read with --apply"},
-		// Refused before the database is opened: an unreachable one does not
-		// change the answer.
 		{"agent principal, no database", []string{"--database-url", nowhere, "--config", configPath, "--apply", "--principal", "bot"}, "must be a configured human"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -308,9 +279,6 @@ func TestDeleteApplyNamesAConfiguredHumanOperator(t *testing.T) {
 	}
 }
 
-// The audit trail as an operator reads it: `delete list` and `delete show`,
-// in text and in JSON, over fixed deletion records — one whose rebuild is
-// complete and one still waiting on a document.
 func TestDeleteListAndShow(t *testing.T) {
 	url, pool := deleteDatabase(t, "delete_record_")
 	ctx := t.Context()
@@ -405,7 +373,6 @@ L2 topics, name redacted (0):
 		})
 	}
 
-	// A job still to run on a rebuilt document holds the status at rebuilding.
 	if _, err := queue.Enqueue(ctx, pool, queue.Request{Kind: distiller.JobKind(), TargetID: "l1:chat:thread"}); err != nil {
 		t.Fatal(err)
 	}

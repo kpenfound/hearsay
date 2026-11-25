@@ -61,8 +61,6 @@ func Write(res Result, configPath, envPath string, overwrite bool) (config.Repo,
 	}
 	if err := writeFile(configPath, res.Config, ConfigMode, overwrite); err != nil {
 		if !overwrite {
-			// The env file was created a moment ago and is nobody's yet; a
-			// second run should not be refused because of it.
 			_ = os.Remove(envPath)
 		}
 		return config.Repo{}, err
@@ -70,8 +68,6 @@ func Write(res Result, configPath, envPath string, overwrite bool) (config.Repo,
 	return repo, nil
 }
 
-// validate loads the configuration from a scratch directory, so nothing is
-// written where the person asked until it is known to load.
 func validate(body []byte) (config.Repo, error) {
 	dir, err := os.MkdirTemp("", "hearsay-init-")
 	if err != nil {

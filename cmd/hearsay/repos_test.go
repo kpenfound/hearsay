@@ -9,9 +9,6 @@ import (
 	"github.com/kpenfound/hearsay/internal/service/assertworker"
 )
 
-// The assertion worker gets a repository reader for every GitHub source a
-// `code/` entry's `repo:` names, built with that source's token, and for no
-// other source.
 func TestRepoReaders(t *testing.T) {
 	sources := map[string]string{
 		"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\n" +
@@ -37,11 +34,9 @@ func TestRepoReaders(t *testing.T) {
 		name    string
 		code    string
 		env     map[string]string
-		want    []string // source ids with a reader; nil is no reader at all
+		want    []string
 		wantErr string
 	}{
-		// github-oss is named by nothing in code/, so it gets no reader, and
-		// its token not being set in any case does not matter.
 		{name: "a GitHub source code/ names", code: github, env: map[string]string{"SEED_GITHUB_TOKEN": "t0ken", "SEED_GITHUB_WEBHOOK_SECRET": "s"}, want: []string{"github"}},
 		{name: "the token alone: the webhook secret is the connectors service's", code: github, env: tokens, want: []string{"github"}},
 		{name: "no reader for another type of source", code: vault, env: tokens},
@@ -86,10 +81,6 @@ func TestRepoReaders(t *testing.T) {
 	}
 }
 
-// The assertion worker gets a replier for every GitHub source, built with its
-// token and not its webhook secret, and a GitHub source whose token is not in
-// the environment stops it starting: it would run commands and answer none. A
-// read-only source gets none, and the worker does not ask for its token.
 func TestCommandRepliers(t *testing.T) {
 	files := map[string]string{
 		"sources/github.yaml": "id: github\ntype: github\ncontainers: [acme/api]\n" +
@@ -139,10 +130,6 @@ func TestCommandRepliers(t *testing.T) {
 	}
 }
 
-// The API answers the slash commands of every Discord source that names an
-// application and is not read-only. A read-only source's application
-// settings are passed over, and its bot token is not asked for: the API
-// registers nothing with it and answers no interaction for it.
 func TestDiscordApps(t *testing.T) {
 	const app = "settings: {guild: \"824100000000000000\", application_id: \"824100000000000009\", " +
 		"public_key: \"3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c\"}\n"

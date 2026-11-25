@@ -166,8 +166,6 @@ func TestGesturesCommand(t *testing.T) {
 		t.Fatalf("pins after unpin = %+v, %v", pins, err)
 	}
 
-	// A decision an agent carried lists its carrier, in the table and in JSON;
-	// every gesture recorded without one lists none.
 	repo, err := config.Load(path)
 	if err != nil {
 		t.Fatal(err)
